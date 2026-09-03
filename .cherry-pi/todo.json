@@ -1,0 +1,17 @@
+{
+  "phases": [
+    {
+      "name": "Setup",
+      "items": [
+        {
+          "content": "write spec",
+          "status": "done"
+        },
+        {
+          "content": "review spec",
+          "status": "in_progress"
+        }
+      ]
+    }
+  ]
+}
