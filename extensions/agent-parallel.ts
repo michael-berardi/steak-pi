@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ExtensionAPI, ThinkingLevel } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 const MAX_TASKS = 8;
@@ -46,7 +46,7 @@ async function runTask(
   task: Task,
   cwd: string,
   model: string | undefined,
-  thinking: ThinkingLevel | undefined,
+  thinking: string | undefined,
   signal: AbortSignal | undefined,
 ): Promise<Result> {
   const args = [

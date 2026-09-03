@@ -14,8 +14,8 @@ const STATE_DIR = ".cherry-pi";
 const STATE_FILE = "todo.json";
 const MARKDOWN_FILE = "TODO.md";
 
-const taskParam = Type.String({ description: "Task content or unique prefix" });
-const phaseParam = Type.String({ description: "Phase name" });
+const taskParam = Type.String();
+const phaseParam = Type.String();
 
 const inputSchema = Type.Object({
   op: Type.Union(
@@ -29,25 +29,24 @@ const inputSchema = Type.Object({
       Type.Literal("append"),
       Type.Literal("rm"),
       Type.Literal("view"),
-    ],
-    { description: "State-changing operation, or view to render the list" },
-  ),
+  ]),
+
   list: Type.Optional(
     Type.Array(
       Type.Object({
-        phase: Type.String({ description: "Phase name, in execution order" }),
-        items: Type.Array(Type.String({ description: "Task content" })),
+        phase: Type.String(),
+        items: Type.Array(Type.String()),
       }),
-      { description: "init only: full phased plan; replaces the current list" },
+      { description: "init: full phased plan" },
     ),
   ),
   task: Type.Optional(taskParam),
   phase: Type.Optional(phaseParam),
   items: Type.Optional(
-    Type.Array(Type.String(), { description: "append only: tasks to add" }),
+    Type.Array(Type.String(), { description: "append: tasks to add" }),
   ),
   reason: Type.Optional(
-    Type.String({ description: "block only: why the task is blocked" }),
+    Type.String({ description: "block: reason" }),
   ),
 });
 
@@ -72,9 +71,8 @@ export default function cherryTodoExtension(pi: ExtensionAPI): void {
     name: "todo",
     label: "Todo",
     description:
-      "Track a phased task list for multi-step work. Ops: init (full phased " +
-      "plan), start, done, drop, block, unblock, append, rm, view. The list " +
-      "auto-promotes the next pending task and persists in .cherry-pi/.",
+      "Phased task tracker. Use only when the operator asks for explicit " +
+      "task tracking. Ops: init|start|done|drop|block|unblock|append|rm|view.",
     parameters: inputSchema,
     async execute(_toolCallId, params) {
       const op = params as TodoOp;
