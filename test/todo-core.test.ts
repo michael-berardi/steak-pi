@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyOp, render, TodoError, type TodoState } from "../extensions/todo-core.ts";
+import { applyOp, render, TodoError, type TodoState } from "../src/todo-core.ts";
 
 const empty: TodoState = { phases: [] };
 
