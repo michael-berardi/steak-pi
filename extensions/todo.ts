@@ -18,36 +18,19 @@ const taskParam = Type.String();
 const phaseParam = Type.String();
 
 const inputSchema = Type.Object({
-  op: Type.Union(
-    [
-      Type.Literal("init"),
-      Type.Literal("start"),
-      Type.Literal("done"),
-      Type.Literal("drop"),
-      Type.Literal("block"),
-      Type.Literal("unblock"),
-      Type.Literal("append"),
-      Type.Literal("rm"),
-      Type.Literal("view"),
-  ]),
-
+  op: Type.String({
+    description:
+      "init|start|done|drop|block|unblock|append|rm|view. done/drop/rm take " +
+      "task for one item or phase for the whole phase. Use only when the " +
+      "operator asks for explicit task tracking.",
+  }),
   list: Type.Optional(
-    Type.Array(
-      Type.Object({
-        phase: Type.String(),
-        items: Type.Array(Type.String()),
-      }),
-      { description: "init: full phased plan" },
-    ),
+    Type.Array(Type.Object({ phase: Type.String(), items: Type.Array(Type.String()) })),
   ),
-  task: Type.Optional(taskParam),
-  phase: Type.Optional(phaseParam),
-  items: Type.Optional(
-    Type.Array(Type.String(), { description: "append: tasks to add" }),
-  ),
-  reason: Type.Optional(
-    Type.String({ description: "block: reason" }),
-  ),
+  task: Type.Optional(Type.String()),
+  phase: Type.Optional(Type.String()),
+  items: Type.Optional(Type.Array(Type.String())),
+  reason: Type.Optional(Type.String()),
 });
 
 function loadState(cwd: string): TodoState {
@@ -70,9 +53,7 @@ export default function cherryTodoExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "todo",
     label: "Todo",
-    description:
-      "Phased task tracker. Use only when the operator asks for explicit " +
-      "task tracking. Ops: init|start|done|drop|block|unblock|append|rm|view.",
+    description: "Phased task tracker (see schema). Tracks operator-requested work only.",
     parameters: inputSchema,
     async execute(_toolCallId, params) {
       const op = params as TodoOp;

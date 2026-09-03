@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
-  "name": "speak",
+  "name": "steak",
   "vars": {
     "cherry": "#e63946",
     "cherryDeep": "#b02a37",

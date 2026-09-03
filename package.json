@@ -1,12 +1,12 @@
 {
-  "name": "speak-pie",
+  "name": "steak-pie",
   "version": "0.1.0",
-  "description": "Speak Pie — the lucky-core flavor of Pi. A curated, minimal, open-source layer of todo, sub-agent, memory, and error-correction tooling for the Pi coding agent. By Implose Cybernetics.",
+  "description": "Steak Pie — the lucky-core flavor of Pi. A curated, minimal, open-source layer of todo, sub-agent, memory, and error-correction tooling for the Pi coding agent. By Implose Cybernetics.",
   "license": "MIT",
   "author": "Implose Cybernetics",
   "keywords": [
     "pi-package",
-    "speak-pie",
+    "steak-pie",
     "coding-agent",
     "todo",
     "subagents"

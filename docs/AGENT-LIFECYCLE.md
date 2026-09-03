@@ -1,4 +1,4 @@
-# Speak Pie Bounded Agent — Lifecycle Spec (v0.1)
+# Steak Pie Bounded Agent — Lifecycle Spec (v0.1)
 
 Status: implemented in `extensions/agent-parallel.ts` (bounded parallel
 executor). This document is the contract Sol review requires before the
@@ -39,7 +39,7 @@ and pipelines require a reviewed lifecycle extension — see Deferred).
   environment. No shared mutable state between children beyond the
   filesystem itself — tasks MUST be independent (the tool description
   says so, and results are aggregated in dispatch order).
-- Children are plain `pi` processes with the Speak Pie package loaded;
+- Children are plain `pi` processes with the Steak Pie package loaded;
   they authenticate with the operator's own provider credentials.
 - A failed child never blocks siblings; failures are reported per-task.
 
