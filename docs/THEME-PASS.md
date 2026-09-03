@@ -1,4 +1,4 @@
-# Cherry Pi × UltraTerm Theme Legibility Pass
+# Speak Pie × UltraTerm Theme Legibility Pass
 
 The cherry TUI theme colors the agent inside terminal panes; UltraTerm
 themes color the app chrome around them. This pass proves the combination
@@ -8,9 +8,9 @@ stays legible everywhere. UltraTerm is desktop-only: all captures at
 ## Method
 
 1. Launch the installed UltraTerm app.
-2. Open one Cherry Pi terminal (`pi` TUI, idle at prompt).
+2. Open one Speak Pie terminal (`pi` TUI, idle at prompt).
 3. Switch the UltraTerm theme (Settings → theme).
-4. Capture the full window; verify the Cherry Pi pane block.
+4. Capture the full window; verify the Speak Pie pane block.
 
 ## Theme matrix
 
