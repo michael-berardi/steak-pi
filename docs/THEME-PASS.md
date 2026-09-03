@@ -1,6 +1,6 @@
 # Steak Pie × UltraTerm Theme Legibility Pass
 
-The cherry TUI theme colors the agent inside terminal panes; UltraTerm
+The steak TUI theme colors the agent inside terminal panes; UltraTerm
 themes color the app chrome around them. This pass proves the combination
 stays legible everywhere. UltraTerm is desktop-only: all captures at
 1920×1080, each inspected individually.
@@ -29,9 +29,9 @@ stays legible everywhere. UltraTerm is desktop-only: all captures at
 ## Acceptance per theme
 
 - Prompt, output text, and diff colors readable at default size.
-- No cherry-red-on-red, no stem-green-on-green collisions.
+- No steak-red-on-red, no stem-green-on-green collisions.
 - Tool result blocks (success/error backgrounds) distinct from plain output.
 - Syntax highlighting readable against the pane background.
 
-Failures → adjust the cherry theme token (never the UltraTerm theme), then
+Failures → adjust the steak theme token (never the UltraTerm theme), then
 re-capture the failing cell.

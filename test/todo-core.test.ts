@@ -13,7 +13,7 @@ function plan(state: TodoState = empty) {
   }).state;
 }
 
-describe("cherry pi todo", () => {
+describe("steak pie todo", () => {
   it("init promotes the earliest pending item", () => {
     const { state, output } = applyOp(empty, { op: "init", list: [
       { phase: "Setup", items: ["a", "b"] },

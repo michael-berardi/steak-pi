@@ -16,12 +16,12 @@ export interface VerifyConfig {
 }
 
 /**
- * Loads `.cherry-pi/config.json` → `{ "verify": { "command": ... } }`.
+ * Loads `.steak-pie/config.json` → `{ "verify": { "command": ... } }`.
  * No config or no command means the feature is idle: zero overhead.
  */
 export function loadVerifyConfig(cwd: string): VerifyConfig | null {
   try {
-    const raw = fs.readFileSync(path.join(cwd, ".cherry-pi", "config.json"), "utf8");
+    const raw = fs.readFileSync(path.join(cwd, ".steak-pie", "config.json"), "utf8");
     const parsed = JSON.parse(raw) as {
       verify?: { command?: unknown; failLimit?: unknown; timeoutMs?: unknown };
     };
@@ -86,7 +86,7 @@ export function formatAppendix(
   tail: string,
 ): string {
   return (
-    `\n\n[cherry-pi] verify failed (attempt ${attempt}/${limit}): ${command}\n` +
+    `\n\n[steak-pie] verify failed (attempt ${attempt}/${limit}): ${command}\n` +
     (tail ? tail + "\n" : "") +
     "Fix the reported problem before finishing."
   );

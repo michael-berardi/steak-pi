@@ -91,7 +91,7 @@ Benchmarks, methodology, and definition hashes: see
 
 ## Themes
 
-The **cherry** theme ships in the box: cherry red on neutral dark surfaces,
+The **steak** theme ships in the box: steak red on neutral dark surfaces,
 stem-green success, built for legibility under UltraTerm's theme matrix.
 
 ## Status

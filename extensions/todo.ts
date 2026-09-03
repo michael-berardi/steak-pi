@@ -10,7 +10,7 @@ import {
   type TodoState,
 } from "../src/todo-core.ts";
 
-const STATE_DIR = ".cherry-pi";
+const STATE_DIR = ".steak-pie";
 const STATE_FILE = "todo.json";
 const MARKDOWN_FILE = "TODO.md";
 
@@ -49,7 +49,7 @@ function persist(cwd: string, state: TodoState, output: string): void {
   fs.writeFileSync(path.join(dir, MARKDOWN_FILE), `# TODO\n\n${output}\n`);
 }
 
-export default function cherryTodoExtension(pi: ExtensionAPI): void {
+export default function steakPieExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "todo",
     label: "Todo",

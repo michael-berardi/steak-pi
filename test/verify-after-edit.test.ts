@@ -9,7 +9,7 @@ const CONFIG = { command: "npm run -s typecheck", failLimit: 2, timeoutMs: 90_00
 
 describe("verify-after-edit", () => {
   it("loads a valid config", () => {
-    const dir = ".cherry-pi";
+    const dir = ".steak-pie";
     expect(loadVerifyConfig("/nonexistent")).toBeNull();
     // valid shape handled in e2e; here assert the idle contract
     expect(shouldVerify(null, "edit", false, 0, 1000, 0)).toBe(false);
@@ -39,7 +39,7 @@ describe("verify-after-edit", () => {
 
   it("formats the appendix with attempt, limit, and output tail", () => {
     const text = formatAppendix("npm run -s typecheck", 1, 2, "error TS2322: x");
-    expect(text).toContain("[cherry-pi] verify failed (attempt 1/2)");
+    expect(text).toContain("[steak-pie] verify failed (attempt 1/2)");
     expect(text).toContain("npm run -s typecheck");
     expect(text).toContain("error TS2322: x");
     expect(text).toContain("Fix the reported problem before finishing.");
