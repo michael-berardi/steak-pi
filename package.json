@@ -1,0 +1,21 @@
+{
+  "name": "cherry-pi",
+  "version": "0.1.0",
+  "description": "Cherry Pi — the lucky-core flavor of Pi. A curated, minimal, open-source layer of todo, sub-agent, memory, and error-correction tooling for the Pi coding agent. By Employee Cybernetics.",
+  "license": "MIT",
+  "author": "Employee Cybernetics",
+  "keywords": [
+    "pi-package",
+    "cherry-pi",
+    "coding-agent",
+    "todo",
+    "subagents"
+  ],
+  "type": "module",
+  "pi": {
+    "extensions": ["./extensions"],
+    "themes": ["./themes"],
+    "skills": ["./skills"],
+    "prompts": ["./prompts"]
+  }
+}
