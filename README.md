@@ -6,7 +6,7 @@
 
 Minimal by design. Smart where it counts. Jackpot when it lands.
 
-*by Employee Cybernetics*
+*by Implose Cybernetics*
 
 </div>
 
@@ -100,4 +100,4 @@ v0.1 in development. Public release lands with benchmark evidence.
 
 ## License
 
-[MIT](./LICENSE) · by Employee Cybernetics
+[MIT](./LICENSE) · by Implose Cybernetics
