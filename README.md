@@ -22,6 +22,9 @@ nothing else:
   OMP's orchestration model
 - 🧠 **Memory** — AGENTS.md conventions plus opt-in cross-session recall
 - 🛠️ **Error correction** — LSP diagnostics and a verify-after-edit loop
+- ⚡ **Rapid Compact** — the default compaction: deterministic VCC briefs,
+  snap frames for bulky tool output, optional UltraCompact (UC) packets, and
+  lossless recall — no LLM calls, $0 per compaction
 
 Everything is toggleable. Idle overhead: zero.
 
@@ -99,6 +102,16 @@ adds. Against OMP the case is total: 32% faster, 5.4x leaner.
 Full methodology, per-run ledger, runner validation, and the
 dual-model verification trail: [`docs/verification/`](./docs/verification/).
 
+## Compaction
+
+Steak Pi compacts with [Rapid Compact](https://github.com/sting8k/rapid-compact)
+(vendored under `extensions/rapid-compact/`): a deterministic brief in
+10–300 ms with zero API cost, lossless recall over the raw session
+(`rc_recall`, `/rc-recall`), sticky key facts that survive every pass, and
+pre-compaction snapshots in `.steak-pi/snaps/`. Manual control: `/rc keep:N
+policy:auto|vcc|snap|uc`. Requires the `rc` binary
+(`~/.local/bin/rc`; falls back to Pi core compaction if missing).
+
 ## Themes
 
 The **steak** theme ships in the box: steak red on neutral dark surfaces,
@@ -106,7 +119,9 @@ stem-green success, built for legibility under UltraTerm's theme matrix.
 
 ## Status
 
-v0.1 in development. Public release lands with benchmark evidence.
+v0.2 — Rapid Compact is the default compaction, replacing Instant Snap
+(whose pre-compaction snapshot guarantee is preserved inside Rapid Compact).
+Benchmark evidence: [rapid-compact/docs/BENCHMARKS.md](https://github.com/sting8k/rapid-compact/blob/main/docs/BENCHMARKS.md).
 
 ## License
 

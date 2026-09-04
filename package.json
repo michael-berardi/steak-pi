@@ -1,6 +1,6 @@
 {
   "name": "steak-pi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Steak Pi — the lucky-core flavor of Pi. A curated, minimal, open-source layer of todo, sub-agent, memory, and error-correction tooling for the Pi coding agent. By Implose Cybernetics.",
   "license": "MIT",
   "author": "Implose Cybernetics",
