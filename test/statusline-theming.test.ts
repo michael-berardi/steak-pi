@@ -1,91 +1,195 @@
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
+import { displayWidth, fitSides, stripAnsi, truncatePlain } from "../src/tui/format.ts";
 import {
-  renderStatusline,
-  gitBranch,
-  shortModel,
-  baseName,
-  type StatusParts,
-} from "../extensions/statusline.ts";
+  initialCompanionState,
+  reduceCompanionState,
+  statusPresentation,
+} from "../src/tui/model.ts";
 import {
-  terminalBackgroundFor,
-  DARK_TERMINAL_THEME,
-  WHITE_TERMINAL_THEME,
-  TERMINAL_THEMES,
-} from "../src/lib/terminalThemes.ts";
+  collectUsage,
+  plainPalette,
+  renderCompanionFooter,
+  renderCompanionHeader,
+  type SemanticPalette,
+} from "../src/tui/render.ts";
+import { simulatorAnsiPalette } from "../src/tui/simulator.ts";
 
-describe("statusline renderer", () => {
-  const parts: StatusParts = {
-    model: "glm5.3flash",
+describe("companion state", () => {
+  it("covers startup, streaming, parallel tools, completion, and resume", () => {
+    let state = initialCompanionState("resumed");
+    expect(statusPresentation(state).text).toBe("● resumed");
+
+    state = reduceCompanionState(state, { type: "agent_start" });
+    expect(state.phase).toBe("thinking");
+    state = reduceCompanionState(state, { type: "stream", kind: "text" });
+    expect(state.phase).toBe("responding");
+    state = reduceCompanionState(state, { type: "tool_start", id: "a", name: "read" });
+    state = reduceCompanionState(state, { type: "tool_start", id: "b", name: "grep" });
+    expect(statusPresentation(state).text).toBe("◆ tools 2");
+    state = reduceCompanionState(state, { type: "tool_end", id: "a", name: "read" });
+    expect(statusPresentation(state).text).toBe("◆ tool grep");
+    state = reduceCompanionState(state, { type: "tool_end", id: "b", name: "grep" });
+    state = reduceCompanionState(state, { type: "settled" });
+    expect(statusPresentation(state)).toEqual({ text: "✓ complete", tone: "success" });
+  });
+
+  it("preserves error and interruption states when the agent settles", () => {
+    const errored = reduceCompanionState(
+      reduceCompanionState(initialCompanionState(), { type: "agent_start" }),
+      { type: "message_error", message: "network" },
+    );
+    expect(reduceCompanionState(errored, { type: "settled" }).phase).toBe("error");
+
+    const stopped = reduceCompanionState(errored, {
+      type: "message_error",
+      aborted: true,
+      message: "interrupted",
+    });
+    expect(reduceCompanionState(stopped, { type: "settled" }).phase).toBe("stopped");
+  });
+
+  it("latches parallel tool errors regardless of sibling completion order", () => {
+    let state = reduceCompanionState(initialCompanionState(), { type: "agent_start" });
+    state = reduceCompanionState(state, { type: "tool_start", id: "a", name: "read" });
+    state = reduceCompanionState(state, { type: "tool_start", id: "b", name: "grep" });
+    state = reduceCompanionState(state, { type: "tool_end", id: "a", name: "read", isError: true });
+    state = reduceCompanionState(state, { type: "tool_end", id: "b", name: "grep" });
+    expect(reduceCompanionState(state, { type: "settled" }).phase).toBe("error");
+
+    state = reduceCompanionState(state, { type: "stream", kind: "text" });
+    expect(reduceCompanionState(state, { type: "settled" }).phase).toBe("complete");
+  });
+
+  it("restores an active tool after nested prompts and tracks compaction", () => {
+    let state = reduceCompanionState(initialCompanionState(), { type: "agent_start" });
+    state = reduceCompanionState(state, { type: "tool_start", id: "a", name: "question" });
+    state = reduceCompanionState(state, { type: "prompt_start", title: "Approve edit" });
+    state = reduceCompanionState(state, { type: "prompt_start", title: "Choose path" });
+    expect(state.promptDepth).toBe(2);
+    state = reduceCompanionState(state, { type: "prompt_end" });
+    expect(state.phase).toBe("waiting");
+    state = reduceCompanionState(state, { type: "prompt_end" });
+    expect(state.phase).toBe("tool");
+    state = reduceCompanionState(state, { type: "tool_end", id: "a", name: "question" });
+    state = reduceCompanionState(state, { type: "compact_start" });
+    expect(state.phase).toBe("compacting");
+    state = reduceCompanionState(state, { type: "compact_end" });
+    expect(statusPresentation(state).text).toBe("● compacted");
+  });
+});
+
+describe("responsive semantic rendering", () => {
+  const snapshot = {
+    state: initialCompanionState("resumed"),
+    cwd: "/Users/demo/dev/a-project-with-a-long-name",
+    home: "/Users/demo",
+    branch: "feature/theme-neutral-companion",
+    sessionName: "visual regression",
+    model: { id: "provider/a-very-long-model-name-that-must-truncate" },
+    provider: "provider",
     thinking: "high",
-    branch: "main",
-    dir: "steak-pi",
-    compression: "auto",
-    compacted: 2,
+    usage: { input: 1200, output: 300, cacheRead: 8500, cacheWrite: 100, cost: 0.125 },
+    context: { percent: 72.4, contextWindow: 131_072 },
   };
 
-  it("renders all segments in order with separators", () => {
-    const line = renderStatusline(parts);
-    expect(line).toContain("◆ glm5.3flash");
-    expect(line).toContain("✦ high");
-    expect(line).toContain("⑂ main");
-    expect(line).toContain("steak-pi");
-    expect(line).toContain("⚡ auto");
-    expect(line).toContain("⊞ 2");
-    expect(line.split("│").length).toBe(6);
+  it("never exceeds the terminal width at compact and desktop sizes", () => {
+    for (const width of [20, 24, 32, 40, 80, 120, 192]) {
+      for (const palette of [plainPalette, simulatorAnsiPalette]) {
+        const lines = [
+          ...renderCompanionHeader(width, palette),
+          ...renderCompanionFooter(width, snapshot, palette),
+        ];
+        expect(lines).toHaveLength(4);
+        for (const line of lines) {
+          expect(displayWidth(line), `${width}: ${stripAnsi(line)}`).toBeLessThanOrEqual(width);
+          expect(stripAnsi(line)).not.toMatch(/[\r\n\t]/);
+        }
+      }
+    }
   });
 
-  it("omits empty segments", () => {
-    const line = renderStatusline({ ...parts, branch: "", compression: null, compacted: 0, thinking: "off" });
-    expect(line).not.toContain("⑂");
-    expect(line).not.toContain("⚡");
-    expect(line).not.toContain("✦");
-    expect(line).not.toContain("⊞");
+  it("uses only semantic theme functions", () => {
+    const calls: string[] = [];
+    const token = (name: string) => (text: string) => {
+      calls.push(name);
+      return text;
+    };
+    const palette: SemanticPalette = {
+      accent: token("accent"), text: token("text"), muted: token("muted"), dim: token("dim"),
+      success: token("success"), warning: token("warning"), error: token("error"), bold: token("bold"),
+    };
+    for (const width of [20, 24, 32, 40, 80, 120, 192]) {
+      const output = [
+        ...renderCompanionHeader(width, palette),
+        ...renderCompanionFooter(width, snapshot, palette),
+      ].join("\n");
+      expect(output).not.toMatch(/#[0-9a-f]{3,8}|\x1b\[/i);
+    }
+    expect(new Set(calls)).toEqual(new Set(["accent", "dim", "bold", "muted"]));
+  });
+
+  it("sanitizes dynamic single-line fields before layout", () => {
+    const adversarial = {
+      ...snapshot,
+      state: reduceCompanionState(initialCompanionState(), {
+        type: "message_error",
+        message: "bad\nstatus\t\u0001\u001b[31m",
+      }),
+      cwd: "/tmp/project\nnext",
+      branch: "main\ttab",
+      sessionName: "name\u0007bell",
+      model: { id: "model\rreturn" },
+    };
+    for (const line of renderCompanionFooter(80, adversarial, plainPalette)) {
+      expect(line).not.toMatch(/[\x00-\x1f\x7f]/);
+      expect(displayWidth(line)).toBeLessThanOrEqual(80);
+    }
+  });
+
+  it("preserves the full brand before optional description at minimum width", () => {
+    expect(renderCompanionHeader(20, plainPalette)).toEqual([
+      "◆ STEAK PI",
+      "/ commands · /resume",
+    ]);
+  });
+
+  it("keeps a useful compact hierarchy", () => {
+    expect(renderCompanionHeader(40, plainPalette)).toEqual([
+      "◆ STEAK PI           native Pi companion",
+      "type / · /model · /resume",
+    ]);
+    expect(renderCompanionFooter(40, snapshot, plainPalette)).toEqual([
+      "● resumed  provider/a-very-long-model-n…",
+      "~/dev/a-project-with…  ctx 72% · 10k tok",
+    ]);
   });
 });
 
-describe("statusline helpers", () => {
-  it("shortens model ids", () => {
-    expect(shortModel({ id: "zai/glm-5.3-flash" })).toBe("glm5.3-flash");
-    expect(shortModel(undefined)).toBe("pi");
+describe("usage and width helpers", () => {
+  it("aggregates only persisted Pi usage channels", () => {
+    const usage = collectUsage([
+      { type: "message", message: { role: "assistant", usage: { input: 10, output: 4, cacheRead: 20, cacheWrite: 2, cost: { total: 0.01 } } } },
+      { type: "message", message: { role: "toolResult", usage: { input: 1, output: 2, cost: { total: 0.02 } } } },
+      { type: "compaction", usage: { input: 3, output: 5, cost: { total: 0.03 } } },
+      { type: "message", message: { role: "user", usage: { input: 999 } } },
+      { type: "other", usage: { input: 999 } },
+    ]);
+    expect(usage).toEqual({ input: 14, output: 11, cacheRead: 20, cacheWrite: 2, cost: 0.06 });
   });
 
-  it("basename handles trailing slashes", () => {
-    expect(baseName("/tmp/proj/")).toBe("proj");
-    expect(baseName("/")).toBe("~");
-  });
-
-  it("gitBranch fails silent outside a repo", () => {
-    const b = gitBranch("/tmp");
-    expect(typeof b).toBe("string");
-  });
-});
-
-describe("terminal themes (UltraTerm bridge)", () => {
-  it("flagship OLED is true black with bright text", () => {
-    expect(DARK_TERMINAL_THEME.background).toBe("#000000");
-    expect(DARK_TERMINAL_THEME.foreground).toBe("#f2f4f8");
-    expect(terminalBackgroundFor("oled")).toBe(DARK_TERMINAL_THEME);
-  });
-
-  it("light base is a real white surface", () => {
-    expect(WHITE_TERMINAL_THEME.light).toBe(true);
-    expect(parseInt(WHITE_TERMINAL_THEME.background.slice(1, 3), 16)).toBeGreaterThan(0xf0);
-  });
-
-  it("resolves the full corpus with OLED fallback", () => {
-    for (const name of [
-      "oled", "white", "obsidian-rite", "nord-frost", "crystal",
-      "vapor", "frutiger-aero", "frutiger-dark", "oel-drive",
-    ]) {
-      expect(TERMINAL_THEMES[name]).toBeDefined();
+  it("matches Pi's width oracle for complex terminal graphemes", () => {
+    for (const value of ["🇺🇸", "1️⃣", "👩‍💻", "é", "界", "◆ STEAK PI"]) {
+      expect(displayWidth(value)).toBe(visibleWidth(value));
     }
-    expect(terminalBackgroundFor("nonexistent").name).toBe("steak-oled");
+    expect(truncatePlain("alpha🙂beta", 8)).toBe("alpha🙂…");
+    expect(truncatePlain("🇺🇸1️⃣👩‍💻界", 7)).toBe("🇺🇸1️⃣👩‍💻…");
   });
 
-  it("every theme keeps steak accent lineage", () => {
-    for (const t of Object.values(TERMINAL_THEMES)) {
-      expect(t.accent).toMatch(/^#[0-9a-f]{6}$/i);
-      expect(t.foreground).toMatch(/^#[0-9a-f]{6}$/i);
-    }
+  it("lays out both sides using Pi's terminal width", () => {
+    const fitted = fitSides("left 🇺🇸 status", "right 1️⃣ model", 20);
+    expect(visibleWidth(fitted.left + fitted.gap + fitted.right)).toBe(20);
+    expect(fitted.left).toContain("left");
+    expect(fitted.right).toContain("right");
   });
 });

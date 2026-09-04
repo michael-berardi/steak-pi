@@ -18,8 +18,9 @@ nothing else:
 
 - 🎯 **Todo** — a phased task list with OMP-compatible semantics
   (start / done / block / auto-promotion), persisted locally
-- 🤖 **Sub-agents** — bounded parallel agents with mid-run steering, matching
-  OMP's orchestration model
+- 🤖 **UltraTerm Sub-Agent Protocol** — native bounded Pi children, background
+  jobs, session-wide scheduling, path ownership, cancellation, accounting, and
+  a run-local IRC-style relay
 - 🧠 **Memory** — AGENTS.md conventions plus opt-in cross-session recall
 - 🛠️ **Error correction** — LSP diagnostics and a verify-after-edit loop
 - ⚡ **UltraCompress** — the default compaction: deterministic VCC briefs,
@@ -73,7 +74,7 @@ so each one is an explicit choice.
 ## Install
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.1.0
+pi install git:github.com/michael-berardi/steak-pi@v0.2.1
 ```
 
 Or try it without installing:
@@ -82,11 +83,35 @@ Or try it without installing:
 pi -e git:github.com/michael-berardi/steak-pi
 ```
 
+## UltraTerm Sub-Agent Protocol
+
+`ultraterm_subagents` replaces the legacy `parallel` subprocess tool. It runs
+1–8 bounded native Pi children with at most four active at once across the
+session, at most 16 active runs, and 50 retained terminal runs. The parent
+supplies the shared goal and contract; every writable leaf must receive
+disjoint owned paths. Read-only workers cannot edit, shell access is opt-in and
+explicitly outside path sandboxing, ambient extensions and project prompts are
+excluded, and every run has hard turn, time, output, and relay bounds.
+
+Background runs return stable IDs immediately. `ultraterm_hub` lists, inspects,
+waits for, messages, and cancels them without polling. Children coordinate with
+`ultraterm_relay`, an ephemeral run-namespaced mailbox supporting addressed
+messages, requests, replies, broadcasts, and parent communication. Worker
+usage is attributed to the parent exactly once.
+
+The parent remains the only orchestrator: it owns decomposition, integration,
+judgment, and final proof. Full protocol:
+[`docs/ULTRATERM-SUBAGENT-PROTOCOL.md`](./docs/ULTRATERM-SUBAGENT-PROTOCOL.md).
+A small paid live GLM-5.3-Flash calibration, with raw caveats and no product-win
+claim, is recorded at
+[`benchmarks/usap/results/glm53-live-calibration-2026-09-04.md`](./benchmarks/usap/results/glm53-live-calibration-2026-09-04.md).
+
 ## Why Steak Pi
 
-We benchmarked honestly: 23 validated cases x 5 samples, one model
-(GLM-5.3-flash) across every harness, correctness decided by independent
-verify commands — never by the agent's own opinion.
+The historical 0.2.1 benchmark used 23 validated cases × 5 samples, one model
+(GLM-5.3-flash) across every harness, and independent verify commands. Those
+numbers describe the legacy bounded executor and are retained as the historical
+baseline; the new USAP implementation is being rebenchmarked separately.
 
 | | Steak Pi | Stock Pi | OMP |
 | --- | --- | --- | --- |
@@ -94,13 +119,14 @@ verify commands — never by the agent's own opinion.
 | Median latency | **16.1s** | 18.3s | 23.7s |
 | Total tokens | 2.63M | **2.33M** | 14.16M |
 
-Steak Pi completes more tasks than stock Pi, 12% faster at the median,
-for a measured 12.8% token premium — the price of the todo tracker,
-bounded parallel agents, verify-after-edit, and memory conventions it
-adds. Against OMP the case is total: 32% faster, 5.4x leaner.
+In that historical suite, Steak Pi completed more tasks than stock Pi, 12%
+faster at the median, for a measured 12.8% token premium. It was 32% faster
+and 5.4× leaner than OMP. These results describe the removed legacy executor,
+not USAP; current calibration is linked above.
 
-Full methodology, per-run ledger, runner validation, and the
-dual-model verification trail: [`docs/verification/`](./docs/verification/).
+Full methodology, per-run ledger, runner validation, and the dual-model
+verification trail:
+[`docs/verification/`](https://github.com/michael-berardi/steak-pi/tree/v0.2.1/docs/verification).
 
 ## Compaction
 
@@ -113,21 +139,37 @@ Manual control: `/ultracompress keep:N policy:auto|vcc|snap|uc`. Requires the
 `ultracompress` binary (`~/.local/bin/ultracompress`; falls back to Pi core
 compaction if missing).
 
-## Themes
+## Companion UI
 
-Three steak themes ship in the box: **steak-oled** (flagship — true black,
-pure-white text, maximum contrast), **steak** (neutral dark), and
-**steak-light**. Built for legibility under UltraTerm's theme matrix; the
-terminal-theme bridge (`src/lib/terminalThemes.ts`) keeps host chrome and
-agent UI on one surface. An OMP-style powerline statusline
-(`◆ model · ✦ thinking · ⑂ branch · ⚡ compression`) renders as a footer widget —
-event-driven, zero idle overhead.
+Steak Pi adds a minimal native header, a responsive two-line footer baseline
+(with extension statuses preserved when present), and a theme-inheriting
+streaming pulse. It reports ready/thinking/responding/tool/waiting/
+compacting/error/completion state alongside model, context, persisted usage,
+cache hit rate, branch, and session location. Pi still owns the editor,
+transcript, tool cards, selectors, history, scrolling, and every keybinding.
+
+The UI uses only the active Pi theme's semantic tokens—no hard-coded terminal
+colors and no UltraTerm-theme matrix—so stock dark/light and user themes work
+without a custom per-theme Steak theme. **steak**, **steak-oled**, and
+**steak-light** remain optional. See [`docs/COMPANION-UI.md`](./docs/COMPANION-UI.md)
+for the state contract and deterministic headless simulator.
+
+```sh
+npm run ui:simulate -- --scenario tool --width 80 --height 24
+```
 
 ## Status
 
-v0.2.1 — UltraCompress is the default compaction, replacing Instant Snap
-(whose pre-compaction snapshot guarantee is preserved inside UltraCompress).
-Benchmark evidence: [ultracompress/docs/BENCHMARKS.md](https://github.com/michael-berardi/ultracompress/blob/main/docs/BENCHMARKS.md).
+**v0.2.1** — adds the theme-neutral native companion UI, makes UltraCompress
+the default compaction, and replaces legacy `parallel` with the UltraTerm
+Sub-Agent Protocol. UltraCompress benchmark evidence:
+[ultracompress/docs/BENCHMARKS.md](https://github.com/michael-berardi/ultracompress/blob/main/docs/BENCHMARKS.md).
+
+## Contributing and security
+
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the local verification workflow
+and [`SECURITY.md`](./SECURITY.md) for private vulnerability reporting and the
+USAP trust boundary.
 
 ## License
 

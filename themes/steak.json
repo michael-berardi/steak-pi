@@ -64,6 +64,8 @@
     "thinkingMinimal": "neutral",
     "thinkingLow": "stem",
     "thinkingMedium": "jackpot",
-    "thinkingHigh": "steakRed"
+    "thinkingHigh": "steakRed",
+    "thinkingXhigh": "steakDeep",
+    "bashMode": "stem"
   }
 }
