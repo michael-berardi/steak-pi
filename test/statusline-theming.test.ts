@@ -19,7 +19,7 @@ describe("statusline renderer", () => {
     thinking: "high",
     branch: "main",
     dir: "steak-pi",
-    rc: "auto",
+    compression: "auto",
     compacted: 2,
   };
 
@@ -35,7 +35,7 @@ describe("statusline renderer", () => {
   });
 
   it("omits empty segments", () => {
-    const line = renderStatusline({ ...parts, branch: "", rc: null, compacted: 0, thinking: "off" });
+    const line = renderStatusline({ ...parts, branch: "", compression: null, compacted: 0, thinking: "off" });
     expect(line).not.toContain("⑂");
     expect(line).not.toContain("⚡");
     expect(line).not.toContain("✦");

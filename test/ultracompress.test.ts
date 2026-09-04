@@ -1,16 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { mergeSettings, DEFAULT_SETTINGS } from "../extensions/rapid-compact/src/settings.ts";
+import { mergeSettings, DEFAULT_SETTINGS } from "../extensions/ultracompress/src/settings.ts";
 import {
   applyTransforms,
   collectCandidates,
   type SnapOp,
   type UcOp,
   type AgentLikeMessage,
-} from "../extensions/rapid-compact/src/transforms.ts";
-import { buildSnap, snapFileName } from "../extensions/rapid-compact/src/snapshot.ts";
-import { parseRcArgs } from "../extensions/rapid-compact/src/compact-hook.ts";
+} from "../extensions/ultracompress/src/transforms.ts";
+import { buildSnap, snapFileName } from "../extensions/ultracompress/src/snapshot.ts";
+import { parseUltraCompressArgs } from "../extensions/ultracompress/src/compact-hook.ts";
 
-describe("rapid-compact settings", () => {
+describe("ultracompress settings", () => {
   it("defaults survive junk and merge partials", () => {
     expect(mergeSettings("junk")).toEqual(DEFAULT_SETTINGS);
     const s = mergeSettings({ policy: "vcc", uc: { enabled: false } });
@@ -24,7 +24,7 @@ describe("rapid-compact settings", () => {
   });
 });
 
-describe("rapid-compact live transforms", () => {
+describe("ultracompress live transforms", () => {
   const snapOp: SnapOp = {
     op: "snap",
     message_index: 0,
@@ -69,19 +69,19 @@ describe("rapid-compact live transforms", () => {
   });
 });
 
-describe("rapid-compact snapshot guarantee (instant-snap replacement)", () => {
+describe("ultracompress snapshot guarantee (instant-snap replacement)", () => {
   it("serializes full pre-compaction state", () => {
     const { meta, payload } = buildSnap([{ type: "message" }, { type: "message" }], "threshold", 1234);
-    expect(meta.compactor).toBe("rapid-compact");
+    expect(meta.compactor).toBe("ultracompress");
     expect(meta.entries).toBe(2);
     expect(JSON.parse(payload).entries).toHaveLength(2);
     expect(snapFileName(1234)).toMatch(/^snap-.*\.json$/);
   });
 });
 
-describe("rapid-compact command args", () => {
-  it("parses /rc keep:N policy:p prompt", () => {
-    const r = parseRcArgs("keep:3 policy:uc rerun the failing suite");
+describe("ultracompress command args", () => {
+  it("parses /ultracompress keep:N policy:p prompt", () => {
+    const r = parseUltraCompressArgs("keep:3 policy:uc rerun the failing suite");
     expect(r).toEqual({ keep: 3, policy: "uc", prompt: "rerun the failing suite" });
   });
 });

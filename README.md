@@ -22,7 +22,7 @@ nothing else:
   OMP's orchestration model
 - 🧠 **Memory** — AGENTS.md conventions plus opt-in cross-session recall
 - 🛠️ **Error correction** — LSP diagnostics and a verify-after-edit loop
-- ⚡ **Rapid Compact** — the default compaction: deterministic VCC briefs,
+- ⚡ **UltraCompress** — the default compaction: deterministic VCC briefs,
   snap frames for bulky tool output, optional UltraCompact (UC) packets, and
   lossless recall — no LLM calls, $0 per compaction
 
@@ -104,13 +104,14 @@ dual-model verification trail: [`docs/verification/`](./docs/verification/).
 
 ## Compaction
 
-Steak Pi compacts with [Rapid Compact](https://github.com/sting8k/rapid-compact)
-(vendored under `extensions/rapid-compact/`): a deterministic brief in
+Steak Pi compacts with [UltraCompress](https://github.com/michael-berardi/ultracompress)
+(vendored under `extensions/ultracompress/`): a deterministic brief in
 10–300 ms with zero API cost, lossless recall over the raw session
-(`rc_recall`, `/rc-recall`), sticky key facts that survive every pass, and
-pre-compaction snapshots in `.steak-pi/snaps/`. Manual control: `/rc keep:N
-policy:auto|vcc|snap|uc`. Requires the `rc` binary
-(`~/.local/bin/rc`; falls back to Pi core compaction if missing).
+(`ultracompress_recall`, `/ultracompress-recall`), sticky key facts that
+survive every pass, and pre-compaction snapshots in `.steak-pi/snaps/`.
+Manual control: `/ultracompress keep:N policy:auto|vcc|snap|uc`. Requires the
+`ultracompress` binary (`~/.local/bin/ultracompress`; falls back to Pi core
+compaction if missing).
 
 ## Themes
 
@@ -119,14 +120,14 @@ pure-white text, maximum contrast), **steak** (neutral dark), and
 **steak-light**. Built for legibility under UltraTerm's theme matrix; the
 terminal-theme bridge (`src/lib/terminalThemes.ts`) keeps host chrome and
 agent UI on one surface. An OMP-style powerline statusline
-(`◆ model · ✦ thinking · ⑂ branch · ⚡ rc`) renders as a footer widget —
+(`◆ model · ✦ thinking · ⑂ branch · ⚡ compression`) renders as a footer widget —
 event-driven, zero idle overhead.
 
 ## Status
 
-v0.2 — Rapid Compact is the default compaction, replacing Instant Snap
-(whose pre-compaction snapshot guarantee is preserved inside Rapid Compact).
-Benchmark evidence: [rapid-compact/docs/BENCHMARKS.md](https://github.com/sting8k/rapid-compact/blob/main/docs/BENCHMARKS.md).
+v0.2.1 — UltraCompress is the default compaction, replacing Instant Snap
+(whose pre-compaction snapshot guarantee is preserved inside UltraCompress).
+Benchmark evidence: [ultracompress/docs/BENCHMARKS.md](https://github.com/michael-berardi/ultracompress/blob/main/docs/BENCHMARKS.md).
 
 ## License
 

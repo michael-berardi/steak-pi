@@ -4,8 +4,8 @@ import { spawnSync } from "node:child_process";
 /**
  * Steak Pi statusline — an OMP-style powerline footer, without the cost.
  *
- * Segments: ◆ model · thinking · branch · dir · rc policy. Rendered as a
- * widget above the editor. Event-driven only (session start, model change,
+ * Segments: ◆ model · thinking · branch · dir · UltraCompress policy.
+ * Rendered as a widget above the editor. Event-driven only (session start, model change,
  * turn end, compaction): no timers, no polling, zero idle overhead.
  * Branch lookups are debounced to turn boundaries and fail silently offline.
  */
@@ -15,7 +15,7 @@ export interface StatusParts {
   thinking: string;
   branch: string;
   dir: string;
-  rc: string | null;
+  compression: string | null;
   compacted: number;
 }
 
@@ -28,7 +28,7 @@ export function renderStatusline(p: StatusParts): string {
   if (p.thinking && p.thinking !== "off") segs.push(`✦ ${p.thinking}`);
   if (p.branch) segs.push(`⑂ ${p.branch}`);
   if (p.dir) segs.push(p.dir);
-  if (p.rc) segs.push(`⚡ ${p.rc}`);
+  if (p.compression) segs.push(`⚡ ${p.compression}`);
   if (p.compacted > 0) segs.push(`⊞ ${p.compacted}`);
   return segs.join(SEP);
 }
@@ -61,23 +61,27 @@ export function baseName(cwd: string): string {
 export default function statuslineExtension(pi: ExtensionAPI): void {
   let branch = "";
   let compacted = 0;
-  let rcPolicy: string | null = null;
+  let compressionPolicy: string | null = "auto";
 
-  const render = (pi2: ExtensionAPI, ctx?: { model?: unknown; thinkingLevel?: unknown; cwd?: string; hasUI?: boolean }) => {
+  type StatusContext = {
+    model?: unknown;
+    thinkingLevel?: unknown;
+    cwd?: string;
+    hasUI?: boolean;
+    ui?: { setWidget?: (id: string, lines: string[]) => void };
+  };
+  const render = (ctx?: StatusContext) => {
     try {
-      if (ctx && ctx.hasUI === false) return;
+      if (ctx?.hasUI === false) return;
       const parts: StatusParts = {
         model: shortModel(ctx?.model),
         thinking: String(ctx?.thinkingLevel ?? ""),
         branch,
         dir: baseName(ctx?.cwd ?? process.cwd()),
-        rc: rcPolicy,
+        compression: compressionPolicy,
         compacted,
       };
-      (pi2 as unknown as { setWidget?: (id: string, lines: string[]) => void }).setWidget?.(
-        "statusline",
-        [renderStatusline(parts)],
-      );
+      ctx?.ui?.setWidget?.("statusline", [renderStatusline(parts)]);
     } catch {
       // Widget rendering is best-effort decoration; never surface errors.
     }
@@ -86,28 +90,34 @@ export default function statuslineExtension(pi: ExtensionAPI): void {
   pi.on("session_start", async (_event, ctx) => {
     compacted = 0;
     branch = gitBranch(ctx?.cwd ?? process.cwd());
-    render(pi, ctx as never);
+    render(ctx as unknown as StatusContext);
   });
 
-  pi.on("model_change", async (event, ctx) => {
-    void event;
-    render(pi, ctx as never);
+  const onModelChange = pi.on as unknown as (
+    event: "model_change",
+    handler: (event: unknown, ctx: StatusContext) => Promise<void>,
+  ) => void;
+  onModelChange("model_change", async (_event, ctx) => {
+    render(ctx);
   });
 
   pi.on("turn_end", async (_event, ctx) => {
-    render(pi, ctx as never);
+    render(ctx as unknown as StatusContext);
   });
 
-  pi.on("session_before_compact", async (event, ctx) => {
-    // Reflect the active compaction stack in the footer.
+  const onCompaction = pi.on as unknown as (
+    event: "session_before_compact",
+    handler: (event: unknown, ctx: StatusContext) => Promise<unknown>,
+  ) => void;
+  onCompaction("session_before_compact", async (event, ctx) => {
     const instructions = String((event as { customInstructions?: string }).customInstructions ?? "");
-    rcPolicy = instructions.includes("/rc") || instructions === "" ? "auto" : rcPolicy;
-    void ctx;
+    compressionPolicy = instructions.includes("/ultracompress") || instructions === "" ? "auto" : compressionPolicy;
+    render(ctx);
     return undefined;
   });
 
   pi.on("session_compact", async (_event, ctx) => {
     compacted++;
-    render(pi, ctx as never);
+    render(ctx as unknown as StatusContext);
   });
 }
