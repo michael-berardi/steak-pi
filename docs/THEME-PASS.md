@@ -1,8 +1,8 @@
 # Steak Pi × UltraTerm Theme-Neutral Legibility Pass
 
 Steak Pi no longer mirrors UltraTerm's theme corpus or chooses a matching
-agent theme. The companion header, footer, and activity indicator consume only
-semantic colors from whichever Pi theme is already active. This keeps one TUI
+agent theme. The companion header, composer band, prompt gutter, and footer
+consume only semantic colors from whichever Pi theme is already active. This keeps one TUI
 implementation compatible with every UltraTerm pane surface.
 
 ## Automated gate

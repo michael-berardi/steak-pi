@@ -9,10 +9,9 @@ is not a canonical USAP tool.
 
 USAP defines how a parent agent delegates bounded leaves, how children
 coordinate, and what evidence the parent must inspect before reporting
-completion. It retains OMP's useful orchestration lessons—parent ownership,
-adaptive parallelism, bounded workers, and proof after integration—without
-recreating OMP's extension layer. It is a protocol, not an implementation
-design.
+completion. It codifies Steak Pi's parent ownership, adaptive parallelism,
+bounded workers, and proof-after-integration model. It is a protocol, not an
+implementation design.
 
 The canonical tool surface is:
 

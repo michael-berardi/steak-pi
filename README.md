@@ -26,13 +26,17 @@ machinery that turns it into a complete daily driver.
 Verified with Pi 0.85.x. Requires Node.js 22.19.0 or newer.
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.2.1
+pi install git:github.com/michael-berardi/steak-pi@v0.3.1
 ```
 
 This installs USAP, todo, verification, themes, memory conventions, and the
 native companion UI. Deterministic compaction additionally needs the local
 [`ultracompress` binary](#ultracompress); without it, Steak Pi safely falls back
 to Pi's core compaction.
+
+For a focused launch, enable **Quiet startup** in `/settings`. Routine context,
+skill, extension, and theme inventories stay out of the workspace while Pi
+continues to surface actionable resource diagnostics.
 
 That is the ceremony. Kettle optional.
 
@@ -200,13 +204,15 @@ If it is absent or fails, Steak Pi falls back to Pi's core compaction. Commands:
 
 ## Native companion UI
 
-Steak Pi adds a compact native header, responsive footer, and streaming pulse.
-It reports lifecycle state alongside model, context, persisted usage, cache hit
+Steak Pi adds a compact native header and its signature composer with an
+integrated status band, prompt gutter, and conditional extension-status row. It
+reports lifecycle state alongside model, context, persisted usage, cache hit
 rate, branch, and session location.
 
-It is event-driven, preserves extension statuses, and uses Pi's semantic theme
-tokens: no polling, hard-coded terminal palette, replacement editor, or stolen
-keybindings. Optional **steak**, **steak-oled**, and **steak-light** themes ship
+The composer extends Pi's `CustomEditor`, preserving native editing,
+autocomplete, history, IME, mouse, submit, and application keybindings. It is
+event-driven, preserves extension statuses, and uses Pi's semantic theme
+tokens: no polling, hard-coded terminal palette, provider hooks, or idle timers. Optional **steak**, **steak-oled**, and **steak-light** themes ship
 with it; ordinary Pi and user themes work too.
 
 UI contract and simulator: [`docs/COMPANION-UI.md`](./docs/COMPANION-UI.md).

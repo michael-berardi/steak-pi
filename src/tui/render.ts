@@ -1,5 +1,13 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import { compactCwd, fitSides, formatTokens, oneLine, shortModel, truncatePlain } from "./format.ts";
+import {
+  compactCwd,
+  displayWidth,
+  fitSides,
+  formatTokens,
+  oneLine,
+  shortModel,
+  truncatePlain,
+} from "./format.ts";
 import { statusPresentation, type CompanionState, type StatusTone } from "./model.ts";
 
 export interface SemanticPalette {
@@ -181,30 +189,47 @@ export function usageSummary(snapshot: FooterSnapshot, width: number): string {
   return parts.join(" · ") || "ctx —";
 }
 
+export function renderComposerBand(
+  width: number,
+  snapshot: FooterSnapshot,
+  palette: SemanticPalette,
+): string {
+  const safeWidth = Math.max(1, width);
+  const status = statusPresentation(snapshot.state);
+  const left = safeWidth >= 42
+    ? `◆  > ${modelSummary(snapshot)} > ${status.text} ▶`
+    : `◆ ${status.text} ▶`;
+  const canShowRight = displayWidth(left) <= Math.floor(safeWidth * 0.58);
+  const rightDetail = !canShowRight
+    ? ""
+    : safeWidth >= 104
+      ? `${locationSummary(snapshot)} · ${usageSummary(snapshot, safeWidth)}`
+      : safeWidth >= 54
+        ? usageSummary(snapshot, safeWidth)
+        : "";
+  const right = rightDetail ? `◀ ${rightDetail}` : "";
+  const fitted = fitSides(left, right, safeWidth, 1);
+  const fillWidth = right
+    ? displayWidth(fitted.gap)
+    : Math.max(0, safeWidth - displayWidth(fitted.left));
+  const fill = "─".repeat(fillWidth);
+  const paintStatus = tonePainter(palette, status.tone);
+  return truncateToWidth(
+    palette.bold(paintStatus(fitted.left)) +
+      palette.accent(fill) +
+      palette.dim(fitted.right),
+    safeWidth,
+    "",
+  );
+}
+
 export function renderCompanionFooter(
   width: number,
   snapshot: FooterSnapshot,
   palette: SemanticPalette,
 ): string[] {
   const safeWidth = Math.max(1, width);
-  const status = statusPresentation(snapshot.state);
-  const first = paintSides(
-    status.text,
-    modelSummary(snapshot),
-    safeWidth,
-    palette,
-    (text) => palette.bold(tonePainter(palette, status.tone)(text)),
-    (text) => palette.dim(text),
-  );
-  const second = paintSides(
-    locationSummary(snapshot),
-    usageSummary(snapshot, safeWidth),
-    safeWidth,
-    palette,
-    (text) => palette.dim(text),
-    (text) => palette.dim(text),
-  );
-  const lines = [first, second];
+  const lines: string[] = [];
   const statuses = (snapshot.extensionStatuses ?? [])
     .map((status) => status.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim())
     .filter(Boolean);

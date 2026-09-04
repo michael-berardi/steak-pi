@@ -14,7 +14,9 @@ npm run verify
 ```
 
 Keep changes narrow, add regression tests for behavior changes, and preserve
-Pi's native editor, transcript, tools, selectors, history, and keybindings.
+Pi's native editor behavior through `CustomEditor`: editing, autocomplete, IME,
+mouse input, history, submission, and application keybindings. Transcript,
+tools, selectors, and session behavior remain native Pi surfaces.
 USAP children must remain bounded and non-recursive; writable tasks require
 disjoint ownership and the parent retains integration and verification.
 

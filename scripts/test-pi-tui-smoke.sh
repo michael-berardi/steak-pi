@@ -92,6 +92,7 @@ fs.writeFileSync(file, JSON.stringify({
   defaultThinkingLevel: "high",
   defaultProjectTrust: "always",
   enableInstallTelemetry: false,
+  quietStartup: true,
   packages: [root],
 }, null, 2));
 NODE
@@ -118,9 +119,14 @@ tmux_private -f /dev/null new-session -d -x 80 -y 24 -s "$SESSION" \
     --no-context-files --use-theme dark"
 
 wait_for "STEAK PI"
-wait_for "steak, steak-light, steak-oled"
 wait_for_current "● ready"
 startup="$(capture)"
+for routine_section in "[Context]" "[Skills]" "[Extensions]" "[Themes]"; do
+  if grep -Fq -- "$routine_section" <<<"$startup"; then
+    printf 'Quiet startup leaked routine section %s.\n' "$routine_section" >&2
+    exit 1
+  fi
+done
 if grep -Fq -- "[Extension issues]" <<<"$startup"; then
   printf 'Pi reported extension issues.\n' >&2
   exit 1
@@ -160,7 +166,8 @@ for geometry in "40 14" "120 32"; do
   sleep 0.2
   pane="$(capture_current)"
   grep -Fq -- "● resumed" <<<"$pane"
-  grep -Eq -- "ctx | tok|ctx —" <<<"$pane"
+  grep -Fq -- "╰─" <<<"$pane"
+  if (( width >= 54 )); then grep -Eq -- "ctx | tok|ctx —" <<<"$pane"; fi
   assert_ansi_width "$width"
 done
 

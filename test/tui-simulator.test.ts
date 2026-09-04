@@ -41,11 +41,11 @@ describe("deterministic headless TUI", () => {
       "  Done. The UI remains native, theme-aware, and",
       "  idle-cost free.",
       "",
-      "────────────────────────────────────────────────",
-      "Type a message…",
-      "────────────────────────────────────────────────",
-      "✓ complete                   glm5.3-flash · high",
-      "~/dev/steak-pi · main          ctx 18% · 12k tok",
+      "",
+      "",
+      "",
+      "◆ > glm5.3-flash · high > ✓ complete ▶──────────",
+      "╰─ Ask anything, edit files, run tools",
     ]);
   });
 

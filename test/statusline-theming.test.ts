@@ -11,6 +11,7 @@ import {
   plainPalette,
   renderCompanionFooter,
   renderCompanionHeader,
+  renderComposerBand,
   type SemanticPalette,
 } from "../src/tui/render.ts";
 import { simulatorAnsiPalette } from "../src/tui/simulator.ts";
@@ -98,9 +99,10 @@ describe("responsive semantic rendering", () => {
       for (const palette of [plainPalette, simulatorAnsiPalette]) {
         const lines = [
           ...renderCompanionHeader(width, palette),
+          renderComposerBand(width, snapshot, palette),
           ...renderCompanionFooter(width, snapshot, palette),
         ];
-        expect(lines).toHaveLength(4);
+        expect(lines).toHaveLength(3);
         for (const line of lines) {
           expect(displayWidth(line), `${width}: ${stripAnsi(line)}`).toBeLessThanOrEqual(width);
           expect(stripAnsi(line)).not.toMatch(/[\r\n\t]/);
@@ -122,6 +124,7 @@ describe("responsive semantic rendering", () => {
     for (const width of [20, 24, 32, 40, 80, 120, 192]) {
       const output = [
         ...renderCompanionHeader(width, palette),
+        renderComposerBand(width, snapshot, palette),
         ...renderCompanionFooter(width, snapshot, palette),
       ].join("\n");
       expect(output).not.toMatch(/#[0-9a-f]{3,8}|\x1b\[/i);
@@ -141,7 +144,10 @@ describe("responsive semantic rendering", () => {
       sessionName: "name\u0007bell",
       model: { id: "model\rreturn" },
     };
-    for (const line of renderCompanionFooter(80, adversarial, plainPalette)) {
+    for (const line of [
+      renderComposerBand(80, adversarial, plainPalette),
+      ...renderCompanionFooter(80, adversarial, plainPalette),
+    ]) {
       expect(line).not.toMatch(/[\x00-\x1f\x7f]/);
       expect(displayWidth(line)).toBeLessThanOrEqual(80);
     }
@@ -159,10 +165,10 @@ describe("responsive semantic rendering", () => {
       "◆ STEAK PI           native Pi companion",
       "type / · /model · /resume",
     ]);
-    expect(renderCompanionFooter(40, snapshot, plainPalette)).toEqual([
-      "● resumed  provider/a-very-long-model-n…",
-      "~/dev/a-project-with…  ctx 72% · 10k tok",
-    ]);
+    expect(renderComposerBand(40, snapshot, plainPalette)).toBe(
+      "◆ ● resumed ▶───────────────────────────",
+    );
+    expect(renderCompanionFooter(40, snapshot, plainPalette)).toEqual([]);
   });
 });
 

@@ -1,7 +1,7 @@
 /**
  * Cherry Pi todo — pure state machine.
  *
- * OMP-compatible semantics:
+ * Steak Pi task semantics:
  * - Phased list; phases run in order, items within a phase in order.
  * - init replaces everything and promotes the earliest pending item.
  * - After any state change: if nothing is in_progress, the earliest

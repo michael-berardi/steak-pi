@@ -3,15 +3,18 @@
 ## Design contract
 
 Steak Pi is a native Pi companion for UltraTerm, not a replacement TUI. It
-owns only three surfaces exposed by Pi's extension API:
+owns three bounded surfaces exposed by Pi's extension API:
 
 1. a two-line startup header;
-2. a two-line live footer baseline, plus Pi extension statuses when present;
-3. the streaming activity indicator.
+2. Steak Pi's status band and prompt gutter around Pi's native editor,
+   including live lifecycle state;
+3. a conditional extension-status row only when another extension publishes one.
 
-Pi continues to own the editor, transcript, Markdown, tool cards, selectors,
-history, scrolling, compaction notices, session restore, and all keybindings.
-That preserves upstream behavior and keeps this layer small.
+The composer extends Pi's `CustomEditor`; Pi still owns text editing, IME,
+autocomplete, history, mouse positioning, paste handling, submission, and all
+application keybindings. Pi also continues to own the transcript, Markdown,
+tool cards, selectors, scrolling, compaction notices, and session restore. This
+preserves upstream behavior while giving Steak Pi a purpose-built entry surface.
 
 ## Visual hierarchy
 
@@ -21,23 +24,23 @@ type / for commands  ·  /model switch  ·  /resume sessions
 
 [Pi's native transcript and tool rendering]
 
-────────────────────────────────────────────────────────────────────────
-[Pi's native editor]
-────────────────────────────────────────────────────────────────────────
-◆ responding                                           glm5.3-flash · high
-~/dev/project · main                         ctx 18% · 12k tok · cache 80%
+◆  > glm5.3-flash · high > responding ▶────────◀ ctx 18% · cache 80%
+╰─ Ask anything, edit files, run tools
+[extension status appears here only when present]
 ```
 
-The footer communicates, in order:
+The composer band communicates, in order:
 
-- current lifecycle state;
 - active model and thinking level;
-- working directory, branch, and optional session name;
-- context pressure, persisted token usage, cache hit rate, and cost when space
-  permits.
+- current lifecycle state;
+- context pressure and higher-priority usage data;
+- working directory, branch, and optional session name when width permits.
+
+No baseline footer is rendered. This avoids duplicating the composer status
+band; a compact row appears only when another extension publishes status.
 
 Statuses published by other Pi extensions remain visible on a conditional
-third line, matching the built-in footer contract.
+row, matching the built-in footer contract.
 
 At narrow widths, values truncate by grapheme and lower-priority metrics drop
 before either status or model disappears.
@@ -59,8 +62,7 @@ before either status or model disappears.
 | Abort/cancel | `stopped` |
 
 State changes are event-driven. There are no idle timers, polling loops,
-subprocesses, network calls, or provider hooks. The only animation is Pi's
-existing streaming indicator lifecycle.
+subprocesses, network calls, provider hooks, or custom animation timers.
 
 ## Theme neutrality
 
