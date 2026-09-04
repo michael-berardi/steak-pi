@@ -9,7 +9,7 @@ import {
   TodoError,
   type TodoOp,
   type TodoState,
-} from "../src/todo-core.ts";
+} from "./todo-core.ts";
 
 const STATE_DIR = ".steak-pi";
 const STATE_FILE = "todo.json";
