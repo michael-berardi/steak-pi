@@ -96,3 +96,48 @@ describe("steak pie todo", () => {
     expect(text).toContain("Overall: 0/2 done");
   });
 });
+
+import { parseCommand } from "../src/todo-core.ts";
+
+describe("parseCommand", () => {
+  it("parses init with piped phases", () => {
+    expect(parseCommand("init Setup: a, b | Build: c")).toEqual({
+      op: "init",
+      list: [
+        { phase: "Setup", items: ["a", "b"] },
+        { phase: "Build", items: ["c"] },
+      ],
+    });
+  });
+
+  it("parses block with reason", () => {
+    expect(parseCommand("block a: waiting on creds")).toEqual({
+      op: "block",
+      task: "a",
+      reason: "waiting on creds",
+    });
+  });
+
+  it("parses done with task, phase, and view", () => {
+    expect(parseCommand("done a")).toEqual({ op: "done", task: "a" });
+    // Phase targets resolve at apply time (task-not-found fallback).
+    expect(parseCommand("done Setup")).toEqual({ op: "done", task: "Setup" });
+    expect(parseCommand("view")).toEqual({ op: "view" });
+  });
+
+  it("done resolves a phase name to whole-phase completion", () => {
+    let state = applyOp({ phases: [] }, parseCommand("init Setup: a, b")).state;
+    state = applyOp(state, parseCommand("done Setup")).state;
+    expect(state.phases[0].items.every((item) => item.status === "done")).toBe(true);
+  });
+
+  it("rejects unknown verbs and empty args", () => {
+    expect(() => parseCommand("frobnicate x")).toThrow(TodoError);
+    expect(() => parseCommand("start")).toThrow(TodoError);
+  });
+
+  it("round-trips into applyOp", () => {
+    const { state } = applyOp({ phases: [] }, parseCommand("init P: x, y"));
+    expect(state.phases[0].items[0].status).toBe("in_progress");
+  });
+});

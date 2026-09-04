@@ -4,13 +4,14 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
   applyOp,
+  parseCommand,
   render,
   TodoError,
   type TodoOp,
   type TodoState,
 } from "../src/todo-core.ts";
 
-const STATE_DIR = ".steak-pie";
+const STATE_DIR = ".steak-pi";
 const STATE_FILE = "todo.json";
 const MARKDOWN_FILE = "TODO.md";
 
@@ -18,19 +19,12 @@ const taskParam = Type.String();
 const phaseParam = Type.String();
 
 const inputSchema = Type.Object({
-  op: Type.String({
+  command: Type.String({
     description:
-      "init|start|done|drop|block|unblock|append|rm|view. done/drop/rm take " +
-      "task for one item or phase for the whole phase. Use only when the " +
-      "operator asks for explicit task tracking.",
+      "todo command. init Phase: a, b | Build: c -- start/done/drop/block/" +
+      "unblock/rm take a task (or phase name for done/drop/rm) -- view " +
+      "shows the list. Only for operator-requested task tracking.",
   }),
-  list: Type.Optional(
-    Type.Array(Type.Object({ phase: Type.String(), items: Type.Array(Type.String()) })),
-  ),
-  task: Type.Optional(Type.String()),
-  phase: Type.Optional(Type.String()),
-  items: Type.Optional(Type.Array(Type.String())),
-  reason: Type.Optional(Type.String()),
 });
 
 function loadState(cwd: string): TodoState {
@@ -50,13 +44,18 @@ function persist(cwd: string, state: TodoState, output: string): void {
 }
 
 export default function steakPieExtension(pi: ExtensionAPI): void {
-  pi.registerTool({
-    name: "todo",
-    label: "Todo",
-    description: "Phased task tracker (see schema). Tracks operator-requested work only.",
-    parameters: inputSchema,
-    async execute(_toolCallId, params) {
-      const op = params as TodoOp;
+  let registered = false;
+
+  const register = () => {
+    if (registered) return;
+    registered = true;
+    pi.registerTool({
+      name: "todo",
+      label: "Todo",
+      description: "Phased task tracker (see schema). Tracks operator-requested work only.",
+      parameters: inputSchema,
+      async execute(_toolCallId, params) {
+        const op = parseCommand((params as { command: string }).command);
       const cwd = process.cwd();
       const state = loadState(cwd);
       try {
@@ -76,12 +75,14 @@ export default function steakPieExtension(pi: ExtensionAPI): void {
         throw error;
       }
     },
-  });
+    });
+  };
 
-  // Render the current list on demand, even without tool calls.
+  // Zero idle schema: the tool materializes when the operator invokes /todo.
   pi.registerCommand("todo", {
-    description: "Render the Cherry Pi todo list",
+    description: "Enable the Steak Pi todo tool for this session",
     handler: async (_args, ctx) => {
+      register();
       const state = loadState(process.cwd());
       await ctx.ui.notify(render(state), "info");
     },

@@ -147,8 +147,8 @@ export function applyOp(state: TodoState, op: TodoOp): { state: TodoState; outpu
       // An explicit start is the operator's choice: it becomes the single
       // in_progress item regardless of phase order.
       state.phases.forEach((phase) => {
-        phase.items.forEach((item) => {
-          if (item.status === "in_progress" && item !== hit.phase.items[hit.index]) {
+        phase.items.forEach((item, index) => {
+          if (item.status === "in_progress" && !(phase === hit.phase && index === hit.index)) {
             item.status = "pending";
           }
         });
@@ -164,49 +164,41 @@ export function applyOp(state: TodoState, op: TodoOp): { state: TodoState; outpu
         });
       } else if (op.task) {
         const hit = findItem(state, op.task);
-        if (!hit) throw new TodoError(`unknown task: ${op.task}`);
-        hit.phase.items[hit.index].status = "done";
+        if (hit) {
+          hit.phase.items[hit.index].status = "done";
+        } else {
+          // Compact interface: a task naming a whole phase completes it.
+          const phase = findPhase(state, op.task);
+          if (!phase) throw new TodoError(`unknown task: ${op.task}`);
+          phase.items.forEach((item) => {
+            if (item.status !== "done") item.status = "done";
+          });
+        }
       } else {
         throw new TodoError("done requires task or phase");
       }
       const next = promoteNext(normalize(state));
       return { state: next, output: render(next) };
     }
-    case "drop": {
-      // Dropped work leaves the active plan entirely.
+    case "drop":
+    case "rm": {
       if (op.phase) {
         const index = state.phases.findIndex((phase) => phase.name === op.phase);
         if (index < 0) throw new TodoError(`unknown phase: ${op.phase}`);
         state.phases.splice(index, 1);
       } else if (op.task) {
         const hit = findItem(state, op.task);
-        if (!hit) throw new TodoError(`unknown task: ${op.task}`);
-        hit.phase.items.splice(hit.index, 1);
-      } else {
-        throw new TodoError("drop requires task or phase");
-      }
-      const next = promoteNext(normalize(state));
-      return { state: next, output: render(next) };
-    }
-    case "done":
-    case "drop": {
-      const status: TodoStatus = op.op === "done" ? "done" : "blocked";
-      let next = state;
-      if (op.phase) {
-        const phase = findPhase(next, op.phase);
-        if (!phase) throw new TodoError(`unknown phase: ${op.phase}`);
-        phase.items.forEach((item) => {
-          if (item.status !== "done") item.status = status;
-        });
-        if (op.op === "drop") phase.items.forEach((item) => { item.reason = item.reason ?? "dropped"; });
-      } else if (op.task) {
-        const hit = findItem(next, op.task);
-        if (!hit) throw new TodoError(`unknown task: ${op.task}`);
-        hit.phase.items[hit.index].status = op.op === "done" ? "done" : "blocked";
+        if (hit) {
+          hit.phase.items.splice(hit.index, 1);
+        } else {
+          const phase = findPhase(state, op.task);
+          if (!phase) throw new TodoError(`unknown task: ${op.task}`);
+          state.phases.splice(state.phases.indexOf(phase), 1);
+        }
       } else {
         throw new TodoError(`${op.op} requires task or phase`);
       }
-      next = promoteNext(normalize(next));
+      const next = promoteNext(normalize(state));
       return { state: next, output: render(next) };
     }
     case "block": {
@@ -234,24 +226,72 @@ export function applyOp(state: TodoState, op: TodoOp): { state: TodoState; outpu
       const next = promoteNext(normalize(state));
       return { state: next, output: render(next) };
     }
-    case "rm": {
-      if (op.phase) {
-        const index = state.phases.findIndex((phase) => phase.name === op.phase);
-        if (index < 0) throw new TodoError(`unknown phase: ${op.phase}`);
-        state.phases.splice(index, 1);
-      } else if (op.task) {
-        const hit = findItem(state, op.task);
-        if (!hit) throw new TodoError(`unknown task: ${op.task}`);
-        hit.phase.items.splice(hit.index, 1);
-      } else {
-        throw new TodoError("rm requires task or phase");
-      }
-      const next = promoteNext(normalize(state));
-      return { state: next, output: render(next) };
-    }
     case "view":
       return { state, output: render(state) };
     default:
       throw new TodoError("unsupported op");
+  }
+}
+/**
+ * Lenient single-command parser for the compact todo tool schema.
+ *
+ *   init Setup: a, b | Build: c     start <task>     done <task|phase>
+ *   drop <task|phase>               block <task>: reason
+ *   unblock <task>                  append <Phase>: a, b
+ *   rm <task|phase>                 view
+ */
+export function parseCommand(command: string): TodoOp {
+  const text = command.trim();
+  const spaceAt = text.indexOf(" ");
+  const verb = (spaceAt < 0 ? text : text.slice(0, spaceAt)).toLowerCase();
+  const rest = spaceAt < 0 ? "" : text.slice(spaceAt + 1).trim();
+
+  switch (verb) {
+    case "view":
+      return { op: "view" };
+    case "start":
+    case "unblock":
+      if (!rest) throw new TodoError(`${verb} requires a task`);
+      return { op: verb, task: rest };
+    case "done":
+    case "drop":
+    case "rm": {
+      if (!rest) throw new TodoError(`${verb} requires a task or phase`);
+      const op: TodoOp = { op: verb };
+      if (text.slice(spaceAt).includes(":") && spaceAt >= 0) {
+        return { op: verb, phase: rest } as TodoOp;
+      }
+      return { op: verb, task: rest } as TodoOp;
+    }
+    case "block": {
+      if (!rest) throw new TodoError("block requires a task");
+      const colon = rest.indexOf(":");
+      if (colon < 0) return { op: "block", task: rest };
+      return { op: "block", task: rest.slice(0, colon).trim(), reason: rest.slice(colon + 1).trim() };
+    }
+    case "append": {
+      const colon = rest.indexOf(":");
+      if (colon < 0) throw new TodoError("append requires Phase: items");
+      const phase = rest.slice(0, colon).trim();
+      const items = rest.slice(colon + 1).split(",").map((item) => item.trim()).filter(Boolean);
+      if (!phase || items.length === 0) throw new TodoError("append requires Phase: items");
+      return { op: "append", phase, items };
+    }
+    case "init": {
+      const phases = rest.split("|").map((segment) => {
+        const colon = segment.indexOf(":");
+        if (colon < 0) throw new TodoError("init requires Phase: items segments");
+        return {
+          phase: segment.slice(0, colon).trim(),
+          items: segment.slice(colon + 1).split(",").map((item) => item.trim()).filter(Boolean),
+        };
+      });
+      if (phases.length === 0 || phases.some((phase) => !phase.phase || phase.items.length === 0)) {
+        throw new TodoError("init requires Phase: items segments");
+      }
+      return { op: "init", list: phases };
+    }
+    default:
+      throw new TodoError(`unknown todo command: ${verb}`);
   }
 }
