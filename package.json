@@ -36,6 +36,9 @@
     "ultraterm-subagent-protocol"
   ],
   "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "scripts": {
     "test": "vitest run",
     "test:tui": "./scripts/test-pi-tui-smoke.sh",

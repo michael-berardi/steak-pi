@@ -1,176 +1,248 @@
 <div align="center">
 
-# 🍒 Steak Pi
+# 🥩 Steak Pi
 
-**The lucky-core flavor of [Pi](https://pi.dev).**
+### Pi, cooked properly.
 
-Minimal by design. Smart where it counts. Jackpot when it lands.
+**Native subagents. Deterministic compaction. Automatic verification.
+A useful TUI. No orchestration theatre.**
 
-*by Implose Cybernetics*
+*The sharp, low-drama package for people who like stock Pi—and would rather not
+build the rest themselves.*
+
+[Install](#install) · [Why Steak Pi](#why-steak-pi) · [Benchmarks](#proof-not-garnish) · [USAP](#usap-native-subagents) · [Security](./SECURITY.md)
 
 </div>
 
 ---
 
-Steak Pi is a curated layer for the [Pi coding agent](https://pi.dev) — not a
-fork. Stock Pi stays stock; Steak Pi adds only what earns its place, and
-nothing else:
+Steak Pi is the performance-focused package for the
+[Pi coding agent](https://pi.dev). It preserves Pi's excellent editor,
+transcript, tools, history, selectors, scrolling, and keybindings, then adds the
+machinery that turns it into a complete daily driver.
 
-- 🎯 **Todo** — a phased task list with OMP-compatible semantics
-  (start / done / block / auto-promotion), persisted locally
-- 🤖 **UltraTerm Sub-Agent Protocol** — native bounded Pi children, background
-  jobs, session-wide scheduling, path ownership, cancellation, accounting, and
-  a run-local IRC-style relay
-- 🧠 **Memory** — AGENTS.md conventions plus opt-in cross-session recall
-- 🛠️ **Error correction** — LSP diagnostics and a verify-after-edit loop
-- ⚡ **UltraCompress** — the default compaction: deterministic VCC briefs,
-  snap frames for bulky tool output, optional UltraCompact (UC) packets, and
-  lossless recall — no LLM calls, $0 per compaction
+## Install
 
-Everything is toggleable. Idle overhead: zero.
+Verified with Pi 0.85.x. Requires Node.js 22.19.0 or newer.
 
-## Error correction
+```sh
+pi install git:github.com/michael-berardi/steak-pi@v0.2.1
+```
 
-Steak Pi closes the loop after every edit. Add a verify command to your
-project:
+This installs USAP, todo, verification, themes, memory conventions, and the
+native companion UI. Deterministic compaction additionally needs the local
+[`ultracompress` binary](#ultracompress); without it, Steak Pi safely falls back
+to Pi's core compaction.
+
+That is the ceremony. Kettle optional.
+
+> **Measured on the larger controlled GLM-5.3-Flash fixture:** Steak Pi's USAP
+> orchestration was **49% faster and used 64% fewer tokens than
+> [Oh My Pi (OMP)](https://github.com/can1357/oh-my-pi)**. Across all three edit
+> fixtures, USAP went **9/9 first-pass**.
+
+## Why Steak Pi
+
+Steak Pi starts with Pi's clean core and adds the parts serious work demands.
+OMP organises a fleet; Steak Pi gets the fleet through the work without making
+every task attend the meeting:
+
+| Steak Pi adds | What you get |
+| --- | --- |
+| **USAP native subagents** | Up to four useful workers at once, with ownership, deadlines, cancellation, relay, and exact usage |
+| **UltraCompress** | Local 10–300 ms compaction, lossless raw-session retention, ranked recall, and **$0 model cost per compaction** |
+| **Verify after edit** | Failed project checks go straight back to the model so it can repair its work |
+| **Phased todo** | Persistent start/done/block state with automatic promotion |
+| **Companion UI** | Responsive lifecycle, model, context, usage, cache, branch, and location telemetry using the active Pi theme |
+| **Memory conventions** | Durable project decisions through `AGENTS.md`; cross-session recall remains explicitly opt-in |
+
+The result is still recognisably Pi: quick to start, pleasant to drive, and not
+trying to become an operating system because you asked it to rename a method.
+
+## Proof, not garnish
+
+### Current USAP calibration
+
+Larger four-module implementation; `zai/glm-5.3-flash`; thinking `high`; three
+samples per arm; identical fixtures and deterministic verification:
+
+| Arm | First-pass | Median time | Median accounted tokens |
+| --- | ---: | ---: | ---: |
+| **Steak Pi / USAP** | **3/3** | **125.913 s** | **78,834** |
+| Legacy `parallel` | 3/3 | 137.462 s | 193,701 |
+| OMP | 3/3 | 246.640 s | 220,809 |
+
+Against OMP, Steak Pi was **about 49% faster and 64% leaner**. Against Steak
+Pi's old executor, USAP was **about 8% faster and 59% leaner**. Every run passed
+first attempt.
+
+USAP is adaptive by design: tiny jobs stay with the parent; independent leaves
+fan out only when parallel work can repay its briefing cost. No compulsory
+committee for a two-line fix.
+
+Full controls, all benchmark arms, medians, variability, accounting rules, and
+security probes:
+[`glm53-live-calibration-2026-09-04.md`](./benchmarks/usap/results/glm53-live-calibration-2026-09-04.md).
+
+### Historical full-suite baseline
+
+Before USAP, Steak Pi and stock Pi ran 23 validated cases × five samples under
+the same model:
+
+| | Steak Pi | Stock Pi |
+| --- | ---: | ---: |
+| Completed | **110/115** | 108/115 |
+| Median latency | **16.1 s** | 18.3 s |
+
+Steak Pi completed more runs while finishing **12% faster at the median**.
+USAP has since replaced that legacy executor; on both fan-out cases in the
+current calibration, it substantially reduced the old executor's orchestration
+bill.
+
+Historical methodology and per-run evidence:
+[`docs/verification/`](https://github.com/michael-berardi/steak-pi/tree/v0.2.1/docs/verification).
+
+## USAP: native subagents
+
+`ultraterm_subagents` runs bounded Pi children inside the host process. The
+parent owns decomposition, judgment, integration, and final proof. Children get
+exact leaf contracts, do not receive orchestration tools, and are forbidden by
+protocol from recursively delegating.
+
+```text
+parent
+ ├─ scout     read-only
+ ├─ backend   writes src/server/**
+ ├─ frontend  writes src/client/**
+ └─ reviewer  read-only
+        ↕ bounded run-local relay
+```
+
+What prevents agent soup:
+
+- **four active children session-wide**, at most eight tasks per run and 16
+  active runs;
+- foreground by default; background only when parent work can overlap;
+- stable run IDs with list, status, wait, message, inbox, and cancel controls;
+- isolated worker settings, transcripts, resources, and tool sets;
+- read-only workers without edit tools;
+- disjoint ownership enforced for guarded writes and edits;
+- hard time, turn, output, history, and relay limits;
+- exact nested usage attributed to the parent once.
+
+Children coordinate through `ultraterm_relay`, a bounded run-local mailbox with
+addressed messages, requests, correlated replies, broadcasts, and parent
+communication. A little like IRC, if IRC had path ownership.
+
+**Trust boundary:** USAP is coordination, not an OS sandbox. Explicitly granting
+`allowBash` gives a child unsandboxed shell access and can bypass path ownership.
+See [`SECURITY.md`](./SECURITY.md) and the full
+[USAP protocol](./docs/ULTRATERM-SUBAGENT-PROTOCOL.md).
+
+## Reliability built in
+
+Steak Pi treats reliability as machinery, not a personality trait:
+
+- configured project checks feed failures back into the edit result;
+- cancellation, deadline, turn, output, mailbox, and retained-run bounds are
+  enforced;
+- one failed child cannot erase a sibling's evidence or turn the run green;
+- ownership validates containment, symlinks, overlap, and platform case rules;
+- malformed, negative, infinite, or duplicated usage cannot corrupt totals;
+- workers do not inherit unrelated extensions, skills, prompts, or transcripts.
+
+The [v0.2.1 release](https://github.com/michael-berardi/steak-pi/releases/tag/v0.2.1)
+passed **109 automated tests**, dark/light native TUI smoke, 40/120-column resize
+and ANSI checks, packed-archive smoke, and a fresh isolated installation. Live
+probes exercised cancellation, exact deadlines, correlated relay replies,
+prompt injection, and hostile out-of-scope writes. The latter was refused, as
+one rather hopes.
+
+### Verify after edit
 
 ```json
 // .steak-pi/config.json
 { "verify": { "command": "npm run -s typecheck", "failLimit": 2 } }
 ```
 
-After each edit or write, Steak Pi runs it. Failures are appended to the
-tool result with attempt count and output, so the model self-repairs before
-moving on — capped at `failLimit` consecutive failures, then it stops
-nagging. Success resets the counter. No config, zero overhead.
+After a successful edit or write in a trusted project, Steak Pi runs the command
+when no verification is already active, debounced to 500 ms. It has a timeout,
+bounded output, abort handling, process cleanup, and a consecutive-failure cap.
+With no configuration, it does nothing at all—an underrated performance
+characteristic.
 
-Pair it with [`pi-lsp`](https://www.npmjs.com/package/@narumitw/pi-lsp)
-(`pi install npm:@narumitw/pi-lsp`) for language-server diagnostics your
-agent can read and fix directly.
+Pair it with [`pi-lsp`](https://www.npmjs.com/package/@narumitw/pi-lsp) for
+language-server diagnostics the agent can read and fix directly.
 
-## Memory
+## UltraCompress
 
-Projects remember through `AGENTS.md` conventions — Steak Pi ships a
-`memory` skill that teaches the agent to record durable decisions and
-re-read them at session start. Cross-session recall is available as an
-opt-in companion (`pi install npm:@narumitw/pi-recall`); it stays opt-in
-until isolation and redaction gates pass.
+[UltraCompress](https://github.com/michael-berardi/ultracompress) provides
+byte-deterministic VCC briefs, snap frames for bulky output, optional
+UltraCompact packets, sticky facts, pre-compaction snapshots, and **lossless raw
+session retention** with ranked recall (**94.4% hit@5** in its published
+benchmark).
 
-## Opt-in companions
+Compaction takes roughly **10–300 ms**, makes **no LLM call**, and costs **$0 per
+compaction**. Context management should not require another context-management
+agent. We have standards.
 
-These ship **outside** Steak Pi by design — install only what you want:
-
-| Capability | Install | Notes |
-| --- | --- | --- |
-| Plan mode | `pi install npm:pi-plan-mode` | Codex-style explore → approve → implement gate |
-| MCP servers | pi settings (`mcpServers`) | Model Context Protocol tools and resources |
-| Web access | `pi install npm:pi-web-access` | Web search + content extraction |
-| LSP diagnostics | `pi install npm:@narumitw/pi-lsp` | Language-server diagnostics as agent tools |
-| Cross-session recall | `pi install npm:@narumitw/pi-recall` | Opt-in until privacy gates pass |
-
-Steak Pi never enables companions implicitly: each one changes behavior,
-so each one is an explicit choice.
-
-## Install
+Install the native binary (Rust 1.85 or newer):
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.2.1
+git clone https://github.com/michael-berardi/ultracompress
+cd ultracompress && cargo build --release
+mkdir -p ~/.local/bin && cp target/release/ultracompress ~/.local/bin/
 ```
 
-Or try it without installing:
+If it is absent or fails, Steak Pi falls back to Pi's core compaction. Commands:
+`/ultracompress`, `/ultracompress-recall`, and `/ultracompress-stats`.
+[Benchmark evidence](https://github.com/michael-berardi/ultracompress/blob/main/docs/BENCHMARKS.md).
+
+## Native companion UI
+
+Steak Pi adds a compact native header, responsive footer, and streaming pulse.
+It reports lifecycle state alongside model, context, persisted usage, cache hit
+rate, branch, and session location.
+
+It is event-driven, preserves extension statuses, and uses Pi's semantic theme
+tokens: no polling, hard-coded terminal palette, replacement editor, or stolen
+keybindings. Optional **steak**, **steak-oled**, and **steak-light** themes ship
+with it; ordinary Pi and user themes work too.
+
+UI contract and simulator: [`docs/COMPANION-UI.md`](./docs/COMPANION-UI.md).
+
+## Memory and optional companions
+
+The included `memory` skill uses `AGENTS.md` for durable project decisions.
+Anything that expands the trust boundary remains opt-in:
+
+| Capability | Install |
+| --- | --- |
+| Plan mode | `pi install npm:pi-plan-mode` |
+| Web access | `pi install npm:pi-web-access` |
+| LSP diagnostics | `pi install npm:@narumitw/pi-lsp` |
+| Cross-session recall | `pi install npm:@narumitw/pi-recall` |
+| MCP servers | Pi settings (`mcpServers`) |
+
+Steak Pi does not install companions behind your back. Your terminal has enough
+roommates already.
+
+## Development
 
 ```sh
-pi -e git:github.com/michael-berardi/steak-pi
+git clone https://github.com/michael-berardi/steak-pi.git
+cd steak-pi
+npm install
+npm run verify
 ```
 
-## UltraTerm Sub-Agent Protocol
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for contribution guidance and
+[`SECURITY.md`](./SECURITY.md) for private vulnerability reporting.
 
-`ultraterm_subagents` replaces the legacy `parallel` subprocess tool. It runs
-1–8 bounded native Pi children with at most four active at once across the
-session, at most 16 active runs, and 50 retained terminal runs. The parent
-supplies the shared goal and contract; every writable leaf must receive
-disjoint owned paths. Read-only workers cannot edit, shell access is opt-in and
-explicitly outside path sandboxing, ambient extensions and project prompts are
-excluded, and every run has hard turn, time, output, and relay bounds.
+## In one line
 
-Background runs return stable IDs immediately. `ultraterm_hub` lists, inspects,
-waits for, messages, and cancels them without polling. Children coordinate with
-`ultraterm_relay`, an ephemeral run-namespaced mailbox supporting addressed
-messages, requests, replies, broadcasts, and parent communication. Worker
-usage is attributed to the parent exactly once.
-
-The parent remains the only orchestrator: it owns decomposition, integration,
-judgment, and final proof. Full protocol:
-[`docs/ULTRATERM-SUBAGENT-PROTOCOL.md`](./docs/ULTRATERM-SUBAGENT-PROTOCOL.md).
-A small paid live GLM-5.3-Flash calibration, with raw caveats and no product-win
-claim, is recorded at
-[`benchmarks/usap/results/glm53-live-calibration-2026-09-04.md`](./benchmarks/usap/results/glm53-live-calibration-2026-09-04.md).
-
-## Why Steak Pi
-
-The historical 0.2.1 benchmark used 23 validated cases × 5 samples, one model
-(GLM-5.3-flash) across every harness, and independent verify commands. Those
-numbers describe the legacy bounded executor and are retained as the historical
-baseline; the new USAP implementation is being rebenchmarked separately.
-
-| | Steak Pi | Stock Pi | OMP |
-| --- | --- | --- | --- |
-| Completed | **110/115** | 108/115 | 110/115 |
-| Median latency | **16.1s** | 18.3s | 23.7s |
-| Total tokens | 2.63M | **2.33M** | 14.16M |
-
-In that historical suite, Steak Pi completed more tasks than stock Pi, 12%
-faster at the median, for a measured 12.8% token premium. It was 32% faster
-and 5.4× leaner than OMP. These results describe the removed legacy executor,
-not USAP; current calibration is linked above.
-
-Full methodology, per-run ledger, runner validation, and the dual-model
-verification trail:
-[`docs/verification/`](https://github.com/michael-berardi/steak-pi/tree/v0.2.1/docs/verification).
-
-## Compaction
-
-Steak Pi compacts with [UltraCompress](https://github.com/michael-berardi/ultracompress)
-(vendored under `extensions/ultracompress/`): a deterministic brief in
-10–300 ms with zero API cost, lossless recall over the raw session
-(`ultracompress_recall`, `/ultracompress-recall`), sticky key facts that
-survive every pass, and pre-compaction snapshots in `.steak-pi/snaps/`.
-Manual control: `/ultracompress keep:N policy:auto|vcc|snap|uc`. Requires the
-`ultracompress` binary (`~/.local/bin/ultracompress`; falls back to Pi core
-compaction if missing).
-
-## Companion UI
-
-Steak Pi adds a minimal native header, a responsive two-line footer baseline
-(with extension statuses preserved when present), and a theme-inheriting
-streaming pulse. It reports ready/thinking/responding/tool/waiting/
-compacting/error/completion state alongside model, context, persisted usage,
-cache hit rate, branch, and session location. Pi still owns the editor,
-transcript, tool cards, selectors, history, scrolling, and every keybinding.
-
-The UI uses only the active Pi theme's semantic tokens—no hard-coded terminal
-colors and no UltraTerm-theme matrix—so stock dark/light and user themes work
-without a custom per-theme Steak theme. **steak**, **steak-oled**, and
-**steak-light** remain optional. See [`docs/COMPANION-UI.md`](./docs/COMPANION-UI.md)
-for the state contract and deterministic headless simulator.
-
-```sh
-npm run ui:simulate -- --scenario tool --width 80 --height 24
-```
-
-## Status
-
-**v0.2.1** — adds the theme-neutral native companion UI, makes UltraCompress
-the default compaction, and replaces legacy `parallel` with the UltraTerm
-Sub-Agent Protocol. UltraCompress benchmark evidence:
-[ultracompress/docs/BENCHMARKS.md](https://github.com/michael-berardi/ultracompress/blob/main/docs/BENCHMARKS.md).
-
-## Contributing and security
-
-See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the local verification workflow
-and [`SECURITY.md`](./SECURITY.md) for private vulnerability reporting and the
-USAP trust boundary.
-
-## License
+**Steak Pi is Pi ready for serious work: faster orchestration, drastically lower
+agent overhead, deterministic context, automatic correction, and no unnecessary
+ceremony. Already measured. Already bounded. Already cooked.**
 
 [MIT](./LICENSE) · by Implose Cybernetics
