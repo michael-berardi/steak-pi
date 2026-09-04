@@ -81,13 +81,23 @@ pi -e npm:steak-pi
 
 ## Why Steak Pi
 
-Stock Pi is the fastest, leanest coding agent we measured. OMP adds
-orchestration and opinions — at five times the token cost. Steak Pi keeps
-Pi's speed and leanness and adds the few capabilities that are worth their
-weight, each one independently toggleable and benchmarked.
+We benchmarked honestly: 23 validated cases x 5 samples, one model
+(GLM-5.3-flash) across every harness, correctness decided by independent
+verify commands — never by the agent's own opinion.
 
-Benchmarks, methodology, and definition hashes: see
-[`BENCHMARKS.md`](./BENCHMARKS.md) (published with v0.1).
+| | Steak Pi | Stock Pi | OMP |
+| --- | --- | --- | --- |
+| Completed | **110/115** | 108/115 | 110/115 |
+| Median latency | **16.1s** | 18.3s | 23.7s |
+| Total tokens | 2.63M | **2.33M** | 14.16M |
+
+Steak Pi completes more tasks than stock Pi, 12% faster at the median,
+for a measured 12.8% token premium — the price of the todo tracker,
+bounded parallel agents, verify-after-edit, and memory conventions it
+adds. Against OMP the case is total: 32% faster, 5.4x leaner.
+
+Full methodology, per-run ledger, runner validation, and the
+dual-model verification trail: [`docs/verification/`](./docs/verification/).
 
 ## Themes
 
