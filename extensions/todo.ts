@@ -4,7 +4,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
   applyOp,
-  parseCommand,
   render,
   TodoError,
   type TodoOp,
@@ -15,16 +14,38 @@ const STATE_DIR = ".steak-pi";
 const STATE_FILE = "todo.json";
 const MARKDOWN_FILE = "TODO.md";
 
-const taskParam = Type.String();
-const phaseParam = Type.String();
-
 const inputSchema = Type.Object({
-  command: Type.String({
-    description:
-      "todo command. init Phase: a, b | Build: c -- start/done/drop/block/" +
-      "unblock/rm take a task (or phase name for done/drop/rm) -- view " +
-      "shows the list. Only for operator-requested task tracking.",
-  }),
+  op: Type.Union(
+    [
+      Type.Literal("init"),
+      Type.Literal("start"),
+      Type.Literal("done"),
+      Type.Literal("drop"),
+      Type.Literal("block"),
+      Type.Literal("unblock"),
+      Type.Literal("append"),
+      Type.Literal("rm"),
+      Type.Literal("view"),
+    ],
+    { description: "State-changing operation, or view to render the list" },
+  ),
+  list: Type.Optional(
+    Type.Array(
+      Type.Object({
+        phase: Type.String({ description: "Phase name, in execution order" }),
+        items: Type.Array(Type.String({ description: "Task content" })),
+      }),
+      { description: "init only: full phased plan; replaces the current list" },
+    ),
+  ),
+  task: Type.Optional(Type.String({ description: "Task content or unique prefix" })),
+  phase: Type.Optional(Type.String({ description: "Phase name" })),
+  items: Type.Optional(
+    Type.Array(Type.String(), { description: "append only: tasks to add" }),
+  ),
+  reason: Type.Optional(
+    Type.String({ description: "block only: why the task is blocked" }),
+  ),
 });
 
 function loadState(cwd: string): TodoState {
@@ -45,12 +66,14 @@ function persist(cwd: string, state: TodoState, output: string): void {
 
 export default function steakPieExtension(pi: ExtensionAPI): void {
   pi.registerTool({
-      name: "todo",
-      label: "Todo",
-      description: "Phased task tracker (see schema). Tracks operator-requested work only.",
-      parameters: inputSchema,
-      async execute(_toolCallId, params) {
-        const op = parseCommand((params as { command: string }).command);
+    name: "todo",
+    label: "Todo",
+    description:
+      "Phased task tracker. Use only when the operator asks for explicit " +
+      "task tracking. Ops: init|start|done|drop|block|unblock|append|rm|view.",
+    parameters: inputSchema,
+    async execute(_toolCallId, params) {
+      const op = params as TodoOp;
       const cwd = process.cwd();
       const state = loadState(cwd);
       try {
