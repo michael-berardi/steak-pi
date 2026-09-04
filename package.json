@@ -14,7 +14,8 @@
   "type": "module",
   "pi": {
     "extensions": [
-      "./extensions"
+      "./extensions",
+      "./extensions/rapid-compact/index.ts"
     ],
     "themes": [
       "./themes"

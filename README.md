@@ -114,8 +114,13 @@ policy:auto|vcc|snap|uc`. Requires the `rc` binary
 
 ## Themes
 
-The **steak** theme ships in the box: steak red on neutral dark surfaces,
-stem-green success, built for legibility under UltraTerm's theme matrix.
+Three steak themes ship in the box: **steak-oled** (flagship — true black,
+pure-white text, maximum contrast), **steak** (neutral dark), and
+**steak-light**. Built for legibility under UltraTerm's theme matrix; the
+terminal-theme bridge (`src/lib/terminalThemes.ts`) keeps host chrome and
+agent UI on one surface. An OMP-style powerline statusline
+(`◆ model · ✦ thinking · ⑂ branch · ⚡ rc`) renders as a footer widget —
+event-driven, zero idle overhead.
 
 ## Status
 
