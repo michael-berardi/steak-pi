@@ -70,13 +70,13 @@ so each one is an explicit choice.
 ## Install
 
 ```sh
-pi install npm:steak-pi
+pi install git:github.com/michael-berardi/steak-pi@v0.1.0
 ```
 
 Or try it without installing:
 
 ```sh
-pi -e npm:steak-pi
+pi -e git:github.com/michael-berardi/steak-pi
 ```
 
 ## Why Steak Pi
