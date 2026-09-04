@@ -44,12 +44,7 @@ function persist(cwd: string, state: TodoState, output: string): void {
 }
 
 export default function steakPieExtension(pi: ExtensionAPI): void {
-  let registered = false;
-
-  const register = () => {
-    if (registered) return;
-    registered = true;
-    pi.registerTool({
+  pi.registerTool({
       name: "todo",
       label: "Todo",
       description: "Phased task tracker (see schema). Tracks operator-requested work only.",
@@ -74,17 +69,6 @@ export default function steakPieExtension(pi: ExtensionAPI): void {
         }
         throw error;
       }
-    },
-    });
-  };
-
-  // Zero idle schema: the tool materializes when the operator invokes /todo.
-  pi.registerCommand("todo", {
-    description: "Enable the Steak Pi todo tool for this session",
-    handler: async (_args, ctx) => {
-      register();
-      const state = loadState(process.cwd());
-      await ctx.ui.notify(render(state), "info");
     },
   });
 }
