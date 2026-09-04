@@ -1,0 +1,30 @@
+{
+ "summary": [
+  {
+   "harness": "pi",
+   "runs": 115,
+   "completed": 108,
+   "verify": 114,
+   "medLat": 18.3,
+   "medTok": 14890,
+   "totTok": 2330478,
+   "fails": [
+    "parallel-triage-fixes",
+    "py-refactor-strategy"
+   ]
+  },
+  {
+   "harness": "steak-pi",
+   "runs": 115,
+   "completed": 110,
+   "verify": 114,
+   "medLat": 16.1,
+   "medTok": 15679,
+   "totTok": 2628061,
+   "fails": [
+    "py-dedupe-order",
+    "py-refactor-strategy"
+   ]
+  }
+ ]
+}

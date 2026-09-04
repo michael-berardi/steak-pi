@@ -1,0 +1,2302 @@
+[
+ {
+  "harness": "steak-pi",
+  "case": "python-boundary",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 18.1,
+  "tokens": 14993.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "python-boundary",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 14.3,
+  "tokens": 13985.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "python-path-boundary",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 65.3,
+  "tokens": 20923.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "python-path-boundary",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.1,
+  "tokens": 15580.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "python-csv-stdlib",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 10.6,
+  "tokens": 15139.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "python-csv-stdlib",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 15.6,
+  "tokens": 15081.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "javascript-async-order",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 17.9,
+  "tokens": 15016.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "javascript-async-order",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 47.0,
+  "tokens": 16205.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "rust-error-path",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 33.7,
+  "tokens": 12701.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "rust-error-path",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 18.5,
+  "tokens": 12936.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "shell-space-safe",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 19.4,
+  "tokens": 14320.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "shell-space-safe",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 12.0,
+  "tokens": 12410.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "cross-file-cutover",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 32.2,
+  "tokens": 15977.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "cross-file-cutover",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 48.5,
+  "tokens": 21610.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "shared-root-cause",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 14.3,
+  "tokens": 14971.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "shared-root-cause",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 11.1,
+  "tokens": 16097.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "parallel-independent-fixes",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 95.6,
+  "tokens": 96639.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "parallel-independent-fixes",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 41.9,
+  "tokens": 107266.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "investigate-precedence",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 74.1,
+  "tokens": 8568.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "investigate-precedence",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 42.2,
+  "tokens": 12724.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "secret-injection-boundary",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 26.4,
+  "tokens": 13542.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "secret-injection-boundary",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 51.7,
+  "tokens": 13196.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "bounded-retry",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 26.5,
+  "tokens": 14360.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "bounded-retry",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 18.6,
+  "tokens": 18883.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-dedupe-order",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 12.6,
+  "tokens": 15779.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-dedupe-order",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 23.3,
+  "tokens": 14780.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-config-precedence",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 205.9,
+  "tokens": 15459.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-config-precedence",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 20.8,
+  "tokens": 15891.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "js-async-sequence",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 12.4,
+  "tokens": 15830.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "js-async-sequence",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 17.0,
+  "tokens": 14461.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-sql-parameterized",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 13.8,
+  "tokens": 14199.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-sql-parameterized",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 10.7,
+  "tokens": 15131.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-async-timeout",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.1,
+  "tokens": 18469.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-async-timeout",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 17.8,
+  "tokens": 15022.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "json-config-repair",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 20.3,
+  "tokens": 14747.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "json-config-repair",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.2,
+  "tokens": 21442.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-offbyone-loop",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 24.0,
+  "tokens": 14866.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-offbyone-loop",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 19.9,
+  "tokens": 15673.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "js-null-guard",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 17.5,
+  "tokens": 22046.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "js-null-guard",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 13.4,
+  "tokens": 14951.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-feature-rate-limit",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 13.4,
+  "tokens": 15412.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-feature-rate-limit",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 21.6,
+  "tokens": 15561.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-refactor-strategy",
+  "sample": 1,
+  "completed": false,
+  "verifyOk": true,
+  "latency_s": 31.1,
+  "tokens": 23335.0,
+  "failure_class": "integrity"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-refactor-strategy",
+  "sample": 1,
+  "completed": false,
+  "verifyOk": true,
+  "latency_s": 13.8,
+  "tokens": 16310.0,
+  "failure_class": "integrity"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "parallel-triage-fixes",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 48.4,
+  "tokens": 94980.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "parallel-triage-fixes",
+  "sample": 1,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 64.7,
+  "tokens": 91345.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "python-boundary",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 21.0,
+  "tokens": 14774.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "python-boundary",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 36.4,
+  "tokens": 15535.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "python-path-boundary",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 11.2,
+  "tokens": 15422.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "python-path-boundary",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 26.3,
+  "tokens": 16097.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "python-csv-stdlib",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 14.3,
+  "tokens": 14407.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "python-csv-stdlib",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 17.0,
+  "tokens": 15299.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "javascript-async-order",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 12.3,
+  "tokens": 15426.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "javascript-async-order",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 39.7,
+  "tokens": 14890.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "rust-error-path",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 21.0,
+  "tokens": 12461.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "rust-error-path",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 13.0,
+  "tokens": 12280.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "shell-space-safe",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 22.4,
+  "tokens": 16915.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "shell-space-safe",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 44.7,
+  "tokens": 20517.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "cross-file-cutover",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 24.3,
+  "tokens": 16636.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "cross-file-cutover",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 19.6,
+  "tokens": 17152.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "shared-root-cause",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.0,
+  "tokens": 16251.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "shared-root-cause",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 17.5,
+  "tokens": 15220.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "parallel-independent-fixes",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 43.3,
+  "tokens": 95156.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "parallel-independent-fixes",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 41.9,
+  "tokens": 101183.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "investigate-precedence",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 22.6,
+  "tokens": 12326.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "investigate-precedence",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 26.4,
+  "tokens": 12147.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "secret-injection-boundary",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 43.1,
+  "tokens": 12763.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "secret-injection-boundary",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 27.6,
+  "tokens": 9508.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "bounded-retry",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 10.9,
+  "tokens": 15428.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "bounded-retry",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 19.1,
+  "tokens": 18647.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-dedupe-order",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 24.7,
+  "tokens": 14575.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-dedupe-order",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.6,
+  "tokens": 15679.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-config-precedence",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 20.1,
+  "tokens": 16294.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-config-precedence",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 49.6,
+  "tokens": 17603.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "js-async-sequence",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 20.6,
+  "tokens": 14457.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "js-async-sequence",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 13.4,
+  "tokens": 15291.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-sql-parameterized",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 13.9,
+  "tokens": 15309.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-sql-parameterized",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 14.6,
+  "tokens": 14583.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-async-timeout",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 22.9,
+  "tokens": 14113.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-async-timeout",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 20.6,
+  "tokens": 15024.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "json-config-repair",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 13.7,
+  "tokens": 15631.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "json-config-repair",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 21.8,
+  "tokens": 13813.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-offbyone-loop",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 18.3,
+  "tokens": 15305.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-offbyone-loop",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 19.4,
+  "tokens": 15833.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "js-null-guard",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 22.5,
+  "tokens": 23527.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "js-null-guard",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 12.5,
+  "tokens": 13938.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-feature-rate-limit",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.5,
+  "tokens": 15512.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-feature-rate-limit",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 15.8,
+  "tokens": 15692.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-refactor-strategy",
+  "sample": 2,
+  "completed": false,
+  "verifyOk": true,
+  "latency_s": 13.6,
+  "tokens": 16239.0,
+  "failure_class": "integrity"
+ },
+ {
+  "harness": "pi",
+  "case": "py-refactor-strategy",
+  "sample": 2,
+  "completed": false,
+  "verifyOk": true,
+  "latency_s": 23.3,
+  "tokens": 15790.0,
+  "failure_class": "integrity"
+ },
+ {
+  "harness": "pi",
+  "case": "parallel-triage-fixes",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 48.1,
+  "tokens": 93645.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "parallel-triage-fixes",
+  "sample": 2,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 37.7,
+  "tokens": 83515.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "python-boundary",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.4,
+  "tokens": 15065.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "python-boundary",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 14.4,
+  "tokens": 14143.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "python-path-boundary",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 36.9,
+  "tokens": 16077.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "python-path-boundary",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 13.1,
+  "tokens": 15889.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "python-csv-stdlib",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.8,
+  "tokens": 15170.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "python-csv-stdlib",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 22.4,
+  "tokens": 14423.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "javascript-async-order",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 20.5,
+  "tokens": 14981.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "javascript-async-order",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 15.6,
+  "tokens": 16027.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "rust-error-path",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 15.3,
+  "tokens": 12410.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "rust-error-path",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 41.9,
+  "tokens": 25606.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "shell-space-safe",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 21.5,
+  "tokens": 17834.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "shell-space-safe",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 28.9,
+  "tokens": 12270.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "cross-file-cutover",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 21.5,
+  "tokens": 16622.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "cross-file-cutover",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 25.1,
+  "tokens": 15883.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "shared-root-cause",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 17.7,
+  "tokens": 14499.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "shared-root-cause",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.4,
+  "tokens": 15301.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "parallel-independent-fixes",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 51.6,
+  "tokens": 114167.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "parallel-independent-fixes",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 41.0,
+  "tokens": 97689.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "investigate-precedence",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 27.1,
+  "tokens": 12456.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "investigate-precedence",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.1,
+  "tokens": 9110.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "secret-injection-boundary",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 30.5,
+  "tokens": 13304.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "secret-injection-boundary",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 41.5,
+  "tokens": 13788.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "bounded-retry",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 12.4,
+  "tokens": 15059.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "bounded-retry",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 18.1,
+  "tokens": 18936.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-dedupe-order",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 11.4,
+  "tokens": 12063.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-dedupe-order",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.3,
+  "tokens": 14638.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-config-precedence",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 20.8,
+  "tokens": 15260.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-config-precedence",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 31.6,
+  "tokens": 16842.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "js-async-sequence",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 12.4,
+  "tokens": 15915.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "js-async-sequence",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.2,
+  "tokens": 14510.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-sql-parameterized",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 19.7,
+  "tokens": 14799.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-sql-parameterized",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.2,
+  "tokens": 15122.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-async-timeout",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.5,
+  "tokens": 15032.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-async-timeout",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 14.4,
+  "tokens": 14220.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "json-config-repair",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 17.4,
+  "tokens": 14415.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "json-config-repair",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 12.4,
+  "tokens": 15420.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-offbyone-loop",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 15.8,
+  "tokens": 15506.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-offbyone-loop",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 18.2,
+  "tokens": 14779.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "js-null-guard",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 14.3,
+  "tokens": 14128.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "js-null-guard",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 15.4,
+  "tokens": 15957.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-feature-rate-limit",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 13.1,
+  "tokens": 15632.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-feature-rate-limit",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 18.2,
+  "tokens": 15187.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-refactor-strategy",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 29.1,
+  "tokens": 15386.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-refactor-strategy",
+  "sample": 3,
+  "completed": false,
+  "verifyOk": true,
+  "latency_s": 19.9,
+  "tokens": 15899.0,
+  "failure_class": "integrity"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "parallel-triage-fixes",
+  "sample": 3,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 37.8,
+  "tokens": 94027.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "parallel-triage-fixes",
+  "sample": 3,
+  "completed": false,
+  "verifyOk": true,
+  "latency_s": 20.0,
+  "tokens": 15490.0,
+  "failure_class": "parallel_not_used"
+ },
+ {
+  "harness": "pi",
+  "case": "python-boundary",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 14.3,
+  "tokens": 14692.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "python-boundary",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 26.9,
+  "tokens": 15724.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "python-path-boundary",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 51.4,
+  "tokens": 21359.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "python-path-boundary",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 28.3,
+  "tokens": 14737.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "python-csv-stdlib",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 29.4,
+  "tokens": 14840.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "python-csv-stdlib",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 22.3,
+  "tokens": 16000.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "javascript-async-order",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 17.0,
+  "tokens": 15439.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "javascript-async-order",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 20.0,
+  "tokens": 14746.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "rust-error-path",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 26.3,
+  "tokens": 26043.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "rust-error-path",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 11.3,
+  "tokens": 12381.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "shell-space-safe",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 18.5,
+  "tokens": 15330.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "shell-space-safe",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 23.7,
+  "tokens": 18076.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "cross-file-cutover",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 24.1,
+  "tokens": 20714.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "cross-file-cutover",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 19.7,
+  "tokens": 16153.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "shared-root-cause",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 19.6,
+  "tokens": 18410.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "shared-root-cause",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 15.9,
+  "tokens": 15216.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "parallel-independent-fixes",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 38.7,
+  "tokens": 93917.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "parallel-independent-fixes",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 33.6,
+  "tokens": 105070.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "investigate-precedence",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 10.1,
+  "tokens": 8819.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "investigate-precedence",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 30.5,
+  "tokens": 15470.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "secret-injection-boundary",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 35.6,
+  "tokens": 9393.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "secret-injection-boundary",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 23.6,
+  "tokens": 9740.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "bounded-retry",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 10.4,
+  "tokens": 11961.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "bounded-retry",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 13.7,
+  "tokens": 15232.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-dedupe-order",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 14.9,
+  "tokens": 14390.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-dedupe-order",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 111.6,
+  "tokens": 87950.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-config-precedence",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 15.5,
+  "tokens": 15977.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-config-precedence",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 22.0,
+  "tokens": 15243.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "js-async-sequence",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 13.8,
+  "tokens": 14568.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "js-async-sequence",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 11.9,
+  "tokens": 15413.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-sql-parameterized",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 9.7,
+  "tokens": 15176.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-sql-parameterized",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 18.1,
+  "tokens": 14660.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-async-timeout",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.6,
+  "tokens": 14829.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-async-timeout",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 12.2,
+  "tokens": 14694.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "json-config-repair",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 10.8,
+  "tokens": 14682.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "json-config-repair",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 14.7,
+  "tokens": 14855.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-offbyone-loop",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 19.5,
+  "tokens": 14905.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-offbyone-loop",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 20.6,
+  "tokens": 18650.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "js-null-guard",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 11.8,
+  "tokens": 14798.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "js-null-guard",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 13.5,
+  "tokens": 15044.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-feature-rate-limit",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.3,
+  "tokens": 14991.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-feature-rate-limit",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 12.9,
+  "tokens": 15638.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-refactor-strategy",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 11.4,
+  "tokens": 15761.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-refactor-strategy",
+  "sample": 4,
+  "completed": false,
+  "verifyOk": false,
+  "latency_s": 22.0,
+  "tokens": 15428.0,
+  "failure_class": "verify_failed"
+ },
+ {
+  "harness": "pi",
+  "case": "parallel-triage-fixes",
+  "sample": 4,
+  "completed": false,
+  "verifyOk": true,
+  "latency_s": 21.1,
+  "tokens": 15667.0,
+  "failure_class": "parallel_not_used"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "parallel-triage-fixes",
+  "sample": 4,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 36.2,
+  "tokens": 95016.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "python-boundary",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 9.5,
+  "tokens": 14980.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "python-boundary",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 18.7,
+  "tokens": 14117.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "python-path-boundary",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 19.6,
+  "tokens": 18237.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "python-path-boundary",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 13.0,
+  "tokens": 16144.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "python-csv-stdlib",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.4,
+  "tokens": 15530.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "python-csv-stdlib",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 13.5,
+  "tokens": 14320.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "javascript-async-order",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.8,
+  "tokens": 14813.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "javascript-async-order",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 15.8,
+  "tokens": 16520.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "rust-error-path",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 11.9,
+  "tokens": 12299.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "rust-error-path",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 15.2,
+  "tokens": 12656.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "shell-space-safe",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 22.6,
+  "tokens": 18284.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "shell-space-safe",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 13.3,
+  "tokens": 12311.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "cross-file-cutover",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 14.8,
+  "tokens": 16675.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "cross-file-cutover",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.3,
+  "tokens": 15513.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "shared-root-cause",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 14.0,
+  "tokens": 15200.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "shared-root-cause",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 13.2,
+  "tokens": 15373.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "parallel-independent-fixes",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 30.4,
+  "tokens": 93689.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "parallel-independent-fixes",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 34.2,
+  "tokens": 93080.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "investigate-precedence",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 30.4,
+  "tokens": 12349.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "investigate-precedence",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 9.5,
+  "tokens": 8889.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "secret-injection-boundary",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 23.5,
+  "tokens": 9854.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "secret-injection-boundary",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 25.0,
+  "tokens": 6223.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "bounded-retry",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.1,
+  "tokens": 17984.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "bounded-retry",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.2,
+  "tokens": 19989.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-dedupe-order",
+  "sample": 5,
+  "completed": false,
+  "verifyOk": false,
+  "latency_s": 260.0,
+  "tokens": 0.0,
+  "failure_class": "process_exit"
+ },
+ {
+  "harness": "pi",
+  "case": "py-dedupe-order",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 15.7,
+  "tokens": 14621.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-config-precedence",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 20.6,
+  "tokens": 16402.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-config-precedence",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 15.4,
+  "tokens": 16030.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "js-async-sequence",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 10.8,
+  "tokens": 15286.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "js-async-sequence",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.0,
+  "tokens": 14504.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-sql-parameterized",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 11.1,
+  "tokens": 14626.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-sql-parameterized",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 12.8,
+  "tokens": 15712.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-async-timeout",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 12.7,
+  "tokens": 15070.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-async-timeout",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 15.0,
+  "tokens": 14367.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "json-config-repair",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 11.0,
+  "tokens": 14033.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "json-config-repair",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 10.3,
+  "tokens": 14702.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-offbyone-loop",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 12.0,
+  "tokens": 16065.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-offbyone-loop",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 16.1,
+  "tokens": 15457.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "js-null-guard",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 14.0,
+  "tokens": 14044.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "js-null-guard",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 12.7,
+  "tokens": 16072.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-feature-rate-limit",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 12.9,
+  "tokens": 15449.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-feature-rate-limit",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 20.5,
+  "tokens": 15570.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "py-refactor-strategy",
+  "sample": 5,
+  "completed": false,
+  "verifyOk": true,
+  "latency_s": 22.6,
+  "tokens": 20394.0,
+  "failure_class": "integrity"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "py-refactor-strategy",
+  "sample": 5,
+  "completed": false,
+  "verifyOk": true,
+  "latency_s": 12.7,
+  "tokens": 15698.0,
+  "failure_class": "integrity"
+ },
+ {
+  "harness": "steak-pi",
+  "case": "parallel-triage-fixes",
+  "sample": 5,
+  "completed": true,
+  "verifyOk": true,
+  "latency_s": 33.1,
+  "tokens": 93187.0,
+  "failure_class": "none"
+ },
+ {
+  "harness": "pi",
+  "case": "parallel-triage-fixes",
+  "sample": 5,
+  "completed": false,
+  "verifyOk": true,
+  "latency_s": 14.0,
+  "tokens": 14869.0,
+  "failure_class": "parallel_not_used"
+ }
+]

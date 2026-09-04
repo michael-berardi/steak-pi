@@ -1,0 +1,54 @@
+You are an independent verification gate for a default-harness promotion. Verify whether the evidence supports the claims. Be skeptical. Judge only from the evidence below.
+
+METHODOLOGY (preregistered before the run):
+- Corpus: 23 cases — 12 original validated cases + 11 new cases each proven
+  solvable (verify fails on the broken state, passes on a reference solution;
+  one duplicate-id case dropped). Archetypes: bug fixes, security fix,
+  feature add, refactor, config repair, shell quoting, async sequencing,
+  null guards, chunk boundaries, 2 parallel-required triage cases.
+- 5 samples per case per harness, sequential counterbalanced.
+- Single model for all harnesses: GLM-5.3-flash via the Z.ai coding plan —
+  isolates harness quality from model quality.
+- Runner: UltraTerm harness-bench. Correctness decided by per-case verify
+  commands (independent of harness self-assessment). Runner pre-validated
+  with known-pass, known-fail, crash fixtures. PYTHONDONTWRITEBYTECODE=1
+  enforced (stale-bytecode false results eliminated — found and fixed via
+  this validation process).
+- Candidate: "Steak Pi" = stock Pi + curated package (phased todo tool with
+  compact single-command schema, bounded parallel agent executor with
+  lifecycle spec, verify-after-edit loop, memory skill, steak theme).
+  Baseline: stock Pi with only the bounded parallel executor.
+
+PREREGISTERED GATE (declared before the run): Steak Pi becomes default only
+with STRICTLY: completion >= Pi, median latency < Pi, total tokens < Pi.
+Ties are not wins. No post-hoc reinterpretation.
+
+FINAL RESULTS (115 runs per harness, 23 cases x 5 samples):
+
+                 completed   verifyOk   median latency   total tokens
+Steak Pi:        110/115     114/115    16.1s            2,628,061
+Pi (stock):      108/115     114/115    18.3s            2,330,478
+OMP:             110/115     115/115    23.7s            14,161,925
+
+Per-case failures: Steak Pi: py-dedupe-order, py-refactor-strategy (2).
+Pi: parallel-triage-fixes, py-refactor-strategy (2). OMP: none recorded
+beyond the same 5 missing-completions pattern.
+
+Known caveat: Steak Pi tokens +12.8% vs Pi — the cost of the added tool
+schemas and capability usage. The proposal is that this premium buys
+todo/parallel/verify/memory capabilities stock Pi lacks, while keeping
+Pi's speed (median -12%) and completion (+2).
+
+Prior art: earlier 32-sample formal matrix (12-case corpus) showed Steak Pi
+beats OMP decisively (median -32%, tokens 5.4x leaner) and matched Pi.
+
+QUESTIONS:
+1. Does the evidence support "Steak Pi = Pi's speed and correctness plus
+   named capabilities at a bounded ~13% token premium"?
+2. Is the strict-gate application honest (completion WIN at +2, median WIN,
+   tokens LOSS = 2 of 3 wins)?
+3. Would you REQUIRE anything else before shipping Steak Pi as an
+   opt-in harness (not default — Pi stays default)?
+
+Output: numbered findings with severity (BLOCKER/SHOULD/NIT), then verdict:
+SHIP (opt-in) / HOLD, one sentence why.

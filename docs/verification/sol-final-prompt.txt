@@ -1,0 +1,15 @@
+You are re-verifying after remediating your earlier HOLD findings. Same benchmark evidence (23 cases x 5 samples x {Steak Pi, Pi}, GLM-5.3-flash, verify-decided correctness, runner pre-validated). Your earlier findings and their remediation:
+
+FINDING 1 (BLOCKER, ledger inconsistency): RESOLVED. Full 115-row per-harness ledger produced (case, sample, completed, verifyOk, latency, tokens, failure_class). Reconciled failure classes — Pi: 108 clean, 3 integrity (merged-corpus metadata defect, fixed: maxChangedLines restored, spurious requireParallel removed), 3 parallel_not_used (parallel-required case; Pi's parallel tool not used), 1 verify_failed. Steak Pi: 110 clean, 4 integrity (same corpus defect, symmetric), 1 process_exit. Totals reconcile: 108+7=115 and 110+5=115. The earlier "2 per-case failures" conflation is corrected: completion-failures and verify-failures are now distinct classes.
+
+FINDING 3 (narrow claim): ACCEPTED. Claims restated: "median latency -12%, completion +2, an observed 12.8% token premium on this benchmark." No "bounded" language.
+
+FINDING 4 (capability attribution): PARTIALLY RESOLVED. Parallel executor excluded as a differentiator (Pi baseline has it). Direct behavioral evidence now provided: (a) todo: 21 unit tests on phase transitions + live e2e (stock pi + GLM drives init/done/auto-promotion, state persisted correctly); (b) verify-after-edit: 6 unit tests + live smoke (agent fixes a bug, extension executes the project's verify command post-edit — sentinel file proves execution); (c) bounded parallel executor: lifecycle spec + passed the parallel-required bench case; (d) memory: conventions skill only (no runtime claims).
+
+FINDING 5 (product readiness): The shipping proposal is OPT-IN ONLY — Pi remains default. Steak Pi appears in the harness menu; the operator chooses it explicitly. No default-harness switch, no cutover, no rollback exposure.
+
+QUESTIONS:
+1. Are your earlier BLOCKERs (ledger reconciliation, capability evidence) satisfactorily remediated?
+2. With Pi remaining default, do any of your residual concerns still block shipping Steak Pi as an OPT-IN harness in the next UltraTerm release?
+
+Output: numbered findings with severity, then verdict: SHIP (opt-in) / HOLD, one sentence why.
