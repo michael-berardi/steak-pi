@@ -10,6 +10,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { assertOwnedPath } from "./policy.ts";
+import { assertModelRoute, assertSubscriptionRequest, guardModelRuntime } from "../model-route-policy.ts";
 import type { RelayBroker, RelayPeer, RelaySendResult } from "./relay.ts";
 import {
   OUTPUT_LIMIT,
@@ -25,6 +26,7 @@ import {
 
 export const MAX_PI_WORKER_TURNS = 12;
 export const PI_WORKER_TURN_WARNING_AT = MAX_PI_WORKER_TURNS - 3;
+export const PI_WORKER_ABORT_GRACE_MS = 2_000;
 const OUTPUT_TRUNCATION_NOTICE = "\n\n[Output truncated at the USAP 20,000-character limit.]";
 
 type PiPackage = typeof import("@earendil-works/pi-coding-agent");
@@ -41,6 +43,7 @@ type PiSdk = Pick<
   | "createWriteToolDefinition"
   | "SessionManager"
   | "SettingsManager"
+  | "ModelRuntime"
 >;
 type PiStateManagers = Pick<PiPackage, "SessionManager" | "SettingsManager">;
 
@@ -85,9 +88,11 @@ async function loadPiSdk(): Promise<PiSdk> {
       import(/* @vite-ignore */ piModuleUrl("core/sdk.js")),
       import(/* @vite-ignore */ piModuleUrl("core/extensions/loader.js")),
       loadPiStateManagers(),
-    ]).then(([sdk, extensions, managers]) => ({
+      import(/* @vite-ignore */ piModuleUrl("core/model-runtime.js")),
+    ]).then(([sdk, extensions, managers, models]) => ({
       ...sdk,
       ...managers,
+      ModelRuntime: models.ModelRuntime,
       createExtensionRuntime: extensions.createExtensionRuntime,
     } as PiSdk)).catch(async (error: unknown) => {
       // The 0.85 unbundled root references optional pi-server code. The shipped
@@ -125,6 +130,8 @@ export interface PiWorkerRunnerOptions {
   resolveRuntime(runId: string): PiWorkerRuntime | Promise<PiWorkerRuntime>;
   /** Test seam. Production uses Pi's native in-process createAgentSession(). */
   sessionFactory?: PiWorkerSessionFactory;
+  /** Test seam for bounded abort/disposal terminalization. */
+  abortGraceMs?: number;
 }
 
 type AnyToolDefinition = ToolDefinition<any, any, any>;
@@ -508,6 +515,17 @@ export function classifyPiWorkerState(input: {
   return { state: "done" };
 }
 
+async function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    promise.then(() => undefined, () => undefined),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, timeoutMs);
+    }),
+  ]);
+  if (timer !== undefined) clearTimeout(timer);
+}
+
 function relaySteeringText(envelope: Parameters<NonNullable<Parameters<RelayBroker["bind"]>[2]>>[0]): string {
   return [
     `[USAP relay ${envelope.kind} ${envelope.id}]`,
@@ -523,40 +541,82 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
   if (!options || typeof options.resolveRuntime !== "function" || !options.relay) {
     throw new TypeError("createPiWorkerRunner requires relay and resolveRuntime");
   }
+  const abortGraceMs = options.abortGraceMs ?? PI_WORKER_ABORT_GRACE_MS;
+  if (!Number.isSafeInteger(abortGraceMs) || abortGraceMs < 0) {
+    throw new RangeError("abortGraceMs must be a nonnegative safe integer");
+  }
   return async ({ run, task, signal, onProgress }): Promise<WorkerResult> => {
     let session: PiWorkerSession | undefined;
     let unsubscribe: (() => void) | undefined;
     let peer: RelayPeer | undefined;
     let promptError: unknown;
+    let abortPromise: Promise<void> | undefined;
     let turns = 0;
     let turnLimitReached = false;
     let finalAssistant: AssistantSnapshot | undefined;
     const usage = emptyUsage();
     const accountedMessages = new WeakSet<object>();
+    const steeringDeliveries = new Set<Promise<boolean>>();
+    let releasePromptWait = () => {};
+    let initializationCleanup: Promise<void> | undefined;
+    const initialize = <T>(pending: Promise<T>, disposeLate?: (value: T) => void): Promise<T> =>
+      new Promise<T>((resolve, reject) => {
+        let abandoned = false;
+        const onInitAbort = () => {
+          abandoned = true;
+          initializationCleanup = cleanup;
+          reject(signal.reason);
+        };
+        const cleanup = pending.then((value) => {
+          signal.removeEventListener("abort", onInitAbort);
+          if (abandoned) disposeLate?.(value);
+          else resolve(value);
+        }, (error) => {
+          signal.removeEventListener("abort", onInitAbort);
+          reject(error);
+        }).catch(() => {});
+        signal.addEventListener("abort", onInitAbort, { once: true });
+        if (signal.aborted) onInitAbort();
+      });
 
-    const abortSession = () => {
-      if (session) void session.abort().catch(() => {});
+    const abortSession = (): Promise<void> => {
+      if (!session) return Promise.resolve();
+      abortPromise ??= Promise.resolve().then(() => session!.abort()).catch(() => {});
+      return abortPromise;
     };
-    signal.addEventListener("abort", abortSession, { once: true });
+    const onAbort = () => {
+      releasePromptWait();
+      void abortSession();
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
 
     try {
       signal.throwIfAborted();
-      const [managers, runtime] = await Promise.all([
+      const [managers, runtime] = await initialize(Promise.all([
         loadPiStateManagers(),
         options.resolveRuntime(run.id),
-      ]);
+      ]));
       signal.throwIfAborted();
       if (!runtime?.model || !runtime.thinkingLevel) throw new Error(`No child runtime resolved for ${run.id}`);
-      const sdk = options.sessionFactory ? undefined : await loadPiSdk();
+      assertModelRoute(runtime.model);
+      const sdk = options.sessionFactory ? undefined : await initialize(loadPiSdk());
+      signal.throwIfAborted();
       const nativeManagers = sdk ?? managers;
       const sessionFactory = options.sessionFactory ?? sdk!.createAgentSession;
       const extensionRuntime = sdk?.createExtensionRuntime();
 
       peer = options.relay.bind(run.id, task.id, (envelope) => {
         if (!session?.isStreaming) return false;
-        void session.steer(relaySteeringText(envelope)).catch(() => {});
-        task.relayReceived += 1;
-        return true;
+        const steering = session.steer(relaySteeringText(envelope)).then(() => {
+          task.relayReceived += 1;
+          return true;
+        }, () => false);
+        steeringDeliveries.add(steering);
+        void steering.then(
+          () => steeringDeliveries.delete(steering),
+          () => steeringDeliveries.delete(steering),
+        );
+        return steering;
       });
       const tools = createGuardedPiWorkerTools({ cwd: run.cwd, task, relay: peer });
       const systemPrompt = buildPiWorkerSystemPrompt(run, task);
@@ -564,17 +624,30 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
         compaction: { enabled: false },
         retry: { enabled: true, maxRetries: 1 },
       });
-      const created = await sessionFactory({
+      const modelRuntime = sdk ? await initialize(sdk.ModelRuntime.create({ signal })) : undefined;
+      if (modelRuntime) {
+        assertSubscriptionRequest(runtime.model, modelRuntime.isUsingOAuth(runtime.model.provider));
+        guardModelRuntime(modelRuntime);
+      }
+      signal.throwIfAborted();
+      const created = await initialize(sessionFactory({
         cwd: run.cwd,
         model: runtime.model,
+        ...(modelRuntime ? { modelRuntime } : {}),
         thinkingLevel: runtime.thinkingLevel,
         tools: tools.map((tool) => tool.name),
         customTools: tools,
         resourceLoader: createIsolatedResourceLoader(systemPrompt, extensionRuntime),
         sessionManager: nativeManagers.SessionManager.inMemory(run.cwd),
         settingsManager,
+      }), ({ session: late }) => {
+        // No prompt/subscription was started. Dispose before releasing its lease.
+        try { late.dispose(); } catch { /* best effort native disposal */ }
       });
       session = created.session;
+      // Session creation may refresh model configuration. Guard the resulting
+      // catalog again, and each subsequent controlled turn, before dispatch.
+      if (modelRuntime) guardModelRuntime(modelRuntime);
 
       unsubscribe = session.subscribe((event) => {
         if (event.type === "tool_execution_start") {
@@ -600,10 +673,12 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
           return;
         }
         if (event.type === "turn_start") {
+          if (modelRuntime) guardModelRuntime(modelRuntime);
           if (turnLimitReached) return;
           if (turns >= MAX_PI_WORKER_TURNS) {
             turnLimitReached = true;
-            abortSession();
+            releasePromptWait();
+            void abortSession();
             return;
           }
           turns += 1;
@@ -623,21 +698,38 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       });
 
       if (signal.aborted) {
-        await session.abort().catch(() => {});
+        void abortSession();
       } else {
-        await session.prompt("Execute the exact assigned leaf and return the required concise report.", {
-          expandPromptTemplates: false,
+        const terminalized = new Promise<void>((resolve) => {
+          releasePromptWait = resolve;
         });
+        if (signal.aborted) releasePromptWait();
+        await Promise.race([
+          session.prompt("Execute the exact assigned leaf and return the required concise report.", {
+            expandPromptTemplates: false,
+          }),
+          terminalized,
+        ]);
       }
     } catch (error) {
       promptError = error;
     } finally {
-      signal.removeEventListener("abort", abortSession);
-      unsubscribe?.();
+      signal.removeEventListener("abort", onAbort);
+      if (session && (signal.aborted || turnLimitReached || session.isStreaming)) {
+        await settleWithin(abortSession(), abortGraceMs);
+      }
+      // Keep subscriptions live during the bounded abort grace so final usage
+      // events can land. Stop new steering and bound any accepted deliveries;
+      // a hostile provider/session must never retain the scheduler lease.
       peer?.close();
-      if (session) {
-        if (session.isStreaming) await session.abort().catch(() => {});
-        session.dispose();
+      if (steeringDeliveries.size > 0) {
+        await settleWithin(Promise.allSettled([...steeringDeliveries]), abortGraceMs);
+      }
+      unsubscribe?.();
+      try {
+        session?.dispose();
+      } catch {
+        // Disposal is best effort after the worker has reached a terminal state.
       }
     }
 
@@ -650,6 +742,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
     const bounded = truncatePiWorkerOutput(finalAssistant?.text ?? "");
     return {
       ...classification,
+      ...(initializationCleanup ? { cleanup: initializationCleanup } : {}),
       output: bounded.output,
       turns,
       usage,

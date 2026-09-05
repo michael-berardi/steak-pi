@@ -332,13 +332,55 @@ describe("native in-process Pi worker runner", () => {
     expect(captured[0].resourceLoader?.getSystemPrompt()).toContain(recordTask.task);
   });
 
-  it("aborts and disposes an active session from the parent signal", async () => {
+  it.each(["runtime", "session"])("bounds cancellation during pending %s initialization and safely settles late resources", async (stage) => {
+    const recordTask = task();
+    const fake = new FakeSession();
+    const controller = new AbortController();
+    let release!: () => void;
+    let entered!: () => void;
+    const ready = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const factory = vi.fn(async () => {
+      if (stage === "session") { entered(); await gate; }
+      return { session: fake };
+    });
+    const runner = createPiWorkerRunner({
+      relay: setupBroker(), abortGraceMs: 1,
+      resolveRuntime: async () => {
+        if (stage === "runtime") { entered(); await gate; }
+        return { model: fakeModel, thinkingLevel: "off" };
+      },
+      sessionFactory: factory,
+    });
+    const pending = runner({ run: run("/tmp", recordTask), task: recordTask, signal: controller.signal, onProgress: vi.fn() });
+    await ready;
+    controller.abort();
+    const result = await pending;
+    expect(result.state).toBe("aborted");
+    expect(result.cleanup).toBeDefined();
+    expect(fake.prompts).toHaveLength(0);
+    release();
+    await result.cleanup;
+    expect(fake.disposed).toBe(stage === "session");
+    expect(factory).toHaveBeenCalledTimes(stage === "session" ? 1 : 0);
+    expect(fake.prompts).toHaveLength(0);
+  });
+
+  it("awaits delayed abort and disposal while retaining final usage events", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "steak-pi-abort-"));
     const recordTask = task();
     const relay = setupBroker();
     const fake = new FakeSession();
-    let release!: () => void;
-    fake.onPrompt = () => new Promise<void>((resolve) => { release = resolve; });
+    let releasePrompt!: () => void;
+    let releaseAbort!: () => void;
+    fake.onPrompt = () => new Promise<void>((resolve) => { releasePrompt = resolve; });
+    fake.abort = async () => {
+      fake.abortCalls += 1;
+      await new Promise<void>((resolve) => { releaseAbort = resolve; });
+      const final = assistant("partial after abort", "aborted", usage(5));
+      fake.emit({ type: "message_end", message: final } as AgentSessionEvent);
+      fake.isStreaming = false;
+    };
     const controller = new AbortController();
     const runner = createPiWorkerRunner({
       relay,
@@ -346,13 +388,46 @@ describe("native in-process Pi worker runner", () => {
       sessionFactory: async () => ({ session: fake }),
     });
     const pending = runner({ run: run(cwd, recordTask), task: recordTask, signal: controller.signal, onProgress: vi.fn() });
-    await flush();
+    await vi.waitFor(() => expect(fake.prompts).toHaveLength(1));
 
     controller.abort(new DOMException("cancelled", "AbortError"));
-    release();
+    releasePrompt();
+    await flush();
+    expect(fake.abortCalls).toBe(1);
+    expect(fake.disposed).toBe(false);
+
+    releaseAbort();
     const result = await pending;
+    expect(result).toMatchObject({ state: "aborted", output: "partial after abort" });
+    expect(result.usage).toEqual(usage(5));
+    expect(fake.disposed).toBe(true);
+  });
+
+  it("bounds a hung session abort and still releases the worker", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "steak-pi-hung-abort-"));
+    const recordTask = task();
+    const relay = setupBroker();
+    const fake = new FakeSession();
+    fake.onPrompt = () => new Promise<void>(() => {});
+    fake.abort = async () => {
+      fake.abortCalls += 1;
+      await new Promise<void>(() => {});
+    };
+    const controller = new AbortController();
+    const runner = createPiWorkerRunner({
+      relay,
+      resolveRuntime: () => ({ model: fakeModel, thinkingLevel: "off" }),
+      sessionFactory: async () => ({ session: fake }),
+      abortGraceMs: 5,
+    });
+    const pending = runner({ run: run(cwd, recordTask), task: recordTask, signal: controller.signal, onProgress: vi.fn() });
+    await vi.waitFor(() => expect(fake.prompts).toHaveLength(1));
+
+    controller.abort(new DOMException("cancelled", "AbortError"));
+    const result = await pending;
+
     expect(result.state).toBe("aborted");
-    expect(fake.abortCalls).toBeGreaterThan(0);
+    expect(fake.abortCalls).toBe(1);
     expect(fake.disposed).toBe(true);
   });
 
@@ -400,9 +475,13 @@ describe("native in-process Pi worker runner", () => {
       sessionFactory: async () => ({ session: fake }),
     });
     const pending = runner({ run: run(cwd, recordTask), task: recordTask, signal: new AbortController().signal, onProgress: vi.fn() });
-    await flush();
+    await vi.waitFor(() => expect(fake.prompts).toHaveLength(1));
 
-    expect(sender.send({ to: recordTask.id, body: "live fact" })).toMatchObject({ status: "delivered" });
+    expect(sender.send({ to: recordTask.id, body: "live fact" })).toMatchObject({
+      status: "queued",
+      delivered: 0,
+      queued: 1,
+    });
     await flush();
     expect(fake.steers[0]).toContain("live fact");
     fake.isStreaming = false;
@@ -416,5 +495,41 @@ describe("native in-process Pi worker runner", () => {
     await pending;
     const mailbox = relay.bind("run-test", recordTask.id).inbox().messages;
     expect(mailbox.map((message) => message.body)).toEqual(["idle fact"]);
+  });
+
+  it("queues active relay delivery when steering rejects without counting receipt", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "steak-pi-relay-reject-"));
+    const recordTask = task();
+    const relay = setupBroker([recordTask.id, "peer"]);
+    const sender = relay.bind("run-test", "peer");
+    const fake = new FakeSession();
+    let release!: () => void;
+    fake.onPrompt = () => new Promise<void>((resolve) => { release = resolve; });
+    fake.steer = async () => { throw new Error("steering rejected"); };
+    const runner = createPiWorkerRunner({
+      relay,
+      resolveRuntime: () => ({ model: fakeModel, thinkingLevel: "off" }),
+      sessionFactory: async () => ({ session: fake }),
+    });
+    const pending = runner({ run: run(cwd, recordTask), task: recordTask, signal: new AbortController().signal, onProgress: vi.fn() });
+    await vi.waitFor(() => expect(fake.prompts).toHaveLength(1));
+
+    expect(sender.send({ to: recordTask.id, body: "retain me" })).toMatchObject({
+      status: "queued",
+      delivered: 0,
+      queued: 1,
+    });
+    await flush();
+    expect(recordTask.relayReceived).toBe(0);
+
+    fake.isStreaming = false;
+    const final = assistant("Evidence: complete");
+    fake.emit({ type: "turn_start" } as AgentSessionEvent);
+    fake.emit({ type: "message_end", message: final } as AgentSessionEvent);
+    fake.emit({ type: "turn_end", message: final, toolResults: [] } as AgentSessionEvent);
+    release();
+    await pending;
+    expect(relay.bind("run-test", recordTask.id).inbox().messages.map((message) => message.body))
+      .toEqual(["retain me"]);
   });
 });

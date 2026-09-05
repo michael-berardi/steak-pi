@@ -1,4 +1,4 @@
-import { promises as fs } from "node:fs";
+import { promises as fs, readFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +10,19 @@ import verifyAfterEditExtension, {
   shellInvocation,
   shouldVerify,
 } from "../extensions/verify-after-edit.ts";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
+});
+
+function registeredHandler() {
+  let handler!: (event: any, ctx: any) => Promise<any>;
+  verifyAfterEditExtension({ on(name: string, value: typeof handler) {
+    if (name === "tool_result") handler = value;
+  } } as unknown as ExtensionAPI);
+  return handler;
+}
 
 const CONFIG = { command: "npm run -s typecheck", failLimit: 2, timeoutMs: 90_000 };
 const tempDirs: string[] = [];
@@ -134,6 +147,60 @@ describe("verify-after-edit", () => {
     );
     expect(result).toBeUndefined();
     await expect(fs.access(path.join(cwd, "ran"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not read config for non-edit, failed, or untrusted results", async () => {
+    const handler = registeredHandler();
+    const cwd = await tempDir();
+    const reads = vi.mocked(readFileSync);
+    reads.mockClear();
+    const ctx = { cwd, isProjectTrusted: () => true, signal: undefined };
+    for (const toolName of ["read", "bash", "grep", "find", "ls", "custom"]) {
+      await handler({ toolName, isError: false, content: [] }, ctx);
+    }
+    for (const toolName of ["edit", "write"]) {
+      await handler({ toolName, isError: true, content: [] }, ctx);
+      await handler({ toolName, isError: false, content: [] }, {
+        ...ctx, isProjectTrusted: () => false,
+      });
+    }
+    expect(reads).not.toHaveBeenCalled();
+  });
+
+  it("skips config reads while verification is already running", async () => {
+    const cwd = await tempDir();
+    await writeConfig(cwd, { command: nodeCommand("setTimeout(() => {}, 100)"), timeoutMs: 2000 });
+    const handler = registeredHandler();
+    const reads = vi.mocked(readFileSync);
+    reads.mockClear();
+    const ctx = { cwd, isProjectTrusted: () => true, signal: undefined };
+    const event = { toolName: "EDIT", isError: false, content: [] };
+    const pending = handler(event, ctx);
+    try {
+      await handler(event, ctx);
+      await handler({ ...event, toolName: "write" }, ctx);
+      expect(reads).toHaveBeenCalledTimes(1);
+    } finally {
+      await pending;
+    }
+  });
+
+  it("reads changed commands and failure limits freshly for each eligible edit", async () => {
+    const cwd = await tempDir();
+    await writeConfig(cwd, { command: "exit 1", failLimit: 1 });
+    const handler = registeredHandler();
+    const reads = vi.mocked(readFileSync);
+    reads.mockClear();
+    vi.spyOn(Date, "now").mockReturnValueOnce(1000).mockReturnValueOnce(2000);
+    const ctx = { cwd, isProjectTrusted: () => true, signal: undefined };
+    const event = { toolName: "write", isError: false, content: [] };
+    const first = await handler(event, ctx);
+    expect(first.content.at(-1).text).toContain("attempt 1/1");
+    await writeConfig(cwd, { command: "printf changed; exit 1", failLimit: 3 });
+    const second = await handler(event, ctx);
+    expect(second.content.at(-1).text).toContain("attempt 2/3");
+    expect(second.content.at(-1).text).toContain("changed");
+    expect(reads).toHaveBeenCalledTimes(2);
   });
 
   it("reports the failure that reaches failLimit, then suppresses later runs", async () => {

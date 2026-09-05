@@ -5,9 +5,9 @@
 Steak Pi is a native Pi companion for UltraTerm, not a replacement TUI. It
 owns three bounded surfaces exposed by Pi's extension API:
 
-1. a two-line startup header;
+1. a single-line, responsive identity and command header;
 2. Steak Pi's status band and prompt gutter around Pi's native editor,
-   including live lifecycle state;
+   including live lifecycle state and context pressure;
 3. a conditional extension-status row only when another extension publishes one.
 
 The composer extends Pi's `CustomEditor`; Pi still owns text editing, IME,
@@ -19,22 +19,22 @@ preserves upstream behavior while giving Steak Pi a purpose-built entry surface.
 ## Visual hierarchy
 
 ```text
-◆ STEAK PI                                      native · minimal · focused
-type / for commands  ·  /model switch  ·  /resume sessions
+◆ STEAK PI                              / commands · /model · /resume
 
 [Pi's native transcript and tool rendering]
 
-◆  > glm5.3-flash · high > responding ▶────────◀ ctx 18% · cache 80%
+◆ > glm5.3-flash · high > responding ▶━━━━────────◀ ◫ 18%/131k · $0.018
 ╰─ Ask anything, edit files, run tools
 [extension status appears here only when present]
 ```
 
 The composer band communicates, in order:
 
-- active model and thinking level;
+- active model name, plus thinking level when space permits, never a provider label;
 - current lifecycle state;
-- context pressure and higher-priority usage data;
-- working directory, branch, and optional session name when width permits.
+- a live context meter, with semantic pressure-colored fill and a dim remainder;
+- context percentage/window, session cost, token volume, and cache efficiency as
+  width permits.
 
 No baseline footer is rendered. This avoids duplicating the composer status
 band; a compact row appears only when another extension publishes status.
@@ -42,8 +42,10 @@ band; a compact row appears only when another extension publishes status.
 Statuses published by other Pi extensions remain visible on a conditional
 row, matching the built-in footer contract.
 
-At narrow widths, values truncate by grapheme and lower-priority metrics drop
-before either status or model disappears.
+At narrow widths, reserve the context percentage first; thinking detail, cost,
+and window size drop before the model and lifecycle. Long names/details truncate
+by grapheme. Native three-pane inspection caught the previous 59-column context
+label disappearing; regression cases now cover 40–64 columns and 0–100% pressure.
 
 ## State model
 
@@ -61,8 +63,10 @@ before either status or model disappears.
 | Provider/tool/compaction error | `error` |
 | Abort/cancel | `stopped` |
 
-State changes are event-driven. There are no idle timers, polling loops,
-subprocesses, network calls, provider hooks, or custom animation timers.
+State and meter changes are event-driven from usage Pi already persists. Meter
+rendering is a bounded string operation on existing redraws. There are no idle
+timers, polling loops, subprocesses, network calls, provider hooks, custom
+animation timers, or extra dependencies.
 
 ## Theme neutrality
 
@@ -101,6 +105,7 @@ acceptance still runs against the installed Pi TUI inside UltraTerm.
 
 - Every rendered line is within 20, 24, 32, 40, 80, 120, and 192 columns.
 - ANSI styling never changes measured layout width.
+- Astra, Luna, and GLM model labels omit provider names and routing prefixes.
 - Truncation never splits an emoji/grapheme.
 - Session resume never clears transcript state.
 - Editor submit/history/escape and resize remain deterministic in simulation.
@@ -108,6 +113,8 @@ acceptance still runs against the installed Pi TUI inside UltraTerm.
   isolated pinned-Pi PTY smoke test.
 - Print/JSON/RPC modes do not install TUI components.
 - Production UI code uses only semantic theme functions.
+- The context meter changes fill at 0%, mid-range, warning, and error pressure
+  without polling or reserving a second header row.
 - Full package tests and TypeScript checks pass before live verification.
 - Live UltraTerm checks inspect dark and light Pi themes at 375px and 1920px
   host widths without restarting UltraTerm or replacing a live tmux pane.

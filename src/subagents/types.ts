@@ -122,6 +122,8 @@ export interface WorkerProgress {
 }
 
 export interface WorkerResult {
+  /** Cancelled initialization may settle later; retain the launch lease until disposed. */
+  cleanup?: Promise<void>;
   state: Extract<TaskState, "done" | "failed" | "aborted" | "timed_out">;
   output: string;
   error?: string;
@@ -173,10 +175,9 @@ export function sanitizeUsage(value: unknown): UsageTotals {
     cacheWrite: nonnegativeFinite(costSource.cacheWrite),
     total: nonnegativeFinite(costSource.total),
   };
-  cost.total = Math.max(
-    cost.total,
-    cost.input + cost.output + cost.cacheRead + cost.cacheWrite,
-  );
+  const componentCost = cost.input + cost.output + cost.cacheRead + cost.cacheWrite;
+  const roundingTolerance = Number.EPSILON * Math.max(1, componentCost) * 8;
+  if (componentCost - cost.total > roundingTolerance) cost.total = componentCost;
   return { input, output, cacheRead, cacheWrite, totalTokens, cost };
 }
 

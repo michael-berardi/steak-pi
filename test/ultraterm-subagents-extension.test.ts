@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createUltratermSubagentsExtension,
   renderRunProgress,
+  renderRunResult,
   renderSessionStatus,
   toRunView,
   ultratermSubagentsSchema,
@@ -36,8 +37,10 @@ function harness(runnerFactory: (relay: RelayBroker) => WorkerRunner) {
   const tools = new Map<string, any>();
   const handlers = new Map<string, (...args: any[]) => unknown>();
   const messages: any[] = [];
+  const entries: any[] = [];
   const statuses: Array<string | undefined> = [];
   const pi = {
+    appendEntry(type: string, data: unknown) { entries.push({ type, data }); },
     registerTool(tool: any) { tools.set(tool.name, tool); },
     on(name: string, handler: (...args: any[]) => unknown) { handlers.set(name, handler); },
     sendMessage(message: unknown, options: unknown) { messages.push({ message, options }); },
@@ -55,7 +58,7 @@ function harness(runnerFactory: (relay: RelayBroker) => WorkerRunner) {
     thinkingLevel: "high",
     ui: { setStatus(_key: string, value: string | undefined) { statuses.push(value); } },
   } as any;
-  return { tools, handlers, messages, statuses, ctx };
+  return { tools, handlers, messages, statuses, entries, ctx };
 }
 
 async function flush(): Promise<void> {
@@ -186,6 +189,33 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     expect(h.statuses.at(-1)).toBeUndefined();
   });
 
+  it("awaits real shutdown before persisting terminal telemetry, without completion chatter", async () => {
+    let release!: () => void;
+    const h = harness(() => async ({ signal }) => {
+      await new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => { release = resolve; }, { once: true });
+      });
+      return { state: "aborted", output: "", turns: 0, usage: emptyUsage() };
+    });
+    await h.tools.get("ultraterm_subagents").execute("call", {
+      goal: "shutdown", background: true, tasks: [{ label: "one", task: "one" }],
+    }, undefined, undefined, h.ctx);
+    await flush();
+    let closed = false;
+    const shutdown = Promise.resolve(h.handlers.get("session_shutdown")!({}, h.ctx)).then(() => { closed = true; });
+    await flush();
+    expect(closed).toBe(false);
+    expect(h.entries.at(-1).data.runState).toBe("running");
+    release();
+    await shutdown;
+    expect(h.entries.at(-1).data).toMatchObject({ runState: "aborted", tasks: [{ state: "aborted" }] });
+    expect(h.messages).toHaveLength(0);
+    await h.handlers.get("session_start")!({}, h.ctx);
+    const count = h.entries.length;
+    await flush();
+    expect(h.entries).toHaveLength(count);
+  });
+
   it("evicts coordinator, binding, runtime, and relay state beyond the terminal retention bound", async () => {
     let broker!: RelayBroker;
     const h = harness((relay) => {
@@ -221,5 +251,8 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     expect(renderRunProgress(run)).toBe("USAP run-a: 0/1 settled · running");
     expect(renderSessionStatus([run])).toBe("USAP 1 run · 0/1 settled");
     expect(toRunView(run).tasks[0].taskId).toBe("t");
+    expect(renderRunResult(run)).toContain("model glm5.3-flash · thinking high");
+    expect(renderRunResult(run)).not.toContain("zai/");
+    expect(toRunView(run).model).toBe("zai/glm-5.3-flash");
   });
 });

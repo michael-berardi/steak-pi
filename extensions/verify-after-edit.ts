@@ -19,7 +19,7 @@ export interface VerifyConfig {
 
 /**
  * Loads `.steak-pi/config.json` → `{ "verify": { "command": ... } }`.
- * No config or no command means the feature is idle: zero overhead.
+ * Only eligible edit results read config; absent config/command skips verification.
  */
 export function loadVerifyConfig(cwd: string): VerifyConfig | null {
   try {
@@ -216,9 +216,11 @@ export default function verifyAfterEditExtension(pi: ExtensionAPI): void {
 
   pi.on("tool_result", async (event, ctx) => {
     if (!ctx.isProjectTrusted()) return undefined;
+    if (running || event.isError || !EDIT_TOOLS[event.toolName.toLowerCase()]) return undefined;
 
+    // Keep eligible reads fresh: projects can change verification settings mid-session.
     const config = loadVerifyConfig(ctx.cwd);
-    if (!config || running) return undefined;
+    if (!config) return undefined;
     const now = Date.now();
     if (
       !shouldVerify(config, event.toolName, event.isError, consecutive, now, lastRunMs)

@@ -30,8 +30,7 @@ describe("deterministic headless TUI", () => {
   it("captures the compact completed hierarchy", () => {
     const output = renderSimulator(createSimulatorState("complete", 48, 16), plainPalette);
     expect(output).toEqual([
-      "◆ STEAK PI                   native Pi companion",
-      "type / · /model · /resume",
+      "◆ STEAK PI                  / · /model · /resume",
       "",
       "user",
       "  Refine the terminal workspace without",
@@ -44,7 +43,8 @@ describe("deterministic headless TUI", () => {
       "",
       "",
       "",
-      "◆ > glm5.3-flash · high > ✓ complete ▶──────────",
+      "",
+      "◆ > glm5.3-flash > ✓ complete ▶────────────◫ 18%",
       "╰─ Ask anything, edit files, run tools",
     ]);
   });

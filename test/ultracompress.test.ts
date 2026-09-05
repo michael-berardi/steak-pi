@@ -1,3 +1,4 @@
+import "./ultracompress-settings-mock.ts";
 import { describe, expect, it } from "vitest";
 import ultraCompressExtension from "../extensions/ultracompress/index.ts";
 import { mergeSettings, DEFAULT_SETTINGS } from "../extensions/ultracompress/src/settings.ts";

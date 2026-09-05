@@ -102,11 +102,45 @@ describe("responsive semantic rendering", () => {
           renderComposerBand(width, snapshot, palette),
           ...renderCompanionFooter(width, snapshot, palette),
         ];
-        expect(lines).toHaveLength(3);
+        expect(lines).toHaveLength(2);
         for (const line of lines) {
           expect(displayWidth(line), `${width}: ${stripAnsi(line)}`).toBeLessThanOrEqual(width);
           expect(stripAnsi(line)).not.toMatch(/[\r\n\t]/);
         }
+      }
+    }
+  });
+
+  it.each([
+    ["openai-codex", "openai-codex/gpt-6-astra", "gpt-6-astra"],
+    ["OpenAI Codex", "gpt-5.6-luna", "gpt-5.6-luna"],
+    ["openrouter", "openrouter/z-ai/glm-5.3-flash", "glm5.3-flash"],
+    ["zai", "glm-5.3-flash", "glm5.3-flash"],
+  ])("shows model only, never provider %s", (provider, id, label) => {
+    for (const width of [42, 80, 120, 192]) {
+      const rendered = stripAnsi(renderComposerBand(width, {
+        ...snapshot, provider, model: { id },
+      }, simulatorAnsiPalette));
+      expect(rendered).toContain(label);
+      expect(rendered).not.toContain(provider);
+      expect(rendered).not.toContain("openai-codex/");
+      expect(displayWidth(rendered)).toBeLessThanOrEqual(width);
+    }
+  });
+
+  it("keeps model, lifecycle and live context visible in actual multi-pane widths", () => {
+    for (const width of [40, 41, 42, 48, 59, 64]) {
+      for (const percent of [0, 6, 50, 72, 95, 100, null]) {
+        const rendered = renderComposerBand(width, {
+          ...snapshot, model: { id: "openai-codex/gpt-6-astra" },
+          state: reduceCompanionState(initialCompanionState(), { type: "settled" }),
+          context: { percent, contextWindow: 272000 },
+        }, plainPalette);
+        expect(rendered).toContain("gpt-6-astra");
+        expect(rendered).toContain("✓ complete");
+        expect(rendered).toContain(percent === null ? "◫ ?" : `◫ ${percent}%`);
+        expect(rendered).not.toContain("high");
+        expect(displayWidth(rendered)).toBeLessThanOrEqual(width);
       }
     }
   });
@@ -129,7 +163,46 @@ describe("responsive semantic rendering", () => {
       ].join("\n");
       expect(output).not.toMatch(/#[0-9a-f]{3,8}|\x1b\[/i);
     }
-    expect(new Set(calls)).toEqual(new Set(["accent", "dim", "bold", "muted"]));
+    expect(new Set(calls)).toEqual(new Set(["accent", "text", "dim", "bold", "muted", "warning"]));
+  });
+
+  it("applies lifecycle tone only to the status segment", () => {
+    const calls: Array<[string, string]> = [];
+    const token = (name: string) => (text: string) => {
+      calls.push([name, text]);
+      return text;
+    };
+    const palette: SemanticPalette = {
+      accent: token("accent"), text: token("text"), muted: token("muted"), dim: token("dim"),
+      success: token("success"), warning: token("warning"), error: token("error"), bold: token("bold"),
+    };
+    const complete = reduceCompanionState(
+      reduceCompanionState(initialCompanionState(), { type: "agent_start" }),
+      { type: "settled" },
+    );
+
+    expect(renderComposerBand(80, {
+      ...snapshot,
+      state: complete,
+      model: { id: "zai/glm-5" },
+      provider: "zai",
+    }, palette)).toBe(
+      "◆ > glm5 · high > ✓ complete ▶─────────────────────────────◀ ◫ 72%/131k · $0.125",
+    );
+    expect(calls).toEqual([
+      ["accent", "◆"],
+      ["muted", " > "],
+      ["text", "glm5 · high"],
+      ["muted", " > "],
+      ["success", "✓ complete"],
+      ["accent", " ▶"],
+      ["bold", "◆ > glm5 · high > ✓ complete ▶"],
+      ["warning", "─────────────────────"],
+      ["dim", "────────"],
+      ["dim", "◀ "],
+      ["warning", "◫ 72%/131k"],
+      ["dim", " · $0.125"],
+    ]);
   });
 
   it("sanitizes dynamic single-line fields before layout", () => {
@@ -153,20 +226,16 @@ describe("responsive semantic rendering", () => {
     }
   });
 
-  it("preserves the full brand before optional description at minimum width", () => {
-    expect(renderCompanionHeader(20, plainPalette)).toEqual([
-      "◆ STEAK PI",
-      "/ commands · /resume",
-    ]);
+  it("preserves the full brand without spending another terminal row", () => {
+    expect(renderCompanionHeader(20, plainPalette)).toEqual(["◆ STEAK PI"]);
   });
 
   it("keeps a useful compact hierarchy", () => {
     expect(renderCompanionHeader(40, plainPalette)).toEqual([
-      "◆ STEAK PI           native Pi companion",
-      "type / · /model · /resume",
+      "◆ STEAK PI          / · /model · /resume",
     ]);
     expect(renderComposerBand(40, snapshot, plainPalette)).toBe(
-      "◆ ● resumed ▶───────────────────────────",
+      "◆ a-very-long-model… · ● resumed ▶─◫ 72%",
     );
     expect(renderCompanionFooter(40, snapshot, plainPalette)).toEqual([]);
   });

@@ -8,7 +8,9 @@ import {
 
 export const RUN_BROADCAST_TARGET = "#run" as const;
 
-export type RelayDelivery = (envelope: RelayEnvelope) => void | boolean;
+export type RelayDelivery = (
+  envelope: RelayEnvelope,
+) => void | boolean | PromiseLike<void | boolean>;
 
 export interface RelayBrokerOptions {
   bodyLimit?: number;
@@ -80,6 +82,7 @@ interface RelayRun {
   peers: readonly string[];
   peerSet: ReadonlySet<string>;
   mailboxes: Map<string, RelayEnvelope[]>;
+  pending: Map<string, RelayEnvelope[]>;
   deliveries: Map<string, DeliveryRegistration>;
   requests: Map<string, { from: string; to: string }>;
   nextSeq: number;
@@ -146,6 +149,7 @@ export class RelayBroker {
       peers: Object.freeze(peers),
       peerSet,
       mailboxes: new Map(peers.map((peerId) => [peerId, []])),
+      pending: new Map(peers.map((peerId) => [peerId, []])),
       deliveries: new Map(),
       requests: new Map(),
       nextSeq: 1,
@@ -200,6 +204,7 @@ export class RelayBroker {
     if (!run) return false;
     run.deliveries.clear();
     run.requests.clear();
+    run.pending.clear();
     run.mailboxes.clear();
     return this.runs.delete(runId);
   }
@@ -249,7 +254,9 @@ export class RelayBroker {
       return reject("run_full", `relay run has reached its ${this.runLimit}-message limit`);
     }
     for (const recipient of recipients) {
-      if ((run.mailboxes.get(recipient)?.length ?? this.mailboxLimit) >= this.mailboxLimit) {
+      const reserved = (run.mailboxes.get(recipient)?.length ?? this.mailboxLimit)
+        + (run.pending.get(recipient)?.length ?? this.mailboxLimit);
+      if (reserved >= this.mailboxLimit) {
         return reject("mailbox_full", `relay mailbox is full: ${recipient}`);
       }
     }
@@ -275,17 +282,49 @@ export class RelayBroker {
       run.accepted += 1;
       if (kind === "request") run.requests.set(envelope.id, { from: senderId, to: recipient });
 
-      const delivery = run.deliveries.get(recipient)?.callback;
+      // Preserve per-recipient FIFO across steering and inbox delivery. A later
+      // direct delivery must not advance a receiver past an older queued or
+      // unresolved message that may still need mailbox fallback.
+      const backlog = run.mailboxes.get(recipient)!.length + run.pending.get(recipient)!.length;
+      const delivery = backlog === 0 ? run.deliveries.get(recipient)?.callback : undefined;
       let handled = false;
+      let pending: PromiseLike<void | boolean> | undefined;
       if (delivery) {
         try {
-          handled = delivery(envelope) !== false;
+          const outcome = delivery(envelope);
+          if (
+            outcome !== null
+            && typeof outcome === "object"
+            && typeof (outcome as PromiseLike<void | boolean>).then === "function"
+          ) {
+            pending = outcome as PromiseLike<void | boolean>;
+          } else {
+            handled = outcome !== false;
+          }
         } catch {
           // An active receiver can decline or fail; its bounded mailbox is the fallback.
         }
       }
       if (handled) {
         delivered += 1;
+      } else if (pending) {
+        // Reserve mailbox capacity while steering is unresolved, but keep the
+        // envelope out of inbox reads so it cannot be consumed there and then
+        // delivered a second time by a late successful acknowledgement.
+        const mailbox = run.mailboxes.get(recipient)!;
+        const pendingMailbox = run.pending.get(recipient)!;
+        pendingMailbox.push(envelope);
+        queued += 1;
+        const settle = (outcome: void | boolean) => {
+          if (this.runs.get(run.id) !== run) return;
+          const index = pendingMailbox.indexOf(envelope);
+          if (index >= 0) pendingMailbox.splice(index, 1);
+          if (outcome === false) {
+            mailbox.push(envelope);
+            mailbox.sort((a, b) => a.seq - b.seq);
+          }
+        };
+        void Promise.resolve(pending).then(settle, () => settle(false));
       } else {
         run.mailboxes.get(recipient)!.push(envelope);
         queued += 1;
@@ -306,11 +345,17 @@ export class RelayBroker {
     }
 
     const mailbox = run.mailboxes.get(peerId)!;
-    while (mailbox.length > 0 && mailbox[0].seq <= afterSeq) mailbox.shift();
-    const messages = mailbox.splice(0, Math.min(limit, this.mailboxLimit));
+    // Never publish a cursor beyond an unresolved delivery: it may still
+    // reject and need its original sequence in the inbox.
+    const barrier = Math.min(...run.pending.get(peerId)!.map((message) => message.seq));
+    const cursor = Math.min(afterSeq, barrier - 1);
+    while (mailbox.length > 0 && mailbox[0].seq <= cursor) mailbox.shift();
+    const available = mailbox.findIndex((message) => message.seq >= barrier);
+    const messages = mailbox.splice(0, Math.min(limit, this.mailboxLimit,
+      available < 0 ? mailbox.length : available));
     return {
       messages,
-      nextSeq: messages.length > 0 ? messages[messages.length - 1].seq : afterSeq,
+      nextSeq: messages.length > 0 ? messages[messages.length - 1].seq : cursor,
       remaining: mailbox.length,
     };
   }

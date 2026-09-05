@@ -121,7 +121,7 @@ describe("companion extension integration", () => {
     await emit("tool_execution_end", { toolCallId: "two", toolName: "grep", isError: false });
     await emit("agent_settled");
     expect(editor.render(80)[0]).toContain("complete");
-    expect(editor.render(80)[0]).toContain("cache 75%");
+    expect(editor.render(80)[0]).toContain("◫ 13%/131k · $0.010");
     expect(footer.render(80)).toEqual([]);
     expect(workingMessages.at(-1)).toBeUndefined();
     expect(renders).toBeGreaterThan(5);

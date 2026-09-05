@@ -87,7 +87,19 @@ export default function ultraCompressExtension(pi: ExtensionAPI): void {
     }
     const minChars = Math.min(settings.uc.minChars, settings.snap.minChars);
     const messages = event.messages as unknown as AgentLikeMessage[];
-    const candidates = collectCandidates(messages, minChars, keyFor);
+    // Reuse keys only within this request: repeated text and the apply pass need
+    // no second serialization/hash. Keep candidate occurrences (and their order)
+    // intact, and recompute with current settings/calibration on the next request.
+    const requestKeys = new Map<string, string>();
+    const requestKeyFor = (text: string): string => {
+      let key = requestKeys.get(text);
+      if (key === undefined) {
+        key = keyFor(text);
+        requestKeys.set(text, key);
+      }
+      return key;
+    };
+    const candidates = collectCandidates(messages, minChars, requestKeyFor);
     const fresh = candidates.filter((c) => !transformCache.has(c.key));
     if (fresh.length > 0) {
       // Batch-compute transforms for unseen blocks in one UltraCompress call. Synthetic
@@ -154,10 +166,10 @@ export default function ultraCompressExtension(pi: ExtensionAPI): void {
     const keyFn = (m: AgentLikeMessage, bi: number): string | undefined => {
       if (m.role !== "toolResult") return undefined;
       const content = m.content;
-      if (typeof content === "string") return content.length >= minChars ? keyFor(content) : undefined;
+      if (typeof content === "string") return content.length >= minChars ? requestKeyFor(content) : undefined;
       const block = content?.[bi] as { text?: unknown } | undefined;
       if (!block || typeof block.text !== "string") return undefined;
-      return block.text.length >= minChars ? keyFor(block.text) : undefined;
+      return block.text.length >= minChars ? requestKeyFor(block.text) : undefined;
     };
 
     const result = applyTransforms(messages, transformCache, keyFn, settings.snap.placement);

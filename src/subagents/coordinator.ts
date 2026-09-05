@@ -63,6 +63,7 @@ interface TaskRuntime {
   dispatched: boolean;
   accounted: boolean;
   stopState?: Extract<TerminalTaskState, "aborted" | "timed_out">;
+  stopMessage?: string;
 }
 
 interface RunRuntime {
@@ -119,6 +120,7 @@ export class SubagentCoordinator {
   private readonly now: () => number;
   private readonly runs = new Map<string, RunRuntime>();
   private closed = false;
+  private shutdownPromise?: Promise<void>;
 
   constructor(runner: WorkerRunner, options: CoordinatorOptions = {}) {
     this.runner = runner;
@@ -287,8 +289,10 @@ export class SubagentCoordinator {
   }
 
   /** Abort all live work and permanently reject subsequent starts. */
-  shutdown(): void {
-    if (this.closed) return;
+  shutdown(): Promise<void> {
+    if (this.shutdownPromise) return this.shutdownPromise;
+    const completions = this.activeRuns().map((run) => this.wait(run.id, "all"));
+    this.shutdownPromise = Promise.all(completions).then(() => undefined);
     this.closed = true;
     for (const runtime of this.runs.values()) {
       if (runtime.record.state !== "running") continue;
@@ -299,6 +303,7 @@ export class SubagentCoordinator {
         }
       }
     }
+    return this.shutdownPromise;
   }
 
   private pump(runtime: RunRuntime): void {
@@ -344,7 +349,17 @@ export class SubagentCoordinator {
           signal: taskRuntime.controller.signal,
           onProgress: (progress) => this.applyProgress(runtime, task, progress),
         });
-        if (!isTerminal(task.state)) this.finishTask(runtime, task, result.state, result);
+        if (!isTerminal(task.state)) {
+          this.finishTask(runtime, task, taskRuntime.stopState ?? result.state, {
+            ...result,
+            error: taskRuntime.stopState
+              ? result.error ?? taskRuntime.stopMessage
+              : result.error,
+          });
+        }
+        // Terminal cancellation is observable promptly, but unresolved native
+        // initialization still owns real concurrency until its late disposal.
+        await result.cleanup;
       }, taskRuntime.controller.signal);
     } catch (error) {
       if (isTerminal(task.state)) return;
@@ -401,13 +416,20 @@ export class SubagentCoordinator {
   ): void {
     const taskRuntime = runtime.tasks.get(task.id)!;
     taskRuntime.stopState = state;
+    taskRuntime.stopMessage = message;
     taskRuntime.controller.abort(new DOMException(message, state === "timed_out" ? "TimeoutError" : "AbortError"));
-    this.finishTask(runtime, task, state, {
-      output: task.output,
-      error: message,
-      turns: task.turns,
-      usage: task.usage,
-    });
+    // A dispatched task may own a live worker/session. Its terminal transition
+    // is performed by execute() only after that worker has settled disposal and
+    // returned its final output/usage. A task never dispatched has no lifecycle
+    // to await and can settle immediately.
+    if (!taskRuntime.dispatched) {
+      this.finishTask(runtime, task, state, {
+        output: task.output,
+        error: message,
+        turns: task.turns,
+        usage: task.usage,
+      });
+    }
   }
 
   private finishTask(

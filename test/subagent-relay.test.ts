@@ -184,6 +184,90 @@ describe("subagent relay broker", () => {
     expect(c.inbox().messages.map((message) => message.body)).toEqual(["fallback"]);
   });
 
+  it("keeps async delivery rejection queued without reporting successful delivery", async () => {
+    const broker = makeBroker();
+    broker.createRun("async-reject", ["a", "b"]);
+    const a = broker.bind("async-reject", "a");
+    const b = broker.bind("async-reject", "b", async () => {
+      throw new Error("active receiver rejected delivery");
+    });
+
+    expect(a.send({ to: "b", body: "fallback" })).toMatchObject({
+      ok: true,
+      status: "queued",
+      accepted: 1,
+      delivered: 0,
+      queued: 1,
+    });
+    await Promise.resolve();
+    expect(b.inbox().messages.map((message) => message.body)).toEqual(["fallback"]);
+  });
+
+  it("keeps pending async delivery out of the inbox to prevent duplicate receipt", async () => {
+    const broker = makeBroker();
+    broker.createRun("async-success", ["a", "b"]);
+    const a = broker.bind("async-success", "a");
+    let acknowledge!: (outcome: boolean) => void;
+    const b = broker.bind("async-success", "b", () => new Promise<boolean>((resolve) => {
+      acknowledge = resolve;
+    }));
+
+    expect(a.send({ to: "b", body: "live" })).toMatchObject({
+      status: "queued",
+      delivered: 0,
+      queued: 1,
+    });
+    expect(b.inbox().messages).toEqual([]);
+    acknowledge(true);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(b.inbox().messages).toEqual([]);
+  });
+
+  it.each(["accept", "decline", "reject"] as const)("keeps steering and inbox FIFO after async %s", async (outcome) => {
+    const broker = makeBroker({ mailboxLimit: 4 });
+    broker.createRun("race", ["a", "b"]);
+    const a = broker.bind("race", "a");
+    let resolve!: (ok: boolean) => void;
+    let reject!: (error: Error) => void;
+    let deliveries = 0;
+    const b = broker.bind("race", "b", () => {
+      deliveries++;
+      return new Promise<boolean>((yes, no) => { resolve = yes; reject = no; });
+    });
+    const request = a.send({ to: "b", kind: "request", body: "one" });
+    expect(a.send({ to: "b", body: "two" })).toMatchObject({ status: "queued" });
+    a.send({ to: "b", body: "three" });
+    expect(deliveries).toBe(1); // Later steering cannot overtake unresolved sequence 1.
+    b.close();
+    const inbox = broker.bind("race", "b");
+    a.send({ to: "b", body: "four" });
+    expect(a.send({ to: "b", body: "full" })).toMatchObject({ code: "mailbox_full" });
+    expect(inbox.inbox()).toEqual({ messages: [], nextSeq: 0, remaining: 3 });
+    if (outcome === "reject") reject(new Error("steering rejected"));
+    else resolve(outcome === "accept");
+    await Promise.resolve();
+    const first = inbox.inbox(0, 1);
+    expect(first.messages.map((m) => m.seq)).toEqual([outcome === "accept" ? 2 : 1]);
+    const rest = inbox.inbox(first.nextSeq);
+    expect(rest.messages.map((m) => m.seq)).toEqual(outcome === "accept" ? [3, 4] : [2, 3, 4]);
+    expect(inbox.inbox(rest.nextSeq).messages).toEqual([]);
+    expect(inbox.send({ to: "a", kind: "reply", replyTo: request.ok ? request.ids[0] : "", body: "answer" }).ok).toBe(true);
+  });
+
+  it("does not steer past already queued unread messages", () => {
+    const broker = makeBroker();
+    broker.createRun("queued", ["a", "b"]);
+    const a = broker.bind("queued", "a");
+    let deliveries = 0;
+    const b = broker.bind("queued", "b", () => ++deliveries > 1);
+    a.send({ to: "b", body: "first" });
+    expect(a.send({ to: "b", body: "second" })).toMatchObject({ status: "queued" });
+    expect(deliveries).toBe(1);
+    expect(b.inbox().messages.map((m) => m.body)).toEqual(["first", "second"]);
+    expect(a.send({ to: "b", body: "third" })).toMatchObject({ status: "delivered" });
+  });
+
   it("cleans up runs and prevents stale bindings from entering recreated runs", () => {
     const broker = makeBroker();
     broker.createRun("temporary", ["a", "b"]);

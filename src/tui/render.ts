@@ -1,6 +1,5 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import {
-  compactCwd,
   displayWidth,
   fitSides,
   formatTokens,
@@ -123,25 +122,24 @@ function paintSides(
 export function renderCompanionHeader(width: number, palette: SemanticPalette): string[] {
   const safeWidth = Math.max(1, width);
   const brand = "◆ STEAK PI";
-  const descriptor = safeWidth >= 54 ? "native · minimal · focused" : "native Pi companion";
-  const first = safeWidth < 32
-    ? palette.bold(palette.accent(truncatePlain(brand, safeWidth)))
-    : paintSides(
-        brand,
-        descriptor,
-        safeWidth,
-        palette,
-        (text) => palette.bold(palette.accent(text)),
-        (text) => palette.dim(text),
-      );
   const hints = safeWidth >= 64
-    ? "type / for commands  ·  /model switch  ·  /resume sessions"
-    : safeWidth >= 36
-      ? "type /  ·  /model  ·  /resume"
-      : safeWidth >= 24
-        ? "/  ·  /model  ·  /resume"
-        : "/ commands  ·  /resume";
-  return [first, palette.muted(truncatePlain(hints, safeWidth))];
+    ? "/ commands · /model · /resume"
+    : safeWidth >= 40
+      ? "/ · /model · /resume"
+      : "";
+  if (!hints) {
+    return [palette.bold(palette.accent(truncatePlain(brand, safeWidth)))];
+  }
+  return [
+    paintSides(
+      brand,
+      hints,
+      safeWidth,
+      palette,
+      (text) => palette.bold(palette.accent(text)),
+      (text) => palette.muted(text),
+    ),
+  ];
 }
 
 function tonePainter(palette: SemanticPalette, tone: StatusTone): (text: string) => string {
@@ -154,39 +152,112 @@ function tonePainter(palette: SemanticPalette, tone: StatusTone): (text: string)
   }
 }
 
+interface ComposerSegment {
+  text: string;
+  paint: (text: string) => string;
+}
+
+/** Paint a fitted plain-text prefix without allowing lifecycle tone to bleed into metadata. */
+function paintComposerSegments(fitted: string, segments: readonly ComposerSegment[]): string {
+  const full = segments.map((segment) => segment.text).join("");
+  const truncated = fitted !== full;
+  const hasEllipsis = truncated && fitted.endsWith("…");
+  let remaining = hasEllipsis ? fitted.slice(0, -1) : fitted;
+  let result = "";
+  let nextPainter = segments[0]?.paint ?? ((text: string) => text);
+
+  for (const segment of segments) {
+    nextPainter = segment.paint;
+    if (!remaining) break;
+    if (remaining.startsWith(segment.text)) {
+      result += segment.paint(segment.text);
+      remaining = remaining.slice(segment.text.length);
+      continue;
+    }
+    result += segment.paint(remaining);
+    remaining = "";
+    break;
+  }
+
+  return hasEllipsis ? result + nextPainter("…") : result;
+}
+
 function modelSummary(snapshot: FooterSnapshot): string {
   const model = shortModel(snapshot.model);
   const thinking = oneLine(snapshot.thinking);
-  const provider = oneLine(snapshot.provider);
-  const base = provider && provider !== "unknown" && provider !== "zai" ? `${provider}/${model}` : model;
-  return thinking && thinking !== "off" ? `${base} · ${thinking}` : base;
+  // Provider routing is configuration, not part of the TUI model label.
+  return thinking && thinking !== "off" ? `${model} · ${thinking}` : model;
 }
 
-function locationSummary(snapshot: FooterSnapshot): string {
-  const parts = [compactCwd(snapshot.cwd, snapshot.home)];
-  const branch = oneLine(snapshot.branch);
-  const sessionName = oneLine(snapshot.sessionName);
-  if (branch) parts.push(branch);
-  if (sessionName) parts.push(sessionName);
-  return parts.join(" · ");
+function contextPercent(snapshot: FooterSnapshot): number | null {
+  const percent = snapshot.context?.percent;
+  return typeof percent === "number" && Number.isFinite(percent)
+    ? Math.max(0, Math.min(100, percent))
+    : null;
+}
+
+function contextPainter(
+  snapshot: FooterSnapshot,
+  palette: SemanticPalette,
+): (text: string) => string {
+  const percent = contextPercent(snapshot);
+  if (percent !== null && percent >= 90) return palette.error;
+  if (percent !== null && percent >= 70) return palette.warning;
+  return palette.accent;
 }
 
 export function usageSummary(snapshot: FooterSnapshot, width: number): string {
   const parts: string[] = [];
   const context = snapshot.context;
   if (context) {
-    parts.push(context.percent === null ? `ctx ?/${formatTokens(context.contextWindow)}` : `ctx ${context.percent.toFixed(0)}%`);
+    const percent = contextPercent(snapshot);
+    parts.push(
+      `◫ ${percent === null ? "?" : `${percent.toFixed(0)}%`}/${formatTokens(context.contextWindow)}`,
+    );
   }
 
   const total = snapshot.usage.input + snapshot.usage.output + snapshot.usage.cacheRead + snapshot.usage.cacheWrite;
-  if (total > 0) parts.push(`${formatTokens(total)} tok`);
+  if (width >= 88 && total > 0) parts.push(`${formatTokens(total)} tok`);
 
   const prompt = snapshot.usage.input + snapshot.usage.cacheRead + snapshot.usage.cacheWrite;
-  if (width >= 72 && prompt > 0 && (snapshot.usage.cacheRead > 0 || snapshot.usage.cacheWrite > 0)) {
-    parts.push(`cache ${((snapshot.usage.cacheRead / prompt) * 100).toFixed(0)}%`);
+  if (width >= 120 && prompt > 0 && (snapshot.usage.cacheRead > 0 || snapshot.usage.cacheWrite > 0)) {
+    parts.push(`${((snapshot.usage.cacheRead / prompt) * 100).toFixed(0)}% cache`);
   }
-  if (width >= 96 && snapshot.usage.cost > 0) parts.push(`$${snapshot.usage.cost.toFixed(3)}`);
-  return parts.join(" · ") || "ctx —";
+  if (width >= 64 && snapshot.usage.cost > 0) parts.push(`$${snapshot.usage.cost.toFixed(3)}`);
+  return parts.join(" · ") || "◫ —";
+}
+
+function usageSegments(
+  snapshot: FooterSnapshot,
+  width: number,
+  palette: SemanticPalette,
+): ComposerSegment[] {
+  const percent = contextPercent(snapshot);
+  const summary = width >= 72
+    ? usageSummary(snapshot, width)
+    : `${width >= 32 ? "◫ " : ""}${percent === null ? "?" : `${percent.toFixed(0)}%`}`;
+  const context = summary.split(" · ", 1)[0] ?? summary;
+  const remainder = summary.slice(context.length);
+  return [
+    ...(width >= 72 ? [{ text: "◀ ", paint: palette.dim }] : []),
+    { text: context, paint: contextPainter(snapshot, palette) },
+    ...(remainder ? [{ text: remainder, paint: palette.dim }] : []),
+  ];
+}
+
+function renderContextMeter(
+  width: number,
+  snapshot: FooterSnapshot,
+  palette: SemanticPalette,
+): string {
+  if (width <= 0) return "";
+  const percent = contextPercent(snapshot);
+  const used = percent === null || percent <= 0
+    ? 0
+    : percent >= 100
+      ? width
+      : Math.max(1, Math.ceil((width * percent) / 100));
+  return contextPainter(snapshot, palette)("─".repeat(used)) + palette.dim("─".repeat(width - used));
 }
 
 export function renderComposerBand(
@@ -196,28 +267,37 @@ export function renderComposerBand(
 ): string {
   const safeWidth = Math.max(1, width);
   const status = statusPresentation(snapshot.state);
-  const left = safeWidth >= 42
-    ? `◆  > ${modelSummary(snapshot)} > ${status.text} ▶`
-    : `◆ ${status.text} ▶`;
-  const canShowRight = displayWidth(left) <= Math.floor(safeWidth * 0.58);
-  const rightDetail = !canShowRight
-    ? ""
-    : safeWidth >= 104
-      ? `${locationSummary(snapshot)} · ${usageSummary(snapshot, safeWidth)}`
-      : safeWidth >= 54
-        ? usageSummary(snapshot, safeWidth)
-        : "";
-  const right = rightDetail ? `◀ ${rightDetail}` : "";
+  const paintStatus = tonePainter(palette, status.tone);
+  // Reserve context first. Ordinary multi-pane widths must not silently hide
+  // the live reading; drop thinking detail and shorten only model/detail text.
+  const rightSegments = safeWidth >= 18 ? usageSegments(snapshot, safeWidth, palette) : [];
+  const right = rightSegments.map((segment) => segment.text).join("");
+  const statusText = truncatePlain(status.text, Math.max(7, Math.min(safeWidth >= 72 ? 32 : 14, Math.floor(safeWidth / 2))));
+  const prefix = safeWidth >= 42 ? " > " : " ";
+  const separator = safeWidth >= 42 ? " > " : " · ";
+  const modelBudget = safeWidth - displayWidth(right) - 1
+    - displayWidth(`◆${prefix}${separator}${statusText} ▶`);
+  const showModel = safeWidth >= 32 && modelBudget >= 6;
+  const model = safeWidth >= 72 ? modelSummary(snapshot) : shortModel(snapshot.model);
+  const leftSegments: ComposerSegment[] = [
+    { text: "◆", paint: palette.accent },
+    { text: showModel ? prefix : " ", paint: palette.muted },
+    ...(showModel ? [
+      { text: truncatePlain(model, modelBudget), paint: palette.text },
+      { text: separator, paint: palette.muted },
+    ] : []),
+    { text: statusText, paint: paintStatus },
+    { text: " ▶", paint: palette.accent },
+  ];
+  const left = leftSegments.map((segment) => segment.text).join("");
   const fitted = fitSides(left, right, safeWidth, 1);
-  const fillWidth = right
+  const meterWidth = right
     ? displayWidth(fitted.gap)
     : Math.max(0, safeWidth - displayWidth(fitted.left));
-  const fill = "─".repeat(fillWidth);
-  const paintStatus = tonePainter(palette, status.tone);
   return truncateToWidth(
-    palette.bold(paintStatus(fitted.left)) +
-      palette.accent(fill) +
-      palette.dim(fitted.right),
+    palette.bold(paintComposerSegments(fitted.left, leftSegments)) +
+      renderContextMeter(meterWidth, snapshot, palette) +
+      paintComposerSegments(fitted.right, rightSegments),
     safeWidth,
     "",
   );

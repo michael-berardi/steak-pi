@@ -2,6 +2,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type, type TSchema } from "typebox";
 import { SubagentCoordinator, CoordinatorWaitTimeoutError } from "../src/subagents/coordinator.ts";
 import { normalizeDispatch } from "../src/subagents/policy.ts";
+import { selectWorkerModel } from "../src/model-route-policy.ts";
+import { shortModel } from "../src/tui/format.ts";
 import {
   RelayBroker,
   RUN_BROADCAST_TARGET,
@@ -24,6 +26,8 @@ export const PARENT_RELAY_ID = "parent" as const;
 export const MAX_HUB_WAIT_MS = 30_000;
 export const MAX_TOOL_CONTENT = 48_000;
 export const MAX_COMPLETION_MESSAGE = 4_000;
+export const USAP_TELEMETRY_CUSTOM_TYPE = "ultraterm-usap-telemetry";
+export const USAP_TELEMETRY_VERSION = 1;
 
 // Equivalent JSON Schema shape to pi-ai's StringEnum, kept local so this
 // extension does not add a direct runtime dependency solely for enum schemas.
@@ -155,8 +159,20 @@ interface SessionRuntime {
   coordinator: SubagentCoordinator;
   bindings: Map<string, RunBinding>;
   workerRuntimes: Map<string, PiWorkerRuntime>;
+  telemetrySignatures: Map<string, string>;
+  telemetryWritable: boolean;
   statusContext?: ExtensionContext;
   closed: boolean;
+}
+
+/** Bounded, non-context state only: never include goals, prompts, output, or usage. */
+export function usapTelemetrySnapshot(run: RunRecord) {
+  return {
+    version: USAP_TELEMETRY_VERSION,
+    runId: run.id,
+    runState: run.state,
+    tasks: run.tasks.map((task) => ({ taskId: task.id, state: task.state })),
+  };
 }
 
 function requireString(value: unknown, field: string): string {
@@ -234,7 +250,7 @@ function appendBounded(target: string, addition: string, limit: number): { text:
 /** Pure ordered all-settled renderer with a hard context bound. */
 export function renderRunResult(run: RunRecord, limit = MAX_TOOL_CONTENT): string {
   if (!Number.isSafeInteger(limit) || limit < 0) throw new RangeError("render limit must be a non-negative integer");
-  let text = `${renderRunProgress(run)}\nmodel ${run.model} · thinking ${run.thinkingLevel}`.slice(0, limit);
+  let text = `${renderRunProgress(run)}\nmodel ${shortModel({ id: run.model })} · thinking ${run.thinkingLevel}`.slice(0, limit);
   let wasTruncated = false;
   for (const task of run.tasks) {
     const suffix = task.truncated ? " · worker output truncated" : "";
@@ -313,6 +329,8 @@ export function createUltratermSubagentsExtension(
 ): (pi: ExtensionAPI) => void {
   return function ultratermSubagentsExtension(pi: ExtensionAPI): void {
     let runtime: SessionRuntime | undefined;
+    // Replacements share leases with any late-disposing prior initialization.
+    const scheduler = dependencies.createScheduler?.() ?? new SessionScheduler(MAX_CONCURRENCY);
 
     const setStatus = (current: SessionRuntime, ctx?: ExtensionContext): void => {
       const target = ctx ?? current.statusContext;
@@ -325,6 +343,20 @@ export function createUltratermSubagentsExtension(
       }
     };
 
+    const persistTelemetry = (current: SessionRuntime, run: RunRecord): void => {
+      if (runtime !== current || !current.telemetryWritable) return;
+      const snapshot = usapTelemetrySnapshot(run);
+      const signature = JSON.stringify(snapshot);
+      if (current.telemetrySignatures.get(run.id) === signature) return;
+      try {
+        // Pi's public action delegates to SessionManager.appendCustomEntry.
+        pi.appendEntry(USAP_TELEMETRY_CUSTOM_TYPE, snapshot);
+        current.telemetrySignatures.set(run.id, signature);
+      } catch {
+        // Telemetry observation must never affect child execution.
+      }
+    };
+
     const reconcileRetainedBindings = (current: SessionRuntime): void => {
       for (const [runId, binding] of current.bindings) {
         if (current.coordinator.has(runId)) continue;
@@ -332,23 +364,30 @@ export function createUltratermSubagentsExtension(
         current.relay.cleanupRun(runId);
         current.bindings.delete(runId);
         current.workerRuntimes.delete(runId);
+        current.telemetrySignatures.delete(runId);
       }
     };
 
-    const destroyRuntime = (ctx?: ExtensionContext): void => {
+    const destroyRuntime = async (ctx?: ExtensionContext, persist = true): Promise<void> => {
       const current = runtime;
       if (!current) {
         ctx?.ui.setStatus("usap", undefined);
         return;
       }
       current.closed = true;
-      current.coordinator.shutdown();
+      await current.coordinator.shutdown();
+      // appendEntry targets the current host session, never a stale replacement.
+      if (persist && runtime === current) {
+        for (const run of current.coordinator.list()) persistTelemetry(current, run);
+      }
       for (const [runId, binding] of current.bindings) {
         binding.parent.close();
         current.relay.cleanupRun(runId);
       }
       current.bindings.clear();
       current.workerRuntimes.clear();
+      current.telemetrySignatures.clear();
+      if (runtime !== current) return;
       try {
         (ctx ?? current.statusContext)?.ui.setStatus("usap", undefined);
       } catch {
@@ -364,7 +403,6 @@ export function createUltratermSubagentsExtension(
       }
 
       const relay = dependencies.createRelay?.() ?? new RelayBroker();
-      const scheduler = dependencies.createScheduler?.() ?? new SessionScheduler(MAX_CONCURRENCY);
       const workerRuntimes = new Map<string, PiWorkerRuntime>();
       let created!: SessionRuntime;
       const runner = dependencies.createRunner?.(pi, relay)
@@ -375,6 +413,7 @@ export function createUltratermSubagentsExtension(
         onProgress: (event) => {
           if (created.closed) return;
           setStatus(created);
+          persistTelemetry(created, event.run);
           const binding = created.bindings.get(event.runId);
           if (!binding?.onUpdate) return;
           try {
@@ -392,6 +431,8 @@ export function createUltratermSubagentsExtension(
         coordinator,
         bindings: new Map(),
         workerRuntimes,
+        telemetrySignatures: new Map(),
+        telemetryWritable: true,
         statusContext: ctx,
         closed: false,
       };
@@ -405,6 +446,7 @@ export function createUltratermSubagentsExtension(
         if (current.closed) return;
         const binding = current.bindings.get(runId);
         current.workerRuntimes.delete(runId);
+        persistTelemetry(current, run);
         setStatus(current);
         reconcileRetainedBindings(current);
         if (!binding) return;
@@ -449,13 +491,21 @@ export function createUltratermSubagentsExtension(
       return completion;
     };
 
-    pi.on("session_start", (_event, ctx) => {
-      if (runtime) destroyRuntime(ctx);
+    pi.on("session_start", async (_event, ctx) => {
+      // The host has already switched at session_start; never append old state.
+      if (runtime) {
+        runtime.telemetryWritable = false;
+        await destroyRuntime(ctx, false);
+      }
       ensureRuntime(ctx);
     });
 
-    pi.on("session_shutdown", (_event, ctx) => {
-      destroyRuntime(ctx);
+    pi.on("session_before_switch", async (_event, ctx) => {
+      await destroyRuntime(ctx);
+    });
+
+    pi.on("session_shutdown", async (_event, ctx) => {
+      await destroyRuntime(ctx);
     });
 
     pi.registerTool({
@@ -465,6 +515,7 @@ export function createUltratermSubagentsExtension(
       promptSnippet: "Dispatch bounded independent child tasks with explicit permissions and path ownership",
       promptGuidelines: [
         "Independence is necessary but not sufficient: keep trivial edits, direct answers, and leaves smaller than their briefing/integration cost in the parent.",
+        "GPT runs use paid Codex only: routine scout/worker runs select Luna; runs containing a reviewer retain the parent model. Never use OpenRouter or batch GPT routes.",
         "Use ultraterm_subagents only for substantial independent bounded leaves where context isolation, multi-turn depth, or useful latency overlap repays delegation; the parent retains decomposition, integration, and verification.",
         "When the request already gives exact disjoint paths and acceptance contracts, dispatch in the first tool turn without pre-reading child-owned files; child inspection supplies leaf evidence and the parent verifies after.",
         "Before dispatch, inspect only shared interfaces or ambiguity actually needed to decompose safely; do not duplicate child discovery in the parent.",
@@ -479,7 +530,7 @@ export function createUltratermSubagentsExtension(
         if (!ctx.model) throw new Error("ultraterm_subagents requires a resolved current model");
         const current = ensureRuntime(ctx);
         const frozenWorkerRuntime: PiWorkerRuntime = Object.freeze({
-          model: Object.freeze({ ...ctx.model }),
+          model: Object.freeze({ ...selectWorkerModel(ctx.model, params.tasks.map((task) => task.role), ctx.modelRegistry) }),
           thinkingLevel: ctx.thinkingLevel ?? "off",
         });
         const model = `${frozenWorkerRuntime.model.provider}/${frozenWorkerRuntime.model.id}`;
@@ -519,6 +570,7 @@ export function createUltratermSubagentsExtension(
           onUpdate,
         };
         current.bindings.set(run.id, binding);
+        persistTelemetry(current, started);
         binding.completion = attachCompletion(current, run.id);
         setStatus(current, ctx);
 
@@ -621,6 +673,7 @@ export function createUltratermSubagentsExtension(
         if (params.action === "cancel") {
           const changed = current.coordinator.cancel(runId, params.taskId);
           const afterCancel = current.coordinator.snapshot(runId)!;
+          persistTelemetry(current, afterCancel);
           setStatus(current, ctx);
           return {
             content: [{

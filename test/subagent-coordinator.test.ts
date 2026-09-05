@@ -249,9 +249,11 @@ describe("subagent coordinator", () => {
   it("enforces the run deadline for queued and running tasks", async () => {
     vi.useFakeTimers();
     const launches: string[] = [];
-    const runner: WorkerRunner = ({ task: recordTask }) => {
+    const runner: WorkerRunner = ({ task: recordTask, signal }) => {
       launches.push(recordTask.id);
-      return new Promise(() => {});
+      return new Promise((resolve) => {
+        signal.addEventListener("abort", () => resolve(result("timed_out")), { once: true });
+      });
     };
     const coordinator = new Coordinator(runner, { scheduler: new Scheduler(1) });
     coordinator.start(run("deadline", 2, 2, 1_000));
@@ -296,6 +298,46 @@ describe("subagent coordinator", () => {
     expect(sawAbort).toEqual(["cancel-t1"]);
     expect(snapshot.state).toBe("aborted");
     expect(snapshot.tasks.map((recordTask) => recordTask.state)).toEqual(["aborted", "aborted"]);
+  });
+
+  it("does not settle cancellation until worker disposal completes and retains final usage", async () => {
+    const abortStarted = deferred<void>();
+    const disposal = deferred<void>();
+    const runner: WorkerRunner = async ({ signal, onProgress }) => {
+      await new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => {
+          abortStarted.resolve();
+          resolve();
+        }, { once: true });
+      });
+      await disposal.promise;
+      onProgress({ turns: 4, usage: usage(7) });
+      return result("aborted", 7, "final partial output");
+    };
+    const coordinator = new Coordinator(runner, { scheduler: new Scheduler(1) });
+    coordinator.start(run("delayed-abort", 1, 1));
+    await flush();
+
+    const waiting = coordinator.wait("delayed-abort", "all");
+    expect(coordinator.cancel("delayed-abort")).toBe(true);
+    await abortStarted.promise;
+    let settled = false;
+    void waiting.then(() => { settled = true; });
+    await flush();
+    expect(settled).toBe(false);
+    expect(coordinator.snapshot("delayed-abort")!.state).toBe("running");
+    expect(coordinator.snapshot("delayed-abort")!.tasks[0].state).toBe("running");
+
+    disposal.resolve();
+    const snapshot = await waiting;
+    expect(snapshot.state).toBe("aborted");
+    expect(snapshot.tasks[0]).toMatchObject({
+      state: "aborted",
+      output: "final partial output",
+      turns: 7,
+      usage: usage(7),
+    });
+    expect(snapshot.usage).toEqual(usage(7));
   });
 
   it("shutdown aborts all work and prevents future starts", async () => {
@@ -411,4 +453,28 @@ describe("subagent coordinator", () => {
     ]);
     expect(coordinator.snapshot("usage")!.usage.totalTokens).toBe(50);
   });
+});
+
+it("terminalizes cancelled initialization but retains its scheduler lease until cleanup", async () => {
+  const scheduler = new Scheduler(1);
+  const cleanup = deferred<void>();
+  const entered = deferred<void>();
+  const first = new Coordinator(async ({ signal }) => {
+    entered.resolve();
+    await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+    return { ...result("aborted"), cleanup: cleanup.promise };
+  }, { scheduler });
+  const launched = vi.fn(async () => result());
+  const second = new Coordinator(launched, { scheduler });
+  first.start(run("old", 1, 1));
+  await entered.promise;
+  await first.shutdown();
+  expect(first.snapshot("old")?.state).toBe("aborted");
+  second.start(run("new", 1, 1));
+  await flush();
+  expect(scheduler.activeCount).toBe(1);
+  expect(launched).not.toHaveBeenCalled();
+  cleanup.resolve();
+  await second.wait("new", "all");
+  expect(launched).toHaveBeenCalledTimes(1);
 });
