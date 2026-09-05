@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import ultraCompressExtension from "../extensions/ultracompress/index.ts";
 import { mergeSettings, DEFAULT_SETTINGS } from "../extensions/ultracompress/src/settings.ts";
 import {
   applyTransforms,
@@ -21,6 +22,25 @@ describe("ultracompress settings", () => {
 
   it("snap frames are provider-gated by default", () => {
     expect(DEFAULT_SETTINGS.snap.providers).toEqual(["anthropic", "google"]);
+  });
+});
+
+describe("ultracompress provider payloads", () => {
+  it("does not rewrite provider image payloads", () => {
+    const eventTypes: string[] = [];
+    const pi = {
+      on(type: string) {
+        eventTypes.push(type);
+      },
+      registerCommand() {},
+      registerTool() {},
+    };
+
+    ultraCompressExtension(pi as never);
+
+    // Pi's OpenAI-compatible serializer emits image_url parts accepted by z.ai.
+    // UltraCompress must not mutate ordinary read-tool images or snap frames.
+    expect(eventTypes).not.toContain("before_provider_request");
   });
 });
 

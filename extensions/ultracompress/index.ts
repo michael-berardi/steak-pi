@@ -3,7 +3,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { runUltraCompress } from "./src/bridge";
 import { loadSettings, resolveUltraCompressBin, type UltraCompressSettings } from "./src/settings";
 import { buildSnap, listSnaps, writeSnap } from "./src/snapshot";
-import { adaptPayloadForZai, payloadHasDataUrlImages } from "./src/payload";
 import {
   applyTransforms,
   cacheKey,
@@ -70,22 +69,6 @@ export default function ultraCompressExtension(pi: ExtensionAPI): void {
         !(m.role === "custom" && m.customType === AUTO_CONTINUE_CUSTOM_TYPE),
     );
     if (messages.length !== event.messages.length) return { messages };
-    return undefined;
-  });
-
-  // Snap-frame wire-format adapter: z.ai's coding endpoint expects image
-  // payloads as `file` parts, not OpenAI `image_url` parts. Rewrite in place;
-  // other providers are untouched. If frames ever get rejected despite this,
-  // the agent_end handler below disables them for the rest of the session.
-  pi.on("before_provider_request", (event, ctx) => {
-    try {
-      const model = ctx?.model as { provider?: string; baseUrl?: string } | undefined;
-      const isZai = model?.provider === "zai" || String(model?.baseUrl ?? "").includes("z.ai");
-      if (!isZai) return undefined;
-      if (!payloadHasDataUrlImages(event.payload as { messages?: Array<{ content?: unknown }> })) return undefined;
-      const n = adaptPayloadForZai(event.payload as { messages?: Array<{ content?: unknown }> });
-      if (n > 0) dbg({ zaiFilePartsConverted: n });
-    } catch {}
     return undefined;
   });
 

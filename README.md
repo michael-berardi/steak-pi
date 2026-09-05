@@ -26,7 +26,7 @@ machinery that turns it into a complete daily driver.
 Verified with Pi 0.85.x. Requires Node.js 22.19.0 or newer.
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.3.1
+pi install git:github.com/michael-berardi/steak-pi@v0.3.3
 ```
 
 This installs USAP, todo, verification, themes, memory conventions, and the
