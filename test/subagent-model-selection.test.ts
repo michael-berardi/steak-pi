@@ -48,6 +48,15 @@ describe("USAP 1.1 explicit model/profile contract", () => {
     const profiles = [{ id: "steak-pi/gpt-6-astra", model: "openai-codex/gpt-6-astra", workerDefault: { profile: "steak-pi/glm-5-3-flash" } }, BUILTIN_WORKER_PROFILES[0]];
     expect(choose(astra, {}, registry(), profiles).model).toBe(glm);
   });
+  it("binds defaults to UltraTerm's actual harness identity when profile IDs overlap", () => {
+    vi.stubEnv("ULTRATERM_HARNESS_ID", "custom-host");
+    try {
+      const profiles = [...BUILTIN_WORKER_PROFILES, { id: "custom-host/gpt-6-astra", model: "openai-codex/gpt-6-astra", workerDefault: { model: "zai/glm-5.3-flash" } }];
+      const result = resolveWorkerSelection(astra, "medium", input(), registry() as never, profiles, "gpt-6-astra");
+      expect(result.model).toBe(glm);
+      expect(result.selection.parentProfile).toBe("custom-host/gpt-6-astra");
+    } finally { vi.unstubAllEnvs(); }
+  });
   it("does not inherit a stale launch profile after /model changes", () => {
     const r = registry();
     const result = resolveWorkerSelection(glm, "high", input(), r as never, BUILTIN_WORKER_PROFILES, "gpt-6-astra");

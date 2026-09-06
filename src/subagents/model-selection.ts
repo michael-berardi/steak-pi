@@ -101,7 +101,7 @@ export function resolveWorkerSelection(
     return matches[0];
   };
   const parents = profiles.filter((p) => p.model === parentKey);
-  const namedParent = parentProfileId && profiles.find((p) => p.id === parentProfileId || p.id === `${process.env.ULTRATERM_HARNESS ?? "steak-pi"}/${parentProfileId}`);
+  const namedParent = parentProfileId && profiles.find((p) => p.id === parentProfileId || p.id === `${process.env.ULTRATERM_HARNESS_ID ?? process.env.ULTRATERM_HARNESS ?? "steak-pi"}/${parentProfileId}`);
   // A /model change must not inherit defaults belonging to a stale launch profile.
   const parentProfile = namedParent && namedParent.model === parentKey ? namedParent : parents.length === 1 ? parents[0] : undefined;
   const review = input.tasks.some((task) => task.role === "reviewer");
