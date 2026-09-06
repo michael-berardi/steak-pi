@@ -23,10 +23,10 @@ machinery that turns it into a complete daily driver.
 
 ## Install
 
-Release **0.3.5**, verified with Pi 0.85.1. Requires Node.js 22.19.0 or newer.
+Release **0.4.0**, verified with Pi 0.85.1. Requires Node.js 22.19.0 or newer.
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.3.5
+pi install git:github.com/michael-berardi/steak-pi@v0.4.0
 ```
 
 This installs USAP, todo, verification, themes, memory conventions, and the
@@ -139,10 +139,18 @@ Children coordinate through `ultraterm_relay`, a bounded run-local mailbox with
 addressed messages, requests, correlated replies, broadcasts, and parent
 communication. A little like IRC, if IRC had path ownership.
 
+**Native model selection:** USAP 1.1 accepts either an exact `model` or a native
+`profile` for the whole run. An Astra manager can explicitly select
+`profile: "steak-pi/glm-5-3-flash"`, including reviewer runs. Omitted selectors
+use per-parent profile defaults. Receipts and hub telemetry show the resolved
+route, selection provenance, and tool success/error counts. Visual inspection
+uses `requireImages: true`. See [profiles and examples](./docs/PROFILES.md).
+
 **GPT routing:** GPT-family requests use the paid Codex subscription route only,
-never OpenRouter, API-key billing, or batch variants. Routine GPT scout/worker
-runs select Luna; runs containing a reviewer retain the parent model. GLM runs
-remain GLM. Missing Luna or subscription auth fails closed. Astra workers default
+never OpenRouter, API-key billing, or batch variants. Default GPT scout/worker
+runs select Luna; default reviewer runs retain the parent model. GLM defaults
+remain GLM. Explicit selections take precedence; missing authentication or
+capability fails closed without fallback. Astra workers default
 to **medium** reasoning, independently of the parent's current effort. Set
 `thinking: "high"` or `"xhigh"` only with a concrete task benefit in
 `thinkingReason`; reviewer role alone does not escalate effort. Other models
@@ -176,7 +184,7 @@ isolated installation before release. Live acceptance covers cancellation,
 deadlines, correlated relay replies, parent/child loops, image reads, GPT route
 denial, and out-of-scope writes. Historical benchmark evidence above does not
 substitute for those candidate gates. Worker tool tests execute the real Pi
-read, grep, find, ls, edit, write, and bash factories. The 0.3.5 loader explicitly
+read, grep, find, ls, edit, write, and bash factories. The native loader explicitly
 loads those exports on both Pi SDK loading paths, including the 0.85.1 path.
 
 ### Verify after edit
@@ -215,7 +223,7 @@ cd ultracompress && cargo build --locked --release
 mkdir -p ~/.local/bin && cp target/release/ultracompress ~/.local/bin/
 ```
 
-The 0.3.5 adapter retrieves large UC-transformed output by `uc:<hash>` reference
+The adapter retrieves large UC-transformed output by `uc:<hash>` reference
 instead of asking the model to copy dense packets. References use a bounded,
 session-local original-text cache; decoded and recalled text is not recompressed.
 Missing references fall back to raw-history recall or re-reading the source.

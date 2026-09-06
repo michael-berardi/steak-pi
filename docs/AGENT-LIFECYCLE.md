@@ -44,7 +44,7 @@ Cancellation prevents queued launches and aborts active native Pi sessions.
 
 Children use native in-process Pi `AgentSession`s with:
 
-- an explicit inherited model and thinking level;
+- a frozen, authenticated native model selected by an explicit run-level model/profile or the parent profile default, with recorded provenance and thinking level;
 - in-memory settings and transcripts;
 - no ambient extensions, skills, prompts, themes, or context files;
 - role-specific tool allowlists;

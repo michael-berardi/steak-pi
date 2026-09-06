@@ -1,4 +1,4 @@
-export const USAP_VERSION = "1.0" as const;
+export const USAP_VERSION = "1.1" as const;
 export const MAX_TASKS = 8;
 export const MAX_ACTIVE_RUNS = 16;
 export const MAX_RETAINED_TERMINAL_RUNS = 50;
@@ -48,8 +48,22 @@ export interface SubagentTaskInput {
   allowBash?: boolean;
 }
 
+export interface ModelSelection {
+  provider: string;
+  modelId: string;
+  profile?: string;
+  parentProfile?: string;
+  source: "override" | "profile-default" | "legacy-default";
+  images: boolean;
+  tools: boolean;
+}
+
 export interface DispatchInput {
   goal: string;
+  /** Run-level, mutually exclusive native route selectors. */
+  model?: string;
+  profile?: string;
+  requireImages?: boolean;
   constraints?: string[];
   contract?: string;
   tasks: SubagentTaskInput[];
@@ -90,6 +104,8 @@ export interface TaskRecord extends NormalizedTask {
   output: string;
   error?: string;
   currentTool?: string;
+  toolErrors?: number;
+  toolSuccesses?: number;
   turns: number;
   usage: UsageTotals;
   relaySent: number;
@@ -105,6 +121,7 @@ export interface RunRecord {
   contract?: string;
   cwd: string;
   model: string;
+  selection?: ModelSelection;
   thinkingLevel: string;
   concurrency: number;
   timeoutMs: number;
@@ -119,6 +136,8 @@ export interface RunRecord {
 export interface WorkerProgress {
   state?: Extract<TaskState, "starting" | "running" | "waiting">;
   currentTool?: string;
+  toolErrors?: number;
+  toolSuccesses?: number;
   turns?: number;
   usage?: UsageTotals;
 }
@@ -129,6 +148,8 @@ export interface WorkerResult {
   state: Extract<TaskState, "done" | "failed" | "aborted" | "timed_out">;
   output: string;
   error?: string;
+  toolErrors?: number;
+  toolSuccesses?: number;
   turns: number;
   usage: UsageTotals;
   truncated?: boolean;

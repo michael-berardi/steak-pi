@@ -4,7 +4,7 @@ description: Use at the start of nontrivial work and whenever deciding whether, 
 license: MIT
 metadata:
   acronym: USAP
-  version: 1.0.0
+  version: 1.1.0
 ---
 
 # UltraTerm Subagent Protocol
@@ -76,6 +76,26 @@ inspect shared contracts, prepare integration, or set up verification. Then
 call `ultraterm_hub` with one bounded `wait`; do not poll repeatedly, duplicate
 a live task, or start background work merely to wait immediately. Cancellation
 is best effort and does not roll back side effects.
+
+## Native model/profile selection (USAP 1.1)
+
+Use one run-level `model: "provider/model"` **or**
+`profile: "steak-pi/glm-5-3-flash"`, never both. All tasks share that route.
+Explicit selection overrides role defaults, including reviewers. An Astra
+manager can explicitly select GLM; GLM can explicitly select authorized GPT.
+Prose saying a model name does not select it.
+
+Without a selector, the matching parent profile's worker/reviewer defaults
+apply. Built-in GPT defaults stay Luna for routine work and the parent for
+review; GLM stays GLM. Profile metadata may explicitly configure alternatives.
+Every GPT request must use paid-route openai-codex OAuth, non-batch, never
+OpenRouter or API-key GPT. Unavailable auth/models fail closed without fallback.
+
+Set `requireImages: true` for visual critics or render inspection. The registry
+must advertise image input and a native text/tool adapter must be available.
+Inspect the receipt and hub's provider/model/profile, selection provenance and
+tool success/error counts. An all-tool-failure task is failed; done alone still
+is not acceptance. Profile defaults: `docs/PROFILES.md`.
 
 ## Coordination and limits
 

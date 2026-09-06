@@ -7,12 +7,34 @@ OpenAI API-key billing, custom endpoints, and batch GPT variants are rejected;
 there is no provider fallback. This verifies the subscription route, not the
 account's billing status or entitlement, which the service verifies.
 
-Routine USAP runs (scout/worker roles only) from a GPT parent select
-`openai-codex/gpt-5.6-luna`. Runs containing a reviewer retain the parent model.
-The run has one explicit model so existing usage and telemetry remain accurate.
-Missing Luna or subscription credentials fails the run rather than silently
-spending on another provider. A GLM parent remains GLM, with image capabilities
-unchanged. To reserve frontier judgment, put it in a reviewer run.
+## Native USAP 1.1 selection
+
+Each run uses one frozen model for all its tasks. Set **either** `model` to an
+exact authenticated `provider/model` or `profile` to a native `harness/profile`
+route. Explicit selection takes precedence over roles and defaults, including
+reviewers. For example, an Astra manager can dispatch
+`profile: "steak-pi/glm-5-3-flash"`; a GLM manager can explicitly choose an
+available paid Codex model. No CLI is launched to resolve a profile.
+
+Omitting both selectors uses the matching parent profile's `workerDefault`, or
+`reviewerDefault` for runs containing reviewers. Built-in Astra defaults remain
+Luna for routine work and Astra for review; GLM remains GLM. A `/model` change
+cannot inherit a stale launch profile's defaults. Unmapped profiles retain the
+legacy role policy. See [profile metadata and examples](./PROFILES.md).
+
+Selection resolves against Pi's configured authentication and available model
+catalog. Missing models, conflicting selectors, unavailable authentication,
+and missing native text/tool adapters fail before launch. Set
+`requireImages: true` for visual critics and render inspection: models without
+advertised image input are rejected. Tool-adapter availability is a preflight
+check, not a guarantee that every provider/model accepts every tool schema;
+actual worker tool results remain visible. No fallback is selected.
+
+Dispatch receipts, hub results, and bounded session telemetry carry the resolved
+provider/model, selected profile when supplied, parent profile when matched,
+`override`/`profile-default`/`legacy-default` provenance, capabilities and effort.
+Task results report native tool successes and errors. If every attempted tool
+fails, a prose completion cannot mark the task successful.
 
 Astra workers default to **medium** reasoning, even when the parent is running
 at high or xhigh. Explicit `thinking: "high"` or `"xhigh"` is supported with a

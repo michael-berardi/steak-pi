@@ -559,6 +559,8 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
     let promptError: unknown;
     let abortPromise: Promise<void> | undefined;
     let turns = 0;
+    let toolErrors = 0;
+    let toolSuccesses = 0;
     let turnLimitReached = false;
     let finalAssistant: AssistantSnapshot | undefined;
     const usage = emptyUsage();
@@ -662,7 +664,9 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
           return;
         }
         if (event.type === "tool_execution_end") {
-          onProgress({ state: "running", currentTool: undefined });
+          if (event.isError) toolErrors += 1;
+          else toolSuccesses += 1;
+          onProgress({ state: "running", currentTool: undefined, toolErrors, toolSuccesses });
           return;
         }
         if (event.type === "message_end") {
@@ -746,11 +750,17 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       finalAssistant,
       ...(promptError === undefined ? {} : { error: promptError }),
     });
+    if (classification.state === "done" && toolErrors > 0 && toolSuccesses === 0) {
+      classification.state = "failed";
+      classification.error = "Every attempted native tool call failed; task output is evidence, not acceptance.";
+    }
     const bounded = truncatePiWorkerOutput(finalAssistant?.text ?? "");
     return {
       ...classification,
       ...(initializationCleanup ? { cleanup: initializationCleanup } : {}),
       output: bounded.output,
+      toolErrors,
+      toolSuccesses,
       turns,
       usage,
       truncated: bounded.truncated,

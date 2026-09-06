@@ -49,12 +49,21 @@ function harness(runnerFactory: (relay: RelayBroker) => WorkerRunner) {
   createUltratermSubagentsExtension({
     createRunner: (_pi, relay) => runnerFactory(relay),
     idFactory: () => `fixed-${++id}`,
+    profiles: [],
   })(pi);
   const cwd = mkdtempSync(join(tmpdir(), "steak-usap-extension-"));
   dirs.push(cwd);
+  const model = { provider: "zai", id: "glm-5.3-flash", input: ["text", "image"] };
   const ctx = {
     cwd,
-    model: { provider: "zai", id: "glm-5.3-flash" },
+    model,
+    modelRegistry: {
+      isUsingOAuth: () => false,
+      hasConfiguredAuth: () => true,
+      getAvailable: () => [model],
+      getProvider: () => ({ streamSimple() {} }),
+      find: () => model,
+    },
     thinkingLevel: "high",
     ui: { setStatus(_key: string, value: string | undefined) { statuses.push(value); } },
   } as any;
@@ -125,6 +134,34 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     expect(first.usage.totalTokens).toBe(10);
     expect(second.usage).toBeUndefined();
     expect(h.statuses.at(-1)).toBeUndefined();
+  });
+
+  it("keeps explicit cross-model provenance and tool evidence through dispatch, hub and telemetry", async () => {
+    const h = harness(() => async () => ({ state: "done", output: "verified", turns: 1, usage: usage(1), toolErrors: 0, toolSuccesses: 4 }));
+    h.ctx.model = { provider: "openai-codex", id: "gpt-6-astra" };
+    const receipt = await h.tools.get("ultraterm_subagents").execute("call", {
+      goal: "explicit GLM reviewer", model: "zai/glm-5.3-flash", requireImages: true,
+      tasks: [{ label: "review", task: "review", role: "reviewer" }], background: true,
+    }, undefined, undefined, h.ctx);
+    const runId = receipt.details.run.runId;
+    const result = await h.tools.get("ultraterm_hub").execute("hub", { action: "wait", runId, mode: "all", timeoutMs: 100 }, undefined, undefined, h.ctx);
+    expect(result.details.run.model).toBe("zai/glm-5.3-flash");
+    expect(result.details.run.selection).toMatchObject({ provider: "zai", modelId: "glm-5.3-flash", source: "override", images: true, tools: true });
+    expect(result.details.run.tasks[0]).toMatchObject({ toolErrors: 0, toolSuccesses: 4 });
+    expect(h.entries.at(-1).data.selection.source).toBe("override");
+    expect(h.entries.at(-1).data.tasks[0].toolSuccesses).toBe(4);
+    expect(result.usage.totalTokens).toBe(10);
+  });
+
+  it("rejects conflicting selectors before invoking any worker", async () => {
+    const runner = vi.fn(async () => ({ state: "done" as const, output: "ok", turns: 1, usage: emptyUsage() }));
+    const h = harness(() => runner);
+    await expect(h.tools.get("ultraterm_subagents").execute("call", {
+      goal: "conflict", model: "zai/glm-5.3-flash", profile: "steak-pi/glm-5-3-flash", tasks: [{ label: "one", task: "one" }],
+    }, undefined, undefined, h.ctx)).rejects.toThrow(/conflict/);
+    expect(runner).not.toHaveBeenCalled();
+    const listed = await h.tools.get("ultraterm_hub").execute("hub", { action: "list" }, undefined, undefined, h.ctx);
+    expect(listed.details.runs).toEqual([]);
   });
 
   it("binds parent relay identity for send and inbox", async () => {
@@ -251,8 +288,8 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     expect(renderRunProgress(run)).toBe("USAP run-a: 0/1 settled · running");
     expect(renderSessionStatus([run])).toBe("USAP 1 run · 0/1 settled");
     expect(toRunView(run).tasks[0].taskId).toBe("t");
-    expect(renderRunResult(run)).toContain("model glm5.3-flash · thinking high");
-    expect(renderRunResult(run)).not.toContain("zai/");
+    expect(renderRunResult(run)).toContain("model zai/glm-5.3-flash · thinking high");
+    expect(renderRunResult(run)).toContain("zai/");
     expect(toRunView(run).model).toBe("zai/glm-5.3-flash");
   });
 });

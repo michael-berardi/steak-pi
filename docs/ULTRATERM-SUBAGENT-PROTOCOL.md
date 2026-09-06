@@ -1,6 +1,6 @@
 # UltraTerm Subagent Protocol (USAP)
 
-Status: canonical protocol for Steak Pi subagent orchestration.
+Version: **1.1**. Status: canonical protocol for Steak Pi subagent orchestration.
 [`AGENT-LIFECYCLE.md`](./AGENT-LIFECYCLE.md) documents the shipped
 implementation and enforced limits. The legacy `parallel` tool is replaced and
 is not a canonical USAP tool.
@@ -115,6 +115,28 @@ Acceptance: observable output and required report shape
 Permissions: may edit, may use shell, and any other narrowed capability
 Ownership: exclusive files or mutable boundaries
 ```
+
+### Native model/profile selection
+
+A run may supply `model: "provider/model"` **or** `profile: "harness/profile"`,
+never both. Selection applies to every task in that run; per-task selectors are
+not supported. Explicit selection is never overridden by a reviewer role or a
+profile default. Omitted selectors use the matching parent profile's configured
+worker/reviewer default, retaining legacy role defaults when none is configured.
+Profiles select route metadata, not a separate CLI or inherited permissions.
+
+Only authenticated, available native registry routes may run. GPT-family models
+always require paid-route `openai-codex` OAuth, the official Codex endpoint and
+non-batch execution. An explicit non-GPT choice from a GPT manager is supported.
+Invalid or unavailable selections fail before any child starts; no silent
+fallback. Visual critics/render inspection must request `requireImages: true`.
+Native text/tool adapter availability is checked for every run.
+
+Receipts, hub state and session telemetry report resolved provider/model,
+profile/default-vs-override provenance and capabilities. Tool success/error
+counts accompany terminal evidence; all attempted tools failing makes a task
+failed rather than accepting a prose-only completion. A done task still needs
+parent acceptance. Examples and per-profile metadata: [PROFILES.md](./PROFILES.md).
 
 Task labels are for people; stable task IDs assigned by the implementation are
 used for lifecycle and relay addressing. A dispatch with missing ownership,

@@ -315,6 +315,19 @@ describe("Pi USAP worker tools", () => {
 });
 
 describe("native in-process Pi worker runner", () => {
+  it.each([0, 1])("preserves tool failure evidence with %s subsequent successes", async (successes) => {
+    const cwd = await mkdtemp(join(tmpdir(), "steak-tool-evidence-"));
+    const recordTask = task(), fake = new FakeSession();
+    fake.onPrompt = async (session) => {
+      session.emit({ type: "tool_execution_end", toolName: "read", isError: true } as AgentSessionEvent);
+      if (successes) session.emit({ type: "tool_execution_end", toolName: "read", isError: false } as AgentSessionEvent);
+      session.emit({ type: "message_end", message: assistant("Claimed completion", "stop", usage(1)) } as AgentSessionEvent);
+    };
+    const runner = createPiWorkerRunner({ relay: setupBroker(), resolveRuntime: () => ({ model: fakeModel, thinkingLevel: "off" }), sessionFactory: async () => ({ session: fake }) });
+    const result = await runner({ run: run(cwd, recordTask), task: recordTask, signal: new AbortController().signal, onProgress: vi.fn() });
+    expect(result).toMatchObject({ state: successes ? "done" : "failed", toolErrors: 1, toolSuccesses: successes, output: "Claimed completion" });
+    if (!successes) expect(result.error).toContain("Every attempted native tool call failed");
+  });
   it("uses explicit isolated runtime options, final assistant text, and message_end usage once", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "steak-pi-runner-"));
     const recordTask = task();

@@ -91,6 +91,7 @@ function cloneTask(task: TaskRecord): TaskRecord {
 function cloneRun(run: RunRecord): RunRecord {
   return {
     ...run,
+    ...(run.selection ? { selection: { ...run.selection } } : {}),
     constraints: [...run.constraints],
     tasks: run.tasks.map(cloneTask),
     usage: cloneUsage(run.usage),
@@ -388,6 +389,8 @@ export class SubagentCoordinator {
       if (progress.currentTool === undefined) delete task.currentTool;
       else task.currentTool = progress.currentTool;
     }
+    if (progress.toolErrors !== undefined) task.toolErrors = safeTurns(progress.toolErrors, task.toolErrors ?? 0);
+    if (progress.toolSuccesses !== undefined) task.toolSuccesses = safeTurns(progress.toolSuccesses, task.toolSuccesses ?? 0);
     if (progress.turns !== undefined) task.turns = safeTurns(progress.turns, task.turns);
     if (progress.usage !== undefined) task.usage = cloneUsage(progress.usage);
 
@@ -436,7 +439,7 @@ export class SubagentCoordinator {
     runtime: RunRuntime,
     task: TaskRecord,
     state: TerminalTaskState,
-    result: Pick<WorkerResult, "output" | "error" | "turns" | "usage" | "truncated">,
+    result: Pick<WorkerResult, "output" | "error" | "turns" | "usage" | "truncated" | "toolErrors" | "toolSuccesses">,
   ): void {
     if (isTerminal(task.state)) return;
 
@@ -444,6 +447,8 @@ export class SubagentCoordinator {
     task.state = state;
     task.output = result.output;
     task.turns = safeTurns(result.turns, task.turns);
+    task.toolErrors = safeTurns(result.toolErrors, task.toolErrors ?? 0);
+    task.toolSuccesses = safeTurns(result.toolSuccesses, task.toolSuccesses ?? 0);
     task.usage = safeUsage;
     task.truncated = result.truncated ?? task.truncated;
     if (result.error !== undefined) task.error = result.error;

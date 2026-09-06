@@ -2,8 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type, type TSchema } from "typebox";
 import { SubagentCoordinator, CoordinatorWaitTimeoutError } from "../src/subagents/coordinator.ts";
 import { normalizeDispatch } from "../src/subagents/policy.ts";
-import { selectWorkerModel, selectWorkerThinking } from "../src/model-route-policy.ts";
-import { shortModel } from "../src/tui/format.ts";
+import { resolveWorkerSelection, type WorkerProfile } from "../src/subagents/model-selection.ts";
 import {
   RelayBroker,
   RUN_BROADCAST_TARGET,
@@ -27,7 +26,7 @@ export const MAX_HUB_WAIT_MS = 30_000;
 export const MAX_TOOL_CONTENT = 48_000;
 export const MAX_COMPLETION_MESSAGE = 4_000;
 export const USAP_TELEMETRY_CUSTOM_TYPE = "ultraterm-usap-telemetry";
-export const USAP_TELEMETRY_VERSION = 1;
+export const USAP_TELEMETRY_VERSION = 1; // Additive route metadata preserves existing readers.
 
 // Equivalent JSON Schema shape to pi-ai's StringEnum, kept local so this
 // extension does not add a direct runtime dependency solely for enum schemas.
@@ -55,6 +54,9 @@ const TaskSchema = Type.Object({
 /** Public dispatcher schema, exported so contract tests do not have to load Pi. */
 export const ultratermSubagentsSchema = Type.Object({
   goal: Type.String({ minLength: 1, maxLength: 8_000 }),
+  model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Exact authenticated provider/model for every task. Mutually exclusive with profile; overrides role defaults." })),
+  profile: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Native harness/profile route, e.g. steak-pi/glm-5-3-flash. Mutually exclusive with model; never launches another CLI." })),
+  requireImages: Type.Optional(Type.Boolean({ description: "Require advertised image input for visual critics/render inspection. No silent fallback." })),
   constraints: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4_000 }), { maxItems: 64 })),
   contract: Type.Optional(Type.String({ minLength: 1, maxLength: 8_000 })),
   tasks: Type.Array(TaskSchema, { minItems: 1, maxItems: MAX_TASKS }),
@@ -109,6 +111,8 @@ export interface SettledTaskView {
   output: string;
   error?: string;
   turns: number;
+  toolErrors: number;
+  toolSuccesses: number;
   truncated: boolean;
 }
 
@@ -117,6 +121,7 @@ export interface RunView {
   goal: string;
   state: RunRecord["state"];
   model: string;
+  selection?: RunRecord["selection"];
   thinkingLevel: string;
   background: boolean;
   createdAt: number;
@@ -143,6 +148,7 @@ export interface HubDetails {
 export interface UltratermSubagentsDependencies {
   createRunner?: (pi: ExtensionAPI, relay: RelayBroker) => WorkerRunner;
   createScheduler?: () => SessionScheduler;
+  profiles?: readonly WorkerProfile[];
   createRelay?: () => RelayBroker;
   now?: () => number;
   idFactory?: () => string;
@@ -173,7 +179,8 @@ export function usapTelemetrySnapshot(run: RunRecord) {
     version: USAP_TELEMETRY_VERSION,
     runId: run.id,
     runState: run.state,
-    tasks: run.tasks.map((task) => ({ taskId: task.id, state: task.state })),
+    ...(run.selection ? { selection: { ...run.selection }, model: run.model, thinkingLevel: run.thinkingLevel } : {}),
+    tasks: run.tasks.map((task) => ({ taskId: task.id, state: task.state, toolErrors: task.toolErrors ?? 0, toolSuccesses: task.toolSuccesses ?? 0 })),
   };
 }
 
@@ -204,6 +211,8 @@ function taskView(task: TaskRecord): SettledTaskView {
     output: task.output,
     ...(task.error === undefined ? {} : { error: task.error }),
     turns: task.turns,
+    toolErrors: task.toolErrors ?? 0,
+    toolSuccesses: task.toolSuccesses ?? 0,
     truncated: task.truncated,
   };
 }
@@ -215,6 +224,7 @@ export function toRunView(run: RunRecord): RunView {
     goal: run.goal,
     state: run.state,
     model: run.model,
+    ...(run.selection ? { selection: { ...run.selection } } : {}),
     thinkingLevel: run.thinkingLevel,
     background: run.background,
     createdAt: run.createdAt,
@@ -252,10 +262,10 @@ function appendBounded(target: string, addition: string, limit: number): { text:
 /** Pure ordered all-settled renderer with a hard context bound. */
 export function renderRunResult(run: RunRecord, limit = MAX_TOOL_CONTENT): string {
   if (!Number.isSafeInteger(limit) || limit < 0) throw new RangeError("render limit must be a non-negative integer");
-  let text = `${renderRunProgress(run)}\nmodel ${shortModel({ id: run.model })} · thinking ${run.thinkingLevel}`.slice(0, limit);
+  let text = `${renderRunProgress(run)}\nmodel ${run.model} · thinking ${run.thinkingLevel}${run.selection ? ` · ${run.selection.source}${run.selection.profile ? ` · ${run.selection.profile}` : ""}` : ""}`.slice(0, limit);
   let wasTruncated = false;
   for (const task of run.tasks) {
-    const suffix = task.truncated ? " · worker output truncated" : "";
+    const suffix = `${task.toolErrors ? ` · ${task.toolErrors} tool errors` : ""}${task.truncated ? " · worker output truncated" : ""}`;
     const error = task.error ? `\nerror: ${task.error}` : "";
     const block = `\n\n[${task.label}] ${task.state}${suffix}${error}\n${task.output || "(no output)"}`;
     const next = appendBounded(text, block, limit);
@@ -517,7 +527,9 @@ export function createUltratermSubagentsExtension(
       promptSnippet: "Dispatch bounded independent child tasks with explicit permissions and path ownership",
       promptGuidelines: [
         "Independence is necessary but not sufficient: keep trivial edits, direct answers, and leaves smaller than their briefing/integration cost in the parent.",
-        "GPT runs use paid Codex only: routine scout/worker runs select Luna; runs containing a reviewer retain the parent model. Never use OpenRouter or batch GPT routes.",
+        "Use run-level model or profile for an explicit authenticated worker route, independent of the manager. Explicit selection overrides reviewer and profile defaults; model and profile are mutually exclusive. Prose naming a model is not selection.",
+        "Without a selector, use the parent profile worker/reviewer default. Legacy GPT defaults are Luna for routine work and the parent for reviewers. Every GPT choice requires paid openai-codex OAuth, never OpenRouter, API-key, or batch GPT.",
+        "Set requireImages=true for visual critics or render inspection. All workers require a native text/tool adapter; unavailable auth or capabilities fail before launch, with no silent fallback.",
         "Astra workers default to medium reasoning. Request high/xhigh only with a concrete task benefit in thinkingReason; reviewer role alone is not a reason to escalate.",
         "Use ultraterm_subagents only for substantial independent bounded leaves where context isolation, multi-turn depth, or useful latency overlap repays delegation; the parent retains decomposition, integration, and verification.",
         "When the request already gives exact disjoint paths and acceptance contracts, dispatch in the first tool turn without pre-reading child-owned files; child inspection supplies leaf evidence and the parent verifies after.",
@@ -532,10 +544,10 @@ export function createUltratermSubagentsExtension(
         const params = rawParams as UltratermSubagentsParams;
         if (!ctx.model) throw new Error("ultraterm_subagents requires a resolved current model");
         const current = ensureRuntime(ctx);
-        const workerModel = selectWorkerModel(ctx.model, params.tasks.map((task) => task.role), ctx.modelRegistry);
+        const resolved = resolveWorkerSelection(ctx.model, ctx.thinkingLevel, params, ctx.modelRegistry, dependencies.profiles);
         const frozenWorkerRuntime: PiWorkerRuntime = Object.freeze({
-          model: Object.freeze({ ...workerModel }),
-          thinkingLevel: selectWorkerThinking(workerModel, ctx.thinkingLevel, params.thinking, params.thinkingReason),
+          model: Object.freeze({ ...resolved.model }),
+          thinkingLevel: resolved.thinkingLevel,
         });
         const model = `${frozenWorkerRuntime.model.provider}/${frozenWorkerRuntime.model.id}`;
         const thinking = String(frozenWorkerRuntime.thinkingLevel);
@@ -553,6 +565,7 @@ export function createUltratermSubagentsExtension(
           dependencies.idFactory,
         );
 
+        run.selection = { ...resolved.selection };
         current.workerRuntimes.set(run.id, frozenWorkerRuntime);
         current.relay.createRun(run.id, [PARENT_RELAY_ID, ...run.tasks.map((task) => task.id)]);
         const parent = current.relay.bindSender(run.id, PARENT_RELAY_ID);
@@ -583,7 +596,7 @@ export function createUltratermSubagentsExtension(
           return {
             content: [{
               type: "text" as const,
-              text: `Started USAP run ${run.id}: ${run.tasks.map((task) => task.id).join(", ")}`,
+              text: `Started USAP run ${run.id} · ${model} · ${resolved.selection.source}${resolved.selection.profile ? ` · ${resolved.selection.profile}` : ""}: ${run.tasks.map((task) => task.id).join(", ")}`,
             }],
             details: dispatchDetails(snapshot),
           };
