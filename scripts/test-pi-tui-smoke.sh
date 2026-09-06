@@ -30,7 +30,10 @@ mkdir -p "$TMP/config" "$TMP/sessions" "$TMP/home" \
 PI_VERSION="$(env -i HOME="$TMP/home" PATH="$SAFE_PATH" \
   PI_CODING_AGENT_DIR="$TMP/config" PI_OFFLINE=1 PI_TELEMETRY=0 \
   "$PI_EXECUTABLE" --version)"
-[[ "$PI_VERSION" == 0.85.* ]]
+[[ "$PI_VERSION" =~ ^0\.85\.([1-9][0-9]*)$ ]] || {
+  echo "Steak Pi requires Pi >=0.85.1 <0.86.0; found $PI_VERSION" >&2
+  exit 1
+}
 
 capture() {
   tmux_private capture-pane -p -S - -t "$SESSION:0.0"

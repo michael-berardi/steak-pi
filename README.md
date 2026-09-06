@@ -23,7 +23,9 @@ machinery that turns it into a complete daily driver.
 
 ## Install
 
-Release **0.4.2**, verified with Pi 0.85.1. Requires Node.js 22.19.0 or newer.
+Release **0.4.2**, verified with Pi 0.85.1. Requires Pi 0.85.1 or newer within
+0.85.x and Node.js 22.19.0 or newer. Pi 0.85.0 lacks the lifecycle/context API
+used by the companion UI.
 
 ```sh
 pi install git:github.com/michael-berardi/steak-pi@v0.4.2
