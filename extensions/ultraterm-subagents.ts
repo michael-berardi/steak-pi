@@ -110,6 +110,7 @@ export interface SettledTaskView {
   state: TaskRecord["state"];
   output: string;
   error?: string;
+  currentTool?: string;
   turns: number;
   toolErrors: number;
   toolSuccesses: number;
@@ -180,7 +181,7 @@ export function usapTelemetrySnapshot(run: RunRecord) {
     runId: run.id,
     runState: run.state,
     ...(run.selection ? { selection: { ...run.selection }, model: run.model, thinkingLevel: run.thinkingLevel } : {}),
-    tasks: run.tasks.map((task) => ({ taskId: task.id, state: task.state, toolErrors: task.toolErrors ?? 0, toolSuccesses: task.toolSuccesses ?? 0 })),
+    tasks: run.tasks.map((task) => ({ taskId: task.id, state: task.state, ...(task.currentTool ? { currentTool: task.currentTool.slice(0, 80) } : {}), toolErrors: task.toolErrors ?? 0, toolSuccesses: task.toolSuccesses ?? 0 })),
   };
 }
 
@@ -210,6 +211,7 @@ function taskView(task: TaskRecord): SettledTaskView {
     state: task.state,
     output: task.output,
     ...(task.error === undefined ? {} : { error: task.error }),
+    ...(task.currentTool ? { currentTool: task.currentTool.slice(0, 80) } : {}),
     turns: task.turns,
     toolErrors: task.toolErrors ?? 0,
     toolSuccesses: task.toolSuccesses ?? 0,
