@@ -23,10 +23,10 @@ machinery that turns it into a complete daily driver.
 
 ## Install
 
-Release **0.4.1**, verified with Pi 0.85.1. Requires Node.js 22.19.0 or newer.
+Release **0.4.2**, verified with Pi 0.85.1. Requires Node.js 22.19.0 or newer.
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.4.1
+pi install git:github.com/michael-berardi/steak-pi@v0.4.2
 ```
 
 This installs USAP, todo, verification, themes, memory conventions, and the
@@ -218,7 +218,7 @@ agent. We have standards.
 Install the native binary (Rust 1.85 or newer):
 
 ```sh
-git clone --branch v0.1.2 https://github.com/michael-berardi/ultracompress
+git clone --branch v0.2.0 https://github.com/michael-berardi/ultracompress
 cd ultracompress && cargo build --locked --release
 mkdir -p ~/.local/bin && cp target/release/ultracompress ~/.local/bin/
 ```
@@ -226,6 +226,8 @@ mkdir -p ~/.local/bin && cp target/release/ultracompress ~/.local/bin/
 The adapter retrieves large UC-transformed output by `uc:<hash>` reference
 instead of asking the model to copy dense packets. References use a bounded,
 session-local original-text cache; decoded and recalled text is not recompressed.
+Fresh explicit file reads remain readable for their first model request,
+avoiding an immediate archive/retrieve round trip; older reads remain eligible.
 Missing references fall back to raw-history recall or re-reading the source.
 References defer reading; retrieval adds the content's tokens back. Encoding
 statistics therefore do not prove provider-billed end-to-end savings.
@@ -234,9 +236,26 @@ UltraTerm-managed installations prefer the bundled UltraCompress bridge over
 older user-local binaries, while preserving explicit overrides and telemetry
 opt-out. If it is absent or fails, Steak Pi falls back to Pi's core compaction. Commands:
 `/ultracompress`, `/ultracompress-recall`, and `/ultracompress-stats`.
+
+The bundled 0.2.0 adapter searches only the current session's actual lineage
+by default, including pre-compaction records. `scope:all` adds sibling branches
+in that file, **not other sessions**; another session requires an explicit
+`sessionFile`. Role/tool and exclusive entry-range filters narrow before
+ranking. Pages and UTF-8 excerpt/result byte budgets are bounded; invalid
+selectors fail closed. Byte budgets are not token guarantees and exclude the
+host's transport wrapper. Requires the 0.2.0 bridge for these options.
+
 [Benchmark evidence](https://github.com/michael-berardi/ultracompress/blob/main/docs/BENCHMARKS.md).
 
 ## Native companion UI
+
+In a managed UltraTerm TUI, Steak Pi emits transition-only terminal activity
+signals. Thinking, responding, tool work, and compaction remain active even
+when terminal output pauses; waiting for user input and settled sessions are
+idle. Signals are not emitted in RPC/print mode or unmanaged terminals. This
+requires UltraTerm 1.7.1 or newer; no periodic heartbeat or provider request is
+added.
+
 
 Steak Pi adds a one-line native header and its signature composer with an
 integrated status band, prompt gutter, live context-pressure meter, and
@@ -264,7 +283,7 @@ Anything that expands the trust boundary remains opt-in:
 | Plan mode | `pi install npm:pi-plan-mode` |
 | Web access | `pi install npm:pi-web-access` |
 | LSP diagnostics | `pi install npm:@narumitw/pi-lsp` |
-| Cross-session recall | `pi install npm:@narumitw/pi-recall` |
+| Explicit cross-session recall | Built-in `ultracompress_recall` with `sessionFile`; no automatic archive scan |
 | MCP servers | Pi settings (`mcpServers`) |
 
 Steak Pi does not install companions behind your back. Your terminal has enough

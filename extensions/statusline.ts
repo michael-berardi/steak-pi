@@ -1,3 +1,4 @@
+import { companionActivity, createActivitySignal } from "../src/tui/activity-signal.ts";
 import {
   CustomEditor,
   type ExtensionAPI,
@@ -100,10 +101,21 @@ export default function companionUiExtension(pi: ExtensionAPI): void {
   let usageDirty = true;
   let cachedUsage = emptyUsage();
 
+  let signalMode = "";
+  const signalActivity = createActivitySignal(
+    (data) => { process.stdout.write(data); },
+    () => ({ mode: signalMode, isTTY: !!process.stdout.isTTY, slot: process.env.ULTRATERM_SLOT }),
+  );
+  const emitActivity = (ctx: ExtensionContext, reset = false) => {
+    signalMode = ctx.mode;
+    signalActivity(companionActivity(state), reset);
+  };
+
   const update = (action: CompanionAction, ctx: ExtensionContext) => {
     const next = reduceCompanionState(state, action);
     if (sameState(state, next)) return;
     state = next;
+    emitActivity(ctx);
     ctx.ui.setWorkingMessage(workingMessage(state));
     requestRender();
   };
@@ -123,6 +135,7 @@ export default function companionUiExtension(pi: ExtensionAPI): void {
         ctx.sessionManager.getSessionFile() ?? undefined,
       ),
     );
+    emitActivity(ctx, true);
     usageDirty = true;
 
     ctx.ui.setHeader((_tui, theme) => ({
@@ -239,6 +252,11 @@ export default function companionUiExtension(pi: ExtensionAPI): void {
       (tui, theme, keybindings) => new SteakBandEditor(tui, theme, keybindings),
     );
     requestRender();
+  });
+
+  pi.on("session_shutdown", async (_event, ctx) => {
+    signalMode = ctx.mode;
+    signalActivity("idle", true);
   });
 
   pi.on("agent_start", async (_event, ctx) => update({ type: "agent_start" }, ctx));
