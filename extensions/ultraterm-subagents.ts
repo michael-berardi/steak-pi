@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type, type TSchema } from "typebox";
 import { SubagentCoordinator, CoordinatorWaitTimeoutError } from "../src/subagents/coordinator.ts";
 import { normalizeDispatch } from "../src/subagents/policy.ts";
-import { selectWorkerModel } from "../src/model-route-policy.ts";
+import { selectWorkerModel, selectWorkerThinking } from "../src/model-route-policy.ts";
 import { shortModel } from "../src/tui/format.ts";
 import {
   RelayBroker,
@@ -61,6 +61,8 @@ export const ultratermSubagentsSchema = Type.Object({
   concurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_CONCURRENCY })),
   timeoutMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 30 * 60_000 })),
   background: Type.Optional(Type.Boolean({ default: false })),
+  thinking: Type.Optional(stringEnum(["medium", "high", "xhigh"] as const)),
+  thinkingReason: Type.Optional(Type.String({ minLength: 16, maxLength: 2_000, description: "Concrete task benefit required for high/xhigh; Astra defaults to medium." })),
 }, { additionalProperties: false });
 
 /** Public provider-compatible hub schema. Sender identity is absent and host-bound. */
@@ -516,6 +518,7 @@ export function createUltratermSubagentsExtension(
       promptGuidelines: [
         "Independence is necessary but not sufficient: keep trivial edits, direct answers, and leaves smaller than their briefing/integration cost in the parent.",
         "GPT runs use paid Codex only: routine scout/worker runs select Luna; runs containing a reviewer retain the parent model. Never use OpenRouter or batch GPT routes.",
+        "Astra workers default to medium reasoning. Request high/xhigh only with a concrete task benefit in thinkingReason; reviewer role alone is not a reason to escalate.",
         "Use ultraterm_subagents only for substantial independent bounded leaves where context isolation, multi-turn depth, or useful latency overlap repays delegation; the parent retains decomposition, integration, and verification.",
         "When the request already gives exact disjoint paths and acceptance contracts, dispatch in the first tool turn without pre-reading child-owned files; child inspection supplies leaf evidence and the parent verifies after.",
         "Before dispatch, inspect only shared interfaces or ambiguity actually needed to decompose safely; do not duplicate child discovery in the parent.",
@@ -529,9 +532,10 @@ export function createUltratermSubagentsExtension(
         const params = rawParams as UltratermSubagentsParams;
         if (!ctx.model) throw new Error("ultraterm_subagents requires a resolved current model");
         const current = ensureRuntime(ctx);
+        const workerModel = selectWorkerModel(ctx.model, params.tasks.map((task) => task.role), ctx.modelRegistry);
         const frozenWorkerRuntime: PiWorkerRuntime = Object.freeze({
-          model: Object.freeze({ ...selectWorkerModel(ctx.model, params.tasks.map((task) => task.role), ctx.modelRegistry) }),
-          thinkingLevel: ctx.thinkingLevel ?? "off",
+          model: Object.freeze({ ...workerModel }),
+          thinkingLevel: selectWorkerThinking(workerModel, ctx.thinkingLevel, params.thinking, params.thinkingReason),
         });
         const model = `${frozenWorkerRuntime.model.provider}/${frozenWorkerRuntime.model.id}`;
         const thinking = String(frozenWorkerRuntime.thinkingLevel);

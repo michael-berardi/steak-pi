@@ -14,6 +14,13 @@ Missing Luna or subscription credentials fails the run rather than silently
 spending on another provider. A GLM parent remains GLM, with image capabilities
 unchanged. To reserve frontier judgment, put it in a reviewer run.
 
+Astra workers default to **medium** reasoning, even when the parent is running
+at high or xhigh. Explicit `thinking: "high"` or `"xhigh"` is supported with a
+concrete task benefit in `thinkingReason`. Reviewer role alone does not raise
+effort. Other models preserve their inherited reasoning level unless explicitly
+overridden. This is a latency-conscious default, not a claim of universally
+equivalent benchmark performance.
+
 `extensions/model-route-policy.ts` composes native provider wrappers through
 Pi's supported registry API. The wrapper checks the resolved model immediately
 before stream/deferred execution, after auth endpoint resolution. A throw at

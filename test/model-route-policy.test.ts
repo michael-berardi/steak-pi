@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  assertModelRoute, assertSubscriptionRequest, guardProvider, selectWorkerModel,
+  assertModelRoute, assertSubscriptionRequest, guardProvider, selectWorkerModel, selectWorkerThinking,
   createRegistryGuard, GPT_ROUTE_ERROR, isModelRouteAllowed, guardModelRuntime,
 } from "../src/model-route-policy.ts";
 
@@ -180,6 +180,17 @@ describe("GPT coding-plan route policy", () => {
     guardModelRuntime(runtime);
     expect(methods.registerProvider).toHaveBeenCalledTimes(3);
     expect(() => native.get("openai-codex")!.streamSimple(overlay, { messages: [] })).toThrow(GPT_ROUTE_ERROR);
+  });
+
+  it("defaults Astra worker effort to medium without changing other models", () => {
+    expect(selectWorkerThinking(astra, "high")).toBe("medium");
+    expect(selectWorkerThinking({ id: "openai-codex/gpt-6-astra" }, "xhigh")).toBe("medium");
+    expect(selectWorkerThinking(glm, "high")).toBe("high");
+    expect(selectWorkerThinking(luna, "low")).toBe("low");
+  });
+  it.each(["high", "xhigh"] as const)("requires a concrete benefit before escalating Astra to %s", (level) => {
+    expect(() => selectWorkerThinking(astra, "high", level)).toThrow(/concrete task benefit/);
+    expect(selectWorkerThinking(astra, "medium", level, "Analyze concurrent credential rotation and crash recovery invariants.")).toBe(level);
   });
 
   it("routes routine GPT runs to Luna, retaining frontier review and GLM", () => {

@@ -21,8 +21,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-PI_EXECUTABLE="$ROOT/node_modules/.bin/pi"
-[[ -x "$PI_EXECUTABLE" ]]
+PI_EXECUTABLE="${PI_EXECUTABLE:-$ROOT/node_modules/.bin/pi}"
+STEAK_PACKAGE="${STEAK_PACKAGE:-$ROOT}"
+[[ -x "$PI_EXECUTABLE" && -d "$STEAK_PACKAGE" ]]
 
 mkdir -p "$TMP/config" "$TMP/sessions" "$TMP/home" \
   "$TMP/xdg-config" "$TMP/xdg-state" "$TMP/xdg-cache" "$TMP/xdg-data"
@@ -83,7 +84,7 @@ wait_for_current() {
   return 1
 }
 
-node - "$TMP/config/settings.json" "$ROOT" <<'NODE'
+node - "$TMP/config/settings.json" "$STEAK_PACKAGE" <<'NODE'
 const fs = require("node:fs");
 const [file, root] = process.argv.slice(2);
 fs.writeFileSync(file, JSON.stringify({

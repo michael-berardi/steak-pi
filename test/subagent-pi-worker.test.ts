@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -221,6 +221,29 @@ describe("Pi USAP worker helpers", () => {
 });
 
 describe("Pi USAP worker tools", () => {
+  it("executes every real SDK filesystem/shell factory, not just mocked session lifecycle", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "steak-pi-native-tools-"));
+    try {
+      const relay = setupBroker();
+      const record = task("run-test", { mayEdit: true, allowBash: true, ownedPaths: [cwd] });
+      const tools = createGuardedPiWorkerTools({ cwd, task: record, relay: relay.bind("run-test", record.id) });
+      const invoke = (name: string, args: unknown) => tools.find((tool) => tool.name === name)!
+        .execute(name, args, undefined, undefined, {} as never);
+      await invoke("write", { path: "fixture.txt", content: "before-token\n" });
+      await invoke("edit", { path: "fixture.txt", edits: [{ oldText: "before-token", newText: "after-token" }] });
+      expect(await readFile(join(cwd, "fixture.txt"), "utf8")).toBe("after-token\n");
+      for (const [name, args, expected] of [
+        ["read", { path: "fixture.txt" }, "after-token"],
+        ["grep", { pattern: "after-token", path: "." }, "fixture.txt"],
+        ["find", { pattern: "*.txt", path: "." }, "fixture.txt"],
+        ["ls", { path: "." }, "fixture.txt"],
+        ["bash", { command: "printf native-shell-ok", timeout: 3 }, "native-shell-ok"],
+      ] as const) {
+        expect(JSON.stringify(await invoke(name, args))).toContain(expected);
+      }
+    } finally { await rm(cwd, { recursive: true, force: true }); }
+  });
+
   it("filters capabilities and rejects filesystem paths outside cwd or ownership", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "steak-pi-worker-"));
     await writeFile(join(cwd, "inside.txt"), "inside", "utf8");

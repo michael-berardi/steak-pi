@@ -23,10 +23,10 @@ machinery that turns it into a complete daily driver.
 
 ## Install
 
-Verified with Pi 0.85.x. Requires Node.js 22.19.0 or newer.
+Release **0.3.5**, verified with Pi 0.85.1. Requires Node.js 22.19.0 or newer.
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@main
+pi install git:github.com/michael-berardi/steak-pi@v0.3.5
 ```
 
 This installs USAP, todo, verification, themes, memory conventions, and the
@@ -142,7 +142,11 @@ communication. A little like IRC, if IRC had path ownership.
 **GPT routing:** GPT-family requests use the paid Codex subscription route only,
 never OpenRouter, API-key billing, or batch variants. Routine GPT scout/worker
 runs select Luna; runs containing a reviewer retain the parent model. GLM runs
-remain GLM. Missing Luna or subscription auth fails closed. See the
+remain GLM. Missing Luna or subscription auth fails closed. Astra workers default
+to **medium** reasoning, independently of the parent's current effort. Set
+`thinking: "high"` or `"xhigh"` only with a concrete task benefit in
+`thinkingReason`; reviewer role alone does not escalate effort. Other models
+keep their existing defaults. See the
 [model-routing contract and boundaries](./docs/MODEL-ROUTING.md).
 
 **Trust boundary:** USAP is coordination, not an OS sandbox. Explicitly granting
@@ -166,12 +170,14 @@ Steak Pi treats reliability as machinery, not a personality trait:
 - extension event handlers contain unexpected failures rather than taking down
   the host session.
 
-The v0.3.4 candidate must pass the full automated suite, dark/light native TUI
+Release candidates must pass the full automated suite, dark/light native TUI
 smoke, 40/120-column resize and ANSI checks, packed-archive smoke, and a fresh
 isolated installation before release. Live acceptance covers cancellation,
 deadlines, correlated relay replies, parent/child loops, image reads, GPT route
 denial, and out-of-scope writes. Historical benchmark evidence above does not
-substitute for those candidate gates.
+substitute for those candidate gates. Worker tool tests execute the real Pi
+read, grep, find, ls, edit, write, and bash factories. The 0.3.5 loader explicitly
+loads those exports on both Pi SDK loading paths, including the 0.85.1 path.
 
 ### Verify after edit
 
@@ -204,12 +210,21 @@ agent. We have standards.
 Install the native binary (Rust 1.85 or newer):
 
 ```sh
-git clone https://github.com/michael-berardi/ultracompress
-cd ultracompress && cargo build --release
+git clone --branch v0.1.2 https://github.com/michael-berardi/ultracompress
+cd ultracompress && cargo build --locked --release
 mkdir -p ~/.local/bin && cp target/release/ultracompress ~/.local/bin/
 ```
 
-If it is absent or fails, Steak Pi falls back to Pi's core compaction. Commands:
+The 0.3.5 adapter retrieves large UC-transformed output by `uc:<hash>` reference
+instead of asking the model to copy dense packets. References use a bounded,
+session-local original-text cache; decoded and recalled text is not recompressed.
+Missing references fall back to raw-history recall or re-reading the source.
+References defer reading; retrieval adds the content's tokens back. Encoding
+statistics therefore do not prove provider-billed end-to-end savings.
+
+UltraTerm-managed installations prefer the bundled UltraCompress bridge over
+older user-local binaries, while preserving explicit overrides and telemetry
+opt-out. If it is absent or fails, Steak Pi falls back to Pi's core compaction. Commands:
 `/ultracompress`, `/ultracompress-recall`, and `/ultracompress-stats`.
 [Benchmark evidence](https://github.com/michael-berardi/ultracompress/blob/main/docs/BENCHMARKS.md).
 

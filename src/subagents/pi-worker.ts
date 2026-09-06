@@ -89,8 +89,10 @@ async function loadPiSdk(): Promise<PiSdk> {
       import(/* @vite-ignore */ piModuleUrl("core/extensions/loader.js")),
       loadPiStateManagers(),
       import(/* @vite-ignore */ piModuleUrl("core/model-runtime.js")),
-    ]).then(([sdk, extensions, managers, models]) => ({
+      import(/* @vite-ignore */ piModuleUrl("core/tools/index.js")),
+    ]).then(([sdk, extensions, managers, models, tools]) => ({
       ...sdk,
+      ...tools,
       ...managers,
       ModelRuntime: models.ModelRuntime,
       createExtensionRuntime: extensions.createExtensionRuntime,
@@ -98,7 +100,12 @@ async function loadPiSdk(): Promise<PiSdk> {
       // The 0.85 unbundled root references optional pi-server code. The shipped
       // Pi bundle contains the same SDK exports without requiring that package.
       if (!errorText(error).includes("@earendil-works/pi-server")) throw error;
-      return loadBundledPiSdk();
+      // The bundle's exported SDK surface differs from core/sdk.js. Resolve
+      // native ToolDefinition factories explicitly on both paths (0.85.0/1).
+      return {
+        ...await loadBundledPiSdk(),
+        ...await import(/* @vite-ignore */ piModuleUrl("core/tools/index.js")),
+      } as PiSdk;
     });
   }
   return piSdkPromise;

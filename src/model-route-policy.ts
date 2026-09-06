@@ -110,6 +110,23 @@ export function guardModelRuntime(runtime: ModelRuntime): void {
   });
 }
 
+/** Astra defaults to medium independently of the parent's current effort.
+ * Escalation is explicit and needs a concrete task benefit, not role alone. */
+export function selectWorkerThinking(
+  model: Pick<Model, "id">,
+  inherited: ExtensionContext["thinkingLevel"],
+  requested?: "medium" | "high" | "xhigh",
+  reason?: string,
+): NonNullable<ExtensionContext["thinkingLevel"]> {
+  if (requested !== undefined && !["medium", "high", "xhigh"].includes(requested)) {
+    throw new Error("Worker thinking must be medium, high, or xhigh.");
+  }
+  if ((requested === "high" || requested === "xhigh") && (!reason || reason.trim().length < 16)) {
+    throw new Error("High/xhigh worker thinking needs a concrete task benefit in thinkingReason.");
+  }
+  return requested ?? (/(?:^|\/)gpt-6-astra$/i.test(model.id) ? "medium" : inherited ?? "off");
+}
+
 /** Runs retain one explicit model for accurate telemetry; mixed/review runs stay frontier. */
 export function selectWorkerModel(parent: Model, roles: readonly (string | undefined)[], registry: Registry): Model {
   assertModelRoute(parent);

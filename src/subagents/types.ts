@@ -56,6 +56,8 @@ export interface DispatchInput {
   concurrency?: number;
   timeoutMs?: number;
   background?: boolean;
+  thinking?: "medium" | "high" | "xhigh";
+  thinkingReason?: string;
 }
 
 export interface NormalizedTask {

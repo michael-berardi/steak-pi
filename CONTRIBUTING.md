@@ -4,7 +4,7 @@ Issues and focused pull requests are welcome.
 
 ## Development
 
-Requirements: Node.js 22 or newer and Pi 0.85.x.
+Requirements: Node.js 22.19 or newer and Pi 0.85.x (release-tested with 0.85.1).
 
 ```sh
 git clone https://github.com/michael-berardi/steak-pi.git

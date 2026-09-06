@@ -4,6 +4,7 @@ import ultraCompressExtension from "../extensions/ultracompress/index.ts";
 import { DEFAULT_SETTINGS, loadSettings, type UltraCompressSettings } from "../extensions/ultracompress/src/settings.ts";
 import { runUltraCompress } from "../extensions/ultracompress/src/bridge.ts";
 import * as transforms from "../extensions/ultracompress/src/transforms.ts";
+import { UcReferences } from "../extensions/ultracompress/src/references.ts";
 import type { AgentLikeMessage, SnapOp, UcOp } from "../extensions/ultracompress/src/transforms.ts";
 
 vi.mock("../extensions/ultracompress/src/bridge.ts", () => ({ runUltraCompress: vi.fn() }));
@@ -66,7 +67,7 @@ describe("request-local live transform keys", () => {
     const expected = structuredClone(original);
     // Unoptimized application oracle: original text lookup and unchanged transforms.
     transforms.applyTransforms(expected, new Map([
-      [a, { op: uc, blocks: [] }], [b, { op: snap, blocks: [] }],
+      [a, { op: { ...uc, reference: new UcReferences().put(a) }, blocks: [] }], [b, { op: snap, blocks: [] }],
     ]), (m, bi) => typeof m.content === "string" ? m.content : m.content[bi]?.text as string, placement);
 
     const result = await hooks.context(structuredClone(original));
@@ -77,7 +78,8 @@ describe("request-local live transform keys", () => {
     const payload = vi.mocked(runUltraCompress).mock.calls[0][2] as any;
     expect(payload.messages.map((m: any) => m.message.content[0].text)).toEqual([a, b, a, a, a]);
     expect(payload.messages.map((m: any) => m.id)).toEqual(["rc1", "rc1", "rc1", "rc2", "rc3"]);
-    expect(JSON.stringify(result.messages)).toContain("@UC1\\nexact-packet-bytes");
+    expect(JSON.stringify(result.messages)).toContain("uc:");
+    expect(JSON.stringify(result.messages)).not.toContain("@UC1\\nexact-packet-bytes");
     expect(JSON.stringify(result.messages)).toContain("archive/frame-1, archive/frame-2");
     expect(result.messages[3].content).toBe(a);
 
@@ -92,7 +94,7 @@ describe("request-local live transform keys", () => {
     vi.mocked(runUltraCompress).mockResolvedValue({ ok: true, data: { ops: [uc] } });
     const result = await hooks.context([{ role: "toolResult", content: [text(a)] }]);
     expect(transforms.cacheKey).toHaveBeenCalledTimes(1);
-    expect(result.messages[0].content).toEqual([text(`${uc.stub}\n\n${uc.packet}`)]);
+    expect(result.messages[0].content).toEqual(transforms.ucReplacement({ ...uc, reference: new UcReferences().put(a) }));
   });
 
   it("preserves duplicate response precedence and fallback on bridge failure", async () => {
@@ -108,7 +110,8 @@ describe("request-local live transform keys", () => {
     } });
     const result = await hooks.context(input());
     expect(result.messages[0].content).toEqual([
-      text(`${uc.stub}\n\n@UC1 last occurrence`), text(`${uc.stub}\n\n@UC1 last occurrence`),
+      ...transforms.ucReplacement({ ...uc, reference: new UcReferences().put(a) }),
+      ...transforms.ucReplacement({ ...uc, reference: new UcReferences().put(a) }),
     ]);
   });
 
