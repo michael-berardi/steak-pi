@@ -16,6 +16,7 @@ import {
   type WorkerRunner,
 } from "./types.ts";
 import { abortError, sessionScheduler, type SessionScheduler } from "./scheduler.ts";
+import { defaultMachineSlots, type MachineSlots, type NoopSlots } from "./machine-slots.ts";
 
 const TERMINAL_TASK_STATES = new Set<TaskState>([
   "done",
@@ -42,6 +43,8 @@ export interface CoordinatorProgressEvent {
 
 export interface CoordinatorOptions {
   scheduler?: SessionScheduler;
+  /** Cross-process launch slots. Defaults to the real machine-tier limiter. */
+  machineSlots?: MachineSlots | NoopSlots;
   onProgress?: (event: CoordinatorProgressEvent) => void;
   now?: () => number;
 }
@@ -117,6 +120,7 @@ function safeTurns(value: unknown, fallback = 0): number {
 export class SubagentCoordinator {
   private readonly runner: WorkerRunner;
   private readonly scheduler: SessionScheduler;
+  private readonly machineSlots: MachineSlots | NoopSlots;
   private readonly onProgress?: (event: CoordinatorProgressEvent) => void;
   private readonly now: () => number;
   private readonly runs = new Map<string, RunRuntime>();
@@ -126,6 +130,7 @@ export class SubagentCoordinator {
   constructor(runner: WorkerRunner, options: CoordinatorOptions = {}) {
     this.runner = runner;
     this.scheduler = options.scheduler ?? sessionScheduler;
+    this.machineSlots = options.machineSlots ?? defaultMachineSlots();
     this.onProgress = options.onProgress;
     this.now = options.now ?? Date.now;
   }
@@ -332,6 +337,9 @@ export class SubagentCoordinator {
     task: TaskRecord,
     taskRuntime: TaskRuntime,
   ): Promise<void> {
+    const provider = runtime.record.model.includes("/")
+      ? runtime.record.model.slice(0, runtime.record.model.indexOf("/"))
+      : "default";
     try {
       await this.scheduler.run(async () => {
         if (taskRuntime.controller.signal.aborted || isTerminal(task.state)) {
@@ -341,27 +349,38 @@ export class SubagentCoordinator {
         task.state = "starting";
         task.startedAt = this.now();
         if (taskRuntime.controller.signal.aborted) throw abortError(taskRuntime.controller.signal);
-        task.state = "running";
-        if (taskRuntime.controller.signal.aborted) throw abortError(taskRuntime.controller.signal);
 
-        const result = await this.runner({
-          run: runtime.record,
-          task,
-          signal: taskRuntime.controller.signal,
-          onProgress: (progress) => this.applyProgress(runtime, task, progress),
-        });
-        if (!isTerminal(task.state)) {
-          this.finishTask(runtime, task, taskRuntime.stopState ?? result.state, {
-            ...result,
-            error: taskRuntime.stopState
-              ? result.error ?? taskRuntime.stopMessage
-              : result.error,
+        // Machine tier: one launch slot per worker across every local session,
+        // bucketed by provider. Released when the task settles or aborts.
+        const releaseMachine = await this.machineSlots.acquire(provider, taskRuntime.controller.signal);
+        try {
+          if (taskRuntime.controller.signal.aborted || isTerminal(task.state)) {
+            throw abortError(taskRuntime.controller.signal);
+          }
+          task.state = "running";
+          if (taskRuntime.controller.signal.aborted) throw abortError(taskRuntime.controller.signal);
+
+          const result = await this.runner({
+            run: runtime.record,
+            task,
+            signal: taskRuntime.controller.signal,
+            onProgress: (progress) => this.applyProgress(runtime, task, progress),
           });
+          if (!isTerminal(task.state)) {
+            this.finishTask(runtime, task, taskRuntime.stopState ?? result.state, {
+              ...result,
+              error: taskRuntime.stopState
+                ? result.error ?? taskRuntime.stopMessage
+                : result.error,
+            });
+          }
+          // Terminal cancellation is observable promptly, but unresolved native
+          // initialization still owns real concurrency until its late disposal.
+          await result.cleanup;
+        } finally {
+          releaseMachine();
         }
-        // Terminal cancellation is observable promptly, but unresolved native
-        // initialization still owns real concurrency until its late disposal.
-        await result.cleanup;
-      }, taskRuntime.controller.signal);
+      }, taskRuntime.controller.signal, provider);
     } catch (error) {
       if (isTerminal(task.state)) return;
       if (taskRuntime.stopState || taskRuntime.controller.signal.aborted) {

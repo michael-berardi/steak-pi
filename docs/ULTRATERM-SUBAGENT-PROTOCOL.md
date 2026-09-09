@@ -80,21 +80,30 @@ Before dispatch, the parent performs this pass:
 5. Assign one writer per path and define interfaces between leaves.
 6. Dispatch all currently independent leaves together.
 
-### Adaptive concurrency: 0–4
+### Adaptive concurrency: 0–8
 
-Concurrency is a decision, not a target:
+Concurrency is a decision, not a target — but independence defaults to width.
+When several genuinely independent leaves exist, dispatch them together and let
+the wave run wide; the launch width defaults to `min(8, task count)`, so an
+unsized dispatch of N disjoint tasks launches N-wide:
 
 | Concurrent children | Use when |
 | --- | --- |
 | 0 | One known edit, a direct answer, coupled work, or briefing costs more than execution |
 | 1 | Context isolation or a specialist pass helps, but no true parallelism exists |
 | 2 | Two independent implementation, research, or review leaves exist |
-| 3–4 | Several genuinely independent paths, subsystems, audits, or evidence sources exist |
+| 3–5 | Several genuinely independent paths, subsystems, audits, or evidence sources exist |
+| 6–8 | Long multi-aspect work with many disjoint leaves; fill the wave instead of executing serially in the parent |
 
-Four is the hard concurrency ceiling. A run may queue more bounded tasks, but
-only four may execute at once. Do not invent padding work to fill slots.
-Stop delegating when the remainder is coupled, smaller than its briefing cost,
-or dependent on the parent's accumulated judgment.
+Eight is the hard session-wide concurrency ceiling. GLM flash lanes fill
+8-wide waves; Luna lanes stay at or below 6 by doctrine. A run may queue more
+bounded tasks than its width, but only the requested width executes at once.
+Do not invent padding work to fill slots, and do not execute a long list of
+independent leaves serially in the parent to avoid dispatching. Stop
+delegating when the remainder is coupled, smaller than its briefing cost,
+or dependent on the parent's accumulated judgment. Delegation must buy
+completion speed: a modest token premium for real throughput is correct;
+added agents at unchanged speed are not.
 
 ## 4. Dispatch contract
 
@@ -240,7 +249,8 @@ The Steak Pi implementation profile uses these ceilings:
 
 | Resource | Bound |
 | --- | --- |
-| Concurrent children | 4 hard maximum |
+| Concurrent children (per session) | 8 hard maximum on GLM lanes; 6 on Luna lanes; launch width defaults to a full wave (min(8, task count)) |
+| Concurrent children (machine-wide) | 8 GLM workers total across all local sessions; 12 Luna; provider-bucketed and crash-safe; a global cap bounds all providers combined |
 | Simultaneously active runs | 16; further dispatch is rejected until a run settles |
 | Tasks accepted in one run | 8 hard maximum; excess tasks remain a parent planning problem |
 | Run wall clock | finite; default 10 minutes, accepted range 1 second–30 minutes |

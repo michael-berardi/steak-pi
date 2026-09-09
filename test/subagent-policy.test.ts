@@ -10,6 +10,7 @@ import {
 import {
   DEFAULT_CONCURRENCY,
   DEFAULT_TIMEOUT_MS,
+  MAX_CONCURRENCY,
   MAX_TIMEOUT_MS,
   MIN_TIMEOUT_MS,
   USAP_VERSION,
@@ -58,7 +59,7 @@ describe("normalizeDispatch", () => {
       cwd: resolve(cwd),
       model: "test/model",
       thinkingLevel: "medium",
-      concurrency: DEFAULT_CONCURRENCY,
+      concurrency: 1,
       timeoutMs: DEFAULT_TIMEOUT_MS,
       background: false,
       state: "running",
@@ -153,7 +154,7 @@ describe("normalizeDispatch", () => {
   it("enforces concurrency and timeout integer bounds", () => {
     const { cwd } = fixture();
     const task = [{ label: "one", task: "work" }];
-    for (const concurrency of [0, 5, 1.5, Number.NaN]) {
+    for (const concurrency of [0, MAX_CONCURRENCY + 1, 1.5, Number.NaN]) {
       expect(() => normalizeDispatch(dispatch(task, { concurrency }), cwd, "m", "t"))
         .toThrow(/concurrency/);
     }
@@ -167,6 +168,19 @@ describe("normalizeDispatch", () => {
       "m",
       "t",
     ).timeoutMs).toBe(MAX_TIMEOUT_MS);
+  });
+
+  it("defaults concurrency to a full adaptive wave", () => {
+    const { cwd } = fixture();
+    const many = Array.from({ length: MAX_CONCURRENCY }, (_, i) => ({ label: `t${i}`, task: "work" }));
+    expect(normalizeDispatch(dispatch(many), cwd, "m", "t").concurrency).toBe(MAX_CONCURRENCY);
+    expect(normalizeDispatch(dispatch(many.slice(0, 3)), cwd, "m", "t").concurrency).toBe(3);
+    expect(normalizeDispatch(
+      dispatch(many, { concurrency: 2 }),
+      cwd,
+      "m",
+      "t",
+    ).concurrency).toBe(2);
   });
 
   it("requires ownership exactly for writable tasks", () => {

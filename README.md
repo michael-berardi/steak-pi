@@ -23,12 +23,12 @@ machinery that turns it into a complete daily driver.
 
 ## Install
 
-Release **0.4.2**, verified with Pi 0.85.1. Requires Pi 0.85.1 or newer within
+Release **0.5.0**, verified with Pi 0.85.1. Requires Pi 0.85.1 or newer within
 0.85.x and Node.js 22.19.0 or newer. Pi 0.85.0 lacks the lifecycle/context API
 used by the companion UI.
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.4.2
+pi install git:github.com/michael-berardi/steak-pi@v0.5.0
 ```
 
 This installs USAP, todo, verification, themes, memory conventions, and the
@@ -55,7 +55,7 @@ making every task attend the meeting:
 
 | Steak Pi adds | What you get |
 | --- | --- |
-| **USAP native subagents** | Up to four useful workers at once, with ownership, deadlines, cancellation, relay, and reported usage |
+| **USAP native subagents** | Up to eight GLM (or six Luna) workers at once per session, with provider-aware machine-wide caps, ownership, deadlines, cancellation, relay, and reported usage |
 | **UltraCompress** | Local 10–300 ms compaction, lossless raw-session retention, ranked recall, and **$0 model cost per compaction** |
 | **Verify after edit** | Failed project checks go straight back to the model so it can repair its work |
 | **Phased todo** | Persistent start/done/block state with automatic promotion |
@@ -126,8 +126,12 @@ parent
 
 What prevents agent soup:
 
-- **four active children session-wide**, at most eight tasks per run and 16
-  active runs;
+- **eight active children session-wide** (GLM lanes; Luna lanes six), at most
+  eight tasks per run and 16 active runs; launch width defaults to a full wave
+  (min(8, task count));
+- **machine-wide launch caps** shared across every local session: eight GLM
+  workers total, twelve Luna, provider-bucketed and crash-safe, so three open
+  windows cannot stampede the provider;
 - foreground by default; background only when parent work can overlap;
 - stable run IDs with list, status, wait, message, inbox, and cancel controls;
 - isolated worker settings, transcripts, resources, and tool sets;
