@@ -43,7 +43,8 @@ Use adaptive concurrency, never padding work:
 
 Launch width defaults to a full wave (min(8, task count)). Eight concurrent
 children is the session-wide GLM ceiling (Luna lanes six), and a machine-wide
-cap of eight GLM workers is shared across all local sessions. Stop delegating
+cap of six GLM workers is shared across all local sessions — sized below the
+provider rate limit so interactive sessions keep headroom. Stop delegating
 when briefing cost exceeds the remaining work, and dispatch more workers only
 when they buy completion speed.
 

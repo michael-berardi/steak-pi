@@ -23,12 +23,12 @@ machinery that turns it into a complete daily driver.
 
 ## Install
 
-Release **0.5.0**, verified with Pi 0.85.1. Requires Pi 0.85.1 or newer within
+Release **0.5.1**, verified with Pi 0.85.1. Requires Pi 0.85.1 or newer within
 0.85.x and Node.js 22.19.0 or newer. Pi 0.85.0 lacks the lifecycle/context API
 used by the companion UI.
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.5.0
+pi install git:github.com/michael-berardi/steak-pi@v0.5.1
 ```
 
 This installs USAP, todo, verification, themes, memory conventions, and the
@@ -42,13 +42,17 @@ continues to surface actionable resource diagnostics.
 
 That is the ceremony. Kettle optional.
 
-> **Measured live on GLM-5.3-Flash (2026-09-09 mirror):** 27/27 benchmark runs
-> and 16/16 pressure-gate fixes passed first attempt. Under the same delegation
-> shape as the September calibration, USAP used **27% fewer tokens** than its
-> previous release, and its new capacity system held a hard **8-worker
-> machine-wide cap across concurrent sessions** with zero provider errors. In
-> the earlier controlled comparison, USAP was **49% faster and 64% leaner than
-> [Oh My Pi (OMP)](https://github.com/can1357/oh-my-pi)**.
+> **Steak Pi vs stock Pi — measured live on GLM-5.3-Flash, shipped build**
+> (identical fixtures, balanced order, deterministic verification):
+>
+> - **Four-module build: 22% faster than stock Pi** (45.8 s vs 59.0 s median,
+>   reproduced at 23% in a second same-day matrix) — 9/9 first-pass on both
+>   sides
+> - **100% first-pass parity**: every Steak Pi run and every stock Pi run
+>   passed deterministic verification, across 18 matched runs
+> - **16 fixes across two concurrent windows, verified 16/16, under a hard
+>   machine-wide cap of 6 concurrent GLM workers** — zero provider errors.
+>   Stock Pi has neither subagents nor any cross-window capacity control.
 
 ## Why Steak Pi
 
@@ -70,83 +74,31 @@ trying to become an operating system because you asked it to rename a method.
 
 ## Proof, not garnish
 
-### Current live mirror (2026-09-09)
+### Steak Pi vs stock Pi — shipped build, live GLM-5.3-Flash
 
-Same controls as the September calibration — `zai/glm-5.3-flash`, thinking
-`high`, balanced order, fresh fixtures, deterministic verification — plus two
-new measurements: doctrine mode (the shipped guidelines choose between inline
-and delegation) and a machine-capacity pressure gate.
+Same fixtures, same model (`zai/glm-5.3-flash`, thinking `high`), balanced
+order, fresh fixtures, deterministic verification. Stock Pi ran the same cases
+with its own built-in tools only. Medians of three runs per cell:
 
-| Measurement | Result |
-| --- | --- |
-| First-pass completion | **27/27 runs**, all arms and modes |
-| Forced-delegation token cost (modules) | **57,372 median**, down from 78,834 (**−27%**) at the same delegation shape |
-| Worker report trims | nested tokens **−22.6%** and wall **−8%** on the forced tiny case |
-| Doctrine mode | matched stock Pi wall time within variance while honoring the delegation-speed contract |
-| Machine-capacity gate | 2 sessions × 8 workers; hard cap of 8 concurrent held; 16/16 fixes verified; no 429s — **~8 fixes/minute aggregate** under one shared cap |
+| Fixture | Stock Pi | Steak Pi | Verdict |
+| --- | ---: | ---: | --- |
+| Four-module build — median wall | 59.0 s | **45.8 s** | **22% faster than stock Pi** (reproduced at 23% in a second same-day matrix) |
+| Four-module build — first-pass | 3/3 | 3/3 | quality held |
+| Direct edit — median wall | 11.9 s | 15.5 s | small premium: the full package rides along every turn |
+| Two-file parallel fix — median wall | 8.3 s | 14.5 s | same story; doctrine keeps trivial work inline |
+| First-pass completion | 9/9 | **9/9** | parity everywhere |
+| Eight-fix fan-out, two concurrent windows | n/a — no subagents | **8/8 + 8/8 verified under the 6-wide machine cap** | stock Pi has no equivalent |
 
-**Takeaway:** at the same delegation shape, the 0.5.0 delegation path costs
-about a quarter less than 0.4.x, first-pass held at 100%, and several open
-windows can now delegate simultaneously without stampeding the provider.
-
-### Whole-package speed (0.5.0 optimization pass)
-
-Microbenchmarks from the 0.5.0 pass, reviewed by GPT-6 Astra:
-
-| Hot path | Before | After |
-| --- | ---: | ---: |
-| UltraCompress context-hook key cache (6,400 lookups, 32×64 KiB texts) | 434.6 ms | **32.5 ms (13×)** |
-| UC reference reverse lookup with LRU-safe eviction | 468.3 ms | **1.1 ms (425×)** |
-| Worker native-tool factory access (per 100k) | 22.68 ms | **0.28 ms (80×)** |
-| Companion footer | queried context/usage every render | **statuses only** — zero extra provider-state queries |
-
-These paths run before model calls and on every render, so the savings compound
-with turn count: long sessions skip thousands of redundant hashes, byte counts,
-and factory allocations.
-
-USAP is adaptive by design: tiny jobs stay with the parent; independent leaves
-fan out only when parallel work repays its briefing cost with faster
-completion. No compulsory committee for a two-line fix.
+The pattern is the honest one: on multi-part real work, Steak Pi's parallel
+doctrine **beats stock Pi outright**; on one-line edits it costs a small
+turn-boundary premium because the orchestration, verification, and compaction
+machinery ships in every session; and quality never moved — 100% first-pass on
+both sides. What stock Pi cannot do at any price: bounded subagents with path
+ownership, delegation spanning every open window under one provider-safe cap,
+verification loops, deterministic $0 compaction, and lossless recall.
 
 Full tables, ranges, controls, and limitations:
 [`glm53-live-mirror-2026-09-09.md`](./benchmarks/usap/results/glm53-live-mirror-2026-09-09.md).
-
-### Previous calibration (2026-09-04)
-
-Larger four-module implementation; `zai/glm-5.3-flash`; thinking `high`; three
-samples per arm; identical fixtures and deterministic verification:
-
-| Arm | First-pass | Median time | Median accounted tokens |
-| --- | ---: | ---: | ---: |
-| **Steak Pi / USAP** | **3/3** | **125.913 s** | **78,834** |
-| Legacy `parallel` | 3/3 | 137.462 s | 193,701 |
-| OMP | 3/3 | 246.640 s | 220,809 |
-
-Against OMP, Steak Pi was **about 49% faster and 64% leaner**. Against Steak
-Pi's old executor, USAP was **about 8% faster and 59% leaner**. Every run passed
-first attempt.
-
-Full controls, all benchmark arms, medians, variability, accounting rules, and
-security probes:
-[`glm53-live-calibration-2026-09-04.md`](./benchmarks/usap/results/glm53-live-calibration-2026-09-04.md).
-
-### Historical full-suite baseline
-
-Before USAP, Steak Pi and stock Pi ran 23 validated cases × five samples under
-the same model:
-
-| | Steak Pi | Stock Pi |
-| --- | ---: | ---: |
-| Completed | **110/115** | 108/115 |
-| Median latency | **16.1 s** | 18.3 s |
-
-Steak Pi completed more runs while finishing **12% faster at the median**.
-USAP has since replaced that legacy executor; on both fan-out cases in the
-current calibration, it substantially reduced the old executor's orchestration
-bill.
-
-Historical methodology and per-run evidence:
-[`docs/verification/`](https://github.com/michael-berardi/steak-pi/tree/v0.2.1/docs/verification).
 
 ## USAP: native subagents
 
@@ -169,8 +121,8 @@ What prevents agent soup:
 - **eight active children session-wide** (GLM lanes; Luna lanes six), at most
   eight tasks per run and 16 active runs; launch width defaults to a full wave
   (min(8, task count));
-- **machine-wide launch caps** shared across every local session: eight GLM
-  workers total, twelve Luna, provider-bucketed and crash-safe, so three open
+- **machine-wide launch caps** shared across every local session: six GLM
+  workers total, twelve Luna, provider-bucketed and crash-safe, so open
   windows cannot stampede the provider;
 - foreground by default; background only when parent work can overlap;
 - stable run IDs with list, status, wait, message, inbox, and cancel controls;

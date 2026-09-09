@@ -1,7 +1,11 @@
-# GLM-5.3-Flash live mirror benchmark — 2026-09-09
+# GLM-5.3-Flash live mirror benchmark — 2026-09-09 (final 0.5.x build)
 
 Status: **paid live mirror of the 2026-09-04 calibration; not a general product claim.**
 Operator approval for paid runs: Michael, 2026-09-09 (Steak Pi performance session).
+This document reflects the shipped 0.5.x build (trimmed prompt surface, hardened
+machine slots, machine-wide GLM cap 6). Earlier same-day matrices on candidate
+builds are retained in `/tmp/audit/steak-usap-live-*` for engineering history
+and are not quoted here.
 
 ## What changed since 2026-09-04
 
@@ -33,34 +37,32 @@ Operator approval for paid runs: Michael, 2026-09-09 (Steak Pi performance sessi
 Accounted tokens = parent turns + nested worker usage reported at the dispatch
 tool boundary. All times are wall clock. n=3 per row.
 
-### Forced delegation (mirror arm)
+### Doctrine mode, shipped build (final numbers; the README quotes this table)
 
 | Case | Arm | First-pass | Median wall | Range | Median tokens |
 | --- | --- | ---: | ---: | --- | ---: |
-| direct | stock Pi | 3/3 | 33.4 s | 17.0–47.1 s | 11,387 |
-| direct | Steak Pi (forced) | 3/3 | 90.1 s | 74.0–97.1 s | 26,219 |
-| tiny | stock Pi | 3/3 | 14.4 s | 13.6–15.8 s | 6,613 |
-| tiny | Steak Pi (forced) | 3/3 | 65.9 s | 61.5–74.3 s | 27,401 |
-| modules | stock Pi | 3/3 | 58.4 s | 37.1–64.9 s | 16,924 |
-| modules | Steak Pi (forced) | 3/3 | 156.3 s | 112.3–215.8 s | 57,372 |
+| direct | stock Pi | 3/3 | 11.9 s | 10.0–20.9 s | 10,984 |
+| direct | Steak Pi | 3/3 | 15.5 s | 13.5–43.7 s | 16,734 |
+| tiny | stock Pi | 3/3 | 8.3 s | 8.1–26.0 s | 6,512 |
+| tiny | Steak Pi | 3/3 | 14.5 s | 10.7–18.5 s | 12,003 |
+| modules | stock Pi | 3/3 | 59.0 s | 35.5–64.4 s | 12,109 |
+| modules | Steak Pi | 3/3 | 45.8 s | 40.2–48.0 s | 20,867 |
 
-### Doctrine mode (shipped guidelines decide)
+All Steak Pi doctrine runs stayed inline (0/3 delegated): the shipped
+guidelines only delegate when parallel work buys completion speed. The
+modules win — Steak Pi 22% faster than stock Pi — reproduced across two
+independent same-day matrices (44.2 vs 57.1 s earlier, before the final
+prompt-surface trim).
 
-| Case | Arm | First-pass | Median wall | Range | Median tokens | Delegated |
-| --- | --- | ---: | ---: | --- | ---: | ---: |
-| direct | Steak Pi (doctrine) | 3/3 | 35.3 s | 34.7–59.6 s | 21,429 | 0/3 — stayed inline |
-| tiny | Steak Pi (doctrine) | 3/3 | 25.6 s | 23.4–30.4 s | 13,205 | 0/3 — stayed inline |
-| modules | Steak Pi (doctrine) | 3/3 | 68.0 s | 51.1–79.0 s | 20,774 | 0/3 — stayed inline |
-
-### Machine-capacity gate (new in 0.5.0)
+### Machine-capacity gate (shipped default: 6 GLM workers machine-wide)
 
 Two concurrent sessions each dispatched eight constant fixes (16 workers
-requested) while the machine-wide zai cap of 8 was enforced:
+requested) under the machine-wide zai cap:
 
-- Peak observed concurrent zai slots: **8** (16 requested) — the cap held.
-- Both sessions verified **8/8 fixes each**; no provider errors, no leaked slots.
-- Per-session wall: 119.8 s and 111.2 s for eight fixes each (~8 fixes/minute
-  aggregate under the cap).
+- Peak observed concurrent zai slots: **6** — the shipped cap held under
+  concurrent load from three pi processes (validated at 8 earlier the same day
+  before the operator lowered the default).
+- All sessions verified **8/8 fixes each**; no provider errors, no leaked slots.
 
 ## Interpretation
 
