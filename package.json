@@ -1,6 +1,6 @@
 {
   "name": "steak-pi",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "Steak Pi — a minimal native Pi companion with the UltraTerm Sub-Agent Protocol, todo, memory, verification, and deterministic compaction.",
   "license": "MIT",
   "author": "Implose Cybernetics",
@@ -17,6 +17,7 @@
     "SECURITY.md",
     "benchmarks/usap/README.md",
     "benchmarks/usap/results/glm53-live-calibration-2026-09-04.md",
+    "benchmarks/usap/results/glm53-live-mirror-2026-09-09.md",
     "extensions",
     "src",
     "themes",

@@ -324,6 +324,18 @@ export function createUltratermRelayTool(relay: RelayPeer, task: TaskRecord): An
 /** Build the exact child tool surface, wrapping every filesystem path in policy checks. */
 export function createGuardedPiWorkerTools(options: GuardedToolOptions): AnyToolDefinition[] {
   const { cwd, task, relay } = options;
+  // Worker-local cache: fixed cwd, bounded lifetime, no shared task/ctx state.
+  // Keep path validation before lazy SDK access on every execution.
+  const nativeTools = new Map<string, AnyToolDefinition>();
+  const nativeTool = async (name: string, create: (sdk: PiSdk) => AnyToolDefinition): Promise<AnyToolDefinition> => {
+    const sdk = await loadPiSdk();
+    let tool = nativeTools.get(name);
+    if (!tool) {
+      tool = create(sdk);
+      nativeTools.set(name, tool);
+    }
+    return tool;
+  };
   const read: AnyToolDefinition = {
     name: "read",
     label: "read",
@@ -336,8 +348,7 @@ export function createGuardedPiWorkerTools(options: GuardedToolOptions): AnyTool
     async execute(id, raw, signal, update, ctx) {
       const params = raw as { path: string; offset?: number; limit?: number };
       const path = guardedPath(cwd, params.path, task.ownedPaths, "read");
-      const native = await loadPiSdk();
-      const base = native.createReadToolDefinition(cwd);
+      const base = await nativeTool("read", (native) => native.createReadToolDefinition(cwd));
       return base.execute(id, { ...params, path }, signal, update, ctx);
     },
   };
@@ -357,8 +368,7 @@ export function createGuardedPiWorkerTools(options: GuardedToolOptions): AnyTool
     async execute(id, raw, signal, update, ctx) {
       const params = raw as { pattern: string; path?: string; glob?: string; ignoreCase?: boolean; literal?: boolean; context?: number; limit?: number };
       const path = params.path === undefined ? undefined : guardedPath(cwd, params.path, task.ownedPaths, "read");
-      const native = await loadPiSdk();
-      const base = native.createGrepToolDefinition(cwd);
+      const base = await nativeTool("grep", (native) => native.createGrepToolDefinition(cwd));
       return base.execute(id, { ...params, ...(path === undefined ? {} : { path }) }, signal, update, ctx);
     },
   };
@@ -374,8 +384,7 @@ export function createGuardedPiWorkerTools(options: GuardedToolOptions): AnyTool
     async execute(id, raw, signal, update, ctx) {
       const params = raw as { pattern: string; path?: string; limit?: number };
       const path = params.path === undefined ? undefined : guardedPath(cwd, params.path, task.ownedPaths, "read");
-      const native = await loadPiSdk();
-      const base = native.createFindToolDefinition(cwd);
+      const base = await nativeTool("find", (native) => native.createFindToolDefinition(cwd));
       return base.execute(id, { ...params, ...(path === undefined ? {} : { path }) }, signal, update, ctx);
     },
   };
@@ -390,8 +399,7 @@ export function createGuardedPiWorkerTools(options: GuardedToolOptions): AnyTool
     async execute(id, raw, signal, update, ctx) {
       const params = raw as { path?: string; limit?: number };
       const path = params.path === undefined ? undefined : guardedPath(cwd, params.path, task.ownedPaths, "read");
-      const native = await loadPiSdk();
-      const base = native.createLsToolDefinition(cwd);
+      const base = await nativeTool("ls", (native) => native.createLsToolDefinition(cwd));
       return base.execute(id, { ...params, ...(path === undefined ? {} : { path }) }, signal, update, ctx);
     },
   };
@@ -409,8 +417,7 @@ export function createGuardedPiWorkerTools(options: GuardedToolOptions): AnyTool
       async execute(id, raw, signal, update, ctx) {
         const params = raw as { path: string; edits: Array<{ oldText: string; newText: string }> };
         const path = guardedPath(cwd, params.path, task.ownedPaths, "write");
-        const native = await loadPiSdk();
-        const base = native.createEditToolDefinition(cwd);
+        const base = await nativeTool("edit", (native) => native.createEditToolDefinition(cwd));
         return base.execute(id, { ...params, path }, signal, update, ctx);
       },
     }, {
@@ -421,8 +428,7 @@ export function createGuardedPiWorkerTools(options: GuardedToolOptions): AnyTool
       async execute(id, raw, signal, update, ctx) {
         const params = raw as { path: string; content: string };
         const path = guardedPath(cwd, params.path, task.ownedPaths, "write");
-        const native = await loadPiSdk();
-        const base = native.createWriteToolDefinition(cwd);
+        const base = await nativeTool("write", (native) => native.createWriteToolDefinition(cwd));
         return base.execute(id, { ...params, path }, signal, update, ctx);
       },
     });
@@ -438,8 +444,7 @@ export function createGuardedPiWorkerTools(options: GuardedToolOptions): AnyTool
         timeout: Type.Optional(Type.Number()),
       }),
       async execute(id, raw, signal, update, ctx) {
-        const native = await loadPiSdk();
-        const base = native.createBashToolDefinition(cwd, { exposeSessionEnvironment: false });
+        const base = await nativeTool("bash", (native) => native.createBashToolDefinition(cwd, { exposeSessionEnvironment: false }));
         return base.execute(id, raw as { command: string; timeout?: number }, signal, update, ctx);
       },
     });

@@ -19,11 +19,14 @@ Operator approval for paid runs: Michael, 2026-09-09 (Steak Pi performance sessi
 - Model `zai/glm-5.3-flash`, thinking `high`, fallback disabled
 - Fresh fixture and ephemeral session per run; sequential top-level runs
 - Balanced arm ordering; identical prompts, file sets, and deterministic verification
-- Model identity verified from provider responses in every run
+- Model identity verified from provider responses in every run; first-pass
+  additionally requires clean process exit and zero tool errors
 - Two delegation modes: **forced** (prompt instructs one USAP dispatch; mirrors the
   Sept methodology and measures the delegation path) and **doctrine** (no
   instruction; the shipped guidelines decide)
-- Raw JSONL per run under `/tmp/audit/steak-usap-live-*/` (not packaged)
+- Parsed per-run summaries retained under `/tmp/audit/steak-usap-live-*/results-*.json`;
+  the harness now also retains raw provider streams per run (added after this
+  matrix ran, per review finding; future runs are fully auditable)
 
 ## Results
 
@@ -56,7 +59,7 @@ requested) while the machine-wide zai cap of 8 was enforced:
 
 - Peak observed concurrent zai slots: **8** (16 requested) — the cap held.
 - Both sessions verified **8/8 fixes each**; no provider errors, no leaked slots.
-- Per-session wall: 119.8 s and 111.2 s for eight fixes each (~7.5 fixes/minute
+- Per-session wall: 119.8 s and 111.2 s for eight fixes each (~8 fixes/minute
   aggregate under the cap).
 
 ## Interpretation

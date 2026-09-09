@@ -1,6 +1,7 @@
 /** Vendored from https://github.com/michael-berardi/ultracompress (MIT). */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { runUltraCompress } from "./src/bridge";
+import { TextKeyCache } from "./src/text-key-cache";
 import { UcReferences } from "./src/references";
 import { recallArgs, recallProperties, recallText, parseRecallCommand } from "./src/recall";
 import { loadSettings, resolveUltraCompressBin, type UltraCompressSettings } from "./src/settings";
@@ -47,9 +48,11 @@ export default function ultraCompressExtension(pi: ExtensionAPI): void {
   const ultracompressBin = resolveUltraCompressBin(settings);
   const transformCache = new Map<string, { op: UltraCompressOp; blocks: Array<Record<string, unknown>> }>();
   const references = new UcReferences();
+  const textKeys = new TextKeyCache();
   pi.on("session_start", () => {
     references.clear();
     transformCache.clear();
+    textKeys.clear();
   });
   let lastCalibratedCpt: number | undefined;
   let visionKnown: boolean | null = null;
@@ -62,12 +65,6 @@ export default function ultraCompressExtension(pi: ExtensionAPI): void {
       writeFileSync("/tmp/ultracompress-debug.json", JSON.stringify(data, null, 2));
     } catch {}
   };
-
-  const keyFor = (text: string) =>
-    cacheKey(
-      { p: settings.policy, v: visionKnown, s: settings.snap.minChars, u: settings.uc.minChars, cpt: lastCalibratedCpt },
-      text,
-    );
 
   // Remove our invisible-continue marker from LLM payloads (matched by type only).
   pi.on("context", (event) => {
@@ -94,14 +91,15 @@ export default function ultraCompressExtension(pi: ExtensionAPI): void {
     }
     const minChars = Math.min(settings.uc.minChars, settings.snap.minChars);
     const messages = event.messages as unknown as AgentLikeMessage[];
-    // Reuse keys only within this request: repeated text and the apply pass need
-    // no second serialization/hash. Keep candidate occurrences (and their order)
-    // intact, and recompute with current settings/calibration on the next request.
+    // Context objects are deep-copied by Pi: exact strings, not message IDs,
+    // are the safe reuse boundary. Bound retained text and invalidate settings.
+    const keyParts = { p: settings.policy, v: visionKnown, s: settings.snap.minChars, u: settings.uc.minChars, cpt: lastCalibratedCpt };
+    textKeys.setScope(JSON.stringify(keyParts));
     const requestKeys = new Map<string, string>();
     const requestKeyFor = (text: string): string => {
       let key = requestKeys.get(text);
       if (key === undefined) {
-        key = keyFor(text);
+        key = textKeys.get(text, () => cacheKey(keyParts, text));
         requestKeys.set(text, key);
       }
       return key;

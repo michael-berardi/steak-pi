@@ -42,10 +42,13 @@ continues to surface actionable resource diagnostics.
 
 That is the ceremony. Kettle optional.
 
-> **Measured on the larger controlled GLM-5.3-Flash fixture:** Steak Pi's USAP
-> orchestration was **49% faster and used 64% fewer tokens than
-> [Oh My Pi (OMP)](https://github.com/can1357/oh-my-pi)**. Across all three edit
-> fixtures, USAP went **9/9 first-pass**.
+> **Measured live on GLM-5.3-Flash (2026-09-09 mirror):** 27/27 benchmark runs
+> and 16/16 pressure-gate fixes passed first attempt. Under the same delegation
+> shape as the September calibration, USAP used **27% fewer tokens** than its
+> previous release, and its new capacity system held a hard **8-worker
+> machine-wide cap across concurrent sessions** with zero provider errors. In
+> the earlier controlled comparison, USAP was **49% faster and 64% leaner than
+> [Oh My Pi (OMP)](https://github.com/can1357/oh-my-pi)**.
 
 ## Why Steak Pi
 
@@ -67,7 +70,29 @@ trying to become an operating system because you asked it to rename a method.
 
 ## Proof, not garnish
 
-### Current USAP calibration
+### Current live mirror (2026-09-09)
+
+Same controls as the September calibration — `zai/glm-5.3-flash`, thinking
+`high`, balanced order, fresh fixtures, deterministic verification — plus two
+new measurements: doctrine mode (the shipped guidelines choose between inline
+and delegation) and a machine-capacity pressure gate.
+
+| Measurement | Result |
+| --- | --- |
+| First-pass completion | **27/27 runs**, all arms and modes |
+| Forced-delegation token cost (modules) | **57,372 median**, down from 78,834 (**−27%**) at the same delegation shape |
+| Worker report trims | nested tokens **−22.6%** and wall **−8%** on the forced tiny case |
+| Doctrine mode | matched stock Pi wall time within variance while honoring the delegation-speed contract |
+| Machine-capacity gate | 2 sessions × 8 workers; hard cap of 8 concurrent held; 16/16 fixes verified; no 429s |
+
+USAP is adaptive by design: tiny jobs stay with the parent; independent leaves
+fan out only when parallel work repays its briefing cost with faster
+completion. No compulsory committee for a two-line fix.
+
+Full tables, ranges, controls, and limitations:
+[`glm53-live-mirror-2026-09-09.md`](./benchmarks/usap/results/glm53-live-mirror-2026-09-09.md).
+
+### Previous calibration (2026-09-04)
 
 Larger four-module implementation; `zai/glm-5.3-flash`; thinking `high`; three
 samples per arm; identical fixtures and deterministic verification:
@@ -81,10 +106,6 @@ samples per arm; identical fixtures and deterministic verification:
 Against OMP, Steak Pi was **about 49% faster and 64% leaner**. Against Steak
 Pi's old executor, USAP was **about 8% faster and 59% leaner**. Every run passed
 first attempt.
-
-USAP is adaptive by design: tiny jobs stay with the parent; independent leaves
-fan out only when parallel work can repay its briefing cost. No compulsory
-committee for a two-line fix.
 
 Full controls, all benchmark arms, medians, variability, accounting rules, and
 security probes:

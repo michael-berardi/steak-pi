@@ -163,7 +163,10 @@ function runArm(arm, caseId, dir, prompt) {
   const t0 = Date.now();
   const proc = spawnSync(PI, args, { cwd: dir, encoding: "utf8", timeout: 15 * 60_000, maxBuffer: 64 * 1024 * 1024 });
   const wallMs = Date.now() - t0;
-  const lines = (proc.stdout || "").split("\n").filter((l) => l.startsWith("{"));
+  const stdout = proc.stdout || "";
+  // Retain the raw provider stream for audit: the results doc's retention claim.
+  writeFileSync(join(dir, "..", `${dir.split("/").pop()}.raw.jsonl`), stdout);
+  const lines = stdout.split("\n").filter((l) => l.startsWith("{"));
   let agentEnd = null;
   let sawModel = false;
   let parentTokens = 0;
@@ -211,7 +214,9 @@ function main() {
         const prompt = CASES[caseId].prompt;
         const run = { caseId, arm, round: i, tag, mode: process.env.DELEGATION_MODE === "doctrine" ? "doctrine" : "forced", ...runArm(arm, caseId, dir, prompt) };
         run.verify = CASES[caseId].verify(dir);
-        run.firstPass = run.verify.ok && run.sawModel;
+        // First-pass requires deterministic verification, the resolved route,
+        // clean process exit, and zero tool errors.
+        run.firstPass = run.verify.ok && run.sawModel && run.exit === 0 && run.toolErrors === 0;
         results.push(run);
         console.log(`${tag} ${caseId} ${arm} #${i}: wall=${(run.wallMs / 1000).toFixed(1)}s tok=${run.parentTokens}+${run.nestedTokens} ok=${run.firstPass} ${run.verify.note}`);
         writeFileSync(join(ROOT, `results-${tag}.json`), JSON.stringify(results, null, 2));

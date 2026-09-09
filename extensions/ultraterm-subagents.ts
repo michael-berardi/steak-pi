@@ -505,13 +505,27 @@ export function createUltratermSubagentsExtension(
      */
     const flushCompletions = (current: SessionRuntime): void => {
       if (current.closed || !current.agentIdle || current.completionBuffer.length === 0) return;
-      const lines = current.completionBuffer.splice(0);
+      const lines: string[] = [];
+      let omitted = 0;
+      let used = 0;
+      // Keep whole reports while they fit; never silently drop a settled run.
+      for (const line of current.completionBuffer) {
+        if (used + line.length > MAX_COMPLETION_MESSAGE && lines.length > 0) {
+          omitted = current.completionBuffer.length - lines.length;
+          break;
+        }
+        lines.push(line);
+        used += line.length + 2;
+      }
+      current.completionBuffer.splice(0, lines.length);
+      const content = lines.join("\n\n")
+        + (omitted > 0 ? `\n\n[+${omitted} more settled run${omitted === 1 ? "" : "s"} omitted; see ultraterm_hub list.]` : "");
       try {
         pi.sendMessage({
           customType: "ultraterm-subagents-complete",
-          content: lines.join("\n\n").slice(0, MAX_COMPLETION_MESSAGE),
+          content: content.slice(0, MAX_COMPLETION_MESSAGE + 128),
           display: true,
-          details: { coalesced: lines.length },
+          details: { coalesced: lines.length, omitted },
         }, { deliverAs: "nextTurn", triggerTurn: false });
       } catch {
         // Completion delivery is best effort during host teardown.

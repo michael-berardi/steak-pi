@@ -53,8 +53,8 @@ function sanitizeProviders(input: unknown): Record<string, number> | undefined {
   return out;
 }
 
-function globalFrom(input: unknown, fallback: number): number {
-  if (typeof input === "number" && Number.isInteger(input) && input >= 1 && input <= 128) return input;
+function globalFrom(input: unknown, fallback: number, max: number): number {
+  if (typeof input === "number" && Number.isInteger(input) && input >= 1 && input <= max) return input;
   return fallback;
 }
 
@@ -75,11 +75,12 @@ export function loadCapacityConfig(path = configPath()): CapacityConfig {
     return {
       session: {
         providers: sanitizeProviders(session.providers) ?? { ...DEFAULTS.session.providers },
-        global: globalFrom(session.global, DEFAULTS.session.global),
+        // Session globals feed SessionScheduler, which validates 1..64.
+        global: globalFrom(session.global, DEFAULTS.session.global, 64),
       },
       machine: {
         providers: sanitizeProviders(machine.providers) ?? { ...DEFAULTS.machine.providers },
-        global: globalFrom(machine.global, DEFAULTS.machine.global),
+        global: globalFrom(machine.global, DEFAULTS.machine.global, 128),
       },
     };
   } catch {
@@ -89,7 +90,7 @@ export function loadCapacityConfig(path = configPath()): CapacityConfig {
 }
 
 export function sessionCap(config: CapacityConfig, provider: string): number {
-  return Math.min(config.session.providers[provider] ?? MAX_CONCURRENCY, config.session.global);
+  return Math.min(config.session.providers[provider] ?? MAX_CONCURRENCY, config.session.global, 64);
 }
 
 export function machineCap(config: CapacityConfig, provider: string): number {

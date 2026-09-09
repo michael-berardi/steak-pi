@@ -37,10 +37,15 @@ Use adaptive concurrency, never padding work:
 - **0:** direct answer, one known edit, or coupled work.
 - **1:** isolation or a specialist pass helps without true parallelism.
 - **2:** two independent leaves.
-- **3–4:** several genuinely independent paths or evidence sources.
+- **3–5:** several genuinely independent paths or evidence sources.
+- **6–8:** long multi-aspect work with many disjoint leaves; fill the wave
+  instead of executing serially in the parent.
 
-Four concurrent children is the hard maximum. Stop delegating when briefing
-cost exceeds the remaining work.
+Launch width defaults to a full wave (min(8, task count)). Eight concurrent
+children is the session-wide GLM ceiling (Luna lanes six), and a machine-wide
+cap of eight GLM workers is shared across all local sessions. Stop delegating
+when briefing cost exceeds the remaining work, and dispatch more workers only
+when they buy completion speed.
 
 ## Dispatch contract
 
@@ -105,7 +110,9 @@ replies. Relay never grants permissions, changes ownership, or settles
 consequential decisions. Requests must not wait without a bound.
 
 Every run enforces finite time, child-turn, output, and relay-message budgets.
-Canonical ceilings include 4 concurrent children, 16 active runs, 8 tasks per
+Canonical ceilings include 8 concurrent children per session on GLM lanes (6 on
+Luna lanes; machine-wide 8 GLM / 12 Luna shared across sessions), 16 active
+runs, 8 tasks per
 run, 50 retained terminal runs, 20,000 retained output characters per child,
 4,000 characters per relay body, 100 mailbox messages, and 500 messages per
 run. Treat truncation, timeout, budget exhaustion, failure, and cancellation

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -121,17 +121,29 @@ describe("MachineSlots", () => {
     r2();
   });
 
-  it("reclaims slots leaked by dead pids", async () => {
+  it("reclaims slots leaked by dead pids, and release never deletes a foreign lease", async () => {
     const dir = slotDir();
     const config = loadCapacityConfig(undefined as unknown as string);
     config.machine.providers = { zai: 1 };
     const slots = new MachineSlots({ dir, config });
     const release = await slots.acquire("zai");
     // Simulate a crashed holder: dead pid inside the held slot file.
-    writeFileSync(join(dir, "zai", "0.lock"), JSON.stringify({ pid: 3_999_999_999, born: Date.now() }));
-    release();
+    writeFileSync(join(dir, "zai", "0.lock"), JSON.stringify({ pid: 3_999_999_999, born: Date.now(), nonce: "crashed" }));
+    release(); // foreign or crashed holder: release must not delete
+    expect(existsSync(join(dir, "zai", "0.lock"))).toBe(true);
     const reclaimed = await slots.acquire("zai", undefined, 5_000);
     reclaimed();
+  });
+
+  it("keeps out-of-cap slots of other capacity views intact", async () => {
+    const dir = slotDir();
+    const config = loadCapacityConfig(undefined as unknown as string);
+    config.machine.providers = { zai: 2 };
+    const slots = new MachineSlots({ dir, config });
+    mkdirSync(join(dir, "zai"), { recursive: true });
+    writeFileSync(join(dir, "zai", "99.lock"), JSON.stringify({ pid: process.pid, born: Date.now(), nonce: "other-view" }));
+    expect(slots.heldCount("zai", 2)).toBe(0); // out of this view's cap: ignored, not deleted
+    expect(existsSync(join(dir, "zai", "99.lock"))).toBe(true);
   });
 
   it("NoopSlots never bounds", async () => {
