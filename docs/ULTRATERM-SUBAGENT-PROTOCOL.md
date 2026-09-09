@@ -250,7 +250,7 @@ The Steak Pi implementation profile uses these ceilings:
 | Resource | Bound |
 | --- | --- |
 | Concurrent children (per session) | 8 hard maximum on GLM lanes; 6 on Luna lanes; launch width defaults to a full wave (min(8, task count)) |
-| Concurrent children (machine-wide) | 8 GLM workers total across all local sessions; 12 Luna; provider-bucketed and crash-safe; a global cap bounds all providers combined |
+| Concurrent children (machine-wide) | 6 GLM workers total across all local sessions (operator-set below the provider rate limit, leaving headroom for interactive sessions); 12 Luna; provider-bucketed and crash-safe; a global cap bounds all providers combined |
 | Simultaneously active runs | 16; further dispatch is rejected until a run settles |
 | Tasks accepted in one run | 8 hard maximum; excess tasks remain a parent planning problem |
 | Run wall clock | finite; default 10 minutes, accepted range 1 second–30 minutes |

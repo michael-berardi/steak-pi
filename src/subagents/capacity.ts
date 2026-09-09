@@ -28,12 +28,14 @@ const DEFAULT_SESSION_PROVIDERS: Record<string, number> = {
 };
 
 /**
- * Machine-wide defaults. zai 8 is the operator-set total across ALL sessions
- * on this computer (one full GLM session, or several narrower ones);
+ * Machine-wide defaults. zai 6 is the operator-set total GLM flash workers
+ * across ALL sessions on this computer, sized below the provider's rate-limit
+ * threshold so interactive terminal sessions keep headroom alongside workers
+ * (observed rate limiting above ~6 concurrent GLM agents, 2026-09-09);
  * codex 12 covers two Luna-heavy sessions; global bounds all providers.
  */
 const DEFAULT_MACHINE_PROVIDERS: Record<string, number> = {
-  zai: 8,
+  zai: 6,
   "openai-codex": 12,
 };
 

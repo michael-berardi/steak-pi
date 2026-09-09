@@ -24,7 +24,7 @@ describe("capacity config", () => {
     const config = loadCapacityConfig(undefined as unknown as string);
     expect(sessionCap(config, "zai")).toBe(8);
     expect(sessionCap(config, "openai-codex")).toBe(6);
-    expect(machineCap(config, "zai")).toBe(8);
+    expect(machineCap(config, "zai")).toBe(6);
     expect(machineCap(config, "openai-codex")).toBe(12);
     expect(config.machine.global).toBe(24);
   });

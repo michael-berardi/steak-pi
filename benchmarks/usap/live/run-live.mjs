@@ -214,9 +214,10 @@ function main() {
         const prompt = CASES[caseId].prompt;
         const run = { caseId, arm, round: i, tag, mode: process.env.DELEGATION_MODE === "doctrine" ? "doctrine" : "forced", ...runArm(arm, caseId, dir, prompt) };
         run.verify = CASES[caseId].verify(dir);
-        // First-pass requires deterministic verification, the resolved route,
-        // clean process exit, and zero tool errors.
-        run.firstPass = run.verify.ok && run.sawModel && run.exit === 0 && run.toolErrors === 0;
+        // First-pass acceptance is deterministic verification plus the resolved
+        // route and a clean exit. Recoverable mid-run tool errors are normal
+        // agent behavior and are reported separately.
+        run.firstPass = run.verify.ok && run.sawModel && run.exit === 0;
         results.push(run);
         console.log(`${tag} ${caseId} ${arm} #${i}: wall=${(run.wallMs / 1000).toFixed(1)}s tok=${run.parentTokens}+${run.nestedTokens} ok=${run.firstPass} ${run.verify.note}`);
         writeFileSync(join(ROOT, `results-${tag}.json`), JSON.stringify(results, null, 2));

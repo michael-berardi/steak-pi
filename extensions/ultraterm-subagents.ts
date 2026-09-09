@@ -54,17 +54,17 @@ const TaskSchema = Type.Object({
 /** Public dispatcher schema, exported so contract tests do not have to load Pi. */
 export const ultratermSubagentsSchema = Type.Object({
   goal: Type.String({ minLength: 1, maxLength: 8_000 }),
-  model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Exact authenticated provider/model for every task. Mutually exclusive with profile; overrides role defaults." })),
-  profile: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Native harness/profile route, e.g. steak-pi/glm-5-3-flash. Mutually exclusive with model; never launches another CLI." })),
-  requireImages: Type.Optional(Type.Boolean({ description: "Require advertised image input for visual critics/render inspection. No silent fallback." })),
+  model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Exact authenticated provider/model for all tasks; mutually exclusive with profile." })),
+  profile: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Native harness/profile route (e.g. steak-pi/glm-5-3-flash); mutually exclusive with model." })),
+  requireImages: Type.Optional(Type.Boolean({ description: "Require advertised image input; no silent fallback." })),
   constraints: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4_000 }), { maxItems: 64 })),
   contract: Type.Optional(Type.String({ minLength: 1, maxLength: 8_000 })),
   tasks: Type.Array(TaskSchema, { minItems: 1, maxItems: MAX_TASKS }),
-  concurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_CONCURRENCY, description: "Launch width. Defaults to a full wave: min(8, task count)." })),
+  concurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_CONCURRENCY, description: "Defaults to min(8, task count)." })),
   timeoutMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 30 * 60_000 })),
   background: Type.Optional(Type.Boolean({ default: false })),
   thinking: Type.Optional(stringEnum(["medium", "high", "xhigh"] as const)),
-  thinkingReason: Type.Optional(Type.String({ minLength: 16, maxLength: 2_000, description: "Concrete task benefit required for high/xhigh; Astra defaults to medium." })),
+  thinkingReason: Type.Optional(Type.String({ minLength: 16, maxLength: 2_000, description: "Why high/xhigh reasoning benefits this task." })),
 }, { additionalProperties: false });
 
 /** Public provider-compatible hub schema. Sender identity is absent and host-bound. */
@@ -562,21 +562,15 @@ export function createUltratermSubagentsExtension(
     pi.registerTool({
       name: "ultraterm_subagents",
       label: "UltraTerm Subagents",
-      description: "Dispatch 1-8 bounded child tasks as one parallel wave through the session USAP coordinator. Foreground default; background only when parent work overlaps. ownedPaths = writable ownership, omitted for read-only tasks. allowBash = explicit unsandboxed shell in the operator trust domain.",
+      description: "Dispatch 1-8 bounded child tasks as one parallel wave. Foreground default. ownedPaths = writable ownership (omit for read-only tasks). allowBash = unsandboxed shell.",
       promptSnippet: "Dispatch bounded independent child tasks with explicit permissions and path ownership",
       promptGuidelines: [
-        "Fan out by default: independent leaves (disjoint files, modules, screens, research angles) dispatch in ONE call as one parallel wave; serially executing a long task list in the parent wastes wall clock.",
-        "Wave width defaults to min(8, task count). GLM lanes fill 8; Luna lanes stay at 6 or fewer. Lower it only for contended resources.",
-        "Delegation must buy completion speed: modest token premiums for real throughput are correct; added agents at unchanged speed are not. Trivial or tightly coupled edits and direct answers stay in the parent.",
-        "Parent owns decomposition, integration, verification; workers own leaves end to end. With exact disjoint paths and acceptance contracts already in hand, dispatch in the first tool turn without pre-reading child-owned files.",
-        "Before dispatch, inspect only shared interfaces or ambiguity needed to decompose safely; do not duplicate child discovery in the parent.",
-        "model/profile select an explicit authenticated worker route; mutually exclusive; overrides role defaults. Prose naming a model is not selection.",
-        "Without a selector, use parent-profile defaults: legacy GPT lanes are Luna (routine) and the parent (reviewers). Every GPT choice requires paid openai-codex OAuth, never OpenRouter, API-key, or batch GPT.",
-        "requireImages=true for visual critics or render inspection. Workers need a native text/tool adapter; missing auth or capability fails before launch, no silent fallback.",
-        "Astra workers default to medium reasoning; high/xhigh needs a concrete benefit in thinkingReason. Reviewer role alone never escalates.",
+        "Fan out by default: independent leaves (disjoint files, modules, screens, angles) dispatch in ONE parallel wave — width defaults to min(8, task count); GLM lanes fill 8, Luna lanes stay at 6 or fewer.",
+        "Delegation must buy completion speed; modest token premiums for real throughput are correct. Trivial or tightly coupled edits and direct answers stay in the parent.",
+        "Parent owns decomposition, integration, verification; workers own leaves end to end. With exact disjoint paths and acceptance contracts in hand, dispatch in the first tool turn without pre-reading child-owned files; do not duplicate child discovery in the parent.",
+        "model or profile picks an explicit authenticated route (mutually exclusive, overrides roles). Every GPT choice requires paid openai-codex OAuth — never OpenRouter, API-key, or batch GPT. Astra workers default to medium reasoning; high/xhigh needs a concrete thinkingReason. requireImages=true for visual critics or render inspection.",
         "Background only when the parent can integrate while children run, then one bounded ultraterm_hub wait. Never start a background run merely to wait immediately.",
-        "For read-only tasks omit ownedPaths and state the read scope in task text; ownedPaths are required only for mayEdit=true.",
-        "allowBash bypasses ownedPaths (shell is not path-sandboxed); grant only when operator-level access is necessary.",
+        "For read-only tasks omit ownedPaths and state the read scope in task text; mayEdit requires ownedPaths. allowBash bypasses ownedPaths — grant only when operator-level shell access is necessary.",
       ],
       parameters: ultratermSubagentsSchema as any,
       async execute(_toolCallId, rawParams, signal, onUpdate, ctx) {
@@ -665,9 +659,9 @@ export function createUltratermSubagentsExtension(
       description: "Manage session-local USAP runs: list, status, bounded wait, cancel, send a host-authenticated parent relay message, or read the parent inbox.",
       promptSnippet: "Inspect, wait for, cancel, or message an existing USAP run",
       promptGuidelines: [
-        "runId is required for status, wait, cancel, send, and inbox; only list omits it.",
-        "Send needs to and body; replies need kind=reply and the exact request envelope ID in replyTo.",
-        "Wait with a finite timeout; avoid repeated status polling.",
+        "runId is required for every action except list.",
+        "Send needs to and body; replies need kind=reply and the exact replyTo.",
+        "Wait with finite timeouts; avoid polling.",
       ],
       parameters: ultratermHubSchema as any,
       async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
