@@ -83,7 +83,26 @@ and delegation) and a machine-capacity pressure gate.
 | Forced-delegation token cost (modules) | **57,372 median**, down from 78,834 (**−27%**) at the same delegation shape |
 | Worker report trims | nested tokens **−22.6%** and wall **−8%** on the forced tiny case |
 | Doctrine mode | matched stock Pi wall time within variance while honoring the delegation-speed contract |
-| Machine-capacity gate | 2 sessions × 8 workers; hard cap of 8 concurrent held; 16/16 fixes verified; no 429s |
+| Machine-capacity gate | 2 sessions × 8 workers; hard cap of 8 concurrent held; 16/16 fixes verified; no 429s — **~8 fixes/minute aggregate** under one shared cap |
+
+**Takeaway:** at the same delegation shape, the 0.5.0 delegation path costs
+about a quarter less than 0.4.x, first-pass held at 100%, and several open
+windows can now delegate simultaneously without stampeding the provider.
+
+### Whole-package speed (0.5.0 optimization pass)
+
+Microbenchmarks from the 0.5.0 pass, reviewed by GPT-6 Astra:
+
+| Hot path | Before | After |
+| --- | ---: | ---: |
+| UltraCompress context-hook key cache (6,400 lookups, 32×64 KiB texts) | 434.6 ms | **32.5 ms (13×)** |
+| UC reference reverse lookup with LRU-safe eviction | 468.3 ms | **1.1 ms (425×)** |
+| Worker native-tool factory access (per 100k) | 22.68 ms | **0.28 ms (80×)** |
+| Companion footer | queried context/usage every render | **statuses only** — zero extra provider-state queries |
+
+These paths run before model calls and on every render, so the savings compound
+with turn count: long sessions skip thousands of redundant hashes, byte counts,
+and factory allocations.
 
 USAP is adaptive by design: tiny jobs stay with the parent; independent leaves
 fan out only when parallel work repays its briefing cost with faster
@@ -333,5 +352,16 @@ See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for contribution guidance and
 **Steak Pi is Pi ready for serious work: faster orchestration, drastically lower
 agent overhead, deterministic context, automatic correction, and no unnecessary
 ceremony. Already measured. Already bounded. Already cooked.**
+
+## ⭐ If Steak Pi earned a place in your terminal
+
+**[Give Steak Pi a star →](https://github.com/michael-berardi/steak-pi/stargazers)**
+
+Steak Pi is built in the open, measured in public, and shipped without a
+download counter or an ad budget. Stars are the only signal that tells other
+people running agents day-to-day that this package is worth their evening —
+they decide what the next release gets priority on, and they genuinely help
+other cooks find the kitchen. If the benchmarks, the protocol, or the compaction
+saved you real time, that one click is the fairest trade on this page.
 
 [MIT](./LICENSE) · by Implose Cybernetics
