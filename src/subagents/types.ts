@@ -2,8 +2,10 @@ export const USAP_VERSION = "1.1" as const;
 export const MAX_TASKS = 8;
 export const MAX_ACTIVE_RUNS = 16;
 export const MAX_RETAINED_TERMINAL_RUNS = 50;
+/** Fallback launch width when a dispatch supplies no usable task count. */
 export const DEFAULT_CONCURRENCY = 4;
-export const MAX_CONCURRENCY = 4;
+/** Session-wide launch ceiling. GLM flash lanes fill 8-wide waves; Luna lanes stay <= 6 by doctrine. */
+export const MAX_CONCURRENCY = 8;
 export const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 export const MIN_TIMEOUT_MS = 1_000;
 export const MAX_TIMEOUT_MS = 30 * 60_000;

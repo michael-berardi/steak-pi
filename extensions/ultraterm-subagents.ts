@@ -60,7 +60,7 @@ export const ultratermSubagentsSchema = Type.Object({
   constraints: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4_000 }), { maxItems: 64 })),
   contract: Type.Optional(Type.String({ minLength: 1, maxLength: 8_000 })),
   tasks: Type.Array(TaskSchema, { minItems: 1, maxItems: MAX_TASKS }),
-  concurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_CONCURRENCY })),
+  concurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_CONCURRENCY, description: "Launch width. Defaults to a full wave: min(8, task count)." })),
   timeoutMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 30 * 60_000 })),
   background: Type.Optional(Type.Boolean({ default: false })),
   thinking: Type.Optional(stringEnum(["medium", "high", "xhigh"] as const)),
@@ -172,6 +172,10 @@ interface SessionRuntime {
   telemetryWritable: boolean;
   statusContext?: ExtensionContext;
   closed: boolean;
+  /** Background completions awaiting one coalesced delivery. */
+  completionBuffer: string[];
+  /** True until an agent run starts; cleared/refreshed by agent lifecycle events. */
+  agentIdle: boolean;
 }
 
 /** Bounded, non-context state only: never include goals, prompts, output, or usage. */
@@ -449,6 +453,8 @@ export function createUltratermSubagentsExtension(
         telemetryWritable: true,
         statusContext: ctx,
         closed: false,
+        completionBuffer: [],
+        agentIdle: true,
       };
       runtime = created;
       return created;
@@ -474,35 +480,42 @@ export function createUltratermSubagentsExtension(
         }
         binding.onUpdate = undefined;
         if (binding.background) {
-          try {
-            pi.sendMessage({
-              customType: "ultraterm-subagents-complete",
-              content: renderCompletionMessage(run),
-              display: true,
-              details: { runId: run.id, state: run.state, taskIds: run.tasks.map((task) => task.id) },
-            }, { deliverAs: "nextTurn", triggerTurn: false });
-          } catch {
-            // Completion delivery is best effort during host teardown.
-          }
+          current.completionBuffer.push(renderCompletionMessage(run));
+          flushCompletions(current);
         }
       }).catch((error: unknown) => {
         if (current.closed) return;
         current.workerRuntimes.delete(runId);
         setStatus(current);
         reconcileRetainedBindings(current);
-        try {
-          pi.sendMessage({
-            customType: "ultraterm-subagents-complete",
-            content: `USAP ${runId} infrastructure failure: ${error instanceof Error ? error.message : String(error)}`
-              .slice(0, MAX_COMPLETION_MESSAGE),
-            display: true,
-            details: { runId, infrastructureError: true },
-          }, { deliverAs: "nextTurn", triggerTurn: false });
-        } catch {
-          // Completion delivery is best effort during host teardown.
-        }
+        current.completionBuffer.push(
+          `USAP ${runId} infrastructure failure: ${error instanceof Error ? error.message : String(error)}`
+            .slice(0, MAX_COMPLETION_MESSAGE),
+        );
+        flushCompletions(current);
       });
       return completion;
+    };
+
+    /**
+     * Deliver buffered background completions as ONE compact message.
+     * Without coalescing, every settled run queues its own nextTurn message;
+     * a long parent turn piles them up and an interrupt flushes them all at
+     * once, spamming the transcript.
+     */
+    const flushCompletions = (current: SessionRuntime): void => {
+      if (current.closed || !current.agentIdle || current.completionBuffer.length === 0) return;
+      const lines = current.completionBuffer.splice(0);
+      try {
+        pi.sendMessage({
+          customType: "ultraterm-subagents-complete",
+          content: lines.join("\n\n").slice(0, MAX_COMPLETION_MESSAGE),
+          display: true,
+          details: { coalesced: lines.length },
+        }, { deliverAs: "nextTurn", triggerTurn: false });
+      } catch {
+        // Completion delivery is best effort during host teardown.
+      }
     };
 
     pi.on("session_start", async (_event, ctx) => {
@@ -512,6 +525,16 @@ export function createUltratermSubagentsExtension(
         await destroyRuntime(ctx, false);
       }
       ensureRuntime(ctx);
+    });
+
+    pi.on("agent_start", async () => {
+      if (runtime) runtime.agentIdle = false;
+    });
+
+    pi.on("agent_settled", async () => {
+      if (!runtime || runtime.closed) return;
+      runtime.agentIdle = true;
+      flushCompletions(runtime);
     });
 
     pi.on("session_before_switch", async (_event, ctx) => {
@@ -525,21 +548,21 @@ export function createUltratermSubagentsExtension(
     pi.registerTool({
       name: "ultraterm_subagents",
       label: "UltraTerm Subagents",
-      description: "Dispatch 1-8 bounded child tasks through the session USAP coordinator. Foreground is the efficient default; choose background explicitly only when parent work can overlap. ownedPaths are writable ownership only and must be omitted for read-only tasks. allowBash is explicit unsandboxed shell access in the operator trust domain.",
+      description: "Dispatch 1-8 bounded child tasks as one parallel wave through the session USAP coordinator. Foreground default; background only when parent work overlaps. ownedPaths = writable ownership, omitted for read-only tasks. allowBash = explicit unsandboxed shell in the operator trust domain.",
       promptSnippet: "Dispatch bounded independent child tasks with explicit permissions and path ownership",
       promptGuidelines: [
-        "Independence is necessary but not sufficient: keep trivial edits, direct answers, and leaves smaller than their briefing/integration cost in the parent.",
-        "Use run-level model or profile for an explicit authenticated worker route, independent of the manager. Explicit selection overrides reviewer and profile defaults; model and profile are mutually exclusive. Prose naming a model is not selection.",
-        "Without a selector, use the parent profile worker/reviewer default. Legacy GPT defaults are Luna for routine work and the parent for reviewers. Every GPT choice requires paid openai-codex OAuth, never OpenRouter, API-key, or batch GPT.",
-        "Set requireImages=true for visual critics or render inspection. All workers require a native text/tool adapter; unavailable auth or capabilities fail before launch, with no silent fallback.",
-        "Astra workers default to medium reasoning. Request high/xhigh only with a concrete task benefit in thinkingReason; reviewer role alone is not a reason to escalate.",
-        "Use ultraterm_subagents only for substantial independent bounded leaves where context isolation, multi-turn depth, or useful latency overlap repays delegation; the parent retains decomposition, integration, and verification.",
-        "When the request already gives exact disjoint paths and acceptance contracts, dispatch in the first tool turn without pre-reading child-owned files; child inspection supplies leaf evidence and the parent verifies after.",
-        "Before dispatch, inspect only shared interfaces or ambiguity actually needed to decompose safely; do not duplicate child discovery in the parent.",
-        "Choose background execution only when the parent can inspect shared contracts or prepare integration while children run; then use one bounded ultraterm_hub wait instead of polling.",
-        "Never start a background run merely to wait immediately; foreground avoids that extra coordination turn.",
+        "Fan out by default: independent leaves (disjoint files, modules, screens, research angles) dispatch in ONE call as one parallel wave; serially executing a long task list in the parent wastes wall clock.",
+        "Wave width defaults to min(8, task count). GLM lanes fill 8; Luna lanes stay at 6 or fewer. Lower it only for contended resources.",
+        "Delegation must buy completion speed: modest token premiums for real throughput are correct; added agents at unchanged speed are not. Trivial or tightly coupled edits and direct answers stay in the parent.",
+        "Parent owns decomposition, integration, verification; workers own leaves end to end. With exact disjoint paths and acceptance contracts already in hand, dispatch in the first tool turn without pre-reading child-owned files.",
+        "Before dispatch, inspect only shared interfaces or ambiguity needed to decompose safely; do not duplicate child discovery in the parent.",
+        "model/profile select an explicit authenticated worker route; mutually exclusive; overrides role defaults. Prose naming a model is not selection.",
+        "Without a selector, use parent-profile defaults: legacy GPT lanes are Luna (routine) and the parent (reviewers). Every GPT choice requires paid openai-codex OAuth, never OpenRouter, API-key, or batch GPT.",
+        "requireImages=true for visual critics or render inspection. Workers need a native text/tool adapter; missing auth or capability fails before launch, no silent fallback.",
+        "Astra workers default to medium reasoning; high/xhigh needs a concrete benefit in thinkingReason. Reviewer role alone never escalates.",
+        "Background only when the parent can integrate while children run, then one bounded ultraterm_hub wait. Never start a background run merely to wait immediately.",
         "For read-only tasks omit ownedPaths and state the read scope in task text; ownedPaths are required only for mayEdit=true.",
-        "allowBash bypasses ownedPaths because shell commands are not path-sandboxed; grant it only when that operator-level access is necessary.",
+        "allowBash bypasses ownedPaths (shell is not path-sandboxed); grant only when operator-level access is necessary.",
       ],
       parameters: ultratermSubagentsSchema as any,
       async execute(_toolCallId, rawParams, signal, onUpdate, ctx) {
@@ -628,9 +651,9 @@ export function createUltratermSubagentsExtension(
       description: "Manage session-local USAP runs: list, status, bounded wait, cancel, send a host-authenticated parent relay message, or read the parent inbox.",
       promptSnippet: "Inspect, wait for, cancel, or message an existing USAP run",
       promptGuidelines: [
-        "Always include runId for status, wait, cancel, send, and inbox; only list omits runId.",
-        "Send requires to and body; a reply also requires kind=reply and the exact request envelope ID in replyTo.",
-        "Use ultraterm_hub wait with a finite timeout for background work; avoid repeated status polling.",
+        "runId is required for status, wait, cancel, send, and inbox; only list omits it.",
+        "Send needs to and body; replies need kind=reply and the exact request envelope ID in replyTo.",
+        "Wait with a finite timeout; avoid repeated status polling.",
       ],
       parameters: ultratermHubSchema as any,
       async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {

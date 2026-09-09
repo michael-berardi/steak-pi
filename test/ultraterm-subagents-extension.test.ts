@@ -83,8 +83,9 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     const h = harness(() => async () => ({ state: "done", output: "ok", turns: 1, usage: usage(1) }));
     expect([...h.tools.keys()]).toEqual(["ultraterm_subagents", "ultraterm_hub"]);
     const guidelines = h.tools.get("ultraterm_subagents").promptGuidelines.join(" ");
-    expect(guidelines).toContain("parent retains decomposition");
-    expect(guidelines).toContain("Independence is necessary but not sufficient");
+    expect(guidelines).toContain("Fan out by default");
+    expect(guidelines).toContain("Parent owns decomposition");
+    expect(guidelines).toContain("Delegation must buy completion speed");
     expect(guidelines).toContain("dispatch in the first tool turn");
     expect(guidelines).toContain("do not duplicate child discovery");
     expect(guidelines).toContain("Never start a background run merely to wait immediately");
