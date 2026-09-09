@@ -92,6 +92,7 @@ describe("responsive semantic rendering", () => {
     thinking: "high",
     usage: { input: 1200, output: 300, cacheRead: 8500, cacheWrite: 100, cost: 0.125 },
     context: { percent: 72.4, contextWindow: 131_072 },
+    extensionStatuses: [],
   };
 
   it("never exceeds the terminal width at compact and desktop sizes", () => {
@@ -100,7 +101,7 @@ describe("responsive semantic rendering", () => {
         const lines = [
           ...renderCompanionHeader(width, palette),
           renderComposerBand(width, snapshot, palette),
-          ...renderCompanionFooter(width, snapshot, palette),
+          ...renderCompanionFooter(width, { extensionStatuses: snapshot.extensionStatuses }, palette),
         ];
         expect(lines).toHaveLength(2);
         for (const line of lines) {
@@ -159,7 +160,7 @@ describe("responsive semantic rendering", () => {
       const output = [
         ...renderCompanionHeader(width, palette),
         renderComposerBand(width, snapshot, palette),
-        ...renderCompanionFooter(width, snapshot, palette),
+        ...renderCompanionFooter(width, { extensionStatuses: snapshot.extensionStatuses }, palette),
       ].join("\n");
       expect(output).not.toMatch(/#[0-9a-f]{3,8}|\x1b\[/i);
     }
@@ -219,7 +220,7 @@ describe("responsive semantic rendering", () => {
     };
     for (const line of [
       renderComposerBand(80, adversarial, plainPalette),
-      ...renderCompanionFooter(80, adversarial, plainPalette),
+      ...renderCompanionFooter(80, { extensionStatuses: (adversarial as { extensionStatuses?: string[] }).extensionStatuses }, plainPalette),
     ]) {
       expect(line).not.toMatch(/[\x00-\x1f\x7f]/);
       expect(displayWidth(line)).toBeLessThanOrEqual(80);
@@ -237,7 +238,7 @@ describe("responsive semantic rendering", () => {
     expect(renderComposerBand(40, snapshot, plainPalette)).toBe(
       "◆ a-very-long-model… · ● resumed ▶─◫ 72%",
     );
-    expect(renderCompanionFooter(40, snapshot, plainPalette)).toEqual([]);
+    expect(renderCompanionFooter(40, { extensionStatuses: snapshot.extensionStatuses }, plainPalette)).toEqual([]);
   });
 });
 

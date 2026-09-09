@@ -305,7 +305,7 @@ export function renderComposerBand(
 
 export function renderCompanionFooter(
   width: number,
-  snapshot: FooterSnapshot,
+  snapshot: Pick<FooterSnapshot, "extensionStatuses">,
   palette: SemanticPalette,
 ): string[] {
   const safeWidth = Math.max(1, width);

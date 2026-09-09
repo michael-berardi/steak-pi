@@ -57,7 +57,7 @@ beforeEach(() => {
   vi.mocked(runUltraCompress).mockReset();
 });
 
-describe("request-local live transform keys", () => {
+describe("bounded cross-request live transform keys", () => {
   it.each(["nextUser", "inline"] as const)("hashes unique text once, preserving %s output and repeat occurrences", async (placement) => {
     const settings = structuredClone(DEFAULT_SETTINGS);
     settings.snap.placement = placement;
@@ -85,7 +85,7 @@ describe("request-local live transform keys", () => {
 
     vi.mocked(transforms.cacheKey).mockClear();
     expect(await hooks.context(structuredClone(original))).toEqual(result);
-    expect(transforms.cacheKey).toHaveBeenCalledTimes(2); // New request, including cache hits.
+    expect(transforms.cacheKey).toHaveBeenCalledTimes(0); // Deep copies reuse exact strings.
     expect(runUltraCompress).toHaveBeenCalledTimes(1);
   });
 
@@ -148,11 +148,11 @@ describe("request-local live transform keys", () => {
     const first = vi.mocked(transforms.cacheKey).mock.results[0].value;
     model.input = ["text"];
     await hooks.context(input());
-    expect(vi.mocked(transforms.cacheKey).mock.results[1].value).toBe(first); // Existing visionKnown latch.
+    expect(transforms.cacheKey).toHaveBeenCalledTimes(1); // Existing visionKnown latch.
     const other = register(settings, model);
     await other.context(input());
     expect(transforms.cacheKey).toHaveBeenLastCalledWith({ p: "auto", v: false, s: 6000, u: 1200, cpt: undefined }, a);
-    expect(vi.mocked(transforms.cacheKey).mock.results[2].value).not.toBe(first);
+    expect(vi.mocked(transforms.cacheKey).mock.results[1].value).not.toBe(first);
     expect(runUltraCompress).toHaveBeenCalledTimes(2);
   });
 });

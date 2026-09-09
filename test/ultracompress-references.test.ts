@@ -22,6 +22,21 @@ function register() {
 }
 
 describe("UC original-output references", () => {
+  it("refreshes reverse-index hits and removes evicted/cleared text keys", () => {
+    const refs = new UcReferences(10, 2);
+    const alpha = refs.put("alpha")!;
+    const beta = refs.put("beta")!;
+    expect(refs.put("alpha")).toBe(alpha);
+    refs.put("gamma");
+    expect(refs.get(beta)).toBeUndefined();
+    expect(refs.get(alpha)).toBe("alpha");
+    expect(refs.put("beta")).toBe(beta);
+    expect(refs.get(beta)).toBe("beta");
+    refs.clear();
+    expect(refs.put("alpha")).toBe(alpha);
+    expect(refs.get(alpha)).toBe("alpha");
+  });
+
   it("is exact, deterministic, bounded and rejects paths or foreign ids", () => {
     const refs = new UcReferences(100, 2);
     const a = refs.put("alpha")!;

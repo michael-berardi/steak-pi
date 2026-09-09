@@ -164,11 +164,7 @@ export default function companionUiExtension(pi: ExtensionAPI): void {
           return cachedUsage;
         })(),
         context: contextSnapshot(ctx),
-        extensionStatuses: Array.from(
-          footerData?.getExtensionStatuses().entries() ?? [],
-        )
-          .sort(([left], [right]) => left.localeCompare(right))
-          .map(([, value]) => value),
+
       };
     };
 
@@ -185,7 +181,13 @@ export default function companionUiExtension(pi: ExtensionAPI): void {
         invalidate() {},
         render(width: number) {
           try {
-            return renderCompanionFooter(width, snapshot(), paletteFor(theme));
+            return renderCompanionFooter(width, {
+              extensionStatuses: Array.from(
+          footerData?.getExtensionStatuses().entries() ?? [],
+        )
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([, value]) => value),
+            }, paletteFor(theme));
           } catch {
             return [theme.fg("dim", "Steak Pi".slice(0, Math.max(0, width)))];
           }

@@ -157,12 +157,17 @@ describe("companion extension integration", () => {
     await emit("agent_settled");
     expect(stripAnsi(editor.render(80)[0])).toContain("stopped · Request interrupted");
 
-    const originalContextUsage = ctx.getContextUsage;
-    ctx.getContextUsage = () => { throw new Error("synthetic render failure"); };
+    // The footer renders extension statuses only; a statuses failure falls
+    // back to a one-line brand marker instead of throwing.
+    const originalStatuses = footerData.getExtensionStatuses;
+    footerData.getExtensionStatuses = () => {
+      throw new Error("synthetic render failure");
+    };
     const fallback = footer.render(12);
     expect(fallback).toHaveLength(1);
     expect(fallback[0]).toBe("Steak Pi");
-    ctx.getContextUsage = originalContextUsage;
+    footerData.getExtensionStatuses = originalStatuses;
+    expect(footer.render(80)).toEqual([]);
   });
 
   it("does not install TUI components in print, JSON, or RPC modes", async () => {
