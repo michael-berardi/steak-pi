@@ -1,3 +1,4 @@
+import { createPrimaryHostPublisher } from "../src/primary-host.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const MAX_TITLE_CHARS = 80;
@@ -91,38 +92,14 @@ export function deriveSessionTitle(raw: string): string | null {
  * the handler only acts while the session name is unset.
  */
 export default function sessionTitleExtension(pi: ExtensionAPI): void {
-  // Only the foreground TUI owns the pane; SDK/RPC children can inherit
-  // TMUX_PANE and must never overwrite its binding. Slots are mutable labels.
-  let published: { pane: string; file: string } | undefined;
-  pi.on("session_start", async (_event, ctx) => {
-    const pane = process.env.TMUX_PANE;
-    if (ctx.mode !== "tui" || !pane || !/^%\d+$/.test(pane)) return;
-    const file = ctx.sessionManager.getSessionFile();
-    try {
-      const args = file && !/[\r\n|]/.test(file)
-        ? ["set-option", "-p", "-t", pane, "@pi-session-file", file]
-        : ["set-option", "-pu", "-t", pane, "@pi-session-file"];
-      const result = await pi.exec(process.env.TMUX_BIN || "tmux", args, { timeout: 1000 });
-      if (result.code === 0 && file) published = { pane, file };
-    } catch {
-      // Optional, non-secret metadata must never prevent session startup.
-    }
-  });
-  pi.on("session_shutdown", async () => {
-    const binding = published;
-    published = undefined;
-    if (!binding) return;
-    try {
-      const tmux = process.env.TMUX_BIN || "tmux";
-      const current = await pi.exec(tmux,
-        ["show-options", "-pqv", "-t", binding.pane, "@pi-session-file"], { timeout: 1000 });
-      if (current.code === 0 && current.stdout.trimEnd() === binding.file) {
-        await pi.exec(tmux, ["set-option", "-pu", "-t", binding.pane, "@pi-session-file"], { timeout: 1000 });
-      }
-    } catch {
-      // A closed pane already discarded its pane-local option.
-    }
-  });
+  const publisher = createPrimaryHostPublisher(
+    (command, args, options) => pi.exec(command, args, options),
+    (type, data) => pi.appendEntry(type, data),
+  );
+  pi.on("session_start", (event, ctx) => publisher.start(ctx, event.reason === "reload"));
+  pi.on("session_tree", (_event, ctx) => publisher.start(ctx));
+  pi.on("message_end", (_event, ctx) => publisher.retry(ctx));
+  pi.on("session_shutdown", (event) => publisher.stop(event.reason === "reload"));
 
   pi.on("input", (event) => {
     try {
