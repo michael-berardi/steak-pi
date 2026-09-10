@@ -10,6 +10,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { assertOwnedPath } from "./policy.ts";
+import { assertWorkerDependencies } from "./dependency-preflight.ts";
 import { assertModelRoute, assertSubscriptionRequest, guardModelRuntime } from "../model-route-policy.ts";
 import type { RelayBroker, RelayPeer, RelaySendResult } from "./relay.ts";
 import {
@@ -607,6 +608,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
 
     try {
       signal.throwIfAborted();
+      assertWorkerDependencies(import.meta.url, (specifier) => import.meta.resolve(specifier));
       const [managers, runtime] = await initialize(Promise.all([
         loadPiStateManagers(),
         options.resolveRuntime(run.id),

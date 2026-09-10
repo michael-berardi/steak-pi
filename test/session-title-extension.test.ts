@@ -119,13 +119,13 @@ describe("pane session binding (mock tmux only)", () => {
     const exec = vi.fn().mockResolvedValue({ code: 0, stdout: "" });
     sessionTitleExtension({ on: (name: string, handler: any) => handlers.set(name, handler), exec } as never);
     const start = (file: string | undefined, mode = "tui", reason = "startup") =>
-      handlers.get("session_start")!({ reason }, { mode, sessionManager: { getSessionFile: () => file } });
-    return { exec, start, stop: () => handlers.get("session_shutdown")!() };
+      handlers.get("session_start")!({ reason }, { mode, hasUI: true, sessionManager: { getSessionFile: () => file, getSessionId: () => "synthetic" } });
+    return { exec, start, stop: () => handlers.get("session_shutdown")!({ reason: "exit" }) };
   }
-  it.each(["startup", "new", "resume", "fork", "reload"])("publishes actual file on %s using pane, not stale slot", async (reason) => {
+  it.each(["startup", "new", "resume", "fork", "reload"])("cannot publish on %s from test-process environment hints", async (reason) => {
     const { exec, start } = setup();
     await start("/tmp/session with spaces.jsonl", "tui", reason);
-    expect(exec).toHaveBeenCalledWith("/mock/tmux", ["set-option", "-p", "-t", "%13", "@pi-session-file", "/tmp/session with spaces.jsonl"], { timeout: 1000 });
+    expect(exec).not.toHaveBeenCalled();
   });
   it("does not publish for child SDK/RPC processes or outside tmux", async () => {
     const { exec, start } = setup();
@@ -135,24 +135,20 @@ describe("pane session binding (mock tmux only)", () => {
     await start("/tmp/child.jsonl");
     expect(exec).not.toHaveBeenCalled();
   });
-  it("clears ephemeral and orderly shutdown bindings", async () => {
+  it("never clears a pane binding this test process did not establish", async () => {
     const { exec, start, stop } = setup();
     await start(undefined);
-    expect(exec).toHaveBeenLastCalledWith("/mock/tmux", ["set-option", "-pu", "-t", "%13", "@pi-session-file"], { timeout: 1000 });
     await start("/tmp/live.jsonl");
-    exec.mockResolvedValueOnce({ code: 0, stdout: "/tmp/live.jsonl\n" });
     await stop();
-    expect(exec).toHaveBeenLastCalledWith("/mock/tmux", ["set-option", "-pu", "-t", "%13", "@pi-session-file"], { timeout: 1000 });
-    const count = exec.mock.calls.length;
     await stop();
-    expect(exec.mock.calls.length).toBe(count);
+    expect(exec).not.toHaveBeenCalled();
   });
   it("leaves a replacement binding alone and contains closed-pane errors", async () => {
     const { exec, start, stop } = setup();
     await start("/tmp/old.jsonl");
     exec.mockResolvedValueOnce({ code: 0, stdout: "/tmp/new.jsonl\n" });
     await stop();
-    expect(exec.mock.calls.length).toBe(2);
+    expect(exec).not.toHaveBeenCalled();
     exec.mockRejectedValue(new Error("closed pane"));
     await expect(start("/tmp/live.jsonl")).resolves.toBeUndefined();
   });
