@@ -23,12 +23,12 @@ machinery that turns it into a complete daily driver.
 
 ## Install
 
-Release **0.5.1**, verified with Pi 0.85.1. Requires Pi 0.85.1 or newer within
+Release **0.5.2**, targeting Pi 0.85.1. Requires Pi 0.85.1 or newer within
 0.85.x and Node.js 22.19.0 or newer. Pi 0.85.0 lacks the lifecycle/context API
 used by the companion UI.
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.5.1
+pi install git:github.com/michael-berardi/steak-pi@v0.5.2
 ```
 
 This installs USAP, todo, verification, themes, memory conventions, and the
@@ -159,6 +159,18 @@ keep their existing defaults. See the
 `allowBash` gives a child unsandboxed shell access and can bypass path ownership.
 See [`SECURITY.md`](./SECURITY.md) and the full
 [USAP protocol](./docs/ULTRATERM-SUBAGENT-PROTOCOL.md).
+
+## New in 0.5.2
+
+- UltraTerm-managed primary TUI hosts publish verified pane/session identity,
+  with reload-safe ownership and retry when the session becomes persistent.
+- The native UltraTerm inbox delivers at idle and records delivery only after
+  matching persisted session evidence; delivery does not imply model-read.
+- USAP workers check their own Pi dependency resolution before starting and
+  report repair guidance without installing packages or changing model routes.
+
+Standalone Pi needs no UltraTerm inbox service. Compaction behavior is unchanged
+in this release. See [the changelog](./CHANGELOG.md).
 
 ## Reliability built in
 
