@@ -82,6 +82,13 @@ function findModel(key: string, registry: Registry): Model {
   return model;
 }
 
+/** Fail closed if explicit routing ever loses its provenance. */
+export function assertWorkerSelectionOverride(input: WorkerSelector, selection: ModelSelection): void {
+  if ((input.model !== undefined || input.profile !== undefined) && selection.source !== "override") {
+    throw new Error("USAP model/profile: explicit selection must produce source override; no fallback was selected.");
+  }
+}
+
 export function resolveWorkerSelection(
   parent: Model,
   inheritedThinking: ExtensionContext["thinkingLevel"],
@@ -90,10 +97,12 @@ export function resolveWorkerSelection(
   profiles: readonly WorkerProfile[] = loadWorkerProfiles(),
   parentProfileId = process.env.ULTRATERM_HARNESS_PROFILE,
 ): { model: Model; thinkingLevel: Thinking; selection: ModelSelection } {
+  // Capture caller intent once, before consulting task/profile/registry objects.
+  const requested: WorkerSelector = { model: input.model, profile: input.profile };
   if (input.tasks.some((task) => "model" in task || "profile" in task)) {
     throw new Error("USAP model/profile selection is run-level only; split different routes into separate runs.");
   }
-  const explicit = input.model !== undefined || input.profile !== undefined;
+  const explicit = requested.model !== undefined || requested.profile !== undefined;
   const parentKey = route(parent);
   const profileById = (id: string): WorkerProfile => {
     const matches = profiles.filter((p) => p.id === id || (!id.includes("/") && p.id === `steak-pi/${id}`));
@@ -106,7 +115,7 @@ export function resolveWorkerSelection(
   const parentProfile = namedParent && namedParent.model === parentKey ? namedParent : parents.length === 1 ? parents[0] : undefined;
   const review = input.tasks.some((task) => task.role === "reviewer");
   const configured = review ? parentProfile?.reviewerDefault ?? parentProfile?.workerDefault : parentProfile?.workerDefault;
-  const chosen = explicit ? selector({ ...(input.model !== undefined ? { model: input.model } : {}), ...(input.profile !== undefined ? { profile: input.profile } : {}) }, "USAP selection") : configured ? selector(configured, "USAP profile default") : undefined;
+  const chosen = explicit ? selector({ ...(requested.model !== undefined ? { model: requested.model } : {}), ...(requested.profile !== undefined ? { profile: requested.profile } : {}) }, "USAP selection") : configured ? selector(configured, "USAP profile default") : undefined;
   const profile = chosen?.profile ? profileById(chosen.profile) : undefined;
   const key = profile?.model ?? chosen?.model;
   const model = key ? findModel(key, registry) : selectWorkerModel(parent, input.tasks.map((task) => task.role), registry);
@@ -121,7 +130,7 @@ export function resolveWorkerSelection(
   const images = model.input.includes("image");
   if (input.requireImages && !images) throw new Error(`USAP model ${route(model)} does not advertise image input. Select an authenticated vision model for image inspection; no fallback was selected.`);
   const thinkingLevel = selectWorkerThinking(model, profile?.thinking ?? inheritedThinking, input.thinking, input.thinkingReason);
-  return {
+  const result: { model: Model; thinkingLevel: Thinking; selection: ModelSelection } = {
     model, thinkingLevel,
     selection: {
       provider: model.provider, modelId: model.id,
@@ -131,4 +140,6 @@ export function resolveWorkerSelection(
       images, tools: true,
     },
   };
+  assertWorkerSelectionOverride(requested, result.selection);
+  return result;
 }

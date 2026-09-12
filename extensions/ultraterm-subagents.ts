@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
 import { SubagentCoordinator, CoordinatorWaitTimeoutError } from "../src/subagents/coordinator.ts";
-import { normalizeDispatch } from "../src/subagents/policy.ts";
+import { normalizeDispatch, SubagentPolicyError } from "../src/subagents/policy.ts";
 import { resolveWorkerSelection, type WorkerProfile } from "../src/subagents/model-selection.ts";
 import {
   RelayBroker,
@@ -135,6 +135,21 @@ export interface RunView {
 export interface DispatchDetails {
   mode: "foreground" | "background";
   run: RunView;
+  summary: {
+    model: string;
+    profile: string | null;
+    thinking: string;
+    background: boolean;
+    tasks: Array<{
+      label: string;
+      role: TaskRecord["role"];
+      mayEdit: boolean;
+      allowBash: boolean;
+      ownedPaths: number;
+      modelRoute: string;
+      selectionSource: string;
+    }>;
+  };
 }
 
 export interface HubDetails {
@@ -305,7 +320,25 @@ export function renderSessionStatus(runs: readonly RunRecord[]): string | undefi
 }
 
 function dispatchDetails(run: RunRecord): DispatchDetails {
-  return { mode: run.background ? "background" : "foreground", run: toRunView(run) };
+  return {
+    mode: run.background ? "background" : "foreground",
+    run: toRunView(run),
+    summary: {
+      model: run.model,
+      profile: run.selection?.profile ?? null,
+      thinking: run.thinkingLevel,
+      background: run.background,
+      tasks: run.tasks.map((task) => ({
+        label: task.label,
+        role: task.role,
+        mayEdit: task.mayEdit,
+        allowBash: task.allowBash,
+        ownedPaths: task.ownedPaths.length,
+        modelRoute: run.model,
+        selectionSource: run.selection?.source ?? "unknown",
+      })),
+    },
+  };
 }
 
 function usageCopy(usage: UsageTotals): UsageTotals {
@@ -589,14 +622,33 @@ export function createUltratermSubagentsExtension(
           tasks: params.tasks,
           background: params.background ?? false,
         };
-        const run = normalizeDispatch(
-          input,
-          ctx.cwd,
-          model,
-          thinking,
-          dependencies.now?.() ?? Date.now(),
-          dependencies.idFactory,
-        );
+        let run: RunRecord;
+        try {
+          run = normalizeDispatch(
+            input,
+            ctx.cwd,
+            model,
+            thinking,
+            dependencies.now?.() ?? Date.now(),
+            dependencies.idFactory,
+          );
+        } catch (error) {
+          if (!(error instanceof SubagentPolicyError)) throw error;
+          // Never throw policy failures to a host formatter that may echo raw arguments.
+          // Bound even labels and error messages: both can contain untrusted input.
+          const reason = error.message.slice(0, 200);
+          const field = /^(?:tasks\[\d+\](?:\.[A-Za-z]+(?:\[\d+\])?)?|[A-Za-z]+)/.exec(reason)?.[0] ?? "input";
+          const labels = Array.isArray(params.tasks)
+            ? params.tasks.slice(0, MAX_TASKS).map((task) =>
+              typeof task?.label === "string" ? task.label.slice(0, 20) : "?")
+            : [];
+          const digest = JSON.stringify({ field, labels }).slice(0, 200);
+          return {
+            isError: true,
+            content: [{ type: "text" as const, text: `Dispatch validation failed: ${reason}\nInput: ${digest}` }],
+            details: undefined,
+          };
+        }
 
         run.selection = { ...resolved.selection };
         current.workerRuntimes.set(run.id, frozenWorkerRuntime);
@@ -629,7 +681,7 @@ export function createUltratermSubagentsExtension(
           return {
             content: [{
               type: "text" as const,
-              text: `Started USAP run ${run.id} · ${model} · ${resolved.selection.source}${resolved.selection.profile ? ` · ${resolved.selection.profile}` : ""}: ${run.tasks.map((task) => task.id).join(", ")}`,
+              text: `Started USAP run ${run.id} · ${model} · ${resolved.selection.source}${resolved.selection.profile ? ` · ${resolved.selection.profile}` : ""}: ${run.tasks.map((task) => task.id).join(", ")}\nDispatch summary: ${JSON.stringify(dispatchDetails(snapshot).summary)}`,
             }],
             details: dispatchDetails(snapshot),
           };
@@ -642,7 +694,7 @@ export function createUltratermSubagentsExtension(
           const settled = await binding.completion;
           binding.usageClaimed = true;
           return {
-            content: [{ type: "text" as const, text: renderRunResult(settled) }],
+            content: [{ type: "text" as const, text: `Dispatch summary: ${JSON.stringify(dispatchDetails(settled).summary)}\n${renderRunResult(settled)}` }],
             details: dispatchDetails(settled),
             // Nested worker usage belongs only here, never under details/results.
             usage: usageCopy(settled.usage),

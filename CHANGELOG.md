@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.4
+
+- Release date: 2026-09-12.
+- Guarantee a FINAL REPORT on every worker settlement: turn-limit exhaustion,
+  cancellation, timeout, and error outcomes now synthesize a status envelope with
+  the worker's changed-path journal and last step — "(no output)" can no longer be
+  a terminal result after edits landed on disk.
+- Worker task briefs state the actual toolset: when bash is not granted, children
+  are told validation belongs to the parent, ending silent no-shell assumptions.
+- Dispatch results carry a per-task permission/model summary (role, mayEdit,
+  allowBash, owned-path count, resolved route, selection source) so parents can
+  immediately verify what took effect; validation failures return bounded
+  field-path diagnostics instead of echoing the full arguments payload.
+- Harden explicit model/profile overrides: the resolved selection must carry
+  override provenance, guarding against intermittent profile-default fallbacks.
+
 ## 0.5.3
 
 - Release date: 2026-09-12.

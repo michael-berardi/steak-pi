@@ -333,10 +333,12 @@ describe("subagent coordinator", () => {
     expect(snapshot.state).toBe("aborted");
     expect(snapshot.tasks[0]).toMatchObject({
       state: "aborted",
-      output: "final partial output",
+      output: expect.stringContaining("final partial output"),
       turns: 7,
       usage: usage(7),
     });
+    expect(snapshot.tasks[0].output).toContain("Status: incomplete");
+    expect(snapshot.tasks[0].output).toMatch(/^FINAL REPORT\n/);
     expect(snapshot.usage).toEqual(usage(7));
   });
 

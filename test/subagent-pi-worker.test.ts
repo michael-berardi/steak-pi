@@ -325,7 +325,8 @@ describe("native in-process Pi worker runner", () => {
     };
     const runner = createPiWorkerRunner({ relay: setupBroker(), resolveRuntime: () => ({ model: fakeModel, thinkingLevel: "off" }), sessionFactory: async () => ({ session: fake }) });
     const result = await runner({ run: run(cwd, recordTask), task: recordTask, signal: new AbortController().signal, onProgress: vi.fn() });
-    expect(result).toMatchObject({ state: successes ? "done" : "failed", toolErrors: 1, toolSuccesses: successes, output: "Claimed completion" });
+    expect(result).toMatchObject({ state: successes ? "done" : "failed", toolErrors: 1, toolSuccesses: successes, output: expect.stringContaining("Claimed completion") });
+    expect(result.output).toMatch(/^FINAL REPORT\n/);
     if (!successes) expect(result.error).toContain("Every attempted native tool call failed");
   });
   it("uses explicit isolated runtime options, final assistant text, and message_end usage once", async () => {
@@ -354,7 +355,8 @@ describe("native in-process Pi worker runner", () => {
 
     const result = await runner({ run: recordRun, task: recordTask, signal: new AbortController().signal, onProgress: vi.fn() });
 
-    expect(result).toMatchObject({ state: "done", output: "Evidence: done", turns: 1, truncated: false });
+    expect(result).toMatchObject({ state: "done", output: expect.stringContaining("Evidence: done"), turns: 1, truncated: false });
+    expect(result.output).toMatch(/^FINAL REPORT\n/);
     expect(result.usage).toEqual(usage(2));
     expect(fake.disposed).toBe(true);
     expect(fake.prompts[0].options).toEqual({ expandPromptTemplates: false });
@@ -434,7 +436,8 @@ describe("native in-process Pi worker runner", () => {
 
     releaseAbort();
     const result = await pending;
-    expect(result).toMatchObject({ state: "aborted", output: "partial after abort" });
+    expect(result).toMatchObject({ state: "aborted", output: expect.stringContaining("partial after abort") });
+    expect(result.output).toMatch(/^FINAL REPORT\n/);
     expect(result.usage).toEqual(usage(5));
     expect(fake.disposed).toBe(true);
   });
