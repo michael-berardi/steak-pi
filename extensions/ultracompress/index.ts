@@ -2,7 +2,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { runUltraCompress } from "./src/bridge";
 import { TextKeyCache } from "./src/text-key-cache";
-import { UcReferences } from "./src/references";
+import { UcReferences, parseUcReference } from "./src/references";
 import { recallArgs, recallProperties, recallText, parseRecallCommand } from "./src/recall";
 import { loadSettings, resolveUltraCompressBin, type UltraCompressSettings } from "./src/settings";
 import { listSnaps, writeSnapEntries } from "./src/snapshot";
@@ -18,6 +18,7 @@ import {
 } from "./src/transforms";
 import {
   buildCompactStdin,
+  capSummary,
   formatStatsLine,
   parseUltraCompressArgs,
   toCompactionResult,
@@ -104,7 +105,7 @@ export default function ultraCompressExtension(pi: ExtensionAPI): void {
       }
       return key;
     };
-    const candidates = collectCandidates(messages, minChars, requestKeyFor);
+    const candidates = collectCandidates(messages, minChars, requestKeyFor, settings.uc.exemptFreshBash);
     const fresh = candidates.filter((c) => !transformCache.has(c.key));
     if (fresh.length > 0) {
       // Batch-compute transforms for unseen blocks in one UltraCompress call. Synthetic
@@ -195,7 +196,7 @@ export default function ultraCompressExtension(pi: ExtensionAPI): void {
       return block.text.length >= minChars ? requestKeyFor(block.text) : undefined;
     };
 
-    const result = applyTransforms(messages, transformCache, keyFn, settings.snap.placement);
+    const result = applyTransforms(messages, transformCache, keyFn, settings.snap.placement, settings.uc.exemptFreshBash);
     if (result.ucApplied + result.snapApplied === 0) return undefined;
     return { messages: result.messages as unknown as typeof event.messages };
   });
@@ -246,6 +247,7 @@ export default function ultraCompressExtension(pi: ExtensionAPI): void {
       snapMinChars: settings.snap.minChars,
     });
 
+    if (!isExplicitUltraCompress && stdin.previousSummary) stdin.previousSummary = capSummary(stdin.previousSummary, settings.summaryMaxBytes);
     const rcArgs = ["compact", "--policy", stdin.policy, "--vision", stdin.vision as string];
     const res = await runUltraCompress<UltraCompressCompactResult>(ultracompressBin, rcArgs, stdin, 30_000);
     if (!res.ok || !res.data) {
@@ -264,6 +266,7 @@ export default function ultraCompressExtension(pi: ExtensionAPI): void {
 
     const mapped = toCompactionResult(rc, ev.preparation?.tokensBefore);
     if (!mapped) return undefined;
+    if (!isExplicitUltraCompress) mapped.summary = capSummary(mapped.summary, settings.summaryMaxBytes);
 
     try {
       ctx?.ui?.notify?.(formatStatsLine(rc), "info");
@@ -378,8 +381,9 @@ export default function ultraCompressExtension(pi: ExtensionAPI): void {
     async execute(_id, params) {
       const packet = String(params.packet ?? "");
       if (!packet) return { content: [{ type: "text", text: "No packet provided." }], details: {} };
-      if (packet.startsWith("uc:")) {
-        const text = references.get(packet.trim());
+      const reference = parseUcReference(packet);
+      if (reference) {
+        const text = references.get(reference);
         return { content: [{ type: "text", text: text ??
           "UC reference is unavailable in this session. Use ultracompress_recall or re-read the original source; do not invent a packet or retry this missing reference." }], details: {} };
       }

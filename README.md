@@ -23,15 +23,15 @@ machinery that turns it into a complete daily driver.
 
 ## Install
 
-Release **0.5.2**, targeting Pi 0.85.1. Requires Pi 0.85.1 or newer within
+Release **0.5.3**, targeting Pi 0.85.1. Requires Pi 0.85.1 or newer within
 0.85.x and Node.js 22.19.0 or newer. Pi 0.85.0 lacks the lifecycle/context API
 used by the companion UI.
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.5.2
+pi install git:github.com/michael-berardi/steak-pi@v0.5.3
 ```
 
-This installs USAP, todo, verification, themes, memory conventions, and the
+This installs skill-catalog-lite, USAP, todo, verification, themes, memory conventions, and the
 native companion UI. Deterministic compaction additionally needs the local
 [`ultracompress` binary](#ultracompress); without it, Steak Pi safely falls back
 to Pi's core compaction.
@@ -63,9 +63,10 @@ making every task attend the meeting:
 | Steak Pi adds | What you get |
 | --- | --- |
 | **USAP native subagents** | Up to eight GLM (or six Luna) workers at once per session, with provider-aware machine-wide caps, ownership, deadlines, cancellation, relay, and reported usage |
+| **Skill catalog lite** | Full catalog under budget; compact name/path/trigger index above it, with on-demand skill reads |
 | **UltraCompress** | Local 10–300 ms compaction, lossless raw-session retention, ranked recall, and **$0 model cost per compaction** |
-| **Verify after edit** | Failed project checks go straight back to the model so it can repair its work |
-| **Phased todo** | Persistent start/done/block state with automatic promotion |
+| **Verify after edit** | Debounced project checks return success receipts or repairable failure output |
+| **Phased todo** | Persistent state, atomic bulk transitions, and automatic promotion |
 | **Companion UI** | Responsive lifecycle, model, context, usage, cache, and cost telemetry using the active Pi theme |
 | **Memory conventions** | Durable project decisions through `AGENTS.md`; cross-session recall remains explicitly opt-in |
 
@@ -160,17 +161,48 @@ keep their existing defaults. See the
 See [`SECURITY.md`](./SECURITY.md) and the full
 [USAP protocol](./docs/ULTRATERM-SUBAGENT-PROTOCOL.md).
 
-## New in 0.5.2
+## New in 0.5.3
 
-- UltraTerm-managed primary TUI hosts publish verified pane/session identity,
-  with reload-safe ownership and retry when the session becomes persistent.
-- The native UltraTerm inbox delivers at idle and records delivery only after
-  matching persisted session evidence; delivery does not imply model-read.
-- USAP workers check their own Pi dependency resolution before starting and
-  report repair guidance without installing packages or changing model routes.
+- **Two-tier skill-catalog-lite:** keep the full catalog within its byte budget;
+  above it, retain a one-line name/path/trigger index and read the relevant
+  `SKILL.md` on demand. The synthetic 77-skill fixture measures **81.4% less
+  catalog text** (44,062 → 8,192 UTF-8 bytes), not whole-prompt or billed-token
+  savings.
+- **UltraCompress waste fixes:** 8,192-character default transform thresholds,
+  fresh bash/read exemptions, short backward-compatible archive references,
+  4,000-byte recall excerpts, and capped automatic-compaction summaries.
+- **Verify after edit:** trailing 500 ms batch debounce and success receipts with
+  command, working-tree fingerprint, and elapsed time; failures retain repair output.
+- **Todo bulk transitions:** `start`, `done`, `drop`, `block`, `unblock`, and `rm`
+  accept `items: ["task name", ...]`. Targets apply in order on a copy; an invalid
+  target leaves the original state untouched. Do not mix `items` with `task` or
+  `phase`.
+- **USAP guidance:** size leaves for roughly 12 tool turns, reuse supplied
+  evidence and successful tool results, batch independent inspection, and leave
+  integrated validation to the parent after siblings finish.
+- **Worker dependencies:** missing local Pi peers may resolve from the actual
+  running host entrypoint, including symlinked launchers; broken local exports
+  still fail. No global search, automatic install, or model fallback.
 
-Standalone Pi needs no UltraTerm inbox service. Compaction behavior is unchanged
-in this release. See [the changelog](./CHANGELOG.md).
+See [the changelog](./CHANGELOG.md).
+
+### Skill catalog configuration
+
+The extension rewrites only Pi's recognized `<available_skills>` section via
+`before_agent_start`; it does not load skill files itself. Small catalogs remain
+byte-for-byte unchanged. Above budget, deterministic first-sentence triggers
+are shortened to fit; all names and paths remain. Those identities can exceed
+an impossibly small budget, and unfamiliar XML is left unchanged.
+
+| Environment variable | Default | Meaning |
+| --- | --- | --- |
+| `STEAK_PI_SKILL_CATALOG_LITE` | enabled | `off`, `0`, `false`, or `no` disables rewriting |
+| `STEAK_PI_SKILL_CATALOG_BYTES` | `8192` | Positive UTF-8 catalog-section budget |
+| `STEAK_PI_SKILL_CATALOG_WORDS` | `15` | Positive trigger-word limit, capped at 15 |
+
+Invalid numeric settings use defaults. Triggers can omit later keywords; read
+full skill instructions when relevant. Disabling restores the stock catalog on
+newly constructed prompts, not an already rewritten stored string.
 
 ## Reliability built in
 
@@ -204,11 +236,25 @@ loads those exports on both Pi SDK loading paths, including the 0.85.1 path.
 { "verify": { "command": "npm run -s typecheck", "failLimit": 2 } }
 ```
 
-After a successful edit or write in a trusted project, Steak Pi runs the command
-when no verification is already active, debounced to 500 ms. It has a timeout,
-bounded output, abort handling, process cleanup, and a consecutive-failure cap.
-Non-edit and failed tool results skip configuration reads. Without a configured
-command, successful edits do not launch verification.
+After a successful edit or write in a trusted project, Steak Pi waits for a
+500 ms quiet period before running the configured command. Concurrent edits
+join the batch; edits arriving during a successful check cause another run.
+Success appends a compact receipt with command, a 16-hex working-subtree
+fingerprint, and elapsed milliseconds; changes detected during the check are
+flagged. The fingerprint covers Git-visible tracked and untracked non-ignored
+files, not ignored files or a commit identity; non-Git/unreadable trees report
+`unavailable`. A receipt records that command's result, not universal correctness.
+
+Failures append bounded repair output and count toward the consecutive-failure
+cap. Checks have a timeout, abort handling, and process cleanup. Non-edit and
+failed tool results skip configuration reads; without a configured command,
+successful edits do not launch verification.
+
+| `.steak-pi/config.json` field | Default | Meaning |
+| --- | --- | --- |
+| `verify.command` | unset | Trusted-project shell command; required to enable checks |
+| `verify.failLimit` | `2` | Positive integer consecutive-failure cap |
+| `verify.timeoutMs` | `90000` | Positive command timeout in milliseconds |
 
 Pair it with [`pi-lsp`](https://www.npmjs.com/package/@narumitw/pi-lsp) for
 language-server diagnostics the agent can read and fix directly.
@@ -236,8 +282,12 @@ mkdir -p ~/.local/bin && cp target/release/ultracompress ~/.local/bin/
 The adapter retrieves large UC-transformed output by `uc:<hash>` reference
 instead of asking the model to copy dense packets. References use a bounded,
 session-local original-text cache; decoded and recalled text is not recompressed.
-Fresh explicit file reads remain readable for their first model request,
-avoiding an immediate archive/retrieve round trip; older reads remain eligible.
+Fresh explicit file reads and, by default, fresh bash results remain readable
+for their first model request, avoiding an immediate archive/retrieve round
+trip; older results remain eligible. Archive references use 72-character
+`[UC uc:<64 lowercase hex>]` markers (under 80 characters). `ultracompress_uc`
+accepts both these and the previous long archive markers, as well as bare
+`uc:<hash>` references; they are not codec packets for `uc decode`.
 Missing references fall back to raw-history recall or re-reading the source.
 References defer reading; retrieval adds the content's tokens back. Encoding
 statistics therefore do not prove provider-billed end-to-end savings.
@@ -254,6 +304,21 @@ in that file, **not other sessions**; another session requires an explicit
 ranking. Pages and UTF-8 excerpt/result byte budgets are bounded; invalid
 selectors fail closed. Byte budgets are not token guarantees and exclude the
 host's transport wrapper. Requires the 0.2.0 bridge for these options.
+
+Adapter settings live in `~/.pi/agent/ultracompress.json`:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `uc.minChars` | `8192` | Minimum text-block character count for UC transforms |
+| `snap.minChars` | `8192` | Minimum text-block character count for snap transforms |
+| `uc.exemptFreshBash` | `true` | Keep bash results after the latest assistant message untransformed |
+| `summaryMaxBytes` | `16384` | Automatic-compaction summary UTF-8 cap, clamped to 1,024–65,536 |
+
+Automatic compaction caps both incoming previous summaries and returned
+summaries, with an explicit recall hint when truncated; explicit
+`/ultracompress` compaction is exempt. Recall's `snippetBytes` defaults to and
+cannot exceed 4,000 UTF-8 bytes per excerpt; the separate whole-result budget
+still applies (default 12,000 bytes, excluding the transport wrapper).
 
 [Benchmark evidence](https://github.com/michael-berardi/ultracompress/blob/main/docs/BENCHMARKS.md).
 

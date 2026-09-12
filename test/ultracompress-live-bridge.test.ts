@@ -21,11 +21,12 @@ describe.skipIf(!process.env.UC_TEST_BIN)("real UC bridge retrieval", () => {
     const original = ('build report: α β 日本語 café [invalid] "quoted"\n' + 'status: complete; file: src/component.ts\n').repeat(160);
     const ctx = { model: { provider: "zai", input: ["text"] } };
     const context = hooks.get("context")![1];
-    const transformed = await context({ messages: [{ role: "toolResult", toolName: "bash", content: [{ type: "text", text: original }] }] }, ctx);
+    const transformed = await context({ messages: [{ role: "toolResult", toolName: "bash", content: [{ type: "text", text: original }] }, { role: "assistant", content: [] }] }, ctx);
     expect(transformed).toBeDefined();
     const marker = transformed.messages[0].content[0].text;
     expect(marker).not.toContain("@UC1");
     expect(marker.length).toBeLessThan(original.length);
+    expect(marker.length).toBeLessThanOrEqual(80);
     const ref = marker.match(/uc:[a-f0-9]{64}/)![0];
     const result = await tools.get("ultracompress_uc").execute("test", { packet: ref });
     expect(result.content[0].text).toBe(original);

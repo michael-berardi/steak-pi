@@ -35,7 +35,9 @@ Write to `AGENTS.md` (or a project notes file it links to) when you:
 
 ## Cross-session recall (opt-in)
 
-If the operator installed a recall extension, prefer quoting saved
-messages over re-deriving context. Recall is opt-in: never assume it is
-present, and never write project memory into a recall store — recall is
-for reusable fragments, AGENTS.md is for project truth.
+Retex recall is opt-in: never assume installation. Recall only to close a
+named knowledge gap, once per topic; consume the result in a decision or
+answer (including explaining why it was rejected), otherwise the call was
+waste. No ritual recalls. Quote useful saved messages instead of re-deriving
+context. Never write project memory into a recall store: recall holds reusable
+fragments; AGENTS.md holds project truth.

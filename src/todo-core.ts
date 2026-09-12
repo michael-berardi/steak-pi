@@ -116,7 +116,7 @@ export function render(state: TodoState): string {
   return lines.join("\n");
 }
 
-export type TodoOp =
+export type TodoSingleOp =
   | { op: "init"; list: { phase: string; items: string[] }[] }
   | { op: "start"; task: string }
   | { op: "done"; task?: string; phase?: string }
@@ -127,7 +127,37 @@ export type TodoOp =
   | { op: "rm"; task?: string; phase?: string }
   | { op: "view" };
 
+/** Existing tool schemas already accept items; transitions can reuse that field. */
+export type TodoBulkOp = {
+  op: "start" | "done" | "drop" | "block" | "unblock" | "rm";
+  items: string[];
+  reason?: string;
+  task?: never;
+  phase?: never;
+};
+export type TodoOp = TodoSingleOp | TodoBulkOp;
+
 export function applyOp(state: TodoState, op: TodoOp): { state: TodoState; output: string } {
+  if ("items" in op && op.op !== "append") {
+    if (!Array.isArray(op.items) || op.items.length === 0 ||
+        op.items.some((item) => typeof item !== "string" || !item.trim())) {
+      throw new TodoError("bulk transitions require non-empty items");
+    }
+    if (op.task !== undefined || op.phase !== undefined) {
+      throw new TodoError("bulk transitions cannot combine items with task or phase");
+    }
+    // Work on a copy: an unknown/ambiguous later target cannot partially mutate
+    // the caller's state. Preserve ordered single-operation promotion semantics.
+    let next = structuredClone(state);
+    for (const task of op.items) {
+      next = applySingleOp(next, { op: op.op, task, reason: op.reason } as TodoSingleOp).state;
+    }
+    return { state: next, output: render(next) };
+  }
+  return applySingleOp(state, op as TodoSingleOp);
+}
+
+function applySingleOp(state: TodoState, op: TodoSingleOp): { state: TodoState; output: string } {
   switch (op.op) {
     case "init": {
       if (!Array.isArray(op.list) || op.list.length === 0) {

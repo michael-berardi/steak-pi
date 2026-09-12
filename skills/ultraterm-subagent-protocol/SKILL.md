@@ -68,13 +68,15 @@ Permissions: may edit/use shell
 Ownership: exclusive writable paths or boundary; omit for read-only leaves
 ```
 
-Require concise returns: evidence, changed paths, risks, and focused checks.
-Children skip project-wide checks while siblings write; the parent runs
-integrated validation once.
+Size each child leaf to fit ~12 tool turns; split broader work before dispatch.
+Parents supply exact paths and available evidence; children verify, never
+rediscover supplied facts. Require concise evidence, changed paths, risks, and
+focused checks. Children skip project-wide checks while siblings write;
+the parent runs integrated validation once, after siblings finish.
 
-When the request already supplies exact disjoint paths and acceptance
-contracts, dispatch in the first tool turn without pre-reading child-owned
-files. Child inspection supplies leaf evidence and the parent verifies after.
+When requests supply exact disjoint paths, evidence, and acceptance contracts,
+dispatch in the first tool turn without pre-reading child-owned files.
+Children inspect only missing leaf evidence; the parent verifies after.
 Before dispatch, inspect only shared interfaces or ambiguity actually needed
 to decompose safely; do not duplicate child discovery. Foreground is the
 efficient default. Choose a background run explicitly only while the parent can
@@ -104,6 +106,11 @@ tool success/error counts. An all-tool-failure task is failed; done alone still
 is not acceptance. Profile defaults: `docs/PROFILES.md`.
 
 ## Coordination and limits
+
+Batch independent read/grep calls in one turn when paths are known, using
+permitted tools, not agent launchers. Never re-issue an identical tool call
+with identical arguments after success. Reuse its result; if state changed,
+inspect the delta rather than repeat the call.
 
 Relay is an ephemeral IRC-style mailbox scoped to one run. Children address
 run peers with short facts, artifact paths, blockers, requests, and correlated

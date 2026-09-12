@@ -2,11 +2,11 @@ import "./ultracompress-settings-mock.ts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ultraCompressExtension from "../extensions/ultracompress/index.ts";
 import { runUltraCompress } from "../extensions/ultracompress/src/bridge.ts";
-import { UcReferences } from "../extensions/ultracompress/src/references.ts";
+import { UcReferences, parseUcReference } from "../extensions/ultracompress/src/references.ts";
 import { applyTransforms, collectCandidates, ucReplacement, type UcOp } from "../extensions/ultracompress/src/transforms.ts";
 
 vi.mock("../extensions/ultracompress/src/bridge.ts", () => ({ runUltraCompress: vi.fn() }));
-const text = 'text with unicode: café 日本語, quotes " and newlines\n'.repeat(100);
+const text = 'text with unicode: café 日本語, quotes " and newlines\n'.repeat(200);
 const op: UcOp = { op: "uc", message_index: 0, block_index: 0, packet: "@UC1\nlegacy bytes", stub: "legacy stub", tokens_before: 1500, tokens_after: 100 };
 
 beforeEach(() => vi.mocked(runUltraCompress).mockReset());
@@ -64,17 +64,24 @@ describe("UC original-output references", () => {
   it("retrieves by short reference without copying or decoding dense text; clears on session replacement", async () => {
     const { handlers, tools } = register();
     vi.mocked(runUltraCompress).mockResolvedValue({ ok: true, data: { ops: [{ ...op }] } });
-    const original = [{ role: "toolResult", toolName: "bash", content: [{ type: "text", text }] }];
+    const original = [{ role: "toolResult", toolName: "bash", content: [{ type: "text", text }] }, { role: "assistant", content: [] }];
     const context = handlers.get("context")![1];
     const transformed = await context({ messages: structuredClone(original) }, { model: { provider: "zai" } });
     const marker = transformed.messages[0].content[0].text;
     const ref = marker.match(/uc:[a-f0-9]{64}/)![0];
     expect(marker).not.toContain("@UC1");
-    expect(marker).toContain("deferred retrieval");
+    expect(marker).toBe(`[UC ${ref}]`);
+    expect(marker.length).toBeLessThanOrEqual(80);
+    expect(parseUcReference(marker)).toBe(ref);
+    const legacyMarker = `[UC archived output: call ultracompress_uc with packet="${ref}" for the exact original text. This is deferred retrieval, not a summary.]`;
+    expect(parseUcReference(legacyMarker)).toBe(ref);
     expect(original[0].content[0].text).toBe(text);
     const tool = tools.get("ultracompress_uc");
     const recovered = await tool.execute("call", { packet: ref });
     expect(recovered.content[0].text).toBe(text);
+    for (const packet of [marker, legacyMarker]) {
+      expect((await tool.execute("call", { packet })).content[0].text).toBe(text);
+    }
     expect(runUltraCompress).toHaveBeenCalledTimes(1);
     const decoded = [{ role: "toolResult", toolName: "ultracompress_uc", content: recovered.content }];
     expect(await context({ messages: decoded }, { model: { provider: "zai" } })).toBeUndefined();

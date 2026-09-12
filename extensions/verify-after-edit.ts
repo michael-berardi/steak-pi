@@ -1,4 +1,5 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -209,43 +210,73 @@ export function formatAppendix(
   );
 }
 
+/** Hash the Git-visible working subtree, including untracked non-ignored files.
+ * Non-Git directories or unreadable trees are explicitly reported as unavailable.
+ */
+export function verificationTreeHash(cwd: string): string {
+  try {
+    const names = execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+      { cwd, encoding: "utf8", timeout: 5_000, maxBuffer: 8 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+    const hash = createHash("sha256");
+    for (const name of [...new Set(names.split("\0").filter(Boolean))].sort()) {
+      const file = path.join(cwd, name);
+      hash.update(JSON.stringify(name));
+      try {
+        const stat = fs.lstatSync(file);
+        hash.update(String(stat.mode));
+        const bytes = stat.isSymbolicLink() ? Buffer.from(fs.readlinkSync(file)) : fs.readFileSync(file);
+        hash.update(String(bytes.length) + ":");
+        hash.update(bytes);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        hash.update("deleted");
+      }
+    }
+    return hash.digest("hex").slice(0, 16);
+  } catch {
+    return "unavailable";
+  }
+}
+
 export default function verifyAfterEditExtension(pi: ExtensionAPI): void {
   let consecutive = 0;
-  let lastRunMs = -DEBOUNCE_MS;
   let running = false;
+  let lastEdit = 0;
+  let revision = 0;
 
   pi.on("tool_result", async (event, ctx) => {
     if (!ctx.isProjectTrusted()) return undefined;
-    if (running || event.isError || !EDIT_TOOLS[event.toolName.toLowerCase()]) return undefined;
-
-    // Keep eligible reads fresh: projects can change verification settings mid-session.
+    if (event.isError || !EDIT_TOOLS[event.toolName.toLowerCase()]) return undefined;
+    lastEdit = performance.now();
+    revision += 1;
+    // Concurrent edits join the active batch; edits during verification trigger
+    // another quiet-period run rather than being lost to a leading-edge throttle.
+    if (running) return undefined;
     const config = loadVerifyConfig(ctx.cwd);
-    if (!config) return undefined;
-    const now = Date.now();
-    if (
-      !shouldVerify(config, event.toolName, event.isError, consecutive, now, lastRunMs)
-    ) {
-      return undefined;
-    }
-
-    lastRunMs = now;
+    if (!config || consecutive >= config.failLimit) return undefined;
     running = true;
     try {
-      const { failed, tail } = await runVerify(config, ctx.cwd, ctx.signal);
-      if (!failed) {
+      while (true) {
+        let remaining: number;
+        while ((remaining = DEBOUNCE_MS - (performance.now() - lastEdit)) > 0) {
+          await new Promise((resolve) => setTimeout(resolve, remaining));
+        }
+        const batch = revision;
+        const tree = verificationTreeHash(ctx.cwd);
+        const started = performance.now();
+        const { failed, tail } = await runVerify(config, ctx.cwd, ctx.signal);
+        const duration = Math.round(performance.now() - started);
+        if (failed) {
+          consecutive += 1;
+          return { content: [...event.content, { type: "text", text:
+            formatAppendix(config.command, consecutive, config.failLimit, tail) }] };
+        }
         consecutive = 0;
-        return undefined;
+        if (revision !== batch) continue;
+        const changed = verificationTreeHash(ctx.cwd) !== tree;
+        return { content: [...event.content, { type: "text", text:
+          `[steak-pi] verify passed: ${config.command.replace(/\s+/g, " ").trim()} | tree=${tree}${changed ? " (changed during verification)" : ""} | ${duration}ms` }] };
       }
-      consecutive += 1;
-      return {
-        content: [
-          ...event.content,
-          {
-            type: "text",
-            text: formatAppendix(config.command, consecutive, config.failLimit, tail),
-          },
-        ],
-      };
     } finally {
       running = false;
     }
