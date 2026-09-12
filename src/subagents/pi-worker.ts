@@ -10,6 +10,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { assertOwnedPath } from "./policy.ts";
+import { finalWorkerReport, workerJournal } from "./coordinator.ts";
 import { assertWorkerDependencies, resolveWorkerDependency } from "./dependency-preflight.ts";
 import { assertModelRoute, assertSubscriptionRequest, guardModelRuntime } from "../model-route-policy.ts";
 import type { RelayBroker, RelayPeer, RelaySendResult } from "./relay.ts";
@@ -200,6 +201,9 @@ export function buildPiWorkerSystemPrompt(run: RunRecord, task: TaskRecord): str
     "## Permissions",
     `May edit: ${task.mayEdit ? "yes" : "no"}`,
     `May use bash: ${task.allowBash ? "yes" : "no"}`,
+    task.allowBash
+      ? "Toolset: bash available (unsandboxed); stay within owned paths."
+      : "Toolset: no shell tool; run tests/typechecks only if the task grants bash — otherwise report and let the parent validate.",
     task.allowBash
       ? "Bash is not path-sandboxed and can bypass ownedPaths. Stay within the exact leaf and operator trust granted by the parent."
       : "No shell access is available.",
@@ -419,7 +423,9 @@ export function createGuardedPiWorkerTools(options: GuardedToolOptions): AnyTool
         const params = raw as { path: string; edits: Array<{ oldText: string; newText: string }> };
         const path = guardedPath(cwd, params.path, task.ownedPaths, "write");
         const base = await nativeTool("edit", (native) => native.createEditToolDefinition(cwd));
-        return base.execute(id, { ...params, path }, signal, update, ctx);
+        const result = await base.execute(id, { ...params, path }, signal, update, ctx);
+        workerJournal(task).changedPaths.add(path);
+        return result;
       },
     }, {
       name: "write",
@@ -430,7 +436,9 @@ export function createGuardedPiWorkerTools(options: GuardedToolOptions): AnyTool
         const params = raw as { path: string; content: string };
         const path = guardedPath(cwd, params.path, task.ownedPaths, "write");
         const base = await nativeTool("write", (native) => native.createWriteToolDefinition(cwd));
-        return base.execute(id, { ...params, path }, signal, update, ctx);
+        const result = await base.execute(id, { ...params, path }, signal, update, ctx);
+        workerJournal(task).changedPaths.add(path);
+        return result;
       },
     });
   }
@@ -597,7 +605,13 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
 
     const abortSession = (): Promise<void> => {
       if (!session) return Promise.resolve();
-      abortPromise ??= Promise.resolve().then(() => session!.abort()).catch(() => {});
+      abortPromise ??= Promise.resolve().then(async () => {
+        if (signal.aborted && session?.isStreaming) {
+          // Best-effort last will within the existing bounded disposal grace.
+          await settleWithin(session.steer("Cancellation requested. Stop tool use and flush your final report now, including partial changed paths and remaining work."), Math.floor(abortGraceMs / 2));
+        }
+        await session!.abort();
+      }).catch(() => {});
       return abortPromise;
     };
     const onAbort = () => {
@@ -669,6 +683,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
 
       unsubscribe = session.subscribe((event) => {
         if (event.type === "tool_execution_start") {
+          workerJournal(task).lastStep = event.toolName;
           onProgress({ state: "running", currentTool: event.toolName });
           return;
         }
@@ -763,7 +778,9 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       classification.state = "failed";
       classification.error = "Every attempted native tool call failed; task output is evidence, not acceptance.";
     }
-    const bounded = truncatePiWorkerOutput(finalAssistant?.text ?? "");
+    const bounded = truncatePiWorkerOutput(finalWorkerReport(
+      task, classification.state, finalAssistant?.text ?? "", classification.error,
+    ));
     return {
       ...classification,
       ...(initializationCleanup ? { cleanup: initializationCleanup } : {}),

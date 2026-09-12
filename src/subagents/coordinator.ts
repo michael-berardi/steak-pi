@@ -109,6 +109,37 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+interface WorkerJournal {
+  changedPaths: Set<string>;
+  lastStep: string;
+}
+
+const workerJournals = new WeakMap<TaskRecord, WorkerJournal>();
+
+/** Worker-local successful edit/write journal, also available on exceptional settlement. */
+export function workerJournal(task: TaskRecord): WorkerJournal {
+  let journal = workerJournals.get(task);
+  if (!journal) {
+    journal = { changedPaths: new Set(), lastStep: "not started" };
+    workerJournals.set(task, journal);
+  }
+  return journal;
+}
+
+export function finalWorkerReport(task: TaskRecord, state: WorkerResult["state"], output: string, error?: string): string {
+  const journal = workerJournal(task);
+  const exhausted = error?.includes("turn limit") === true || error?.includes("-turn limit") === true;
+  const status = state === "done" ? "done" : state === "aborted" || state === "timed_out" || exhausted ? "incomplete" : "failed";
+  const reason = exhausted ? "turn budget exhausted" : error ?? (state === "done" ? "completed" : state);
+  return [
+    "FINAL REPORT",
+    `Status: ${status}: ${reason}`,
+    `Changed paths: ${JSON.stringify([...journal.changedPaths])}`,
+    `Progress: last step: ${journal.lastStep}`,
+    ...(output.trim() && output.trim() !== "(no output)" ? ["", output] : []),
+  ].join("\n");
+}
+
 function safeTurns(value: unknown, fallback = 0): number {
   return Number.isSafeInteger(value) && (value as number) >= 0 ? value as number : fallback;
 }
@@ -464,7 +495,9 @@ export class SubagentCoordinator {
 
     const safeUsage = sanitizeUsage(result.usage);
     task.state = state;
-    task.output = result.output;
+    task.output = result.output.startsWith("FINAL REPORT\n")
+      ? result.output
+      : finalWorkerReport(task, state, result.output, result.error);
     task.turns = safeTurns(result.turns, task.turns);
     task.toolErrors = safeTurns(result.toolErrors, task.toolErrors ?? 0);
     task.toolSuccesses = safeTurns(result.toolSuccesses, task.toolSuccesses ?? 0);
