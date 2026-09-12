@@ -6,6 +6,7 @@ export interface UcSettings {
   enabled: boolean;
   bin: string;
   minChars: number;
+  exemptFreshBash: boolean;
 }
 
 export interface SnapSettings {
@@ -27,6 +28,7 @@ export interface UltraCompressSettings {
   uc: UcSettings;
   snap: SnapSettings;
   snapshot: { enabled: boolean };
+  summaryMaxBytes: number;
   debug: boolean;
 }
 
@@ -36,9 +38,10 @@ export const DEFAULT_SETTINGS: UltraCompressSettings = {
   smartKeepTail: true,
   keepUserTurns: null,
   ultracompressBin: "",
-  uc: { enabled: true, bin: "uc", minChars: 1200 },
-  snap: { enabled: true, minChars: 6000, placement: "nextUser", imageTokensPerFrame: null, providers: ["anthropic", "google"] },
+  uc: { enabled: true, bin: "uc", minChars: 8192, exemptFreshBash: true },
+  snap: { enabled: true, minChars: 8192, placement: "nextUser", imageTokensPerFrame: null, providers: ["anthropic", "google"] },
   snapshot: { enabled: true },
+  summaryMaxBytes: 16384,
   debug: false,
 };
 
@@ -62,11 +65,13 @@ export function mergeSettings(raw: unknown): UltraCompressSettings {
   // One-release migration alias; new files always write ultracompressBin.
   else if (typeof obj.rcBin === "string") out.ultracompressBin = obj.rcBin;
   if (typeof obj.debug === "boolean") out.debug = obj.debug;
+  if (typeof obj.summaryMaxBytes === "number" && Number.isFinite(obj.summaryMaxBytes)) out.summaryMaxBytes = Math.max(1024, Math.min(65536, Math.floor(obj.summaryMaxBytes)));
   if (obj.uc && typeof obj.uc === "object") {
     const uc = obj.uc as Record<string, unknown>;
     if (typeof uc.enabled === "boolean") out.uc.enabled = uc.enabled;
     if (typeof uc.bin === "string") out.uc.bin = uc.bin;
-    if (typeof uc.minChars === "number") out.uc.minChars = Math.max(0, uc.minChars);
+    if (typeof uc.minChars === "number" && Number.isFinite(uc.minChars)) out.uc.minChars = Math.max(0, Math.floor(uc.minChars));
+    if (typeof uc.exemptFreshBash === "boolean") out.uc.exemptFreshBash = uc.exemptFreshBash;
   }
   if (obj.snap && typeof obj.snap === "object") {
     const snap = obj.snap as Record<string, unknown>;

@@ -10,7 +10,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { assertOwnedPath } from "./policy.ts";
-import { assertWorkerDependencies } from "./dependency-preflight.ts";
+import { assertWorkerDependencies, resolveWorkerDependency } from "./dependency-preflight.ts";
 import { assertModelRoute, assertSubscriptionRequest, guardModelRuntime } from "../model-route-policy.ts";
 import type { RelayBroker, RelayPeer, RelaySendResult } from "./relay.ts";
 import {
@@ -52,7 +52,7 @@ let piSdkPromise: Promise<PiSdk> | undefined;
 let piStateManagersPromise: Promise<PiStateManagers> | undefined;
 
 function piDistPath(): string {
-  const packageJson = findPackageJSON("@earendil-works/pi-coding-agent", import.meta.url);
+  const packageJson = findPackageJSON(resolveWorkerDependency("@earendil-works/pi-coding-agent", (specifier) => import.meta.resolve(specifier)));
   if (!packageJson) throw new Error("Could not locate @earendil-works/pi-coding-agent");
   return join(dirname(packageJson), "dist");
 }
@@ -608,7 +608,8 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
 
     try {
       signal.throwIfAborted();
-      assertWorkerDependencies(import.meta.url, (specifier) => import.meta.resolve(specifier));
+      assertWorkerDependencies(import.meta.url, (specifier) =>
+        resolveWorkerDependency(specifier, (name) => import.meta.resolve(name)));
       const [managers, runtime] = await initialize(Promise.all([
         loadPiStateManagers(),
         options.resolveRuntime(run.id),

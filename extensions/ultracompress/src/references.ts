@@ -46,3 +46,11 @@ export class UcReferences {
     this.bytes = 0;
   }
 }
+
+/** Accept exact references and both generations of archive marker. */
+export function parseUcReference(packet: string): string | undefined {
+  const text = packet.trim();
+  if (/^uc:[a-f0-9]{64}$/.test(text)) return text;
+  return /^\[UC (uc:[a-f0-9]{64})\]$/.exec(text)?.[1]
+    ?? /^\[UC archived output: call ultracompress_uc with packet="(uc:[a-f0-9]{64})" for the exact original text\. This is deferred retrieval, not a summary\.\]$/.exec(text)?.[1];
+}

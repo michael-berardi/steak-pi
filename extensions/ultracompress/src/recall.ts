@@ -11,7 +11,7 @@ export const recallProperties = {
   beforeEntry: { type: "string", description: "Search only before this entry ID in the selected scope (exclusive)." },
   page: { type: "integer", minimum: 1, maximum: 1000000, description: "1-based page. Default 1." },
   perPage: { type: "integer", minimum: 1, maximum: 20, description: "Hits per page. Default 5." },
-  snippetBytes: { type: "integer", minimum: 128, maximum: 4000, description: "UTF-8 bytes per excerpt, not tokens. Default 1000." },
+  snippetBytes: { type: "integer", minimum: 128, maximum: 4000, description: "UTF-8 bytes per excerpt, not tokens. Default 4000 (below the 4096-byte per-hit cap)." },
   maxOutputBytes: { type: "integer", minimum: 1024, maximum: 32000, description: "Complete result JSON byte budget (transport wrapper excluded), not tokens. Default 12000." },
 } as const;
 
@@ -57,6 +57,7 @@ export function recallArgs(params: Record<string, unknown>, session: RecallSessi
     if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) throw new Error(`${key} must be an integer from ${min} to ${max}`);
     args.push(flag, String(value));
   }
+  if (params.snippetBytes === undefined) args.push("--snippet-bytes", "4000");
   return args;
 }
 

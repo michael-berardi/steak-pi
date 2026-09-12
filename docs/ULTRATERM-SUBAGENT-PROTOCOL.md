@@ -65,7 +65,8 @@ forbidden, including indirect attempts to invoke `ultraterm_subagents`,
 - A dependency runs after its prerequisite. Parallelize DAG siblings, not a
   dependency chain.
 - Children do not run project-wide builds, linters, or test suites while
-  siblings are writing. The parent runs integrated validation once.
+  siblings are writing. The parent runs integrated validation once, after siblings
+  finish.
 - Files and artifacts carry large context. Relay messages carry small
   coordination facts, not copied session histories.
 
@@ -79,6 +80,13 @@ Before dispatch, the parent performs this pass:
 4. Select the cheapest model that can reliably finish each remaining leaf.
 5. Assign one writer per path and define interfaces between leaves.
 6. Dispatch all currently independent leaves together.
+
+Size leaves for roughly 12 tool turns and pass available evidence with exact
+paths. Children inspect missing evidence rather than rediscover supplied facts.
+When paths, evidence, and acceptance contracts are already disjoint and exact,
+dispatch in the first tool turn without pre-reading child-owned files. Batch
+independent inspection using permitted tools; reuse successful identical calls
+unless state changed, then inspect the delta.
 
 ### Adaptive concurrency: 0–8
 

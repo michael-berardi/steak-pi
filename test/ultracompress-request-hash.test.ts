@@ -13,8 +13,8 @@ vi.mock("../extensions/ultracompress/src/transforms.ts", async (importOriginal) 
   return { ...actual, cacheKey: vi.fn(actual.cacheKey) };
 });
 
-const a = "A".repeat(7000);
-const b = "B".repeat(7000);
+const a = "A".repeat(8192);
+const b = "B".repeat(8192);
 const image = { type: "image", data: "original-base64", mimeType: "image/png" };
 const uc: UcOp = {
   op: "uc", message_index: 0, block_index: 0,
@@ -58,6 +58,16 @@ beforeEach(() => {
 });
 
 describe("bounded cross-request live transform keys", () => {
+  it("does not hash or archive below 8192 characters", async () => {
+    expect(DEFAULT_SETTINGS.uc.minChars).toBe(8192);
+    expect(DEFAULT_SETTINGS.snap.minChars).toBe(8192);
+    const hooks = register(structuredClone(DEFAULT_SETTINGS));
+    const input = [{ role: "toolResult", content: [text("A".repeat(8191))] }];
+    expect(await hooks.context(structuredClone(input))).toBeUndefined();
+    expect(transforms.cacheKey).not.toHaveBeenCalled();
+    expect(runUltraCompress).not.toHaveBeenCalled();
+  });
+
   it.each(["nextUser", "inline"] as const)("hashes unique text once, preserving %s output and repeat occurrences", async (placement) => {
     const settings = structuredClone(DEFAULT_SETTINGS);
     settings.snap.placement = placement;
@@ -122,7 +132,7 @@ describe("bounded cross-request live transform keys", () => {
     const input = () => [{ role: "toolResult", content: [text(a)] }];
     vi.mocked(runUltraCompress).mockResolvedValue({ ok: true, data: { ops: [uc] } });
     await hooks.context(input());
-    expect(transforms.cacheKey).toHaveBeenLastCalledWith({ p: "auto", v: true, s: 6000, u: 1200, cpt: undefined }, a);
+    expect(transforms.cacheKey).toHaveBeenLastCalledWith({ p: "auto", v: true, s: 8192, u: 8192, cpt: undefined }, a);
     const first = vi.mocked(transforms.cacheKey).mock.results[0].value;
     settings.policy = "uc";
     settings.uc.minChars = 1000;
@@ -151,7 +161,7 @@ describe("bounded cross-request live transform keys", () => {
     expect(transforms.cacheKey).toHaveBeenCalledTimes(1); // Existing visionKnown latch.
     const other = register(settings, model);
     await other.context(input());
-    expect(transforms.cacheKey).toHaveBeenLastCalledWith({ p: "auto", v: false, s: 6000, u: 1200, cpt: undefined }, a);
+    expect(transforms.cacheKey).toHaveBeenLastCalledWith({ p: "auto", v: false, s: 8192, u: 8192, cpt: undefined }, a);
     expect(vi.mocked(transforms.cacheKey).mock.results[1].value).not.toBe(first);
     expect(runUltraCompress).toHaveBeenCalledTimes(2);
   });

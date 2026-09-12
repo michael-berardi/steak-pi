@@ -140,3 +140,14 @@ export function formatStatsLine(rc: UltraCompressCompactResult): string {
   if (s.uc_blocks > 0) parts.push(`uc ×${s.uc_blocks}`);
   return parts.join(" · ");
 }
+
+/** Hard UTF-8 budget, with an explicit recovery route; raw history is untouched. */
+export function capSummary(summary: string, maxBytes: number): string {
+  const budget = Number.isFinite(maxBytes) ? Math.max(1024, Math.min(65536, Math.floor(maxBytes))) : 16384;
+  if (Buffer.byteLength(summary) <= budget) return summary;
+  const marker = "\n[Summary capped; use ultracompress_recall for omitted history.]";
+  const bytes = Buffer.from(summary);
+  let end = budget - Buffer.byteLength(marker);
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+  return bytes.subarray(0, end).toString("utf8") + marker;
+}

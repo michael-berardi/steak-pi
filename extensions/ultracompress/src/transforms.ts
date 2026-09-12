@@ -98,11 +98,11 @@ function lastAssistantIndex(messages: AgentLikeMessage[]): number {
 /** Find transform candidates. Fresh explicit reads stay readable for their
  * first model request; forcing immediate reference retrieval adds cost rather
  * than saving it. Older reads remain eligible on subsequent requests. */
-export function collectCandidates(messages: AgentLikeMessage[], minChars: number, keyFn: (text: string) => string): Candidate[] {
+export function collectCandidates(messages: AgentLikeMessage[], minChars: number, keyFn: (text: string) => string, exemptFreshBash = true): Candidate[] {
   const out: Candidate[] = [];
   const lastAssistant = lastAssistantIndex(messages);
   messages.forEach((m, messageIndex) => {
-    if (m.role !== "toolResult" || isRetrievalResult(m) || (m.toolName === "read" && messageIndex > lastAssistant)) return;
+    if (m.role !== "toolResult" || isRetrievalResult(m) || ((m.toolName === "read" || (exemptFreshBash && m.toolName === "bash")) && messageIndex > lastAssistant)) return;
     for (const { index: blockIndex, text } of textBlocks(m)) {
       if (text.length >= minChars) {
         out.push({ messageIndex, blockIndex, text, key: keyFn(text) });
@@ -118,7 +118,7 @@ export function ucReplacement(op: UcOp): Array<Record<string, unknown>> {
     {
       type: "text",
       text: op.reference
-        ? `[UC archived output: call ultracompress_uc with packet="${op.reference}" for the exact original text. This is deferred retrieval, not a summary.]`
+        ? `[UC ${op.reference}]`
         : `${op.stub}\n\n${op.packet}`,
     },
   ];
@@ -170,6 +170,7 @@ export function applyTransforms(
   replacements: Map<string, { op: UltraCompressOp; blocks: Array<Record<string, unknown>> }>,
   keys: (m: AgentLikeMessage, bi: number) => string | undefined,
   placement: "nextUser" | "inline",
+  exemptFreshBash = true,
 ): ApplyResult {
   let ucApplied = 0;
   let snapApplied = 0;
@@ -177,7 +178,7 @@ export function applyTransforms(
 
   const lastAssistant = lastAssistantIndex(messages);
   messages.forEach((m, mi) => {
-    if (m.role !== "toolResult" || isRetrievalResult(m) || (m.toolName === "read" && mi > lastAssistant) || typeof m.content === "string") return;
+    if (m.role !== "toolResult" || isRetrievalResult(m) || ((m.toolName === "read" || (exemptFreshBash && m.toolName === "bash")) && mi > lastAssistant) || typeof m.content === "string") return;
     const content = m.content as Array<Record<string, unknown>>;
     for (let bi = 0; bi < content.length; bi++) {
       const key = keys(m, bi);

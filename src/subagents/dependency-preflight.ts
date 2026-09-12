@@ -1,11 +1,37 @@
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const WORKER_PI_DEPENDENCIES = [
   "@earendil-works/pi-coding-agent",
   "@earendil-works/pi-tui",
 ] as const;
+
+/** Resolve a git-installed extension against its own peers first, then the
+ * actual running host. Never search globals, cwd, runtime trees or install peers.
+ * Broken local exports remain errors rather than silently switching SDKs.
+ */
+export function resolveWorkerDependency(
+  specifier: string,
+  localResolve: (specifier: string) => string,
+  hostEntrypoint: string | undefined = process.argv[1],
+): string {
+  try {
+    return localResolve(specifier);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code !== "ERR_MODULE_NOT_FOUND" && code !== "MODULE_NOT_FOUND") throw error;
+    if (!hostEntrypoint || !WORKER_PI_DEPENDENCIES.includes(specifier as typeof WORKER_PI_DEPENDENCIES[number])) throw error;
+    try {
+      // Resolve symlinked launchers to the package actually hosting this process.
+      const require = createRequire(realpathSync(hostEntrypoint));
+      return pathToFileURL(require.resolve(specifier)).href;
+    } catch {
+      throw error; // Preserve the original actionable installation diagnostic.
+    }
+  }
+}
 
 /** The resolver MUST be import.meta.resolve from the worker entrypoint itself.
  * Passing a manager's resolver (or require.resolve) checks a different context.
@@ -42,7 +68,7 @@ export function assertWorkerDependencies(entrypoint: string, resolve: (specifier
       `Repair the dependency installation at package root ${JSON.stringify(root)} ` +
       `(for a writable checkout: cd ${JSON.stringify(root)} && npm install --no-audit --no-fund). ` +
       "Ensure declared Pi peers are installed, not omitted. For an immutable runtime, rebuild its candidate instead. " +
-      "A manager/global Pi installation is not a substitute. No worker session started; no automatic install or model fallback.",
+      "No usable peer was found via the worker resolver or its explicit host fallback. No worker session started; no automatic install or model fallback.",
       { cause: new AggregateError(failures, "Worker dependency resolution failures") },
     );
   }

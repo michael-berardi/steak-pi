@@ -9,8 +9,8 @@ const session = { getSessionFile: () => "/tmp/current.jsonl", getLeafId: () => "
 
 describe("session-local recall contract", () => {
   it("pins default recall to the actual current session and tip", () => {
-    expect(recallArgs({ query: "alpha" }, session)).toEqual(["recall", "--session", "/tmp/current.jsonl", "--query", "alpha", "--scope", "lineage", "--leaf", "current-tip"]);
-    expect(recallArgs({ query: "alpha" }, { ...session, getLeafId: () => null }).slice(-2)).toEqual(["--leaf", ""]);
+    expect(recallArgs({ query: "alpha" }, session)).toEqual(["recall", "--session", "/tmp/current.jsonl", "--query", "alpha", "--scope", "lineage", "--leaf", "current-tip", "--snippet-bytes", "4000"]);
+    expect(recallArgs({ query: "alpha" }, { ...session, getLeafId: () => null }).slice(-4)).toEqual(["--leaf", "", "--snippet-bytes", "4000"]);
   });
   it("never carries the current tip into an explicit other session or all branches", () => {
     const args = recallArgs({ query: "alpha", sessionFile: "/tmp/other session.jsonl" }, session);
@@ -21,6 +21,16 @@ describe("session-local recall contract", () => {
   it("propagates narrow filters and byte budgets", () => {
     const args = recallArgs({ query: "alpha", role: "toolResult", toolName: "read", afterEntry: "a", beforeEntry: "b", page: 2, perPage: 3, snippetBytes: 256, maxOutputBytes: 2048, regex: true }, session);
     for (const flag of ["--role", "--tool-name", "--after-entry", "--before-entry", "--page", "--per-page", "--snippet-bytes", "--max-output-bytes", "--regex"]) expect(args).toContain(flag);
+  });
+  it("defaults to a 4000-byte snippet cap and rejects larger requests", () => {
+    for (const snippetBytes of [128, 4000]) {
+      const args = recallArgs({ query: "alpha", snippetBytes }, session);
+      expect(args.slice(-2)).toEqual(["--snippet-bytes", String(snippetBytes)]);
+      expect(args.filter((arg) => arg === "--snippet-bytes")).toHaveLength(1);
+    }
+    for (const snippetBytes of [127, 4001, 4096]) {
+      expect(() => recallArgs({ query: "alpha", snippetBytes }, session)).toThrow("snippetBytes");
+    }
   });
   it("rejects invalid parameters without silently widening", () => {
     for (const params of [{ scope: "global" }, { scope: null }, { sessionFile: null }, { constructor: true }, { perPage: 0 }, { page: 1.5 }, { maxOutputBytes: Infinity }, { role: "system" }, { toolName: "" }, { sessionFile: "" }, { other: true }, { regex: "true" }]) {
@@ -54,17 +64,17 @@ describe("session-local recall contract", () => {
   });
 });
 
-describe("fresh read break-even policy", () => {
-  it("avoids archive+immediate-retrieval overhead even on a cached transform", () => {
-    const text = "explicitly requested text ".repeat(200);
+describe("fresh read and bash break-even policy", () => {
+  it.each(["read", "bash"])("exempts fresh %s even on a cached transform, but archives older output", (toolName) => {
+    const text = "explicitly requested text ".repeat(400);
     const op: UcOp = { op: "uc", message_index: 0, block_index: 0, packet: "packet", stub: "stub", reference: "uc:" + "a".repeat(64), tokens_before: 1500, tokens_after: 100 };
     const cache = new Map([["k", { op, blocks: ucReplacement(op) }]]);
-    const messages = [{ role: "assistant", content: [] }, { role: "toolResult", toolName: "read", content: [{ type: "text", text }] }];
-    expect(collectCandidates(messages, 1200, () => "k")).toEqual([]);
+    const messages = [{ role: "assistant", content: [] }, { role: "toolResult", toolName, content: [{ type: "text", text }] }];
+    expect(collectCandidates(messages, 8192, () => "k")).toEqual([]);
     const result = applyTransforms(structuredClone(messages), cache, () => "k", "nextUser");
     expect(result.ucApplied).toBe(0); expect(result.messages[1].content).toEqual([{ type: "text", text }]);
     const older = [...messages, { role: "assistant", content: [] }];
-    expect(collectCandidates(older, 1200, () => "k")).toHaveLength(1);
+    expect(collectCandidates(older, 8192, () => "k")).toHaveLength(1);
     expect(applyTransforms(structuredClone(older), cache, () => "k", "nextUser").ucApplied).toBe(1);
     // Immediate retrieval necessarily includes the full original PLUS marker
     // and another request. Passing through avoids this overhead exactly.

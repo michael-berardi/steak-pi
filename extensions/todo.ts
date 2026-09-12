@@ -68,7 +68,7 @@ const inputSchema = Type.Object({
   task: Type.Optional(Type.String({ description: "Task content or unique prefix" })),
   phase: Type.Optional(Type.String({ description: "Phase name" })),
   items: Type.Optional(
-    Type.Array(Type.String(), { description: "append only: tasks to add" }),
+    Type.Array(Type.String(), { description: "append: tasks to add; start/done/drop/block/unblock/rm: task names or unique prefixes for an atomic ordered bulk transition" }),
   ),
   reason: Type.Optional(
     Type.String({ description: "block only: why the task is blocked" }),
@@ -170,7 +170,7 @@ export default function steakPieExtension(pi: ExtensionAPI): void {
     label: "Todo",
     description:
       "Phased task tracker. Use only when the operator asks for explicit " +
-      "task tracking. Ops: init|start|done|drop|block|unblock|append|rm|view.",
+      "task tracking. Ops: init|start|done|drop|block|unblock|append|rm|view. For bulk start/done/drop/block/unblock/rm, pass items (task names or unique prefixes), without task or phase; the ordered batch is atomic.",
     parameters: inputSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const op = params as TodoOp;
