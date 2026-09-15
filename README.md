@@ -23,13 +23,25 @@ machinery that turns it into a complete daily driver.
 
 ## Install
 
-Release **0.5.3**, targeting Pi 0.85.1. Requires Pi 0.85.1 or newer within
+Release **0.5.5**, targeting Pi 0.85.1. Requires Pi 0.85.1 or newer within
 0.85.x and Node.js 22.19.0 or newer. Pi 0.85.0 lacks the lifecycle/context API
 used by the companion UI.
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.5.3
+pi install git:github.com/michael-berardi/steak-pi@v0.5.5
 ```
+
+Or through Homebrew under the Implose Cybernetics distribution:
+
+```sh
+brew install michael-berardi/implose-software-distribution/steak-pi
+```
+
+The formula ships the `steak-pi` updater. `steak-pi install` wires the
+Homebrew-managed copy into Pi; `steak-pi update` then upgrades through Homebrew
+and keeps the Pi-side package on the same release; `steak-pi status` reports
+what is installed. UltraTerm adopts the Homebrew-managed copy automatically
+when no other installation is configured.
 
 This installs skill-catalog-lite, USAP, todo, verification, themes, memory conventions, and the
 native companion UI. Deterministic compaction additionally needs the local
@@ -161,28 +173,17 @@ keep their existing defaults. See the
 See [`SECURITY.md`](./SECURITY.md) and the full
 [USAP protocol](./docs/ULTRATERM-SUBAGENT-PROTOCOL.md).
 
-## New in 0.5.3
+## New in 0.5.5
 
-- **Two-tier skill-catalog-lite:** keep the full catalog within its byte budget;
-  above it, retain a one-line name/path/trigger index and read the relevant
-  `SKILL.md` on demand. The synthetic 77-skill fixture measures **81.4% less
-  catalog text** (44,062 → 8,192 UTF-8 bytes), not whole-prompt or billed-token
-  savings.
-- **UltraCompress waste fixes:** 8,192-character default transform thresholds,
-  fresh bash/read exemptions, short backward-compatible archive references,
-  4,000-byte recall excerpts, and capped automatic-compaction summaries.
-- **Verify after edit:** trailing 500 ms batch debounce and success receipts with
-  command, working-tree fingerprint, and elapsed time; failures retain repair output.
-- **Todo bulk transitions:** `start`, `done`, `drop`, `block`, `unblock`, and `rm`
-  accept `items: ["task name", ...]`. Targets apply in order on a copy; an invalid
-  target leaves the original state untouched. Do not mix `items` with `task` or
-  `phase`.
-- **USAP guidance:** size leaves for roughly 12 tool turns, reuse supplied
-  evidence and successful tool results, batch independent inspection, and leave
-  integrated validation to the parent after siblings finish.
-- **Worker dependencies:** missing local Pi peers may resolve from the actual
-  running host entrypoint, including symlinked launchers; broken local exports
-  still fail. No global search, automatic install, or model fallback.
+- **Homebrew distribution (Implose Cybernetics):** install with
+  `brew install michael-berardi/implose-software-distribution/steak-pi`.
+- **`steak-pi` updater CLI:** first-class terminal updates. Homebrew-managed
+  installs upgrade through `brew` and keep the pi-side package on the same
+  release; git/npm installs re-pin to the latest published GitHub release.
+  `steak-pi status` shows what is installed and how it is managed.
+- **UltraTerm brew adoption:** UltraTerm's Steak Pi launcher uses the
+  Homebrew-managed copy automatically when no other package is configured;
+  explicitly configured checkouts keep priority.
 
 See [the changelog](./CHANGELOG.md).
 
