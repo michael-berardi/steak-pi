@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.5
+
+- Release date: 2026-09-15.
+- Ship the `steak-pi` updater CLI (`bin/steak-pi`): Homebrew-managed installs
+  upgrade through `brew` and keep the pi-side package on the same release;
+  git/npm installs re-pin to the latest published GitHub release.
+- Add the Homebrew distribution channel
+  (`brew install michael-berardi/implose-software-distribution/steak-pi`)
+  under the Implose Cybernetics distribution.
+- Document the Homebrew install/update path in the README and keep the
+  install line on the current release.
+
 ## 0.5.4
 
 - Release date: 2026-09-12.

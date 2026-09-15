@@ -1,0 +1,156 @@
+#!/bin/sh
+# steak-pi — installer/updater for the Steak Pi pi-package (Implose Cybernetics).
+#
+#   steak-pi install   Install or re-point the Steak Pi package for the pi CLI.
+#   steak-pi update    First-class update: Homebrew upgrade + Pi re-pin (brew),
+#                      or latest GitHub release re-pin (git/npm installs).
+#   steak-pi status    Show what is installed and how it is managed.
+#   steak-pi version   Print the CLI/package version.
+#   steak-pi remove    Remove the Pi-side package.
+#
+# Homebrew wrapper context sets STEAK_PI_LIBEXEC / STEAK_PI_OPT / STEAK_PI_FORMULA.
+# Git and npm installs derive everything from this script's location.
+set -u
+
+REPO="github.com/michael-berardi/steak-pi"
+PI_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+SETTINGS="$PI_DIR/settings.json"
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'steak-pi: %s\n' "$*" >&2; exit 1; }
+
+# Resolve the package root that ships this script.
+if [ -n "${STEAK_PI_LIBEXEC:-}" ]; then
+  PKG_ROOT="$STEAK_PI_LIBEXEC"
+  BREW_MODE=1
+else
+  self_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || die "cannot resolve script directory"
+  PKG_ROOT="$self_dir/.."
+  BREW_MODE=0
+fi
+PKG_ROOT=$(CDPATH= cd -- "$PKG_ROOT" && pwd -P) || die "cannot resolve package root"
+
+pkg_version() {
+  [ -f "$1/package.json" ] || return 1
+  sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$1/package.json" | head -n 1
+}
+
+VERSION=$(pkg_version "$PKG_ROOT") || die "package.json missing next to $0"
+GIT_SPEC="git:$REPO@v$VERSION"
+
+need_pi() { command -v pi >/dev/null 2>&1 || die "pi CLI not found on PATH; install pi first (https://pi.dev)."; }
+
+# The Pi-side spec currently installed, if any.
+pi_spec() {
+  [ -f "$SETTINGS" ] || return 1
+  hit=$(grep -o "\"[^\"]*$REPO@[^\"]*\"" "$SETTINGS" | head -n 1)
+  [ -n "$hit" ] && { printf '%s' "$hit" | tr -d '"'; return 0; }
+  hit=$(grep -o "\"/[^\"']*steak-pi[^\"]*\"" "$SETTINGS" | head -n 1)
+  [ -n "$hit" ] && { printf '%s' "$hit" | tr -d '"'; return 0; }
+  return 1
+}
+
+latest_tag() {
+  command -v curl >/dev/null 2>&1 || return 1
+  curl -fsSL --max-time 20 "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null |
+    grep -o '"tag_name": *"[^"]*"' | head -n 1 | cut -d '"' -f 4
+}
+
+cmd_install() {
+  need_pi
+  if [ "$BREW_MODE" -eq 1 ]; then
+    say "Installing Steak Pi $VERSION for pi from the Homebrew copy:"
+    say "  pi install $PKG_ROOT"
+    exec pi install "$PKG_ROOT"
+  fi
+  say "Installing Steak Pi $VERSION for pi:"
+  say "  pi install $GIT_SPEC"
+  exec pi install "$GIT_SPEC"
+}
+
+cmd_update() {
+  if [ "$BREW_MODE" -eq 1 ]; then
+    command -v brew >/dev/null 2>&1 || die "brew not found; this copy is Homebrew-managed."
+    say "Upgrading Homebrew formula ${STEAK_PI_FORMULA:-steak-pi}..."
+    brew update || die "brew update failed."
+    brew upgrade "${STEAK_PI_FORMULA:-steak-pi}" || say "Homebrew reports no upgrade; continuing."
+    NEW_LIBEXEC="$STEAK_PI_OPT/libexec"
+    NEW_VERSION=$(pkg_version "$NEW_LIBEXEC") || die "upgraded formula package not found at $NEW_LIBEXEC"
+    [ "$NEW_VERSION" = "$VERSION" ] && say "Steak Pi is up to date ($VERSION)." || say "Steak Pi upgraded: $VERSION -> $NEW_VERSION."
+    current=$(pi_spec) || current=""
+    case "$current" in
+      */opt/steak-pi*)
+        say "Re-pointing the pi package at the upgraded copy:"
+        say "  pi install $NEW_LIBEXEC"
+        exec pi install "$NEW_LIBEXEC"
+        ;;
+      "git:$REPO@"*)
+        say "Re-pinning the pi package to v$NEW_VERSION:"
+        say "  pi install git:$REPO@v$NEW_VERSION"
+        exec pi install "git:$REPO@v$NEW_VERSION"
+        ;;
+      "")
+        say "Pi-side integration is not installed. Run 'steak-pi install' to add it."
+        exit 0
+        ;;
+      *)
+        say "Unrecognized pi spec '$current'; leaving it untouched."
+        exit 0
+        ;;
+    esac
+  fi
+  need_pi
+  say "Resolving the latest Steak Pi release..."
+  TAG=$(latest_tag) || die "cannot reach GitHub. Install a release manually: pi install $GIT_SPEC"
+  [ -n "$TAG" ] || die "no published release found. Install manually: pi install $GIT_SPEC"
+  say "Updating pi package to $TAG:"
+  say "  pi install git:$REPO@$TAG"
+  exec pi install "git:$REPO@$TAG"
+}
+
+cmd_status() {
+  mode="git/npm install"; [ "$BREW_MODE" -eq 1 ] && mode="Homebrew (${STEAK_PI_FORMULA:-steak-pi})"
+  say "steak-pi CLI      $VERSION  [$mode]"
+  say "package root      $PKG_ROOT"
+  if current=$(pi_spec); then
+    root="${current#git:$REPO@}"
+    case "$current" in
+      git:*) loc="$PI_DIR/git/$REPO";;
+      *) loc="$current";;
+    esac
+    pver=$(pkg_version "$loc" 2>/dev/null || echo "unknown")
+    say "pi integration    $current  (v$pver)"
+  else
+    say "pi integration    not installed — run 'steak-pi install'"
+  fi
+}
+
+cmd_version() {
+  say "steak-pi $VERSION (Implose Cybernetics)"
+}
+
+cmd_remove() {
+  need_pi
+  if current=$(pi_spec); then
+    say "Removing $current from pi..."
+    exec pi remove "$current"
+  fi
+  say "No Steak Pi package found in $SETTINGS."
+}
+
+case "${1:-help}" in
+  install) cmd_install;;
+  update)  cmd_update;;
+  status)  cmd_status;;
+  version|--version|-V) cmd_version;;
+  remove|uninstall) cmd_remove;;
+  help|--help|-h|*)
+    say "usage: steak-pi <install|update|status|version|remove>"
+    say "  install   add Steak Pi to the pi coding agent (or re-point at this copy)"
+    say "  update    upgrade through Homebrew and keep pi on the same release"
+    say "  status    show installed versions and management mode"
+    say "  version   print the CLI/package version"
+    say "  remove    remove the pi-side package"
+    [ -n "${1:-}" ] && [ "$1" != "help" ] && die "unknown command '$1'"
+    ;;
+esac
