@@ -21,27 +21,42 @@ Steak Pi is the performance-focused package for the
 transcript, tools, history, selectors, scrolling, and keybindings, then adds the
 machinery that turns it into a complete daily driver.
 
+This checkout documents release **Steak Pi 0.6.0** (USAP 1.2). It targets Pi 0.86.0
+and retains the Pi 0.85.1 peer range. Session-isolation, repaint, and packaged
+smoke checks ran on Pi 0.86.0; earlier 0.85.1 evidence predates those changes.
+The feature descriptions apply to this revision. Benchmarks below are explicitly dated historical results, not a remeasurement of 0.6.0 or a multi-hour endurance claim.
+
 ## Install
 
-Release **0.5.5**, targeting Pi 0.85.1. Requires Pi 0.85.1 or newer within
-0.85.x and Node.js 22.19.0 or newer. Pi 0.85.0 lacks the lifecycle/context API
-used by the companion UI.
+Release **0.6.0**. Requires Pi 0.85.1 or 0.86.0 (release-tested with 0.86.0) and
+Node.js 22.19.0 or newer. Pi 0.85.0 lacks the lifecycle/context API used by the
+companion UI. Steak Pi is distributed from this Git repository and its GitHub
+release archives; it is **not** published to the npm registry.
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.5.5
+pi install git:github.com/michael-berardi/steak-pi@v0.6.0
 ```
 
-Or through Homebrew under the Implose Cybernetics distribution:
+GitHub release archives (`steak-pi-0.6.0.tgz` with its `.sha256` beside it) work
+without Git access: verify the checksum, extract, and point Pi at the extracted
+package.
 
 ```sh
-brew install michael-berardi/implose-software-distribution/steak-pi
+shasum -a 256 -c steak-pi-0.6.0.tgz.sha256
+tar -xzf steak-pi-0.6.0.tgz
+pi install "$PWD/package"
 ```
 
-The formula ships the `steak-pi` updater. `steak-pi install` wires the
-Homebrew-managed copy into Pi; `steak-pi update` then upgrades through Homebrew
-and keeps the Pi-side package on the same release; `steak-pi status` reports
-what is installed. UltraTerm adopts the Homebrew-managed copy automatically
-when no other installation is configured.
+**Homebrew is conditional.** The Implose Cybernetics tap
+(`michael-berardi/implose-software-distribution`) is private, so
+`brew install` is not a public acquisition path. Pre-existing installs by
+already-authorized operators continue to work, and the formula ships the
+`steak-pi` updater: `steak-pi install` wires the Homebrew-managed copy into Pi,
+and `steak-pi update` upgrades through Homebrew while keeping the Pi-side package
+on the same release. Everything else uses the git tag or the release archive
+above. `steak-pi status` reports what is installed and how it is managed;
+UltraTerm adopts a Homebrew-managed copy automatically when no other
+installation is configured.
 
 This installs skill-catalog-lite, USAP, todo, verification, themes, memory conventions, and the
 native companion UI. Deterministic compaction additionally needs the local
@@ -54,8 +69,8 @@ continues to surface actionable resource diagnostics.
 
 That is the ceremony. Kettle optional.
 
-> **Steak Pi vs stock Pi — measured live on GLM-5.3-Flash, shipped build**
-> (identical fixtures, balanced order, deterministic verification):
+> **Historical comparison — GLM-5.3-Flash, September 9, 2026**
+> (earlier Steak Pi build; identical fixtures, balanced order, deterministic verification):
 >
 > - **Four-module build: 22% faster than stock Pi** (45.8 s vs 59.0 s median,
 >   reproduced at 23% in a second same-day matrix) — 9/9 first-pass on both
@@ -74,7 +89,7 @@ making every task attend the meeting:
 
 | Steak Pi adds | What you get |
 | --- | --- |
-| **USAP native subagents** | Up to eight GLM (or six Luna) workers at once per session, with provider-aware machine-wide caps, ownership, deadlines, cancellation, relay, and reported usage |
+| **USAP native subagents** | Default provider ceilings of eight ZAI or six Codex workers per session, with provider-aware machine-wide caps, ownership, deadlines, cancellation, relay, and reported usage |
 | **Skill catalog lite** | Full catalog under budget; compact name/path/trigger index above it, with on-demand skill reads |
 | **UltraCompress** | Local 10–300 ms compaction, lossless raw-session retention, ranked recall, and **$0 model cost per compaction** |
 | **Verify after edit** | Debounced project checks return success receipts or repairable failure output |
@@ -87,7 +102,7 @@ trying to become an operating system because you asked it to rename a method.
 
 ## Proof, not garnish
 
-### Steak Pi vs stock Pi — shipped build, live GLM-5.3-Flash
+### Historical live GLM-5.3-Flash comparison — September 9, 2026
 
 Same fixtures, same model (`zai/glm-5.3-flash`, thinking `high`), balanced
 order, fresh fixtures, deterministic verification. Stock Pi ran the same cases
@@ -102,13 +117,12 @@ with its own built-in tools only. Medians of three runs per cell:
 | First-pass completion | 9/9 | **9/9** | parity everywhere |
 | Eight-fix fan-out, two concurrent windows | n/a — no subagents | **8/8 + 8/8 verified under the 6-wide machine cap** | stock Pi has no equivalent |
 
-The pattern is the honest one: on multi-part real work, Steak Pi's parallel
-doctrine **beats stock Pi outright**; on one-line edits it costs a small
-turn-boundary premium because the orchestration, verification, and compaction
-machinery ships in every session; and quality never moved — 100% first-pass on
-both sides. What stock Pi cannot do at any price: bounded subagents with path
-ownership, delegation spanning every open window under one provider-safe cap,
-verification loops, deterministic $0 compaction, and lossless recall.
+In this historical matrix, Steak Pi completed the multi-part fixture faster,
+while direct edits and the two-file fixture were slower. Both sides passed all
+first-pass checks. These results are not a general speed guarantee or a 0.6.0
+benchmark; the new checkpoint persistence has its own local overhead. Stock Pi
+alone does not include this package's bounded subagents, guarded path ownership,
+shared provider caps, verification loops, or local compaction adapter.
 
 Full tables, ranges, controls, and limitations:
 [`glm53-live-mirror-2026-09-09.md`](./benchmarks/usap/results/glm53-live-mirror-2026-09-09.md).
@@ -131,26 +145,29 @@ parent
 
 What prevents agent soup:
 
-- **eight active children session-wide** (GLM lanes; Luna lanes six), at most
-  eight tasks per run and 16 active runs; launch width defaults to a full wave
-  (min(8, task count));
+- **eight tasks and up to eight concurrent children per run**, 16 active runs;
+  default session capacity is eight ZAI / six Codex, fourteen combined;
+  launch width defaults to min(8, task count), subject to capacity;
 - **machine-wide launch caps** shared across every local session: six GLM
-  workers total, twelve Luna, provider-bucketed and crash-safe, so open
-  windows cannot stampede the provider;
+  workers on ZAI, twelve Codex, twelve for other providers, twenty-four
+  combined by default; these are configurable capacity defaults, not per-model quotas;
 - foreground by default; background only when parent work can overlap;
-- stable run IDs with list, status, wait, message, inbox, and cancel controls;
+- stable run IDs with list, status, wait, send, inbox, cancel, diagnose, and
+  explicit resume controls;
 - isolated worker settings, transcripts, resources, and tool sets;
 - read-only workers without edit tools;
 - disjoint ownership enforced for guarded writes and edits;
 - hard time, turn, output, history, and relay limits;
 - exact nested usage attributed to the parent once;
-- a fixed 12-turn limit per child, including relay-driven follow-up turns.
+- `timeoutMs`: 10 minutes by default, 1 second–8 hours; `maxTurns`: 64
+  assistant turns per child by default, 1–2,048, including relay follow-ups.
+  Roughly 12 tool turns remains a leaf-sizing guideline, not the runtime cap.
 
 Children coordinate through `ultraterm_relay`, a bounded run-local mailbox with
 addressed messages, requests, correlated replies, broadcasts, and parent
 communication. A little like IRC, if IRC had path ownership.
 
-**Native model selection:** USAP 1.1 accepts either an exact `model` or a native
+**Native model selection:** USAP 1.2 accepts either an exact `model` or a native
 `profile` for the whole run. An Astra manager can explicitly select
 `profile: "steak-pi/glm-5-3-flash"`, including reviewer runs. Omitted selectors
 use per-parent profile defaults. Receipts and hub telemetry show the resolved
@@ -158,9 +175,11 @@ route, selection provenance, and tool success/error counts. Visual inspection
 uses `requireImages: true`. See [profiles and examples](./docs/PROFILES.md).
 
 **GPT routing:** GPT-family requests use the paid Codex subscription route only,
-never OpenRouter, API-key billing, or batch variants. Default GPT scout/worker
-runs select Luna; default reviewer runs retain the parent model. GLM defaults
-remain GLM. Explicit selections take precedence; missing authentication or
+never OpenRouter, API-key billing, or batch variants. Built-in routine workers
+use OpenCode Go (DeepSeek V4.1 Flash); Astra reviewers retain Astra. Go requires
+your own key and can retry once on Go GLM 5.3 Flash for a transient failure before
+visible output, never for auth, billing, or region errors. Explicit selections
+take precedence; missing authentication or
 capability fails closed without fallback. Astra workers default
 to **medium** reasoning, independently of the parent's current effort. Set
 `thinking: "high"` or `"xhigh"` only with a concrete task benefit in
@@ -168,18 +187,70 @@ to **medium** reasoning, independently of the parent's current effort. Set
 keep their existing defaults. See the
 [model-routing contract and boundaries](./docs/MODEL-ROUTING.md).
 
+**Session isolation:** Hub operations are private to the native parent session. Runs carry its captured session ID and canonical file, including after restart. Late callbacks cannot write into a switched session. Copied or unowned activity remains history, not live work. Legacy checkpoints are adopted only with matching native filename and header evidence; ambiguous records remain on disk but are not attached automatically.
+
+**Pinned plans:** Todo state is private to the native session under `.steak-pi/todo/<session-hash>/`, with its JSON and Markdown together. Legacy workspace-wide plans stay untouched and are not imported automatically. Completed or empty plans unpin; cancelled subagents unpin once their status settles. A cancelled session switch does not erase current work.
+
 **Trust boundary:** USAP is coordination, not an OS sandbox. Explicitly granting
 `allowBash` gives a child unsandboxed shell access and can bypass path ownership.
 See [`SECURITY.md`](./SECURITY.md) and the full
 [USAP protocol](./docs/ULTRATERM-SUBAGENT-PROTOCOL.md).
 
+## New in 0.6.0 (USAP 1.2)
+
+- Native worker compaction and at most one native retry; budgets remain finite.
+  Native summaries can use model calls, and their recorded usage is included in
+  worker totals. Pi 0.86 cache-warming requests are disabled for isolated workers.
+- Private checkpoints scoped to a persistent parent session. Host exit interrupts
+  workers; reopening that session exposes recovery state, not an automatic restart.
+  Hub `resume` explicitly creates a new run for unfinished tasks only, continuing
+  available native history with fresh budgets. Inspect prior side effects first.
+- Hub `diagnose` reports budget, progress, failure and checkpoint metadata without
+  worker transcripts. Memory-only parent sessions have no durable recovery.
+- Background completion is passively displayed at the idle boundary with no
+  added model call; it does not automatically make the parent integrate results.
+- Compact terminal cards show task states and errors; expanded cards add bounded
+  report excerpts and tool counts. No detached worker or recovery daemon.
+
+### Persistence and runtime limits
+
+- The 8-hour maximum is the configurable `timeoutMs` deadline ceiling, not a claim
+  that a session, terminal, or host stays healthy that long. No multi-hour
+  endurance run was performed for this release.
+- Workers, persistent shells, and live relay state belong to the host Pi process;
+  recovery checkpoints are retained on disk. Exiting or crashing the host ends
+  child execution; reopening the same
+  native session exposes recovery state for inspection, and `resume` starts a new
+  run with fresh budgets for unfinished tasks only.
+- Memory-only parent sessions (no persisted session file) have no durable
+  recovery, and nothing restarts workers automatically: there is no daemon,
+  detached worker, cross-host failover, or scheduler.
+- Cancel, deadline, turn, output, mailbox, and retained-run bounds are enforced
+  per process lifetime; a resumed run gets new budgets instead of inheriting a
+  prior allowance.
+
+### Optional DeepSeek harness launcher
+
+`bin/steak-pi-dsh` is an explicit opt-in entrypoint for a managed primary session
+on `opencode-go/deepseek-v4.1-flash` with native Pi 0.86.0, giving the session's
+native-name `bash` tool persistent shell state under the same ownership and
+verification rules. It admits only this first-party package at its canonical path
+and refuses unknown extensions, resource filters, startup hooks, or
+configuration-changing flags instead of silently dropping guards. Ordinary Pi
+loading of the extensions is unchanged. Limits, failure modes, and the guarded
+vendor adaptation are documented in
+[`docs/DEEPSEEK-HARNESS.md`](./docs/DEEPSEEK-HARNESS.md).
+
 ## New in 0.5.5
 
-- **Homebrew distribution (Implose Cybernetics):** install with
-  `brew install michael-berardi/implose-software-distribution/steak-pi`.
+- **Homebrew distribution (Implose Cybernetics):** the formula lives in the
+  private Implose Cybernetics tap, so Homebrew remains an update path for
+  already-authorized operators rather than a public install; everyone else uses
+  the git tag or the release archive above.
 - **`steak-pi` updater CLI:** first-class terminal updates. Homebrew-managed
   installs upgrade through `brew` and keep the pi-side package on the same
-  release; git/npm installs re-pin to the latest published GitHub release.
+  release; git and other non-Homebrew installs re-pin to the latest published
+  GitHub release (Steak Pi is not published to the npm registry).
   `steak-pi status` shows what is installed and how it is managed.
 - **UltraTerm brew adoption:** UltraTerm's Steak Pi launcher uses the
   Homebrew-managed copy automatically when no other package is configured;
@@ -275,7 +346,7 @@ agent. We have standards.
 Install the native binary (Rust 1.85 or newer):
 
 ```sh
-git clone --branch v0.2.0 https://github.com/michael-berardi/ultracompress
+git clone --branch v0.2.2 https://github.com/michael-berardi/ultracompress
 cd ultracompress && cargo build --locked --release
 mkdir -p ~/.local/bin && cp target/release/ultracompress ~/.local/bin/
 ```
@@ -295,16 +366,17 @@ statistics therefore do not prove provider-billed end-to-end savings.
 
 UltraTerm-managed installations prefer the bundled UltraCompress bridge over
 older user-local binaries, while preserving explicit overrides and telemetry
-opt-out. If it is absent or fails, Steak Pi falls back to Pi's core compaction. Commands:
+opt-out. If it is absent or fails, Steak Pi falls back to Pi's core compaction,
+which can use model calls and the provider's normal allowance. Commands:
 `/ultracompress`, `/ultracompress-recall`, and `/ultracompress-stats`.
 
-The bundled 0.2.0 adapter searches only the current session's actual lineage
+The bundled adapter searches only the current session's actual lineage
 by default, including pre-compaction records. `scope:all` adds sibling branches
 in that file, **not other sessions**; another session requires an explicit
 `sessionFile`. Role/tool and exclusive entry-range filters narrow before
 ranking. Pages and UTF-8 excerpt/result byte budgets are bounded; invalid
 selectors fail closed. Byte budgets are not token guarantees and exclude the
-host's transport wrapper. Requires the 0.2.0 bridge for these options.
+host's transport wrapper. Requires bridge 0.2.0 or newer for these options.
 
 Adapter settings live in `~/.pi/agent/ultracompress.json`:
 
@@ -360,7 +432,7 @@ Anything that expands the trust boundary remains opt-in:
 | Web access | `pi install npm:pi-web-access` |
 | LSP diagnostics | `pi install npm:@narumitw/pi-lsp` |
 | Explicit cross-session recall | Built-in `ultracompress_recall` with `sessionFile`; no automatic archive scan |
-| MCP servers | Pi settings (`mcpServers`) |
+| MCP servers | An optional MCP extension; not bundled or configured by Steak Pi |
 
 Steak Pi does not install companions behind your back. Your terminal has enough
 roommates already.
@@ -370,9 +442,14 @@ roommates already.
 ```sh
 git clone https://github.com/michael-berardi/steak-pi.git
 cd steak-pi
-npm install
+npm ci --ignore-scripts
 npm run verify
 ```
+
+`npm ci` installs the dev toolchain (TypeScript, Vitest, and pinned Pi 0.86.0
+peers) from `package-lock.json`; `npm run verify` runs typecheck, the full test
+suite, and the isolated TUI smoke test. Steak Pi itself has no runtime npm
+dependencies beyond the Pi peers declared in `package.json`.
 
 See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for contribution guidance and
 [`SECURITY.md`](./SECURITY.md) for private vulnerability reporting.

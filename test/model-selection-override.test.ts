@@ -57,7 +57,7 @@ describe("run-level override invariants", () => {
         return { state: "done", output: "ok", turns: 1, usage: emptyUsage() };
       },
     })(pi);
-    const ctx = { cwd: process.cwd(), model: parent, modelRegistry: registry, thinkingLevel: "high", ui: { setStatus() {} } };
+    const ctx = { cwd: process.cwd(), sessionManager: { getSessionId: () => "override-test" }, model: parent, modelRegistry: registry, thinkingLevel: "high", ui: { setStatus() {} } };
     const result = await tools.get("ultraterm_subagents").execute("override", JSON.parse(JSON.stringify(input)), undefined, undefined, ctx);
     expect(result.details.run.state).toBe("done");
     expect(result.details.run.model).toBe(input.model);

@@ -4,6 +4,7 @@ import {
   MAX_RETAINED_TERMINAL_RUNS,
   MAX_TASKS,
   MAX_TIMEOUT_MS,
+  MAX_WORKER_TURNS,
   MIN_TIMEOUT_MS,
   addUsage,
   sanitizeUsage,
@@ -46,6 +47,9 @@ export interface CoordinatorOptions {
   /** Cross-process launch slots. Defaults to the real machine-tier limiter. */
   machineSlots?: MachineSlots | NoopSlots;
   onProgress?: (event: CoordinatorProgressEvent) => void;
+  /** Durable state observer; called at every lifecycle boundary and progress update. */
+  onChange?: (run: RunRecord) => void;
+  sessionDir?: (run: RunRecord, task: TaskRecord) => string | undefined;
   now?: () => number;
 }
 
@@ -77,7 +81,19 @@ interface RunRuntime {
   completionCount: number;
   listeners: Set<() => void>;
   deadline?: ReturnType<typeof setTimeout>;
+  /** Absolute run deadline (ms epoch). No wait inside a run may outlive it. */
+  deadlineAt: number;
 }
+
+/**
+ * `NoopSlots.acquire` takes no parameters, so the union of the two limiter
+ * implementations cannot be invoked with an explicit deadline directly.
+ */
+type MachineSlotAcquire = (
+  provider: string,
+  signal?: AbortSignal,
+  timeoutMs?: number,
+) => Promise<() => void>;
 
 function cloneUsage(usage: UsageTotals): UsageTotals {
   return sanitizeUsage(usage);
@@ -87,6 +103,8 @@ function cloneTask(task: TaskRecord): TaskRecord {
   return {
     ...task,
     ownedPaths: [...task.ownedPaths],
+    changedPaths: [...workerJournal(task).changedPaths],
+    lastStep: workerJournal(task).lastStep,
     usage: cloneUsage(task.usage),
   };
 }
@@ -120,7 +138,7 @@ const workerJournals = new WeakMap<TaskRecord, WorkerJournal>();
 export function workerJournal(task: TaskRecord): WorkerJournal {
   let journal = workerJournals.get(task);
   if (!journal) {
-    journal = { changedPaths: new Set(), lastStep: "not started" };
+    journal = { changedPaths: new Set(task.changedPaths ?? []), lastStep: task.lastStep ?? "not started" };
     workerJournals.set(task, journal);
   }
   return journal;
@@ -153,6 +171,8 @@ export class SubagentCoordinator {
   private readonly scheduler: SessionScheduler;
   private readonly machineSlots: MachineSlots | NoopSlots;
   private readonly onProgress?: (event: CoordinatorProgressEvent) => void;
+  private readonly onChange?: (run: RunRecord) => void;
+  private readonly sessionDir?: CoordinatorOptions["sessionDir"];
   private readonly now: () => number;
   private readonly runs = new Map<string, RunRuntime>();
   private closed = false;
@@ -163,6 +183,8 @@ export class SubagentCoordinator {
     this.scheduler = options.scheduler ?? sessionScheduler;
     this.machineSlots = options.machineSlots ?? defaultMachineSlots();
     this.onProgress = options.onProgress;
+    this.onChange = options.onChange;
+    this.sessionDir = options.sessionDir;
     this.now = options.now ?? Date.now;
   }
 
@@ -193,6 +215,9 @@ export class SubagentCoordinator {
     ) {
       throw new RangeError(`Run timeoutMs must be an integer from ${MIN_TIMEOUT_MS} to ${MAX_TIMEOUT_MS}`);
     }
+    if (!Number.isInteger(run.maxTurns) || run.maxTurns < 1 || run.maxTurns > MAX_WORKER_TURNS) {
+      throw new RangeError(`Run maxTurns must be an integer from 1 to ${MAX_WORKER_TURNS}`);
+    }
     if (run.tasks.some((task) => task.state !== "queued")) {
       throw new Error(`Run ${run.id} contains a task that is not queued`);
     }
@@ -210,12 +235,14 @@ export class SubagentCoordinator {
       accepting: true,
       completionCount: 0,
       listeners: new Set(),
+      deadlineAt: this.now() + record.timeoutMs,
     };
     if (runtime.tasks.size !== record.tasks.length) {
       throw new Error(`Run ${run.id} contains duplicate task IDs`);
     }
 
     this.runs.set(record.id, runtime);
+    this.observe(runtime);
     runtime.deadline = setTimeout(() => this.expire(runtime), record.timeoutMs);
     this.pump(runtime);
     return cloneRun(record);
@@ -343,6 +370,11 @@ export class SubagentCoordinator {
     return this.shutdownPromise;
   }
 
+  /** Milliseconds left before the run's absolute deadline; never negative. */
+  private remainingRunBudgetMs(runtime: RunRuntime): number {
+    return Math.max(0, runtime.deadlineAt - this.now());
+  }
+
   private pump(runtime: RunRuntime): void {
     if (!runtime.accepting || runtime.record.state !== "running") return;
 
@@ -379,22 +411,40 @@ export class SubagentCoordinator {
 
         task.state = "starting";
         task.startedAt = this.now();
+        this.observe(runtime);
         if (taskRuntime.controller.signal.aborted) throw abortError(taskRuntime.controller.signal);
 
         // Machine tier: one launch slot per worker across every local session,
-        // bucketed by provider. Released when the task settles or aborts.
-        const releaseMachine = await this.machineSlots.acquire(provider, taskRuntime.controller.signal);
+        // bucketed by provider. Released when the task settles or aborts. The
+        // wait is bounded by this run's remaining budget only: the implicit
+        // ten-minute slot default is never a floor, so a dispatch queued behind
+        // machine capacity cannot outlive the run that requested it.
+        const remainingRunMs = this.remainingRunBudgetMs(runtime);
+        if (remainingRunMs <= 0) {
+          // The run deadline has passed but its timer has not fired yet.
+          // Settle this dispatch exactly as the deadline would (timed_out)
+          // instead of waiting on a slot or reporting an exhausted launch.
+          this.stopTask(runtime, task, "timed_out", "Run deadline exceeded");
+          throw abortError(taskRuntime.controller.signal);
+        }
+        const releaseMachine = await (this.machineSlots.acquire as MachineSlotAcquire)(
+          provider,
+          taskRuntime.controller.signal,
+          remainingRunMs,
+        );
         try {
           if (taskRuntime.controller.signal.aborted || isTerminal(task.state)) {
             throw abortError(taskRuntime.controller.signal);
           }
           task.state = "running";
+          this.observe(runtime);
           if (taskRuntime.controller.signal.aborted) throw abortError(taskRuntime.controller.signal);
 
           const result = await this.runner({
             run: runtime.record,
             task,
             signal: taskRuntime.controller.signal,
+            sessionDir: this.sessionDir?.(runtime.record, task),
             onProgress: (progress) => this.applyProgress(runtime, task, progress),
           });
           if (!isTerminal(task.state)) {
@@ -443,6 +493,12 @@ export class SubagentCoordinator {
     if (progress.toolSuccesses !== undefined) task.toolSuccesses = safeTurns(progress.toolSuccesses, task.toolSuccesses ?? 0);
     if (progress.turns !== undefined) task.turns = safeTurns(progress.turns, task.turns);
     if (progress.usage !== undefined) task.usage = cloneUsage(progress.usage);
+    for (const field of ["retryAttempt", "retryDelayMs", "compactions"] as const) {
+      if (progress[field] !== undefined) task[field] = safeTurns(progress[field], task[field] ?? 0);
+    }
+    if (progress.sessionFile !== undefined) task.sessionFile = progress.sessionFile;
+    task.lastProgressAt = this.now();
+    this.observe(runtime);
 
     if (!this.onProgress) return;
     try {
@@ -515,6 +571,7 @@ export class SubagentCoordinator {
     }
     runtime.completionCount += 1;
     this.finishRunIfSettled(runtime);
+    this.observe(runtime);
     this.notify(runtime);
     this.pruneTerminalRuns();
   }
@@ -558,6 +615,12 @@ export class SubagentCoordinator {
     runtime.accepting = false;
     for (const task of runtime.record.tasks) {
       if (!isTerminal(task.state)) this.stopTask(runtime, task, "timed_out", "Run deadline exceeded");
+    }
+  }
+
+  private observe(runtime: RunRuntime): void {
+    try { this.onChange?.(cloneRun(runtime.record)); } catch {
+      // The host reports checkpoint errors; never abandon a live worker here.
     }
   }
 

@@ -1,4 +1,4 @@
-export const USAP_VERSION = "1.1" as const;
+export const USAP_VERSION = "1.2" as const;
 export const MAX_TASKS = 8;
 export const MAX_ACTIVE_RUNS = 16;
 export const MAX_RETAINED_TERMINAL_RUNS = 50;
@@ -8,7 +8,14 @@ export const DEFAULT_CONCURRENCY = 4;
 export const MAX_CONCURRENCY = 8;
 export const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 export const MIN_TIMEOUT_MS = 1_000;
-export const MAX_TIMEOUT_MS = 30 * 60_000;
+/** Eight hours: one dispatch may hold a long-horizon leaf instead of re-dispatching it. */
+export const MAX_TIMEOUT_MS = 8 * 60 * 60_000;
+/** Per-task worker turn budget when a dispatch supplies none. */
+export const DEFAULT_MAX_TURNS = 64;
+/** Hard ceiling for the per-task worker turn budget. */
+export const MAX_MAX_TURNS = 2048;
+/** Schema ceiling exposed to the extension's `maxTurns` dispatch field. */
+export const MAX_WORKER_TURNS = MAX_MAX_TURNS;
 export const OUTPUT_LIMIT = 20_000;
 export const RELAY_BODY_LIMIT = 4_000;
 export const RELAY_MAILBOX_LIMIT = 100;
@@ -71,6 +78,8 @@ export interface DispatchInput {
   tasks: SubagentTaskInput[];
   concurrency?: number;
   timeoutMs?: number;
+  /** Per-task worker turn budget; defaults to DEFAULT_MAX_TURNS, ceiling MAX_MAX_TURNS. */
+  maxTurns?: number;
   background?: boolean;
   thinking?: "medium" | "high" | "xhigh";
   thinkingReason?: string;
@@ -100,6 +109,9 @@ export interface RelayEnvelope {
 }
 
 export interface TaskRecord extends NormalizedTask {
+  retryAttempt?: number;
+  retryDelayMs?: number;
+  compactions?: number;
   state: TaskState;
   startedAt?: number;
   endedAt?: number;
@@ -113,11 +125,25 @@ export interface TaskRecord extends NormalizedTask {
   relaySent: number;
   relayReceived: number;
   truncated: boolean;
+  /**
+   * Optional parent-supplied session file. When present the worker continues
+   * that persisted history instead of starting from an empty in-memory session.
+   */
+  sessionFile?: string;
+  /** Successful edit/write tool paths journaled for the final report. */
+  changedPaths?: string[];
+  /** Last observed worker step (tool name or compaction/retry phase). */
+  lastStep?: string;
+  /** Epoch ms of the last accepted progress update; drives staleness diagnosis. */
+  lastProgressAt?: number;
 }
 
 export interface RunRecord {
   version: typeof USAP_VERSION;
   id: string;
+  /** Native parent identity, captured at dispatch (never inferred from a viewing pane). */
+  ownerSessionId?: string;
+  ownerSessionFile?: string;
   goal: string;
   constraints: string[];
   contract?: string;
@@ -127,6 +153,8 @@ export interface RunRecord {
   thinkingLevel: string;
   concurrency: number;
   timeoutMs: number;
+  /** Per-task worker turn budget applied to every task in this run. */
+  maxTurns: number;
   background: boolean;
   state: RunState;
   createdAt: number;
@@ -136,12 +164,21 @@ export interface RunRecord {
 }
 
 export interface WorkerProgress {
+  retryAttempt?: number;
+  retryDelayMs?: number;
+  compactions?: number;
   state?: Extract<TaskState, "starting" | "running" | "waiting">;
+  /**
+   * Current step name. Compaction and retry phases reuse this existing field
+   * ("compaction" / "retry") so progress reporting needs no protocol change.
+   */
   currentTool?: string;
   toolErrors?: number;
   toolSuccesses?: number;
   turns?: number;
   usage?: UsageTotals;
+  /** Checkpoint path when the worker session is persisted to disk. */
+  sessionFile?: string;
 }
 
 export interface WorkerResult {
@@ -162,6 +199,8 @@ export interface WorkerRunContext {
   task: TaskRecord;
   signal: AbortSignal;
   onProgress: (progress: WorkerProgress) => void;
+  /** Optional parent-supplied session directory used when creating a persisted session. */
+  sessionDir?: string;
 }
 
 export type WorkerRunner = (context: WorkerRunContext) => Promise<WorkerResult>;

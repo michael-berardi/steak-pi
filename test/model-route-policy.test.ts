@@ -6,6 +6,17 @@ import {
 
 type Model = Parameters<typeof assertSubscriptionRequest>[0];
 type Provider = Parameters<typeof guardProvider>[0];
+// Resolve the SDK's own pi-ai: 0.86 requires normalization before provider dispatch.
+const { normalizeContext } = await import(/* @vite-ignore */ new URL(
+  "../node_modules/@earendil-works/pi-ai/dist/index.js",
+  import.meta.resolve("@earendil-works/pi-coding-agent"),
+).href);
+function emptyContext(): Parameters<Provider["streamSimple"]>[1] {
+  // 0.85 accepts Context directly and does not export normalizeContext.
+  const normalize = typeof normalizeContext === "function" ? normalizeContext : (context: { messages: never[] }) => context;
+  return normalize({ messages: [] });
+}
+
 type Registry = Parameters<typeof selectWorkerModel>[2];
 const astra = {
   id: "gpt-6-astra", name: "GPT-6 Astra", provider: "openai-codex",
@@ -64,8 +75,8 @@ describe("GPT coding-plan route policy", () => {
     const provider = fakeProvider("openrouter");
     const guarded = guardProvider(provider, () => true);
     const blocked = { ...astra, provider: "openrouter" };
-    expect(() => guarded.stream(blocked, { messages: [] })).toThrow();
-    expect(() => guarded.streamSimple(blocked, { messages: [] })).toThrow();
+    expect(() => guarded.stream(blocked, emptyContext())).toThrow();
+    expect(() => guarded.streamSimple(blocked, emptyContext())).toThrow();
     expect(() => guarded.fetchDeferred!(blocked, {} as never)).toThrow();
     await expect(guarded.cancelDeferred!(blocked, {} as never)).rejects.toThrow();
     for (const key of ["stream", "streamSimple", "fetchDeferred", "cancelDeferred"] as const) {
@@ -123,13 +134,14 @@ describe("GPT coding-plan route policy", () => {
     expect(filtered.every((model) => model === glm)).toBe(true);
   });
 
-  it("checks OAuth at execution time and passes allowed requests through unchanged", () => {
+  it("checks OAuth at execution time and passes allowed requests through unchanged", async () => {
     const provider = fakeProvider();
     let oauth = true;
     const guarded = guardProvider(provider, () => oauth);
-    const context = { messages: [] };
+    const context = emptyContext();
     const options = { signal: new AbortController().signal };
-    expect(guarded.streamSimple(astra, context, options)).toBe("simple");
+    const events = guarded.streamSimple(astra, context, options);
+    for await (const _event of events) { /* drain native gate */ }
     expect(provider.streamSimple).toHaveBeenCalledWith(astra, context, options);
     oauth = false;
     expect(() => guarded.streamSimple(astra, context, options)).toThrow();
@@ -155,10 +167,10 @@ describe("GPT coding-plan route policy", () => {
     registry.getProvider = (id) => id === "openai-codex"
       ? { ...base, getModels: () => [overlay] } : native.get(id);
     install(registry);
-    expect(methods.registerProvider).toHaveBeenCalledTimes(3);
-    expect(() => native.get("openai-codex")!.streamSimple(overlay, { messages: [] })).toThrow(GPT_ROUTE_ERROR);
+    expect(methods.registerProvider).toHaveBeenCalledTimes(4);
+    expect(() => native.get("openai-codex")!.streamSimple(overlay, emptyContext())).toThrow(GPT_ROUTE_ERROR);
     install(registry);
-    expect(methods.registerProvider).toHaveBeenCalledTimes(3);
+    expect(methods.registerProvider).toHaveBeenCalledTimes(4);
   });
 
   it("reapplies worker runtime guards after an API refresh without stacking unchanged providers", () => {
@@ -178,8 +190,8 @@ describe("GPT coding-plan route policy", () => {
     registry.getProvider = (id) => id === "openai-codex"
       ? { ...base, getModels: () => [overlay] } : native.get(id);
     guardModelRuntime(runtime);
-    expect(methods.registerProvider).toHaveBeenCalledTimes(3);
-    expect(() => native.get("openai-codex")!.streamSimple(overlay, { messages: [] })).toThrow(GPT_ROUTE_ERROR);
+    expect(methods.registerProvider).toHaveBeenCalledTimes(4);
+    expect(() => native.get("openai-codex")!.streamSimple(overlay, emptyContext())).toThrow(GPT_ROUTE_ERROR);
   });
 
   it("defaults Astra worker effort to medium without changing other models", () => {

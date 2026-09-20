@@ -17,7 +17,7 @@ function harness() {
   const cwd = mkdtempSync(join(tmpdir(), "steak-dispatch-ergonomics-"));
   dirs.push(cwd);
   const model = { provider: "zai", id: "glm-5.3-flash", input: ["text", "image"] };
-  const ctx = { cwd, model, thinkingLevel: "medium", modelRegistry: {
+  const ctx = { cwd, sessionManager: { getSessionId: () => cwd }, model, thinkingLevel: "medium", modelRegistry: {
     isUsingOAuth: () => false, hasConfiguredAuth: () => true, getAvailable: () => [model],
     getProvider: () => ({ streamSimple() {} }), find: () => model,
   }, ui: { setStatus() {} } };

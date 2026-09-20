@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Coordinator, CoordinatorWaitTimeoutError } from "../src/subagents/coordinator.ts";
 import { Scheduler } from "../src/subagents/scheduler.ts";
+import type { MachineSlots } from "../src/subagents/machine-slots.ts";
 import {
   MAX_ACTIVE_RUNS,
   MAX_RETAINED_TERMINAL_RUNS,
@@ -69,6 +70,7 @@ function run(id: string, taskCount: number, concurrency = 4, timeoutMs = 10_000)
     thinkingLevel: "off",
     concurrency,
     timeoutMs,
+    maxTurns: 64,
     background: true,
     state: "running",
     createdAt: Date.now(),
@@ -130,6 +132,27 @@ describe("session scheduler", () => {
 });
 
 describe("subagent coordinator", () => {
+  it("keeps a six-hour task alive beyond legacy limits and enforces the absolute deadline", async () => {
+    vi.useFakeTimers();
+    const changes: RunRecord[] = [];
+    const coordinator = new Coordinator(async ({ signal, onProgress }) => {
+      onProgress({ turns: 80, currentTool: "read" });
+      await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      return result("aborted", 80, "partial evidence");
+    }, { scheduler: new Scheduler(1), onChange: (value) => changes.push(value) });
+    const input = run("hours", 1, 1, 6 * 60 * 60_000); input.maxTurns = 256;
+    coordinator.start(input); await flush();
+    await vi.advanceTimersByTimeAsync(5 * 60 * 60_000);
+    expect(coordinator.snapshot("hours")!.tasks[0].state).toBe("running");
+    expect(coordinator.snapshot("hours")!.tasks[0].turns).toBe(80);
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    const settled = await coordinator.wait("hours", "all");
+    expect(settled.tasks[0].state).toBe("timed_out");
+    expect(settled.tasks[0].output).toContain("partial evidence");
+    expect(changes.at(-1)!.state).toBe("failed");
+    await coordinator.shutdown();
+  });
+
   it("shares a max-four pool across runs and preserves run/task order", async () => {
     const scheduler = new Scheduler(4);
     const gate = deferred<void>();
@@ -271,6 +294,53 @@ describe("subagent coordinator", () => {
     expect(launches).toEqual(["deadline-t1"]);
   });
 
+  it("bounds the machine-slot wait by the run's remaining budget", async () => {
+    vi.useFakeTimers();
+    const requestedWaits: number[] = [];
+    const slots = {
+      acquire: async (_provider: string, _signal?: AbortSignal, timeoutMs?: number) => {
+        requestedWaits.push(timeoutMs ?? -1);
+        return () => undefined;
+      },
+    } as unknown as MachineSlots;
+
+    // An explicit multi-hour dispatch asks for its own remaining budget, never
+    // the implicit ten-minute machine-slot default.
+    let clock = 1_000_000;
+    const sixHours = 6 * 60 * 60_000;
+    const longHorizon = new Coordinator(async () => result(), {
+      machineSlots: slots,
+      scheduler: new Scheduler(1),
+      now: () => clock,
+    });
+    longHorizon.start(run("budget-long", 1, 1, sixHours));
+    await flush();
+    expect(requestedWaits).toEqual([sixHours]);
+    expect((await longHorizon.wait("budget-long", "all")).tasks[0].state).toBe("done");
+    await longHorizon.shutdown();
+
+    // A short run never asks for more time than it has left: the second
+    // dispatch is capped at the run budget minus the time already spent queued.
+    requestedWaits.length = 0;
+    clock = 2_000_000;
+    const gate = deferred<void>();
+    const shortRun = new Coordinator(async ({ task: recordTask }) => {
+      if (recordTask.id === "budget-short-t1") await gate.promise;
+      return result();
+    }, { machineSlots: slots, scheduler: new Scheduler(1), now: () => clock });
+    shortRun.start(run("budget-short", 2, 1, 90_000));
+    await flush();
+    expect(requestedWaits).toEqual([90_000]);
+
+    clock += 30_000; // thirty seconds queued behind the first task
+    gate.resolve();
+    for (let index = 0; index < 4; index += 1) await flush();
+    expect(requestedWaits).toEqual([90_000, 60_000]);
+    expect((await shortRun.wait("budget-short", "all")).tasks.map((recordTask) => recordTask.state))
+      .toEqual(["done", "done"]);
+    await shortRun.shutdown();
+  });
+
   it("cancels globally queued and running tasks without a late launch", async () => {
     const scheduler = new Scheduler(1);
     const launched: string[] = [];
@@ -365,7 +435,7 @@ describe("subagent coordinator", () => {
     expect(() => coordinator.start(run("empty", 0))).toThrow(/1 to 8/);
     expect(() => coordinator.start(run("many", 9))).toThrow(/1 to 8/);
     expect(() => coordinator.start(run("short", 1, 1, 999))).toThrow(/timeoutMs/);
-    expect(() => coordinator.start(run("long", 1, 1, 30 * 60_000 + 1))).toThrow(/timeoutMs/);
+    expect(() => coordinator.start(run("long", 1, 1, 8 * 60 * 60_000 + 1))).toThrow(/timeoutMs/);
   });
 
   it("bounds simultaneously active runs even when workers never settle", () => {

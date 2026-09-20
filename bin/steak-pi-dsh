@@ -1,0 +1,30 @@
+#!/usr/bin/env node
+// Node's default TypeScript loader refuses files inside node_modules.
+import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { registerHooks, stripTypeScriptTypes } from "node:module";
+import { dirname, resolve, join } from "node:path";
+import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
+try {
+  // Only these two reviewed, erasable modules need launcher-time loading. Never
+  // enable TypeScript for a directory/package, or pass this hook to native Pi.
+  const primaryURL = new URL("../src/deepseek-primary.ts", import.meta.url);
+  const reviewedURLs = new Set([primaryURL.href, new URL("../vendor/pi-dsh-minimal/bash-session.ts", import.meta.url).href]);
+  const hook = registerHooks({
+    load(url, context, nextLoad) {
+      if (!reviewedURLs.has(url)) return nextLoad(url, context);
+      return { format: "module", shortCircuit: true, source: stripTypeScriptTypes(readFileSync(new URL(url), "utf8"), { mode: "strip", sourceUrl: url }) };
+    },
+  });
+  let primary;
+  try { primary = await import(primaryURL.href); } finally { hook.deregister(); }
+  const { preflightPrimary, resolveNativePi } = primary;
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const args = preflightPrimary(root, process.cwd(), process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi/agent"), process.argv.slice(2));
+  const cli = resolveNativePi(process.env.PATH || "", process.env.ULTRATERM_PI_PACKAGE_ROOT, process.env.STEAK_DSH_NATIVE_CLI);
+  const child = spawn(process.execPath, [cli, ...args], { stdio: "inherit", env: { ...process.env, STEAK_DSH_MANAGED_ROOT: root } });
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => child.kill(signal));
+  child.on("error", error => { console.error(error.message); process.exitCode = 1; });
+  child.on("exit", (code, signal) => { process.exitCode = code ?? (signal ? 1 : 0); });
+} catch (error) { console.error(error.message); process.exitCode = 1; }

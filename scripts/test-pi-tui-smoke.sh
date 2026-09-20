@@ -30,8 +30,8 @@ mkdir -p "$TMP/config" "$TMP/sessions" "$TMP/home" \
 PI_VERSION="$(env -i HOME="$TMP/home" PATH="$SAFE_PATH" \
   PI_CODING_AGENT_DIR="$TMP/config" PI_OFFLINE=1 PI_TELEMETRY=0 \
   "$PI_EXECUTABLE" --version)"
-[[ "$PI_VERSION" =~ ^0\.85\.([1-9][0-9]*)$ ]] || {
-  echo "Steak Pi requires Pi >=0.85.1 <0.86.0; found $PI_VERSION" >&2
+[[ "$PI_VERSION" == "0.85.1" || "$PI_VERSION" == "0.86.0" ]] || {
+  echo "Steak Pi requires Pi 0.85.1 or 0.86.0; found $PI_VERSION" >&2
   exit 1
 }
 
@@ -110,8 +110,38 @@ const lines = [
   { type: "message", id: "a1b2c3d4", parentId: null, timestamp: iso, message: { role: "user", content: "fixture-resume-marker", timestamp: now - 60_000 } },
   { type: "message", id: "b2c3d4e5", parentId: "a1b2c3d4", timestamp: iso, message: { role: "assistant", content: [{ type: "text", text: "fixture restored" }], api: "openai-completions", provider: "zai", model: "glm-5.3-flash", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: now - 59_000 } },
 ];
+const run = { runId: "run-visual-fixture", goal: "Verify the subagent workgroup", state: "failed", model: "zai/glm-5.3-flash", createdAt: now - 60_000, endedAt: now - 1_000, tasks: [
+  { taskId: "one", label: "Source review", state: "done", turns: 8, toolSuccesses: 6, toolErrors: 0, startedAt: now - 60_000, endedAt: now - 10_000, output: "Reviewed implementation and retained evidence." },
+  { taskId: "two", label: "Long-running verification", state: "failed", turns: 64, toolSuccesses: 55, toolErrors: 1, startedAt: now - 60_000, endedAt: now - 1_000, error: "Turn budget reached — partial work retained", output: "Partial verification report is available for inspection." },
+] };
+lines.push(
+  { type: "message", id: "c3d4e5f6", parentId: "b2c3d4e5", timestamp: iso, message: { ...lines[2].message, content: [{ type: "toolCall", id: "fixture-dispatch", name: "ultraterm_subagents", arguments: { goal: run.goal, tasks: run.tasks.map(t => ({ label: t.label, task: t.label })) } }], stopReason: "toolUse" } },
+  { type: "message", id: "d4e5f6a7", parentId: "c3d4e5f6", timestamp: iso, message: { role: "toolResult", toolCallId: "fixture-dispatch", toolName: "ultraterm_subagents", content: [{ type: "text", text: "USAP visual fixture: one success and one exhausted budget" }], details: { mode: "foreground", run }, isError: false, timestamp: now } },
+);
 fs.writeFileSync(file, lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
 NODE
+
+# Exercise the REAL host's passive custom-message delivery without any provider
+# request. Only the worker runner and route catalog are synthetic; the extension
+# completion path and Pi TUI/session delivery are the candidate implementation.
+cat >"$TMP/completion-proof.ts" <<EOF
+import { createUltratermSubagentsExtension } from "$ROOT/extensions/ultraterm-subagents.ts";
+import { emptyUsage } from "$ROOT/src/subagents/types.ts";
+export default function(pi) {
+  const tools = new Map();
+  const model = { provider: "zai", id: "glm-5.3-flash", input: ["text"] };
+  createUltratermSubagentsExtension({ checkpointRoot: "$TMP/completion-checkpoints", profiles: [], idFactory: () => "completion-proof", createRunner: () => async () => ({ state: "done", output: "offline proof", turns: 1, usage: emptyUsage() }) })({
+    registerTool: (tool) => tools.set(tool.name, tool), on: () => {},
+    appendEntry: (...args) => pi.appendEntry(...args), sendMessage: (...args) => pi.sendMessage(...args),
+  });
+  pi.registerCommand("usap-smoke", { description: "Offline completion proof", handler: async (_args, ctx) => {
+    await tools.get("ultraterm_subagents").execute("proof", { goal: "offline completion proof", model: "zai/glm-5.3-flash", background: true, tasks: [{ label: "Completion delivery verified", task: "offline" }] }, undefined, undefined, {
+      ...ctx, model, thinkingLevel: "medium",
+      modelRegistry: { isUsingOAuth: () => false, hasConfiguredAuth: () => true, getAvailable: () => [model], find: () => model, getProvider: () => ({ streamSimple() {} }) },
+    });
+  } });
+}
+EOF
 
 PI_ENV="env -i HOME='$TMP/home' PATH='$SAFE_PATH' TMPDIR='$TMP' SHELL='/bin/bash' USER='steak-smoke' TERM='screen-256color' COLORTERM='truecolor' LANG='en_US.UTF-8' LC_ALL='en_US.UTF-8' XDG_CONFIG_HOME='$TMP/xdg-config' XDG_STATE_HOME='$TMP/xdg-state' XDG_CACHE_HOME='$TMP/xdg-cache' XDG_DATA_HOME='$TMP/xdg-data' PI_CODING_AGENT_DIR='$TMP/config' PI_OFFLINE='1' PI_TELEMETRY='0'"
 
@@ -119,7 +149,7 @@ PI_ENV="env -i HOME='$TMP/home' PATH='$SAFE_PATH' TMPDIR='$TMP' SHELL='/bin/bash
 # UltraTerm panes, operator sessions, credentials, telemetry, or startup network.
 tmux_private -f /dev/null new-session -d -x 80 -y 24 -s "$SESSION" \
   "cd '$ROOT' && exec $PI_ENV '$PI_EXECUTABLE' --offline --approve \
-    --session-dir '$TMP/sessions' --no-skills --no-prompt-templates \
+    --session-dir '$TMP/sessions' --extension '$TMP/completion-proof.ts' --no-skills --no-prompt-templates \
     --no-context-files --use-theme dark"
 
 wait_for "STEAK PI"
@@ -154,25 +184,57 @@ tmux_private send-keys -t "$SESSION:0.0" -l "$second_command"
 tmux_private send-keys -t "$SESSION:0.0" Enter
 wait_for "second-smoke"
 
+# Completion must appear before any subsequent user input. The old nextTurn
+# implementation fails this assertion because no prompt follows the command.
+tmux_private send-keys -t "$SESSION:0.0" -l '/usap-smoke'
+tmux_private send-keys -t "$SESSION:0.0" Enter
+wait_for "Completion delivery verified"
+wait_for "1 done"
+
 # Use native selector confirmation to load a seeded private session, then
 # verify both its transcript and the extension's resumed state.
+tmux_private resize-window -t "$SESSION" -x 120 -y 40
 tmux_private send-keys -t "$SESSION:0.0" -l '/resume'
 tmux_private send-keys -t "$SESSION:0.0" Enter
 wait_for_current "Resume Session"
 tmux_private send-keys -t "$SESSION:0.0" Enter
 wait_for_current "● resumed"
 wait_for_current "fixture-resume-marker"
+wait_for_current "Subagents"
+wait_for_current "Turn budget reached"
+if [[ -n "${TUI_EVIDENCE_DIR:-}" ]]; then
+  mkdir -p "$TUI_EVIDENCE_DIR"
+  tmux_private capture-pane -p -e -t "$SESSION:0.0" >"$TUI_EVIDENCE_DIR/steak-usap-120.ansi"
+  capture_current >"$TUI_EVIDENCE_DIR/steak-usap-120.txt"
+fi
 
 # Exercise compact and wide redraws and ensure both footer surfaces survive.
-for geometry in "40 14" "120 32"; do
+for geometry in "40 14" "80 32" "120 32"; do
   read -r width height <<<"$geometry"
   tmux_private resize-window -t "$SESSION" -x "$width" -y "$height"
   sleep 0.2
   pane="$(capture_current)"
   grep -Fq -- "● resumed" <<<"$pane"
   grep -Fq -- "╰─" <<<"$pane"
-  if (( width >= 54 )); then grep -Eq -- "ctx | tok|ctx —" <<<"$pane"; fi
+  if (( width >= 54 )); then grep -Eq -- "ctx | tok|ctx —|◫" <<<"$pane"; fi
   assert_ansi_width "$width"
+  if [[ -n "${TUI_EVIDENCE_DIR:-}" ]]; then
+    tmux_private capture-pane -p -e -t "$SESSION:0.0" >"$TUI_EVIDENCE_DIR/steak-usap-${width}.ansi"
+    capture_current >"$TUI_EVIDENCE_DIR/steak-usap-${width}.txt"
+  fi
+done
+
+# Native expansion uses the same tool context as a real restored transcript.
+tmux_private send-keys -t "$SESSION:0.0" C-o
+wait_for_current "Reviewed implementation"
+for width in 120 80; do
+  tmux_private resize-window -t "$SESSION" -x "$width" -y 40
+  sleep .2
+  assert_ansi_width "$width"
+  if [[ -n "${TUI_EVIDENCE_DIR:-}" ]]; then
+    tmux_private capture-pane -p -e -t "$SESSION:0.0" >"$TUI_EVIDENCE_DIR/steak-usap-expanded-${width}.ansi"
+    capture_current >"$TUI_EVIDENCE_DIR/steak-usap-expanded-${width}.txt"
+  fi
 done
 
 # Repeat startup under Pi's opposite stock theme.
