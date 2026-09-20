@@ -672,6 +672,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
     let finalAssistant: AssistantSnapshot | undefined;
     const usage = emptyUsage();
     const accountedMessages = new WeakSet<object>();
+    const accountedCompactions = new WeakSet<object>();
     const steeringDeliveries = new Set<Promise<boolean>>();
     let releasePromptWait = () => {};
     let initializationCleanup: Promise<void> | undefined;
@@ -747,10 +748,15 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       const systemPrompt = buildPiWorkerSystemPrompt(run, task);
       // Long-horizon leaves need native compaction to stay inside the context
       // window; retries stay capped so a flaky provider cannot eat the budget.
-      const settingsManager = nativeManagers.SettingsManager.inMemory({
+      const workerSettings = {
         compaction: { ...PI_WORKER_COMPACTION },
         retry: { enabled: true, maxRetries: PI_WORKER_MAX_RETRIES },
-      });
+        // Pi 0.86 defaults to warming requests; workers must not spend outside
+        // their explicit task stream or silently omit auxiliary usage. Keep
+        // the object separate for 0.85, whose Settings type predates this key.
+        cacheWarming: "off" as const,
+      };
+      const settingsManager = nativeManagers.SettingsManager.inMemory(workerSettings);
       const sessionManager = openWorkerSession(nativeManagers.SessionManager, run.cwd, task, sessionDir);
       const modelRuntime = sdk ? await initialize(sdk.ModelRuntime.create({ signal })) : undefined;
       if (modelRuntime) {
@@ -789,7 +795,16 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
         if (phase) onProgress({ state: "running", currentTool: event.type.endsWith("_end") ? undefined : phase });
         if (event.type === "auto_retry_start") onProgress({ retryAttempt: event.attempt, retryDelayMs: event.delayMs });
         if (event.type === "auto_retry_end") onProgress({ retryDelayMs: 0 });
-        if (event.type === "compaction_end" && event.result && !event.aborted) onProgress({ compactions: ++compactions });
+        if (event.type === "compaction_end" && event.result && !accountedCompactions.has(event.result)) {
+          accountedCompactions.add(event.result);
+          if (!event.aborted) onProgress({ compactions: ++compactions });
+          // Summary calls run outside the assistant message stream. Include
+          // their recorded usage instead of silently understating worker cost.
+          if (event.result.usage) {
+            addUsage(usage, event.result.usage);
+            onProgress({ usage: cloneUsage(usage) });
+          }
+        }
         if (event.type === "tool_execution_start") {
           workerJournal(task).lastStep = event.toolName;
           task.lastStep = event.toolName;
