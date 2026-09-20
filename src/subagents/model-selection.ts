@@ -18,10 +18,12 @@ export interface WorkerProfile {
 }
 export const BUILTIN_WORKER_PROFILES: readonly WorkerProfile[] = [
   { id: "steak-pi/glm-5-3-flash", model: "zai/glm-5.3-flash", thinking: "high",
-    workerDefault: { model: "zai/glm-5.3-flash" } },
+    workerDefault: { profile: "steak-pi/opencode-go" } },
   { id: "steak-pi/gpt-6-astra", model: "openai-codex/gpt-6-astra", thinking: "medium",
-    workerDefault: { model: "openai-codex/gpt-5.6-luna" },
+    workerDefault: { profile: "steak-pi/opencode-go" },
     reviewerDefault: { model: "openai-codex/gpt-6-astra" } },
+  { id: "steak-pi/opencode-go", model: "opencode-go/deepseek-v4.1-flash", thinking: "high",
+    workerDefault: { profile: "steak-pi/opencode-go" } },
 ];
 const thinkingLevels = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
 

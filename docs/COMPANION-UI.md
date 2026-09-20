@@ -68,6 +68,14 @@ rendering is a bounded string operation on existing redraws. There are no idle
 timers, polling loops, subprocesses, network calls, provider hooks, custom
 animation timers, or extra dependencies.
 
+## UltraTerm UI Mode controls
+
+The bundled `ultraterm-ui` bridge exposes the current Pi model scope and saved-session controls to a compatible UltraTerm UI Mode. Model-only selection changes an idle session without sending a prompt. Confirmation comes from the runtime; stale requests fail without discarding the draft. Older bridges retain a next-message override rather than claiming an immediate change.
+
+In UltraTerm UI Mode, `/session` opens the saved-session picker, as does `/resume`. Native Pi's `/session` command still shows session statistics. The picker supports filtering and preview; its search input has no focus ring or glow.
+
+Selecting a model does not authorize paid inference. Explicit paid routes still require the approved launch flag and matching allowlisted provider, model and endpoint. Default workers retain subscription-first routing.
+
 ## Theme neutrality
 
 The companion UI contains no RGB, hex, 256-color, dark/light, or UltraTerm
@@ -116,5 +124,5 @@ acceptance still runs against the installed Pi TUI inside UltraTerm.
 - The context meter changes fill at 0%, mid-range, warning, and error pressure
   without polling or reserving a second header row.
 - Full package tests and TypeScript checks pass before live verification.
-- Live UltraTerm checks inspect dark and light Pi themes at 375px and 1920px
-  host widths without restarting UltraTerm or replacing a live tmux pane.
+- Live UltraTerm checks inspect dark and light themes at desktop widths (1440px
+  and 1920px), including stacked panes, without replacing a live tmux pane.

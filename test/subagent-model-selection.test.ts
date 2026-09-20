@@ -9,8 +9,9 @@ type Model = Parameters<typeof resolveWorkerSelection>[0];
 const astra = { id: "gpt-6-astra", name: "GPT-6 Astra", provider: "openai-codex", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text", "image"] } as Model;
 const luna = { ...astra, id: "gpt-5.6-luna", name: "GPT-5.6 Luna" };
 const glm = { ...astra, id: "glm-5.3-flash", name: "GLM-5.3 Flash", provider: "zai", api: "openai-completions", baseUrl: "https://api.z.ai/api/coding/paas/v4" } as Model;
+const go = { ...glm, id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", provider: "opencode-go", api: "openai-completions", baseUrl: "https://api.opencode.ai/v1", input: ["text"] } as Model;
 const other = { ...glm, id: "custom-vision", name: "Custom vision", provider: "custom" };
-function registry(models = [astra, luna, glm, other]) {
+function registry(models = [astra, luna, glm, go, other]) {
   return {
     find: (provider: string, id: string) => models.find(m => m.provider === provider && m.id === id),
     getAvailable: vi.fn(() => models),
@@ -41,10 +42,10 @@ describe("USAP 1.1 explicit model/profile contract", () => {
     expect(choose(astra, { profile: "steak-pi/glm-5-3-flash", tasks: [{ label: "review", task: "review", role: "reviewer" }] }).model).toBe(glm);
   });
   it("preserves omitted default routes and configured per-profile overrides", () => {
-    expect(choose(astra).model).toBe(luna);
+    expect(choose(astra).model).toBe(go);
     expect(choose(astra).selection.source).toBe("profile-default");
     expect(choose(astra, { tasks: [{ label: "r", task: "review", role: "reviewer" }] }).model).toBe(astra);
-    expect(choose(glm).model).toBe(glm);
+    expect(choose(glm).model).toBe(go);
     const profiles = [{ id: "steak-pi/gpt-6-astra", model: "openai-codex/gpt-6-astra", workerDefault: { profile: "steak-pi/glm-5-3-flash" } }, BUILTIN_WORKER_PROFILES[0]];
     expect(choose(astra, {}, registry(), profiles).model).toBe(glm);
   });
@@ -60,7 +61,7 @@ describe("USAP 1.1 explicit model/profile contract", () => {
   it("does not inherit a stale launch profile after /model changes", () => {
     const r = registry();
     const result = resolveWorkerSelection(glm, "high", input(), r as never, BUILTIN_WORKER_PROFILES, "gpt-6-astra");
-    expect(result.model).toBe(glm);
+    expect(result.model).toBe(go);
   });
   it.each([
     { model: "zai/glm-5.3-flash", profile: "steak-pi/glm-5-3-flash" },

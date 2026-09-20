@@ -8,22 +8,44 @@ vi.mock("node:fs", async importOriginal => {
   return { ...fs, readSync: vi.fn(fs.readSync) };
 });
 const host = { version: 1 as const, pid: process.pid, sessionId: "pi-id", sessionFile: "/file", generation: "generation" };
-const claim: Claim = { receiptId: "receipt", claimId: "claim", fromSessionId: "sender", toSessionId: "terminal", text: "exact\n\u2028 text" };
-function harness() {
+const claim: Claim = { receiptId: "receipt", claimId: "claim", fromSessionId: "sender", toSessionId: host.sessionId, text: "exact\n\u2028 text" };
+function harness(targetHost = host, message = claim, terminalId = "terminal") {
   let idle = true, valid = true, evidence: string | undefined, fail = "";
   const calls: any[] = [];
   const send = vi.fn();
   const transport = { request: vi.fn(async (r: any) => {
     calls.push(r);
     if (fail === r.cmd) { fail = ""; throw Error("lost response"); }
-    if (r.cmd === "inbox.register") return { token: "private", terminalId: "terminal" };
-    if (r.cmd === "inbox.poll") return { message: r.ready ? claim : null };
+    if (r.cmd === "inbox.register") return { token: "private", terminalId };
+    if (r.cmd === "inbox.poll") return { message: r.ready ? message : null };
     return {};
   }) };
-  const consumer = new InboxConsumer({ host, transport, idle: () => idle, current: () => valid, evidence: () => evidence, send });
+  const consumer = new InboxConsumer({ host: targetHost, transport, idle: () => idle, current: () => valid, evidence: () => evidence, send });
   return { consumer, calls, send, transport, idle: (v: boolean) => idle = v, valid: (v: boolean) => valid = v, evidence: (v?: string) => evidence = v, fail: (v: string) => fail = v };
 }
 describe("native inbox state machine", () => {
+  it("accepts the Rust SDK-session recipient, not the containing terminal identity", async () => {
+    expect(claim.toSessionId).not.toBe("terminal");
+    const h = harness(); await h.consumer.tick();
+    expect(h.send).toHaveBeenCalledTimes(1);
+    h.consumer.stop();
+    for (const wrongId of ["terminal", "previous-pi-session"]) {
+      const rejected = harness(host, { ...claim, toSessionId: wrongId });
+      await rejected.consumer.tick();
+      expect(rejected.send).not.toHaveBeenCalled();
+      expect(rejected.consumer.status).toContain("recipient session identity mismatch");
+      expect(rejected.calls.some(r => r.cmd === "inbox.record")).toBe(false);
+      rejected.consumer.stop();
+    }
+  });
+  it("keeps routing stable across terminal registration changes but rejects a replacement Pi session", async () => {
+    const renumbered = harness(host, claim, "different-terminal-registration");
+    await renumbered.consumer.tick(); expect(renumbered.send).toHaveBeenCalledTimes(1); renumbered.consumer.stop();
+    const replacement = harness({ ...host, sessionId: "new-pi-session" }, claim);
+    await replacement.consumer.tick(); expect(replacement.send).not.toHaveBeenCalled(); replacement.consumer.stop();
+    const addressedReplacement = harness({ ...host, sessionId: "new-pi-session" }, { ...claim, toSessionId: "new-pi-session" });
+    await addressedReplacement.consumer.tick(); expect(addressedReplacement.send).toHaveBeenCalledTimes(1); addressedReplacement.consumer.stop();
+  });
   it("keeps busy messages on server; idle dispatch uses canonical followUp", async () => {
     const h = harness(); h.idle(false); await h.consumer.tick();
     expect(h.calls.at(-1).ready).toBe(false); expect(h.send).not.toHaveBeenCalled();

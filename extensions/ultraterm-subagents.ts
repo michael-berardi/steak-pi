@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
 import { SubagentCoordinator, CoordinatorWaitTimeoutError } from "../src/subagents/coordinator.ts";
@@ -9,10 +10,15 @@ import {
   type RelayPeer,
 } from "../src/subagents/relay.ts";
 import { SessionScheduler } from "../src/subagents/scheduler.ts";
+import { CheckpointStore, diagnoseRun, recoveredRun } from "../src/subagents/checkpoints.ts";
+import { renderSubagentCall, renderSubagentResult, renderSubagentLive } from "../src/subagents/render.ts";
 import type { PiWorkerRuntime, PiWorkerRunnerOptions } from "../src/subagents/pi-worker.ts";
 import {
+  USAP_VERSION,
   MAX_CONCURRENCY,
   MAX_TASKS,
+  MAX_TIMEOUT_MS,
+  MAX_WORKER_TURNS,
   RELAY_MAILBOX_LIMIT,
   type DispatchInput,
   type RunRecord,
@@ -36,7 +42,7 @@ function stringEnum<T extends readonly string[]>(values: T): TSchema {
 
 const RoleSchema = stringEnum(["scout", "worker", "reviewer"] as const);
 const RelayKindSchema = stringEnum(["message", "request", "reply", "status"] as const);
-const HubActionSchema = stringEnum(["list", "status", "wait", "cancel", "send", "inbox"] as const);
+const HubActionSchema = stringEnum(["list", "status", "wait", "cancel", "send", "inbox", "resume", "diagnose"] as const);
 const WaitModeSchema = stringEnum(["next", "all"] as const);
 
 const TaskSchema = Type.Object({
@@ -61,7 +67,8 @@ export const ultratermSubagentsSchema = Type.Object({
   contract: Type.Optional(Type.String({ minLength: 1, maxLength: 8_000 })),
   tasks: Type.Array(TaskSchema, { minItems: 1, maxItems: MAX_TASKS }),
   concurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_CONCURRENCY, description: "Defaults to min(8, task count)." })),
-  timeoutMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 30 * 60_000 })),
+  timeoutMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: MAX_TIMEOUT_MS, description: "Absolute run budget including queue time; default 10 minutes, maximum 8 hours." })),
+  maxTurns: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_WORKER_TURNS, description: "Per-worker request budget; default 64. Increase explicitly for long-horizon work." })),
   background: Type.Optional(Type.Boolean({ default: false })),
   thinking: Type.Optional(stringEnum(["medium", "high", "xhigh"] as const)),
   thinkingReason: Type.Optional(Type.String({ minLength: 16, maxLength: 2_000, description: "Why high/xhigh reasoning benefits this task." })),
@@ -73,7 +80,7 @@ export const ultratermHubSchema = Type.Object({
   runId: Type.Optional(Type.String({
     minLength: 1,
     maxLength: 128,
-    description: "Required for status, wait, cancel, send, and inbox; omit only for list",
+    description: "Required for every action except list. Resume explicitly continues only unfinished checkpointed tasks.",
   })),
   taskId: Type.Optional(Type.String({ minLength: 1, maxLength: 160, description: "Optional task target for cancel" })),
   mode: Type.Optional(WaitModeSchema),
@@ -91,7 +98,7 @@ export const hubSchema = ultratermHubSchema;
 
 export type UltratermSubagentsParams = DispatchInput;
 export interface UltratermHubParams {
-  action: "list" | "status" | "wait" | "cancel" | "send" | "inbox";
+  action: "list" | "status" | "wait" | "cancel" | "send" | "inbox" | "resume" | "diagnose";
   runId?: string;
   taskId?: string;
   mode?: "next" | "all";
@@ -115,6 +122,10 @@ export interface SettledTaskView {
   toolErrors: number;
   toolSuccesses: number;
   truncated: boolean;
+  startedAt?: number;
+  endedAt?: number;
+  lastProgressAt?: number;
+  detail?: string;
 }
 
 export interface RunView {
@@ -168,6 +179,7 @@ export interface UltratermSubagentsDependencies {
   createRelay?: () => RelayBroker;
   now?: () => number;
   idFactory?: () => string;
+  checkpointRoot?: string;
 }
 
 interface RunBinding {
@@ -188,19 +200,57 @@ interface SessionRuntime {
   statusContext?: ExtensionContext;
   closed: boolean;
   /** Background completions awaiting one coalesced delivery. */
-  completionBuffer: string[];
+  completionBuffer: Array<{ runId: string; text: string }>;
+  awaitingReceipt: Set<string>;
+  deliveryRetry?: ReturnType<typeof setTimeout>;
+  deliveryRetries: number;
+  store?: CheckpointStore;
+  checkpointError?: string;
   /** True until an agent run starts; cleared/refreshed by agent lifecycle events. */
   agentIdle: boolean;
 }
 
-/** Bounded, non-context state only: never include goals, prompts, output, or usage. */
+function observedCompletionIds(ctx?: ExtensionContext): Set<string> | undefined {
+  const entries = ctx?.sessionManager?.getEntries?.();
+  if (!entries) return undefined;
+  const ids = new Set<string>();
+  for (const entry of entries) {
+    if (entry.type !== "custom_message" || entry.customType !== "ultraterm-subagents-complete") continue;
+    const details = entry.details as { runIds?: unknown } | undefined;
+    if (Array.isArray(details?.runIds)) for (const id of details.runIds) if (typeof id === "string") ids.add(id);
+  }
+  return ids;
+}
+
+function taskDetail(task: TaskRecord): string | undefined {
+  if (/Host interrupted|Coordinator shut down/i.test(task.error ?? "")) return task.sessionFile ? "Interrupted — inspect the checkpoint" : "Interrupted — inspect diagnostics";
+  if (/turn.limit|turn budget/i.test(task.error ?? "")) return "Turn budget reached — partial work retained";
+  if (task.state === "timed_out") return "Time budget reached — partial work retained";
+  if (task.state === "aborted") return "Cancelled";
+  if (task.state === "failed") return "Needs attention — inspect diagnostics";
+  if (task.state === "done") return "Finished — ready for parent verification";
+  const steps: Record<string, string> = { read: "Reading assigned files", grep: "Searching source", find: "Finding source files", ls: "Inspecting files", edit: "Editing assigned files", write: "Writing assigned files", bash: "Running a command", compaction: "Managing context", retry: "Retrying the connection" };
+  return task.currentTool ? steps[task.currentTool] : undefined;
+}
+
+/** Bounded UI labels/lifecycle only: never include goals, task prompts, output, or usage. */
 export function usapTelemetrySnapshot(run: RunRecord) {
   return {
     version: USAP_TELEMETRY_VERSION,
     runId: run.id,
     runState: run.state,
     ...(run.selection ? { selection: { ...run.selection }, model: run.model, thinkingLevel: run.thinkingLevel } : {}),
-    tasks: run.tasks.map((task) => ({ taskId: task.id, state: task.state, ...(task.currentTool ? { currentTool: task.currentTool.slice(0, 80) } : {}), toolErrors: task.toolErrors ?? 0, toolSuccesses: task.toolSuccesses ?? 0 })),
+    tasks: run.tasks.map((task) => ({
+      taskId: task.id,
+      label: task.label.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 80),
+      state: task.state,
+      ...(taskDetail(task) ? { detail: taskDetail(task) } : {}),
+      ...(Number.isFinite(task.startedAt) && task.startedAt! >= 0 ? { startedAt: task.startedAt } : {}),
+      ...(Number.isFinite(task.endedAt) && task.endedAt! >= 0 ? { endedAt: task.endedAt } : {}),
+      ...(task.currentTool ? { currentTool: task.currentTool.slice(0, 80) } : {}),
+      toolErrors: task.toolErrors ?? 0,
+      toolSuccesses: task.toolSuccesses ?? 0,
+    })),
   };
 }
 
@@ -232,6 +282,10 @@ function taskView(task: TaskRecord): SettledTaskView {
     ...(task.error === undefined ? {} : { error: task.error }),
     ...(task.currentTool ? { currentTool: task.currentTool.slice(0, 80) } : {}),
     turns: task.turns,
+    startedAt: task.startedAt,
+    endedAt: task.endedAt,
+    lastProgressAt: task.lastProgressAt,
+    ...(taskDetail(task) ? { detail: taskDetail(task) } : {}),
     toolErrors: task.toolErrors ?? 0,
     toolSuccesses: task.toolSuccesses ?? 0,
     truncated: task.truncated,
@@ -388,7 +442,10 @@ export function createUltratermSubagentsExtension(
       if (!target) return;
       current.statusContext = target;
       try {
-        target.ui.setStatus("usap", renderSessionStatus(current.coordinator.activeRuns()));
+        const active = current.coordinator.activeRuns();
+        target.ui.setStatus("usap", renderSessionStatus(active));
+        const background = active.filter((run) => run.background);
+        target.ui.setWidget?.("usap-progress", background.length ? (_tui, theme) => renderSubagentLive(background, theme) : undefined);
       } catch {
         // UI observation must not affect child execution.
       }
@@ -426,7 +483,21 @@ export function createUltratermSubagentsExtension(
         return;
       }
       current.closed = true;
+      clearTimeout(current.deliveryRetry);
+      // Snapshot before shutdown changes active tasks into ordinary cancellations.
+      for (const run of current.coordinator.list()) {
+        try { current.store?.save(run, true); } catch { current.checkpointError = "Checkpoint write failed during host shutdown"; }
+      }
       await current.coordinator.shutdown();
+      // Keep disposal-time final reports and changed paths. Shutdown interruption
+      // is distinct from an explicit operator cancellation and remains resumable.
+      for (const run of current.coordinator.list()) {
+        for (const task of run.tasks) {
+          if (task.state === "aborted" && /Coordinator shut down/.test(task.error ?? "")) task.error = "Host interrupted; inspect checkpoint and explicitly resume unfinished work";
+        }
+        try { current.store?.save(run, true); } catch { current.checkpointError = "Final shutdown checkpoint failed"; }
+      }
+      current.store?.close();
       // appendEntry targets the current host session, never a stale replacement.
       if (persist && runtime === current) {
         for (const run of current.coordinator.list()) persistTelemetry(current, run);
@@ -441,6 +512,9 @@ export function createUltratermSubagentsExtension(
       if (runtime !== current) return;
       try {
         (ctx ?? current.statusContext)?.ui.setStatus("usap", undefined);
+        (ctx ?? current.statusContext)?.ui.setStatus("usap-delivery", undefined);
+        (ctx ?? current.statusContext)?.ui.setStatus("usap-checkpoint", undefined);
+        (ctx ?? current.statusContext)?.ui.setWidget?.("usap-progress", undefined);
       } catch {
         // The session UI may already be tearing down.
       }
@@ -453,6 +527,8 @@ export function createUltratermSubagentsExtension(
         return runtime;
       }
 
+      const sessionFile = ctx.sessionManager?.getSessionFile?.();
+      const store = sessionFile ? new CheckpointStore(sessionFile, dependencies.checkpointRoot) : undefined;
       const relay = dependencies.createRelay?.() ?? new RelayBroker();
       const workerRuntimes = new Map<string, PiWorkerRuntime>();
       let created!: SessionRuntime;
@@ -461,10 +537,18 @@ export function createUltratermSubagentsExtension(
       const coordinator = new SubagentCoordinator(runner, {
         scheduler,
         now: dependencies.now,
+        sessionDir: () => store?.sessionsDirectory,
+        onChange: (run) => {
+          if (!created || created.closed) return;
+          try { store?.save(run, run.state !== "running"); } catch {
+            created.checkpointError = "Checkpoint write failed; recovery is not guaranteed. Inspect disk space and private directory permissions.";
+            try { created.statusContext?.ui.setStatus("usap-checkpoint", "USAP checkpoint error — hub diagnose"); } catch { /* Observation only. */ }
+          }
+          persistTelemetry(created, run);
+          setStatus(created);
+        },
         onProgress: (event) => {
           if (created.closed) return;
-          setStatus(created);
-          persistTelemetry(created, event.run);
           const binding = created.bindings.get(event.runId);
           if (!binding?.onUpdate) return;
           try {
@@ -487,9 +571,21 @@ export function createUltratermSubagentsExtension(
         statusContext: ctx,
         closed: false,
         completionBuffer: [],
+        awaitingReceipt: new Set(),
+        deliveryRetries: 0,
+        store,
         agentIdle: true,
       };
       runtime = created;
+      const observed = observedCompletionIds(ctx);
+      for (const checkpoint of store?.list() ?? []) {
+        if (observed?.has(checkpoint.run.id)) store?.markDelivered(checkpoint.run.id);
+        const recovered = recoveredRun(checkpoint);
+        if (checkpoint.run.state === "running") store?.save(recovered, true);
+        if (!checkpoint.delivered && !observed?.has(checkpoint.run.id) && recovered.background) {
+          created.completionBuffer.push({ runId: recovered.id, text: renderCompletionMessage(recovered) });
+        }
+      }
       return created;
     };
 
@@ -513,7 +609,7 @@ export function createUltratermSubagentsExtension(
         }
         binding.onUpdate = undefined;
         if (binding.background) {
-          current.completionBuffer.push(renderCompletionMessage(run));
+          current.completionBuffer.push({ runId: run.id, text: renderCompletionMessage(run) });
           flushCompletions(current);
         }
       }).catch((error: unknown) => {
@@ -521,49 +617,91 @@ export function createUltratermSubagentsExtension(
         current.workerRuntimes.delete(runId);
         setStatus(current);
         reconcileRetainedBindings(current);
-        current.completionBuffer.push(
+        current.completionBuffer.push({ runId, text:
           `USAP ${runId} infrastructure failure: ${error instanceof Error ? error.message : String(error)}`
             .slice(0, MAX_COMPLETION_MESSAGE),
-        );
+        });
         flushCompletions(current);
       });
       return completion;
     };
 
-    /**
-     * Deliver buffered background completions as ONE compact message.
-     * Without coalescing, every settled run queues its own nextTurn message;
-     * a long parent turn piles them up and an interrupt flushes them all at
-     * once, spamming the transcript.
-     */
-    const flushCompletions = (current: SessionRuntime): void => {
-      if (current.closed || !current.agentIdle || current.completionBuffer.length === 0) return;
-      const lines: string[] = [];
-      let omitted = 0;
-      let used = 0;
-      // Keep whole reports while they fit; never silently drop a settled run.
-      for (const line of current.completionBuffer) {
-        if (used + line.length > MAX_COMPLETION_MESSAGE && lines.length > 0) {
-          omitted = current.completionBuffer.length - lines.length;
-          break;
-        }
-        lines.push(line);
-        used += line.length + 2;
+    // Short, bounded retries bridge SDK idle/append transitions without polling
+    // throughout a long task or starting another model turn.
+    const retryDelivery = (current: SessionRuntime): void => {
+      if (current.closed || current.deliveryRetry) return;
+      if (current.deliveryRetries >= 20) {
+        try { current.statusContext?.ui.setStatus("usap-delivery", "USAP delivery unconfirmed — results remain in hub status"); } catch { /* Observation only. */ }
+        return;
       }
-      current.completionBuffer.splice(0, lines.length);
-      const content = lines.join("\n\n")
-        + (omitted > 0 ? `\n\n[+${omitted} more settled run${omitted === 1 ? "" : "s"} omitted; see ultraterm_hub list.]` : "");
-      try {
-        pi.sendMessage({
-          customType: "ultraterm-subagents-complete",
-          content: content.slice(0, MAX_COMPLETION_MESSAGE + 128),
-          display: true,
-          details: { coalesced: lines.length, omitted },
-        }, { deliverAs: "nextTurn", triggerTurn: false });
-      } catch {
-        // Completion delivery is best effort during host teardown.
+      current.deliveryRetries += 1;
+      current.deliveryRetry = setTimeout(() => {
+        current.deliveryRetry = undefined;
+        flushCompletions(current);
+      }, 100);
+      current.deliveryRetry.unref?.();
+    };
+
+    /** Passive delivery adds no model call. Never resend an unconfirmed SDK
+     * submission: it may already be queued. Native receipts acknowledge it. */
+    const flushCompletions = (current: SessionRuntime): void => {
+      if (current.closed || !current.agentIdle) return;
+      if (current.statusContext?.isIdle && !current.statusContext.isIdle()) {
+        retryDelivery(current);
+        return;
+      }
+      const acknowledge = (ids: Set<string>): void => {
+        current.completionBuffer = current.completionBuffer.filter((item) => {
+          if (!ids.has(item.runId)) return true;
+          current.awaitingReceipt.delete(item.runId);
+          try { current.store?.markDelivered(item.runId); } catch { current.checkpointError = "Completion receipt checkpoint failed"; }
+          return false;
+        });
+      };
+      acknowledge(observedCompletionIds(current.statusContext) ?? new Set());
+      while (current.completionBuffer.some((item) => !current.awaitingReceipt.has(item.runId))) {
+        const batch: typeof current.completionBuffer = [];
+        let used = 0;
+        for (const item of current.completionBuffer) {
+          if (current.awaitingReceipt.has(item.runId)) continue;
+          if (used + item.text.length + 2 > MAX_COMPLETION_MESSAGE && batch.length > 0) break;
+          batch.push(item);
+          used += item.text.length + 2;
+        }
+        try {
+          pi.sendMessage({
+            customType: "ultraterm-subagents-complete",
+            content: batch.map((item) => item.text).join("\n\n").slice(0, MAX_COMPLETION_MESSAGE),
+            display: true,
+            details: { coalesced: batch.length, omitted: 0, runIds: batch.map((item) => item.runId),
+              runs: batch.flatMap((item) => {
+                const saved = current.store?.get(item.runId);
+                const run = current.coordinator.snapshot(item.runId) ?? (saved ? recoveredRun(saved) : undefined);
+                return run ? [{ ...toRunView(run), goal: "", tasks: run.tasks.map((task) => ({ ...taskView(task), output: "", ...(task.error ? { error: taskDetail(task) } : {}) })) }] : [];
+              }),
+            },
+          }, { deliverAs: "steer", triggerTurn: false });
+        } catch { retryDelivery(current); return; }
+        for (const item of batch) current.awaitingReceipt.add(item.runId);
+        // Real Pi appends passive idle messages synchronously. Preserve pending
+        // evidence if a host queues them instead; do not manufacture a receipt.
+        const observed = observedCompletionIds(current.statusContext);
+        acknowledge(observed ?? new Set(batch.map((item) => item.runId)));
+      }
+      if (current.completionBuffer.length) retryDelivery(current);
+      else {
+        clearTimeout(current.deliveryRetry);
+        current.deliveryRetry = undefined;
+        current.deliveryRetries = 0;
+        try { current.statusContext?.ui.setStatus("usap-delivery", undefined); } catch { /* Observation only. */ }
       }
     };
+
+    pi.registerMessageRenderer?.("ultraterm-subagents-complete", (message, options, theme) => {
+      const details = message.details as { runs?: RunView[] } | undefined;
+      const runs = details?.runs ?? [];
+      return renderSubagentResult({ content: [{ type: "text", text: typeof message.content === "string" ? message.content : "Subagents settled" }], details: runs.length === 1 ? { run: runs[0] } : { runs } }, options, theme);
+    });
 
     pi.on("session_start", async (_event, ctx) => {
       // The host has already switched at session_start; never append old state.
@@ -571,7 +709,7 @@ export function createUltratermSubagentsExtension(
         runtime.telemetryWritable = false;
         await destroyRuntime(ctx, false);
       }
-      ensureRuntime(ctx);
+      flushCompletions(ensureRuntime(ctx));
     });
 
     pi.on("agent_start", async () => {
@@ -581,6 +719,7 @@ export function createUltratermSubagentsExtension(
     pi.on("agent_settled", async () => {
       if (!runtime || runtime.closed) return;
       runtime.agentIdle = true;
+      runtime.deliveryRetries = 0;
       flushCompletions(runtime);
     });
 
@@ -606,6 +745,9 @@ export function createUltratermSubagentsExtension(
         "For read-only tasks omit ownedPaths and state the read scope in task text; mayEdit requires ownedPaths. allowBash bypasses ownedPaths — grant only when operator-level shell access is necessary.",
       ],
       parameters: ultratermSubagentsSchema as any,
+      renderShell: "self",
+      renderCall: renderSubagentCall,
+      renderResult: renderSubagentResult,
       async execute(_toolCallId, rawParams, signal, onUpdate, ctx) {
         const params = rawParams as UltratermSubagentsParams;
         if (!ctx.model) throw new Error("ultraterm_subagents requires a resolved current model");
@@ -651,6 +793,8 @@ export function createUltratermSubagentsExtension(
         }
 
         run.selection = { ...resolved.selection };
+        // Never launch a supposedly durable run whose initial checkpoint failed.
+        current.store?.save(run, true);
         current.workerRuntimes.set(run.id, frozenWorkerRuntime);
         current.relay.createRun(run.id, [PARENT_RELAY_ID, ...run.tasks.map((task) => task.id)]);
         const parent = current.relay.bindSender(run.id, PARENT_RELAY_ID);
@@ -708,7 +852,7 @@ export function createUltratermSubagentsExtension(
     pi.registerTool({
       name: "ultraterm_hub",
       label: "UltraTerm Hub",
-      description: "Manage session-local USAP runs: list, status, bounded wait, cancel, send a host-authenticated parent relay message, or read the parent inbox.",
+      description: "Inspect live and checkpointed USAP runs: list, status, bounded wait, cancel, send, inbox, diagnose, or explicitly resume unfinished work. Resume never repeats completed tasks; host exit interrupts execution but preserves checkpoints.",
       promptSnippet: "Inspect, wait for, cancel, or message an existing USAP run",
       promptGuidelines: [
         "runId is required for every action except list.",
@@ -716,12 +860,17 @@ export function createUltratermSubagentsExtension(
         "Wait with finite timeouts; avoid polling.",
       ],
       parameters: ultratermHubSchema as any,
+      renderShell: "self",
+      renderCall: renderSubagentCall,
+      renderResult: renderSubagentResult,
       async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
         const params = rawParams as UltratermHubParams;
         const current = ensureRuntime(ctx);
 
         if (params.action === "list") {
-          const runs = current.coordinator.list();
+          const live = current.coordinator.list();
+          const liveIds = new Set(live.map((run) => run.id));
+          const runs = [...(current.store?.list() ?? []).filter((item) => !liveIds.has(item.run.id)).map(recoveredRun), ...live];
           return {
             content: [{
               type: "text" as const,
@@ -735,8 +884,57 @@ export function createUltratermSubagentsExtension(
 
         const runId = requireRunId(params);
         const binding = current.bindings.get(runId);
-        const snapshot = current.coordinator.snapshot(runId);
-        if (!binding || !snapshot) throw new Error(`Unknown USAP run: ${runId}`);
+        const checkpoint = current.store?.get(runId);
+        const snapshot = current.coordinator.snapshot(runId) ?? (checkpoint ? recoveredRun(checkpoint) : undefined);
+        if (!snapshot) throw new Error(`Unknown USAP run: ${runId}`);
+
+        if (params.action === "diagnose") {
+          const diagnostics = { ...diagnoseRun(snapshot), persistence: current.store ? "checkpointed" : "memory-only", checkpointError: current.checkpointError ?? null, warnings: current.store?.warnings ?? [], waitTimeoutMeaning: "A hub wait timeout stops observing, never the worker." };
+          return { content: [{ type: "text" as const, text: JSON.stringify(diagnostics, null, 2) }], details: { action: "diagnose", diagnostics } };
+        }
+
+        if (params.action === "resume") {
+          if (snapshot.state === "running") throw new Error("Run is still active; resume would duplicate work");
+          if (checkpoint?.resumedAs) throw new Error(`Already resumed as ${checkpoint.resumedAs}; inspect that run instead`);
+          if (checkpoint?.pendingResume) throw new Error("Resume reservation interrupted; reload the host to recover it before retrying");
+          if (!current.store || current.checkpointError) throw new Error("Healthy durable checkpoints are required to resume");
+          if (snapshot.version !== USAP_VERSION) throw new Error("Checkpoint policy version is incompatible; inspect history before a new dispatch");
+          if (!statSync(snapshot.cwd).isDirectory()) throw new Error("Checkpoint workspace is unavailable");
+          const unfinished = snapshot.tasks.filter((task) => task.state !== "done");
+          if (!unfinished.length) throw new Error("No unfinished tasks to resume");
+          for (const task of unfinished) {
+            if (task.startedAt !== undefined && !task.sessionFile) throw new Error(`No native checkpoint for ${task.label}; inspect partial work before a new dispatch`);
+            if (task.sessionFile) current.store.validateSession(task.sessionFile);
+          }
+          if (!ctx.model) throw new Error("A resolved model is required to resume");
+          const input: DispatchInput = {
+            goal: snapshot.goal, constraints: snapshot.constraints, contract: snapshot.contract,
+            model: snapshot.model, thinking: snapshot.thinkingLevel as DispatchInput["thinking"],
+            thinkingReason: "Continue the explicitly budgeted checkpoint on its original model and reasoning level.",
+            concurrency: snapshot.concurrency, timeoutMs: snapshot.timeoutMs, maxTurns: snapshot.maxTurns,
+            background: true, tasks: unfinished.map((task) => ({ label: task.label, task: task.task, role: task.role, mayEdit: task.mayEdit, ...(task.mayEdit ? { ownedPaths: task.ownedPaths } : {}), allowBash: task.allowBash })),
+          };
+          const resolved = resolveWorkerSelection(ctx.model, ctx.thinkingLevel, input, ctx.modelRegistry, dependencies.profiles);
+          const run = normalizeDispatch(input, snapshot.cwd, snapshot.model, String(resolved.thinkingLevel), dependencies.now?.() ?? Date.now(), dependencies.idFactory);
+          run.selection = { ...resolved.selection };
+          run.tasks.forEach((task, index) => {
+            task.sessionFile = unfinished[index].sessionFile;
+            task.changedPaths = unfinished[index].changedPaths;
+            task.lastStep = unfinished[index].lastStep;
+          });
+          current.store.prepareResume(runId, run);
+          current.workerRuntimes.set(run.id, Object.freeze({ model: Object.freeze({ ...resolved.model }), thinkingLevel: resolved.thinkingLevel }));
+          current.relay.createRun(run.id, [PARENT_RELAY_ID, ...run.tasks.map((task) => task.id)]);
+          const parent = current.relay.bindSender(run.id, PARENT_RELAY_ID);
+          try {
+            const started = current.coordinator.start(run);
+            const resumed: RunBinding = { parent, background: true, completion: Promise.resolve(started), usageClaimed: false };
+            current.bindings.set(run.id, resumed);
+            resumed.completion = attachCompletion(current, run.id);
+            setStatus(current, ctx);
+            return { content: [{ type: "text" as const, text: `Resumed ${unfinished.length} unfinished tasks as ${run.id}. Completed tasks were not replayed. A fresh explicit budget applies; inspect prior side effects.` }], details: dispatchDetails(started) };
+          } catch (error) { parent.close(); current.relay.cleanupRun(run.id); current.workerRuntimes.delete(run.id); throw error; }
+        }
 
         if (params.action === "status") {
           return {
@@ -744,6 +942,11 @@ export function createUltratermSubagentsExtension(
             details: { action: "status" as const, run: toRunView(snapshot) },
           };
         }
+
+        if (params.action === "wait" && !binding) {
+          return { content: [{ type: "text" as const, text: renderRunResult(snapshot) }], details: { action: "wait", run: toRunView(snapshot), timedOut: false } };
+        }
+        if (!binding) throw new Error("Archived run: use status, diagnose, or explicitly resume unfinished work");
 
         if (params.action === "wait") {
           const timeoutMs = boundedHubWait(params.timeoutMs);
@@ -766,7 +969,7 @@ export function createUltratermSubagentsExtension(
             if (!(error instanceof CoordinatorWaitTimeoutError)) throw error;
             const afterTimeout = current.coordinator.snapshot(runId)!;
             return {
-              content: [{ type: "text" as const, text: `${renderRunProgress(afterTimeout)}\nHub wait timed out after ${timeoutMs}ms.` }],
+              content: [{ type: "text" as const, text: `${renderRunProgress(afterTimeout)}\nObservation window ended after ${timeoutMs}ms; workers continue running. This is not a worker failure.` }],
               details: { action: "wait" as const, run: toRunView(afterTimeout), timedOut: true },
             };
           }

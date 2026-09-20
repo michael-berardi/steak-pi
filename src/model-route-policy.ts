@@ -1,12 +1,19 @@
 import type { ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { withOpenCodeGoRouting } from "./opencode-go-routing.ts";
+import { authHeadersMatch, gatedMeteredStream, isSubscriptionOrLocalRoute, SUBSCRIPTION_FIRST_ERROR } from "./subscription-first-routing.ts";
 
 type Registry = ExtensionContext["modelRegistry"];
 type Model = NonNullable<ExtensionContext["model"]>;
 type Provider = NonNullable<ReturnType<Registry["getProvider"]>>;
 type GuardRegistry = Pick<Registry, "getAll" | "getProvider" | "getRegisteredNativeProvider" | "isUsingOAuth"> & {
   registerProvider(provider: Provider): void;
+  getProviderAuth?: Registry["getProviderAuth"];
+  hasConfiguredAuth?: Registry["hasConfiguredAuth"];
 };
-const GUARD_MARKER = Symbol.for("steak-pi.model-route-policy.v1");
+const GUARD_MARKER = Symbol.for("steak-pi.model-route-policy.v4-explicit-paid");
+type PaidApproval = (model: Model) => boolean;
+type GuardMark = { root: Provider; approval?: PaidApproval };
+const guardMark = (provider: Provider) => (provider as unknown as Record<symbol, unknown>)[GUARD_MARKER] as GuardMark | undefined;
 export const ROUTINE_GPT_MODEL = "gpt-5.6-luna";
 export const GPT_ROUTE_ERROR = "GPT-family models require the paid openai-codex subscription route, non-batch. OpenRouter and API-key routes are not permitted.";
 
@@ -38,10 +45,37 @@ export function assertSubscriptionRequest(model: Model, usingOAuth: boolean): vo
 }
 
 /** Supported native-provider composition; exceptions here stop dispatch, unlike event hooks. */
-export function guardProvider(provider: Provider, usingOAuth: () => boolean): Provider {
+export function guardProvider(provider: Provider, usingOAuth: () => boolean,
+  getGoKey: () => Promise<string | undefined> = async () => {
+    throw new Error(`${SUBSCRIPTION_FIRST_ERROR} Provider authentication introspection is unavailable.`);
+  }, original?: Provider,
+  getProviderAuth?: GuardRegistry["getProviderAuth"], approval?: PaidApproval): Provider {
+  // Rebind policy closures without nesting an earlier guard/Go retry wrapper.
+  const previous = guardMark(provider);
+  if (previous) provider = previous.root;
+  const root = original ?? provider;
+  provider = withOpenCodeGoRouting(provider);
   const check = (model: Model) => {
     if (model.provider !== provider.id) throw new Error(GPT_ROUTE_ERROR);
     assertSubscriptionRequest(model, !isGptFamily(model) || usingOAuth());
+  };
+  const requestOAuth = async (model: Model, options: Pick<NonNullable<Parameters<Provider["streamSimple"]>[2]>, "apiKey" | "headers"> | undefined): Promise<boolean> => {
+    let oauth = usingOAuth();
+    if (oauth) {
+      if (getProviderAuth) {
+        let auth: Awaited<ReturnType<NonNullable<GuardRegistry["getProviderAuth"]>>>;
+        try { auth = await getProviderAuth(model.provider); }
+        catch { throw new Error(SUBSCRIPTION_FIRST_ERROR); }
+        oauth = auth?.source === "OAuth" &&
+          (options?.apiKey === auth.auth.apiKey) &&
+          authHeadersMatch(auth.auth.apiKey, model.headers, options?.headers);
+      } else {
+        // Legacy/test registries cannot prove an explicit credential override.
+        oauth = options?.apiKey === undefined && authHeadersMatch(undefined, model.headers, options?.headers);
+      }
+    }
+    assertSubscriptionRequest(model, oauth);
+    return oauth;
   };
   const guarded: Provider = {
     ...provider,
@@ -56,14 +90,23 @@ export function guardProvider(provider: Provider, usingOAuth: () => boolean): Pr
     },
     stream(model, context, options) {
       check(model);
+      if (getGoKey && !isSubscriptionOrLocalRoute(model, false)) {
+        return gatedMeteredStream(model, () => requestOAuth(model, options), getGoKey, () => provider.stream(model, context, options), options?.signal, () => approval?.(model) === true);
+      }
       return provider.stream(model, context, options);
     },
     streamSimple(model, context, options) {
       check(model);
+      if (getGoKey && !isSubscriptionOrLocalRoute(model, false)) {
+        return gatedMeteredStream(model, () => requestOAuth(model, options), getGoKey, () => provider.streamSimple(model, context, options), options?.signal, () => approval?.(model) === true);
+      }
       return provider.streamSimple(model, context, options);
     },
     ...(provider.fetchDeferred ? { fetchDeferred: ((model, handle, options) => {
       check(model);
+      if (getGoKey && !isSubscriptionOrLocalRoute(model, false)) {
+        return gatedMeteredStream(model, () => requestOAuth(model, options), getGoKey, () => provider.fetchDeferred!(model, handle, options), options?.signal, () => approval?.(model) === true);
+      }
       return provider.fetchDeferred!(model, handle, options);
     }) as NonNullable<Provider["fetchDeferred"]> } : {}),
     ...(provider.cancelDeferred ? { cancelDeferred: (async (model, handle, options) => {
@@ -71,28 +114,44 @@ export function guardProvider(provider: Provider, usingOAuth: () => boolean): Pr
       return provider.cancelDeferred!(model, handle, options);
     }) as NonNullable<Provider["cancelDeferred"]> } : {}),
   };
-  Object.defineProperty(guarded, GUARD_MARKER, { value: true });
+  Object.defineProperty(guarded, GUARD_MARKER, { value: { root, approval } satisfies GuardMark });
   return guarded;
 }
 
 /** Re-check registration provenance after reload/model changes without stacking wrappers. */
-export function createRegistryGuard(): (registry: GuardRegistry) => void {
+export function createRegistryGuard(approval?: PaidApproval): (registry: GuardRegistry) => void {
   const installed = new WeakSet<Provider>();
   return (registry) => {
-    const models = registry.getAll();
-    const ids = new Set(models.map((model) => model.provider));
-    for (const id of ids) {
+    // One catalog pass rather than filtering every model once per provider on
+    // every worker turn. Preserve the API coverage gate on configuration reload.
+    const apisByProvider = new Map<string, Set<Model["api"]>>();
+    for (const model of registry.getAll()) {
+      let apis = apisByProvider.get(model.provider);
+      if (!apis) apisByProvider.set(model.provider, apis = new Set());
+      apis.add(model.api);
+    }
+    for (const [id, apis] of apisByProvider) {
       const native = registry.getRegisteredNativeProvider(id);
-      if (native && (installed.has(native) ||
-          (native as unknown as Record<symbol, unknown>)[GUARD_MARKER] === true)) {
-        // A models.json reload may introduce another API after registration.
-        // Re-wrap the current composed provider before dispatch in that case.
-        const apis = new Set(native.getModels().map((model) => model.api));
-        if (models.every((model) => model.provider !== id || apis.has(model.api))) continue;
+      const mark = native && guardMark(native);
+      if (native && (installed.has(native) || mark)) {
+        const covered = new Set(native.getModels().map(model => model.api));
+        if (mark?.approval === approval && [...apis].every(api => covered.has(api))) continue;
+        // Recompose from the original unguarded provider when a new API appears.
+        // Skipping this lets the SDK bypass native guards through its global API;
+        // wrapping the guarded composition instead stacks same-provider retries.
+        if (mark) registry.registerProvider(mark.root);
       }
       const provider = registry.getProvider(id);
       if (!provider) continue;
-      const guarded = guardProvider(provider, () => registry.isUsingOAuth({ provider: id } as Model));
+      const getGoKey = registry.getProviderAuth ? async () => {
+        const auth = await registry.getProviderAuth!("opencode-go");
+        const key = auth?.auth.apiKey;
+        if (!key && (auth || registry.hasConfiguredAuth?.({ provider: "opencode-go" } as Model))) {
+          throw new Error(SUBSCRIPTION_FIRST_ERROR);
+        }
+        return key;
+      } : undefined;
+      const guarded = guardProvider(provider, () => registry.isUsingOAuth({ provider: id } as Model), getGoKey, mark?.root, registry.getProviderAuth?.bind(registry), approval);
       registry.registerProvider(guarded);
       installed.add(guarded);
     }
@@ -107,6 +166,8 @@ export function guardModelRuntime(runtime: ModelRuntime): void {
     getRegisteredNativeProvider: (id) => runtime.getRegisteredNativeProvider(id),
     registerProvider: (provider) => runtime.registerNativeProvider(provider),
     isUsingOAuth: (model) => runtime.isUsingOAuth(model.provider),
+    hasConfiguredAuth: (model) => runtime.hasConfiguredAuth(model.provider),
+    getProviderAuth: (id) => runtime.getAuth(id),
   });
 }
 

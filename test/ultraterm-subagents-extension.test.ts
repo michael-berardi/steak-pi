@@ -1,4 +1,6 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { CheckpointStore } from "../src/subagents/checkpoints.ts";
+import { normalizeDispatch } from "../src/subagents/policy.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -10,6 +12,7 @@ import {
   renderSessionStatus,
   toRunView,
   ultratermSubagentsSchema,
+  usapTelemetrySnapshot,
 } from "../extensions/ultraterm-subagents.ts";
 import type { RelayBroker } from "../src/subagents/relay.ts";
 import { emptyUsage, type UsageTotals, type WorkerRunner } from "../src/subagents/types.ts";
@@ -33,7 +36,7 @@ function usage(seed: number): UsageTotals {
   };
 }
 
-function harness(runnerFactory: (relay: RelayBroker) => WorkerRunner) {
+function harness(runnerFactory: (relay: RelayBroker) => WorkerRunner, durable?: { root: string; parent: string; prefix: string }) {
   const tools = new Map<string, any>();
   const handlers = new Map<string, (...args: any[]) => unknown>();
   const messages: any[] = [];
@@ -48,8 +51,9 @@ function harness(runnerFactory: (relay: RelayBroker) => WorkerRunner) {
   let id = 0;
   createUltratermSubagentsExtension({
     createRunner: (_pi, relay) => runnerFactory(relay),
-    idFactory: () => `fixed-${++id}`,
+    idFactory: () => `${durable?.prefix ?? "fixed"}-${++id}`,
     profiles: [],
+    checkpointRoot: durable?.root,
   })(pi);
   const cwd = mkdtempSync(join(tmpdir(), "steak-usap-extension-"));
   dirs.push(cwd);
@@ -65,6 +69,7 @@ function harness(runnerFactory: (relay: RelayBroker) => WorkerRunner) {
       find: () => model,
     },
     thinkingLevel: "high",
+    ...(durable ? { sessionManager: { getSessionFile: () => durable.parent } } : {}),
     ui: { setStatus(_key: string, value: string | undefined) { statuses.push(value); } },
   } as any;
   return { tools, handlers, messages, statuses, entries, ctx };
@@ -75,10 +80,29 @@ async function flush(): Promise<void> {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 describe("UltraTerm Subagent Protocol Pi extension", () => {
+  it("emits bounded assignment labels and genuine lifecycle, never prompts or fake progress", () => {
+    const run = {
+      id: "run-1", state: "done", goal: "PRIVATE GOAL",
+      tasks: [{ id: "task-1", label: "Review\nsidebar", state: "done", startedAt: 1000, endedAt: 2400,
+        task: "PRIVATE PROMPT", output: "PRIVATE OUTPUT", currentTool: "read" }],
+    } as unknown as Parameters<typeof usapTelemetrySnapshot>[0];
+    const snapshot = usapTelemetrySnapshot(run);
+    expect(snapshot.tasks[0]).toEqual({ taskId: "task-1", label: "Review sidebar", state: "done", detail: "Finished — ready for parent verification", startedAt: 1000, endedAt: 2400, currentTool: "read", toolErrors: 0, toolSuccesses: 0 });
+    expect(JSON.stringify(snapshot)).not.toContain("PRIVATE");
+    expect(snapshot.tasks[0]).not.toHaveProperty("totalSteps");
+    run.tasks[0].label = "a".repeat(200);
+    run.tasks[0].startedAt = Number.NaN;
+    delete run.tasks[0].endedAt;
+    const pending = usapTelemetrySnapshot(run).tasks[0];
+    expect(pending.label).toHaveLength(80);
+    expect(pending).not.toHaveProperty("startedAt");
+    expect(pending).not.toHaveProperty("endedAt");
+  });
   it("registers only the canonical parent tools", () => {
     const h = harness(() => async () => ({ state: "done", output: "ok", turns: 1, usage: usage(1) }));
     expect([...h.tools.keys()]).toEqual(["ultraterm_subagents", "ultraterm_hub"]);
@@ -123,7 +147,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     expect(started.usage).toBeUndefined();
     await flush();
     expect(h.messages).toHaveLength(1);
-    expect(h.messages[0].options).toEqual({ deliverAs: "nextTurn", triggerTurn: false });
+    expect(h.messages[0].options).toEqual({ deliverAs: "steer", triggerTurn: false });
 
     const runId = started.details.run.runId;
     const first = await h.tools.get("ultraterm_hub").execute("hub", {
@@ -275,6 +299,121 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     }, undefined, undefined, h.ctx);
     expect(listed.details.runs).toHaveLength(50);
     expect(() => broker.bind(firstRunId, "parent")).toThrow(/unknown relay run/i);
+  });
+
+  it("retries a transient SDK idle boundary without another user turn", async () => {
+    vi.useFakeTimers();
+    const h = harness(() => async () => ({ state: "done", output: "ready", turns: 1, usage: emptyUsage() }));
+    let idle = false;
+    h.ctx.isIdle = () => idle;
+    await h.handlers.get("session_start")!({}, h.ctx);
+    await h.tools.get("ultraterm_subagents").execute("call", { goal: "idle edge", background: true, tasks: [{ label: "one", task: "one" }] }, undefined, undefined, h.ctx);
+    await flush();
+    expect(h.messages).toHaveLength(0);
+    idle = true;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(h.messages).toHaveLength(1);
+    expect(h.messages[0].options.triggerTurn).toBe(false);
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not resend a submission while its native receipt is delayed", async () => {
+    vi.useFakeTimers();
+    const h = harness(() => async () => ({ state: "done", output: "ready", turns: 1, usage: emptyUsage() }));
+    const receipts: any[] = [];
+    h.ctx.sessionManager = { getEntries: () => receipts };
+    await h.tools.get("ultraterm_subagents").execute("call", { goal: "receipt edge", background: true, tasks: [{ label: "one", task: "one" }] }, undefined, undefined, h.ctx);
+    await flush();
+    expect(h.messages).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(300);
+    await h.handlers.get("agent_settled")!({}, h.ctx);
+    expect(h.messages).toHaveLength(1);
+    receipts.push({ type: "custom_message", ...h.messages[0].message });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(h.messages).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+
+  it("bounds unconfirmed receipt checks and surfaces the retained result", async () => {
+    vi.useFakeTimers();
+    const h = harness(() => async () => ({ state: "done", output: "ready", turns: 1, usage: emptyUsage() }));
+    h.ctx.sessionManager = { getEntries: () => [] };
+    await h.tools.get("ultraterm_subagents").execute("call", { goal: "unconfirmed", background: true, tasks: [{ label: "one", task: "one" }] }, undefined, undefined, h.ctx);
+    await flush();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(h.messages).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(h.statuses.some((text) => text?.includes("delivery unconfirmed"))).toBe(true);
+    await h.handlers.get("agent_settled")!({}, h.ctx);
+    expect(h.messages).toHaveLength(1);
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("delivers busy-parent completions at settlement, once, without waiting for user input", async () => {
+    const h = harness(() => async () => ({ state: "done", output: "ready", turns: 1, usage: emptyUsage() }));
+    await h.handlers.get("session_start")!({}, h.ctx);
+    await h.handlers.get("agent_start")!({}, h.ctx);
+    for (let index = 0; index < 3; index++) {
+      await h.tools.get("ultraterm_subagents").execute("call", { goal: "busy", background: true, tasks: [{ label: "one", task: "one" }] }, undefined, undefined, h.ctx);
+    }
+    await flush();
+    expect(h.messages).toHaveLength(0);
+    await h.handlers.get("agent_settled")!({}, h.ctx);
+    expect(h.messages).toHaveLength(1);
+    expect(h.messages[0].message.details.coalesced).toBe(3);
+    expect(h.messages[0].options).toEqual({ deliverAs: "steer", triggerTurn: false });
+    await h.handlers.get("agent_start")!({}, h.ctx);
+    await h.handlers.get("agent_settled")!({}, h.ctx);
+    expect(h.messages).toHaveLength(1);
+  });
+
+  it("recovers completed history and diagnoses it without replaying completed work", async () => {
+    const root = mkdtempSync(join(tmpdir(), "usap-recovery-")); dirs.push(root);
+    const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "first" };
+    const h = harness(() => async () => ({ state: "done", output: "finished", turns: 1, usage: emptyUsage() }), durable);
+    const result = await h.tools.get("ultraterm_subagents").execute("call", { goal: "durable", tasks: [{ label: "done", task: "done" }] }, undefined, undefined, h.ctx);
+    const runId = result.details.run.runId;
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+    const runner = vi.fn(async () => ({ state: "done" as const, output: "ok", turns: 1, usage: emptyUsage() }));
+    const next = harness(() => runner, { ...durable, prefix: "second" });
+    await next.handlers.get("session_start")!({}, next.ctx);
+    const status = await next.tools.get("ultraterm_hub").execute("hub", { action: "status", runId }, undefined, undefined, next.ctx);
+    expect(status.details.run.state).toBe("done");
+    expect(runner).not.toHaveBeenCalled();
+    await expect(next.tools.get("ultraterm_hub").execute("hub", { action: "resume", runId }, undefined, undefined, next.ctx)).rejects.toThrow(/No unfinished/);
+    const diagnostics = await next.tools.get("ultraterm_hub").execute("hub", { action: "diagnose", runId }, undefined, undefined, next.ctx);
+    expect(diagnostics.details.diagnostics.persistence).toBe("checkpointed");
+    await next.handlers.get("session_shutdown")!({}, next.ctx);
+  });
+
+  it("resumes an interrupted native checkpoint once and excludes completed siblings", async () => {
+    const root = mkdtempSync(join(tmpdir(), "usap-resume-")); dirs.push(root);
+    const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "resumed" };
+    const store = new CheckpointStore(durable.parent, durable.root);
+    const run = normalizeDispatch({ goal: "continue", background: true, tasks: [{ label: "complete", task: "complete" }, { label: "unfinished", task: "continue" }] }, root, "zai/glm-5.3-flash", "medium", Date.now(), () => "interrupted");
+    run.tasks[0].state = "done";
+    run.tasks[1].state = "running"; run.tasks[1].startedAt = Date.now();
+    const sessionFile = join(store.sessionsDirectory, "native.jsonl"); writeFileSync(sessionFile, "checkpoint", { mode: 0o600 });
+    run.tasks[1].sessionFile = sessionFile;
+    store.save(run, true); store.close();
+    const launched: string[] = [];
+    const h = harness(() => async ({ task }) => {
+      launched.push(task.label);
+      expect(task.sessionFile).toBe(sessionFile);
+      return { state: "done", output: "continued", turns: 1, usage: emptyUsage() };
+    }, durable);
+    await h.handlers.get("session_start")!({}, h.ctx);
+    const diagnose = await h.tools.get("ultraterm_hub").execute("hub", { action: "diagnose", runId: run.id }, undefined, undefined, h.ctx);
+    expect(diagnose.details.diagnostics.tasks[1].reason).toBe("host_interrupted");
+    const resumed = await h.tools.get("ultraterm_hub").execute("hub", { action: "resume", runId: run.id }, undefined, undefined, h.ctx);
+    expect(resumed.details.run.tasks).toHaveLength(1);
+    await flush();
+    expect(launched).toEqual(["unfinished"]);
+    await expect(h.tools.get("ultraterm_hub").execute("hub", { action: "resume", runId: run.id }, undefined, undefined, h.ctx)).rejects.toThrow(/Already resumed/);
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
   });
 
   it("keeps compact public views deterministic", () => {

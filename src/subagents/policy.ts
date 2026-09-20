@@ -3,8 +3,10 @@ import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import {
   DEFAULT_CONCURRENCY,
+  DEFAULT_MAX_TURNS,
   DEFAULT_TIMEOUT_MS,
   MAX_CONCURRENCY,
+  MAX_MAX_TURNS,
   MAX_TASKS,
   MAX_TIMEOUT_MS,
   MIN_TIMEOUT_MS,
@@ -219,6 +221,15 @@ export function normalizeDispatch(
     MAX_TIMEOUT_MS,
     "timeoutMs",
   );
+  // Long-horizon leaves carry their own bounded turn budget; an unsized
+  // dispatch still gets the 64-turn default rather than an unbounded child.
+  const maxTurns = integerInRange(
+    input.maxTurns,
+    DEFAULT_MAX_TURNS,
+    1,
+    MAX_MAX_TURNS,
+    "maxTurns",
+  );
   const background = booleanOrDefault(input.background, false, "background");
   const runId = `run-${safeDisplayId(idFactory())}`;
   const labels = new Set<string>();
@@ -291,6 +302,7 @@ export function normalizeDispatch(
     thinkingLevel: thinking.trim(),
     concurrency,
     timeoutMs,
+    maxTurns,
     background,
     state: "running",
     createdAt: now,

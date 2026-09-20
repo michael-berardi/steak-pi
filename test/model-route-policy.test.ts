@@ -123,13 +123,14 @@ describe("GPT coding-plan route policy", () => {
     expect(filtered.every((model) => model === glm)).toBe(true);
   });
 
-  it("checks OAuth at execution time and passes allowed requests through unchanged", () => {
+  it("checks OAuth at execution time and passes allowed requests through unchanged", async () => {
     const provider = fakeProvider();
     let oauth = true;
     const guarded = guardProvider(provider, () => oauth);
     const context = { messages: [] };
     const options = { signal: new AbortController().signal };
-    expect(guarded.streamSimple(astra, context, options)).toBe("simple");
+    const events = guarded.streamSimple(astra, context, options);
+    for await (const _event of events) { /* drain native gate */ }
     expect(provider.streamSimple).toHaveBeenCalledWith(astra, context, options);
     oauth = false;
     expect(() => guarded.streamSimple(astra, context, options)).toThrow();
@@ -155,10 +156,10 @@ describe("GPT coding-plan route policy", () => {
     registry.getProvider = (id) => id === "openai-codex"
       ? { ...base, getModels: () => [overlay] } : native.get(id);
     install(registry);
-    expect(methods.registerProvider).toHaveBeenCalledTimes(3);
+    expect(methods.registerProvider).toHaveBeenCalledTimes(4);
     expect(() => native.get("openai-codex")!.streamSimple(overlay, { messages: [] })).toThrow(GPT_ROUTE_ERROR);
     install(registry);
-    expect(methods.registerProvider).toHaveBeenCalledTimes(3);
+    expect(methods.registerProvider).toHaveBeenCalledTimes(4);
   });
 
   it("reapplies worker runtime guards after an API refresh without stacking unchanged providers", () => {
@@ -178,7 +179,7 @@ describe("GPT coding-plan route policy", () => {
     registry.getProvider = (id) => id === "openai-codex"
       ? { ...base, getModels: () => [overlay] } : native.get(id);
     guardModelRuntime(runtime);
-    expect(methods.registerProvider).toHaveBeenCalledTimes(3);
+    expect(methods.registerProvider).toHaveBeenCalledTimes(4);
     expect(() => native.get("openai-codex")!.streamSimple(overlay, { messages: [] })).toThrow(GPT_ROUTE_ERROR);
   });
 

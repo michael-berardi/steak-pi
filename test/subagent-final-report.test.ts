@@ -13,7 +13,7 @@ function fixture(): RunRecord {
   };
   return {
     version: USAP_VERSION, id: "report-run", goal: "report", constraints: [], cwd: "/repo",
-    model: "test/model", thinkingLevel: "low", concurrency: 1, timeoutMs: 10_000,
+    model: "test/model", thinkingLevel: "low", concurrency: 1, timeoutMs: 10_000, maxTurns: 64,
     background: false, state: "running", createdAt: 1, tasks: [task], usage: emptyUsage(),
   };
 }

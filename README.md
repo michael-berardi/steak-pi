@@ -21,6 +21,10 @@ Steak Pi is the performance-focused package for the
 transcript, tools, history, selectors, scrolling, and keybindings, then adds the
 machinery that turns it into a complete daily driver.
 
+This checkout documents the proposed **Steak Pi 0.6 / USAP 1.2 candidate**.
+Candidate behavior below is source-level documentation, not a published-release
+or end-to-end recovery verification claim. Installation remains pinned below.
+
 ## Install
 
 Release **0.5.5**, targeting Pi 0.85.1. Requires Pi 0.85.1 or newer within
@@ -74,7 +78,7 @@ making every task attend the meeting:
 
 | Steak Pi adds | What you get |
 | --- | --- |
-| **USAP native subagents** | Up to eight GLM (or six Luna) workers at once per session, with provider-aware machine-wide caps, ownership, deadlines, cancellation, relay, and reported usage |
+| **USAP native subagents** | Default provider ceilings of eight ZAI or six Codex workers per session, with provider-aware machine-wide caps, ownership, deadlines, cancellation, relay, and reported usage |
 | **Skill catalog lite** | Full catalog under budget; compact name/path/trigger index above it, with on-demand skill reads |
 | **UltraCompress** | Local 10–300 ms compaction, lossless raw-session retention, ranked recall, and **$0 model cost per compaction** |
 | **Verify after edit** | Debounced project checks return success receipts or repairable failure output |
@@ -131,26 +135,29 @@ parent
 
 What prevents agent soup:
 
-- **eight active children session-wide** (GLM lanes; Luna lanes six), at most
-  eight tasks per run and 16 active runs; launch width defaults to a full wave
-  (min(8, task count));
+- **eight tasks and up to eight concurrent children per run**, 16 active runs;
+  default session capacity is eight ZAI / six Codex, fourteen combined;
+  launch width defaults to min(8, task count), subject to capacity;
 - **machine-wide launch caps** shared across every local session: six GLM
-  workers total, twelve Luna, provider-bucketed and crash-safe, so open
-  windows cannot stampede the provider;
+  workers on ZAI, twelve Codex, twelve for other providers, twenty-four
+  combined by default; these are configurable capacity defaults, not per-model quotas;
 - foreground by default; background only when parent work can overlap;
-- stable run IDs with list, status, wait, message, inbox, and cancel controls;
+- stable run IDs with list, status, wait, send, inbox, cancel, diagnose, and
+  explicit resume controls;
 - isolated worker settings, transcripts, resources, and tool sets;
 - read-only workers without edit tools;
 - disjoint ownership enforced for guarded writes and edits;
 - hard time, turn, output, history, and relay limits;
 - exact nested usage attributed to the parent once;
-- a fixed 12-turn limit per child, including relay-driven follow-up turns.
+- `timeoutMs`: 10 minutes by default, 1 second–8 hours; `maxTurns`: 64
+  assistant turns per child by default, 1–2,048, including relay follow-ups.
+  Roughly 12 tool turns remains a leaf-sizing guideline, not the runtime cap.
 
 Children coordinate through `ultraterm_relay`, a bounded run-local mailbox with
 addressed messages, requests, correlated replies, broadcasts, and parent
 communication. A little like IRC, if IRC had path ownership.
 
-**Native model selection:** USAP 1.1 accepts either an exact `model` or a native
+**Native model selection:** USAP 1.2 candidate accepts either an exact `model` or a native
 `profile` for the whole run. An Astra manager can explicitly select
 `profile: "steak-pi/glm-5-3-flash"`, including reviewer runs. Omitted selectors
 use per-parent profile defaults. Receipts and hub telemetry show the resolved
@@ -158,9 +165,11 @@ route, selection provenance, and tool success/error counts. Visual inspection
 uses `requireImages: true`. See [profiles and examples](./docs/PROFILES.md).
 
 **GPT routing:** GPT-family requests use the paid Codex subscription route only,
-never OpenRouter, API-key billing, or batch variants. Default GPT scout/worker
-runs select Luna; default reviewer runs retain the parent model. GLM defaults
-remain GLM. Explicit selections take precedence; missing authentication or
+never OpenRouter, API-key billing, or batch variants. Built-in routine workers
+use OpenCode Go (DeepSeek V4.1 Flash); Astra reviewers retain Astra. Go requires
+your own key and can retry once on Go GLM 5.3 Flash for a transient failure before
+visible output, never for auth, billing, or region errors. Explicit selections
+take precedence; missing authentication or
 capability fails closed without fallback. Astra workers default
 to **medium** reasoning, independently of the parent's current effort. Set
 `thinking: "high"` or `"xhigh"` only with a concrete task benefit in
@@ -172,6 +181,20 @@ keep their existing defaults. See the
 `allowBash` gives a child unsandboxed shell access and can bypass path ownership.
 See [`SECURITY.md`](./SECURITY.md) and the full
 [USAP protocol](./docs/ULTRATERM-SUBAGENT-PROTOCOL.md).
+
+## Proposed in 0.6 (USAP 1.2 candidate)
+
+- Native worker compaction and at most one native retry; budgets remain finite.
+- Private checkpoints scoped to a persistent parent session. Host exit interrupts
+  workers; reopening that session exposes recovery state, not an automatic restart.
+  Hub `resume` explicitly creates a new run for unfinished tasks only, continuing
+  available native history with fresh budgets. Inspect prior side effects first.
+- Hub `diagnose` reports budget, progress, failure and checkpoint metadata without
+  worker transcripts. Memory-only parent sessions have no durable recovery.
+- Background completion is passively displayed at the idle boundary with no
+  added model call; it does not automatically make the parent integrate results.
+- Compact terminal cards show task states and errors; expanded cards add bounded
+  report excerpts and tool counts. No detached worker or recovery daemon.
 
 ## New in 0.5.5
 

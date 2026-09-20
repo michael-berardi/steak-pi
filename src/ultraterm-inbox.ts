@@ -161,7 +161,6 @@ export interface InboxDependencies {
 export class InboxConsumer {
   private readonly instanceId: string;
   private token?: string;
-  private terminalId?: string;
   private pending?: Claim;
   private invoked = new Set<string>();
   private controller = new AbortController();
@@ -186,13 +185,16 @@ export class InboxConsumer {
         const r = await this.request("inbox.register");
         if (!this.valid()) return;
         if (typeof r.token !== "string" || !r.token || typeof r.terminalId !== "string") throw Error("invalid registration");
-        this.token = r.token; this.terminalId = r.terminalId;
+        this.token = r.token;
       }
       const r = await this.request("inbox.poll", { ready: !this.pending && this.d.idle() });
       if (!this.valid()) return;
       if (r.message) {
         const m = r.message as Claim;
-        if (![m.receiptId, m.claimId, m.fromSessionId, m.toSessionId, m.text].every(v => typeof v === "string") || m.toSessionId !== this.terminalId || Buffer.byteLength(m.text) > 64 * 1024) throw Error("invalid claim");
+        if (![m.receiptId, m.claimId, m.fromSessionId, m.toSessionId, m.text].every(v => typeof v === "string") || Buffer.byteLength(m.text) > 64 * 1024) throw Error("invalid claim");
+        // Claims address Pi history identities, not the containing UltraTerm
+        // terminal UUID (which registration returns separately).
+        if (m.toSessionId !== this.d.host.sessionId) throw Error("recipient session identity mismatch");
         if (this.pending && JSON.stringify(this.pending) !== JSON.stringify(m)) throw Error("claim changed");
         this.pending = m;
       }
@@ -215,7 +217,12 @@ export class InboxConsumer {
         await this.request("inbox.record", { receiptId: m.receiptId, claimId: m.claimId, ...proof });
         if (this.valid()) { this.pending = undefined; this.status = "recorded (model-read unknown)"; }
       } else this.status = "uncertain: awaiting persisted evidence";
-    } catch { if (!this.stopped) { this.status = "unavailable or uncertain; retrying without redispatch"; this.token = undefined; } }
+    } catch (error) { if (!this.stopped) {
+      this.status = error instanceof Error && error.message === "recipient session identity mismatch"
+        ? "recipient session identity mismatch; delivery withheld"
+        : "unavailable or uncertain; retrying without redispatch";
+      this.token = undefined;
+    } }
     finally { this.running = false; }
   }
   stop() {
