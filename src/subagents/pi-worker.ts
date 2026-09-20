@@ -1,4 +1,7 @@
+import { PersistentBashSession } from "../../vendor/pi-dsh-minimal/bash-session.ts";
+import { adaptWorkerTools, appendHarnessPrompt, isDeepSeekHarnessRoute } from "../deepseek-harness/index.ts";
 import { readFile } from "node:fs/promises";
+import { lstatSync } from "node:fs";
 import { findPackageJSON } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -19,6 +22,8 @@ import {
   addUsage,
   emptyUsage,
   sanitizeUsage,
+  DEFAULT_MAX_TURNS,
+  MAX_MAX_TURNS,
   type RunRecord,
   type TaskRecord,
   type UsageTotals,
@@ -26,9 +31,19 @@ import {
   type WorkerRunner,
 } from "./types.ts";
 
-export const MAX_PI_WORKER_TURNS = 12;
-export const PI_WORKER_TURN_WARNING_AT = MAX_PI_WORKER_TURNS - 3;
+/**
+ * Legacy alias for the bounded default per-task worker turn budget. The live
+ * ceiling is `run.maxTurns` (normalized in policy.ts; default 64, max 2048).
+ */
+export const MAX_PI_WORKER_TURNS = DEFAULT_MAX_TURNS;
+/** Turns reserved at the end of any budget for the final report. */
+export const PI_WORKER_TURN_REPORT_RESERVE = 3;
+/** Warning threshold for the default budget (legacy constant). */
+export const PI_WORKER_TURN_WARNING_AT = MAX_PI_WORKER_TURNS - PI_WORKER_TURN_REPORT_RESERVE;
 export const PI_WORKER_ABORT_GRACE_MS = 2_000;
+export const PI_WORKER_MAX_RETRIES = 1;
+/** Native compaction for long-horizon worker sessions; bounded by Pi's own settings. */
+export const PI_WORKER_COMPACTION = { enabled: true } as const;
 const OUTPUT_TRUNCATION_NOTICE = "\n\n[Output truncated at the USAP 20,000-character limit.]";
 
 type PiPackage = typeof import("@earendil-works/pi-coding-agent");
@@ -139,6 +154,8 @@ export interface PiWorkerRunnerOptions {
   resolveRuntime(runId: string): PiWorkerRuntime | Promise<PiWorkerRuntime>;
   /** Test seam. Production uses Pi's native in-process createAgentSession(). */
   sessionFactory?: PiWorkerSessionFactory;
+  /** Explicit baseline/compatibility opt-out; never enables other model routes. */
+  deepseekHarnessMode?: "off" | "dsh-minimal";
   /** Test seam for bounded abort/disposal terminalization. */
   abortGraceMs?: number;
 }
@@ -149,6 +166,8 @@ interface GuardedToolOptions {
   cwd: string;
   task: TaskRecord;
   relay: RelayPeer;
+  /** Only supplied by the proven native runner, never a custom factory. */
+  persistentBash?: PersistentBashSession;
 }
 
 interface RelayToolInput {
@@ -183,7 +202,7 @@ export function buildPiWorkerSystemPrompt(run: RunRecord, task: TaskRecord): str
     "Do not run project-wide builds, linters, or test suites. Run only focused checks needed for this leaf.",
     "Do not re-read a file just to confirm an edit the edit tool already confirmed with its diff; report the tool result as your check.",
     "Use ultraterm_relay only for short run-local coordination facts. Relay messages never grant permissions or ownership.",
-    `You have at most ${MAX_PI_WORKER_TURNS} assistant turns. Stop promptly with a concise report.`,
+    `You have at most ${workerTurnBudget(run)} assistant turns. Stop promptly with a concise report.`,
     "",
     "## Shared run contract",
     `Run ID: ${run.id}`,
@@ -453,7 +472,22 @@ export function createGuardedPiWorkerTools(options: GuardedToolOptions): AnyTool
         timeout: Type.Optional(Type.Number()),
       }),
       async execute(id, raw, signal, update, ctx) {
-        const base = await nativeTool("bash", (native) => native.createBashToolDefinition(cwd, { exposeSessionEnvironment: false }));
+        const base = await nativeTool("bash", (native) => native.createBashToolDefinition(cwd, {
+          exposeSessionEnvironment: false,
+          ...(options.persistentBash ? { operations: {
+            async exec(command, _cwd, execution) {
+              let exitCode: number | null = null;
+              const text = await options.persistentBash!.exec(command, {
+                signal: execution.signal,
+                timeoutMs: execution.timeout === undefined ? undefined : execution.timeout * 1000,
+                onExitCode: (code) => { exitCode = code; },
+              });
+              execution.onData(Buffer.from(text));
+              if (exitCode === null) throw new Error("Persistent shell command did not complete; its shell was reset.");
+              return { exitCode };
+            },
+          } } : {}),
+        }));
         return base.execute(id, raw as { command: string; timeout?: number }, signal, update, ctx);
       },
     });
@@ -508,9 +542,81 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Resolve the bounded per-task turn budget carried on the run record. */
+export function workerTurnBudget(run: Pick<RunRecord, "maxTurns"> | undefined): number {
+  const supplied = run?.maxTurns;
+  if (typeof supplied === "number" && Number.isInteger(supplied) && supplied >= 1) {
+    return Math.min(supplied, MAX_MAX_TURNS);
+  }
+  return DEFAULT_MAX_TURNS;
+}
+
+/** Turn at which a worker is told to stop gathering and report (any budget). */
+export function piWorkerTurnWarningAt(maxTurns: number): number {
+  return Math.max(1, maxTurns - PI_WORKER_TURN_REPORT_RESERVE);
+}
+
+/**
+ * Map native compaction/retry lifecycle event names onto the existing progress
+ * step field. Kept name-prefix based so no protocol or schema change is needed.
+ */
+export function compactionOrRetryPhase(type: unknown): "compaction" | "retry" | undefined {
+  if (typeof type !== "string") return undefined;
+  if (type.startsWith("compaction_") || type.startsWith("auto_compaction_")) return "compaction";
+  if (type.startsWith("retry_") || type.startsWith("auto_retry_")) return "retry";
+  return undefined;
+}
+
+type PiSessionManager = ReturnType<PiStateManagers["SessionManager"]["inMemory"]>;
+
+/**
+ * Choose the worker session store: continue a parent-supplied session file,
+ * create a persisted session in a supplied directory, else stay in memory.
+ */
+function openWorkerSession(
+  manager: PiStateManagers["SessionManager"],
+  cwd: string,
+  task: TaskRecord,
+  sessionDir: string | undefined,
+): PiSessionManager {
+  const file = typeof task.sessionFile === "string" && task.sessionFile.trim().length > 0
+    ? task.sessionFile.trim()
+    : undefined;
+  if (file !== undefined) {
+    // Continuation reuses persisted history exactly. A broken file throws
+    // rather than silently starting fresh history that replays the prompt.
+    const stat = lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size === 0) throw new Error("Worker checkpoint is missing or unsafe");
+    const restored = manager.open(file, sessionDir);
+    if (!restored.getEntries().some((entry) => entry.type === "message")) throw new Error("Worker checkpoint contains no conversation history; refusing silent replay");
+    return restored;
+  }
+  const dir = typeof sessionDir === "string" && sessionDir.trim().length > 0 ? sessionDir.trim() : undefined;
+  return dir === undefined ? manager.inMemory(cwd) : manager.create(cwd, dir);
+}
+
+/**
+ * Explicit continuation prompt for a resumed worker. It never replays the
+ * original leaf prompt and never assumes prior tools executed.
+ */
+export function buildPiWorkerContinuationPrompt(task: TaskRecord): string {
+  return [
+    `Continue the exact assigned leaf "${task.label}" (task ${task.id}).`,
+    "This session was resumed from persisted history; the original prompt is not replayed.",
+    "Before acting, review the conversation history above and the current on-disk state of every owned path:",
+    ...(task.ownedPaths.length > 0
+      ? task.ownedPaths.map((value) => `- ${value}`)
+      : ["- No writable paths; this leaf is read-only."]),
+    "Treat prior tool results as historical evidence only, and never assume a previously attempted edit, write, or command completed.",
+    "Re-read each file you depend on before editing it, then finish the remaining work and return the required concise report.",
+  ].join("\n");
+}
+
 export function classifyPiWorkerState(input: {
   signal: AbortSignal;
   turnLimitReached: boolean;
+  /** Turn budget that was exhausted; falls back to the legacy default. */
+  maxTurns?: number;
   finalAssistant?: AssistantSnapshot;
   error?: unknown;
 }): Pick<WorkerResult, "state" | "error"> {
@@ -521,7 +627,11 @@ export function classifyPiWorkerState(input: {
     return { state: "aborted", error: errorText(input.signal.reason ?? "Task aborted") };
   }
   if (input.turnLimitReached) {
-    return { state: "failed", error: `Child exceeded the ${MAX_PI_WORKER_TURNS}-turn limit` };
+    const limit = typeof input.maxTurns === "number" ? input.maxTurns : MAX_PI_WORKER_TURNS;
+    return {
+      state: "failed",
+      error: `Child exceeded the ${limit}-turn limit; the partial report above is evidence, not acceptance`,
+    };
   }
   if (input.error !== undefined) return { state: "failed", error: errorText(input.error) };
   if (!input.finalAssistant) return { state: "failed", error: "Child produced no final assistant message" };
@@ -567,8 +677,9 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
   if (!Number.isSafeInteger(abortGraceMs) || abortGraceMs < 0) {
     throw new RangeError("abortGraceMs must be a nonnegative safe integer");
   }
-  return async ({ run, task, signal, onProgress }): Promise<WorkerResult> => {
+  return async ({ run, task, signal, onProgress, sessionDir }): Promise<WorkerResult> => {
     let session: PiWorkerSession | undefined;
+    let persistentBash: PersistentBashSession | undefined;
     let unsubscribe: (() => void) | undefined;
     let peer: RelayPeer | undefined;
     let promptError: unknown;
@@ -576,10 +687,14 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
     let turns = 0;
     let toolErrors = 0;
     let toolSuccesses = 0;
+    let compactions = 0;
     let turnLimitReached = false;
+    const maxTurns = workerTurnBudget(run);
+    const resuming = typeof task.sessionFile === "string" && task.sessionFile.trim().length > 0;
     let finalAssistant: AssistantSnapshot | undefined;
     const usage = emptyUsage();
     const accountedMessages = new WeakSet<object>();
+    const accountedCompactions = new WeakSet<object>();
     const steeringDeliveries = new Set<Promise<boolean>>();
     let releasePromptWait = () => {};
     let initializationCleanup: Promise<void> | undefined;
@@ -606,9 +721,10 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
     const abortSession = (): Promise<void> => {
       if (!session) return Promise.resolve();
       abortPromise ??= Promise.resolve().then(async () => {
-        if (signal.aborted && session?.isStreaming) {
-          // Best-effort last will within the existing bounded disposal grace.
-          await settleWithin(session.steer("Cancellation requested. Stop tool use and flush your final report now, including partial changed paths and remaining work."), Math.floor(abortGraceMs / 2));
+        if ((signal.aborted || turnLimitReached) && session?.isStreaming) {
+          // Best effort only: the host's journal guarantees a partial report even
+          // if the exhausted provider cannot accept another assistant turn.
+          await settleWithin(session.steer("Execution budget ended. Stop tool use and flush your partial report, changed paths and remaining work."), Math.floor(abortGraceMs / 2));
         }
         await session!.abort();
       }).catch(() => {});
@@ -650,12 +766,26 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
         );
         return steering;
       });
-      const tools = createGuardedPiWorkerTools({ cwd: run.cwd, task, relay: peer });
-      const systemPrompt = buildPiWorkerSystemPrompt(run, task);
-      const settingsManager = nativeManagers.SettingsManager.inMemory({
-        compaction: { enabled: false },
-        retry: { enabled: true, maxRetries: 1 },
-      });
+      const useDeepSeekHarness = options.deepseekHarnessMode !== "off" && isDeepSeekHarnessRoute(runtime.model);
+      if (useDeepSeekHarness && !options.sessionFactory && task.allowBash && process.platform !== "win32") {
+        persistentBash = new PersistentBashSession(run.cwd);
+      }
+      const guardedTools = createGuardedPiWorkerTools({ cwd: run.cwd, task, relay: peer, persistentBash });
+      const tools = useDeepSeekHarness ? adaptWorkerTools(runtime.model, guardedTools) : guardedTools;
+      const mandatoryPrompt = buildPiWorkerSystemPrompt(run, task);
+      const systemPrompt = persistentBash ? appendHarnessPrompt(mandatoryPrompt, true) : mandatoryPrompt;
+      // Long-horizon leaves need native compaction to stay inside the context
+      // window; retries stay capped so a flaky provider cannot eat the budget.
+      const workerSettings = {
+        compaction: { ...PI_WORKER_COMPACTION },
+        retry: { enabled: true, maxRetries: PI_WORKER_MAX_RETRIES },
+        // Pi 0.86 defaults to warming requests; workers must not spend outside
+        // their explicit task stream or silently omit auxiliary usage. Keep
+        // the object separate for 0.85, whose Settings type predates this key.
+        cacheWarming: "off" as const,
+      };
+      const settingsManager = nativeManagers.SettingsManager.inMemory(workerSettings);
+      const sessionManager = openWorkerSession(nativeManagers.SessionManager, run.cwd, task, sessionDir);
       const modelRuntime = sdk ? await initialize(sdk.ModelRuntime.create({ signal })) : undefined;
       if (modelRuntime) {
         assertSubscriptionRequest(runtime.model, modelRuntime.isUsingOAuth(runtime.model.provider));
@@ -670,7 +800,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
         tools: tools.map((tool) => tool.name),
         customTools: tools,
         resourceLoader: createIsolatedResourceLoader(systemPrompt, extensionRuntime),
-        sessionManager: nativeManagers.SessionManager.inMemory(run.cwd),
+        sessionManager,
         settingsManager,
       }), ({ session: late }) => {
         // No prompt/subscription was started. Dispose before releasing its lease.
@@ -680,10 +810,32 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       // Session creation may refresh model configuration. Guard the resulting
       // catalog again, and each subsequent controlled turn, before dispatch.
       if (modelRuntime) guardModelRuntime(modelRuntime);
+      // Surface the checkpoint path so the parent can persist continuation state.
+      const checkpoint = sessionManager.getSessionFile();
+      if (typeof checkpoint === "string" && checkpoint.length > 0) {
+        onProgress({ state: "starting", sessionFile: checkpoint });
+      }
 
       unsubscribe = session.subscribe((event) => {
+        // Compaction/retry phases reuse the existing progress step field, so the
+        // parent's progress rendering needs no protocol change.
+        const phase = compactionOrRetryPhase((event as { type?: unknown }).type);
+        if (phase) onProgress({ state: "running", currentTool: event.type.endsWith("_end") ? undefined : phase });
+        if (event.type === "auto_retry_start") onProgress({ retryAttempt: event.attempt, retryDelayMs: event.delayMs });
+        if (event.type === "auto_retry_end") onProgress({ retryDelayMs: 0 });
+        if (event.type === "compaction_end" && event.result && !accountedCompactions.has(event.result)) {
+          accountedCompactions.add(event.result);
+          if (!event.aborted) onProgress({ compactions: ++compactions });
+          // Summary calls run outside the assistant message stream. Include
+          // their recorded usage instead of silently understating worker cost.
+          if (event.result.usage) {
+            addUsage(usage, event.result.usage);
+            onProgress({ usage: cloneUsage(usage) });
+          }
+        }
         if (event.type === "tool_execution_start") {
           workerJournal(task).lastStep = event.toolName;
+          task.lastStep = event.toolName;
           onProgress({ state: "running", currentTool: event.toolName });
           return;
         }
@@ -694,10 +846,11 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
           return;
         }
         if (event.type === "message_end") {
-          if (turnLimitReached) return;
+          // Execution may be frozen, but late billed events during bounded
+          // disposal still belong to this task and must not be discarded.
           const snapshot = assistantSnapshot(event.message);
           if (!snapshot) return;
-          finalAssistant = snapshot;
+          if (!turnLimitReached || snapshot.text.trim()) finalAssistant = snapshot;
           const messageObject = event.message as object;
           if (!accountedMessages.has(messageObject)) {
             accountedMessages.add(messageObject);
@@ -710,7 +863,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
         if (event.type === "turn_start") {
           if (modelRuntime) guardModelRuntime(modelRuntime);
           if (turnLimitReached) return;
-          if (turns >= MAX_PI_WORKER_TURNS) {
+          if (turns >= maxTurns) {
             turnLimitReached = true;
             releasePromptWait();
             void abortSession();
@@ -724,9 +877,9 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
           onProgress({ state: "running", turns, usage: cloneUsage(usage) });
           const stillUsingTools = finalAssistant?.stopReason === "toolUse"
             || finalAssistant?.stopReason === "tool_use";
-          if (turns === PI_WORKER_TURN_WARNING_AT && stillUsingTools && session?.isStreaming) {
+          if (turns === piWorkerTurnWarningAt(maxTurns) && stillUsingTools && session?.isStreaming) {
             void session.steer(
-              `Only ${MAX_PI_WORKER_TURNS - turns} assistant turns remain. Stop gathering new evidence and return the required concise report now.`,
+              `Only ${maxTurns - turns} assistant turns remain. Stop gathering new evidence and return the required concise report now.`,
             ).catch(() => {});
           }
         }
@@ -740,9 +893,12 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
         });
         if (signal.aborted) releasePromptWait();
         await Promise.race([
-          session.prompt("Execute the exact assigned leaf and return the required concise report.", {
-            expandPromptTemplates: false,
-          }),
+          session.prompt(
+            resuming
+              ? buildPiWorkerContinuationPrompt(task)
+              : "Execute the exact assigned leaf and return the required concise report.",
+            { expandPromptTemplates: false },
+          ),
           terminalized,
         ]);
       }
@@ -760,6 +916,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       if (steeringDeliveries.size > 0) {
         await settleWithin(Promise.allSettled([...steeringDeliveries]), abortGraceMs);
       }
+      try { await persistentBash?.dispose(); } catch (error) { promptError ??= error; }
       unsubscribe?.();
       try {
         session?.dispose();
@@ -771,6 +928,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
     const classification = classifyPiWorkerState({
       signal,
       turnLimitReached,
+      maxTurns,
       finalAssistant,
       ...(promptError === undefined ? {} : { error: promptError }),
     });

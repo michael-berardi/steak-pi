@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,23 +9,30 @@ import type {
 import { describe, expect, it, vi } from "vitest";
 import {
   MAX_PI_WORKER_TURNS,
-  PI_WORKER_TURN_WARNING_AT,
+  buildPiWorkerContinuationPrompt,
   buildPiWorkerSystemPrompt,
   classifyPiWorkerState,
+  compactionOrRetryPhase,
   createGuardedPiWorkerTools,
   createIsolatedResourceLoader,
   createPiWorkerRunner,
+  piWorkerTurnWarningAt,
   truncatePiWorkerOutput,
+  workerTurnBudget,
   type PiWorkerSession,
 } from "../src/subagents/pi-worker.ts";
 import { RelayBroker } from "../src/subagents/relay.ts";
 import {
+  DEFAULT_MAX_TURNS,
+  MAX_MAX_TURNS,
+  MAX_WORKER_TURNS,
   OUTPUT_LIMIT,
   USAP_VERSION,
   emptyUsage,
   type RunRecord,
   type TaskRecord,
   type UsageTotals,
+  type WorkerProgress,
 } from "../src/subagents/types.ts";
 
 function usage(seed = 1): UsageTotals {
@@ -64,7 +72,7 @@ function task(runId = "run-test", overrides: Partial<TaskRecord> = {}): TaskReco
   };
 }
 
-function run(cwd: string, recordTask: TaskRecord): RunRecord {
+function run(cwd: string, recordTask: TaskRecord, maxTurns = DEFAULT_MAX_TURNS): RunRecord {
   return {
     version: USAP_VERSION,
     id: "run-test",
@@ -76,6 +84,7 @@ function run(cwd: string, recordTask: TaskRecord): RunRecord {
     thinkingLevel: "low",
     concurrency: 1,
     timeoutMs: 10_000,
+    maxTurns,
     background: false,
     state: "running",
     createdAt: 1,
@@ -366,6 +375,7 @@ describe("native in-process Pi worker runner", () => {
     expect(captured[0].thinkingLevel).toBe("low");
     expect(captured[0].tools).toEqual(["read", "grep", "find", "ls", "ultraterm_relay"]);
     expect(captured[0].sessionManager?.getSessionFile()).toBeUndefined();
+    expect(captured[0].settingsManager?.getGlobalSettings()).toMatchObject({ cacheWarming: "off" });
     expect(captured[0].resourceLoader?.getAgentsFiles().agentsFiles).toEqual([]);
     expect(captured[0].resourceLoader?.getSystemPrompt()).toContain(recordTask.task);
   });
@@ -470,14 +480,15 @@ describe("native in-process Pi worker runner", () => {
     expect(fake.disposed).toBe(true);
   });
 
-  it("enforces the twelve-turn cap without counting usage from other event types", async () => {
+  it("enforces the run turn budget and steers at the report threshold", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "steak-pi-turns-"));
     const recordTask = task();
     const relay = setupBroker();
+    const budget = 6;
     const fake = new FakeSession();
     fake.onPrompt = async (session) => {
-      for (let index = 0; index < MAX_PI_WORKER_TURNS + 2; index += 1) {
-        const message = assistant(`turn ${index}`, index === MAX_PI_WORKER_TURNS ? "aborted" : "toolUse");
+      for (let index = 0; index < budget + 2; index += 1) {
+        const message = assistant(`turn ${index}`, index === budget ? "aborted" : "toolUse");
         session.emit({ type: "turn_start" } as AgentSessionEvent);
         session.emit({ type: "message_end", message } as AgentSessionEvent);
         session.emit({ type: "turn_end", message, toolResults: [] } as AgentSessionEvent);
@@ -489,15 +500,170 @@ describe("native in-process Pi worker runner", () => {
       sessionFactory: async () => ({ session: fake }),
     });
 
-    const result = await runner({ run: run(cwd, recordTask), task: recordTask, signal: new AbortController().signal, onProgress: vi.fn() });
+    const result = await runner({ run: run(cwd, recordTask, budget), task: recordTask, signal: new AbortController().signal, onProgress: vi.fn() });
     expect(result.state).toBe("failed");
-    expect(result.error).toContain("12-turn limit");
-    expect(result.turns).toBe(MAX_PI_WORKER_TURNS);
-    expect(result.usage.input).toBe(MAX_PI_WORKER_TURNS);
+    expect(result.error).toContain(`${budget}-turn limit`);
+    expect(result.turns).toBe(budget);
+    // The fake provider emits two late billed messages after abort; retain
+    // their accounting even though execution turns stay frozen at the limit.
+    expect(result.usage.input).toBe(budget + 2);
+    expect(budget - piWorkerTurnWarningAt(budget)).toBe(3);
     expect(fake.steers).toEqual([
-      `Only ${MAX_PI_WORKER_TURNS - PI_WORKER_TURN_WARNING_AT} assistant turns remain. Stop gathering new evidence and return the required concise report now.`,
+      `Only 3 assistant turns remain. Stop gathering new evidence and return the required concise report now.`,
+      "Execution budget ended. Stop tool use and flush your partial report, changed paths and remaining work.",
     ]);
     expect(fake.abortCalls).toBe(1);
+  });
+
+  it("keeps the default 64-turn budget and the exported 2048 schema ceiling", () => {
+    expect(MAX_PI_WORKER_TURNS).toBe(DEFAULT_MAX_TURNS);
+    expect(DEFAULT_MAX_TURNS).toBe(64);
+    expect(MAX_WORKER_TURNS).toBe(2048);
+    expect(MAX_MAX_TURNS).toBe(MAX_WORKER_TURNS);
+    expect(workerTurnBudget({ maxTurns: 128 })).toBe(128);
+    expect(workerTurnBudget({ maxTurns: 5000 })).toBe(MAX_MAX_TURNS);
+    expect(workerTurnBudget({ maxTurns: 0 })).toBe(DEFAULT_MAX_TURNS);
+    expect(workerTurnBudget(undefined)).toBe(DEFAULT_MAX_TURNS);
+    expect(piWorkerTurnWarningAt(64)).toBe(61);
+    expect(piWorkerTurnWarningAt(1)).toBe(1);
+    expect(compactionOrRetryPhase("compaction_end")).toBe("compaction");
+    expect(compactionOrRetryPhase("retry_start")).toBe("retry");
+    expect(compactionOrRetryPhase("message_end")).toBeUndefined();
+    expect(compactionOrRetryPhase(7)).toBeUndefined();
+  });
+
+  it("reports compaction phases and journals the last step for the final report", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "steak-pi-progress-"));
+    const recordTask = task();
+    const progress: WorkerProgress[] = [];
+    const fake = new FakeSession();
+    fake.onPrompt = async (session) => {
+      session.emit({ type: "compaction_start" } as AgentSessionEvent);
+      const compacted = { summary: "Earlier work", firstKeptEntryId: "test", tokensBefore: 128, usage: usage(3) };
+      const compactedEvent = { type: "compaction_end", result: compacted, aborted: false, willRetry: false } as AgentSessionEvent;
+      session.emit(compactedEvent);
+      session.emit(compactedEvent); // Duplicate notifications must not inflate billing.
+      session.emit({ type: "tool_execution_start", toolName: "edit" } as AgentSessionEvent);
+      const final = assistant("Evidence: journaled");
+      session.emit({ type: "turn_start" } as AgentSessionEvent);
+      session.emit({ type: "message_end", message: final } as AgentSessionEvent);
+      session.emit({ type: "turn_end", message: final, toolResults: [] } as AgentSessionEvent);
+    };
+    const runner = createPiWorkerRunner({
+      relay: setupBroker(),
+      resolveRuntime: () => ({ model: fakeModel, thinkingLevel: "off" }),
+      sessionFactory: async () => ({ session: fake }),
+    });
+
+    const result = await runner({
+      run: run(cwd, recordTask),
+      task: recordTask,
+      signal: new AbortController().signal,
+      onProgress: (value) => progress.push(value),
+    });
+
+    expect(result.state).toBe("done");
+    expect(progress.some((value) => value.currentTool === "compaction")).toBe(true);
+    expect(progress.some((value) => value.currentTool === "edit")).toBe(true);
+    expect(recordTask.lastStep).toBe("edit");
+    expect(result.output).toContain("last step: edit");
+    expect(progress.filter((value) => value.compactions).map((value) => value.compactions)).toEqual([1]);
+    expect(result.usage.totalTokens).toBe(usage(4).totalTokens);
+    expect(result.usage.cost.total).toBeCloseTo(usage(4).cost.total);
+  });
+
+  it("resumes a persisted session without replaying the original prompt", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "steak-pi-resume-"));
+    try {
+      const { SessionManager } = await import("@earendil-works/pi-coding-agent");
+      const saved = SessionManager.create(cwd, join(cwd, "sessions"));
+      saved.appendMessage({ role: "user", content: "Original assignment", timestamp: Date.now() });
+      saved.appendMessage({ ...assistant("Partial evidence"), stopReason: "stop" });
+      const sessionFile = saved.getSessionFile();
+      expect(typeof sessionFile).toBe("string");
+      const recordTask = task("run-test", { sessionFile: sessionFile as string, changedPaths: [], lastStep: "edit" });
+      const captured: CreateAgentSessionOptions[] = [];
+      const progress: WorkerProgress[] = [];
+      const fake = new FakeSession();
+      fake.onPrompt = async (session) => {
+        const final = assistant("Evidence: resumed without replay");
+        session.emit({ type: "turn_start" } as AgentSessionEvent);
+        session.emit({ type: "message_end", message: final } as AgentSessionEvent);
+        session.emit({ type: "turn_end", message: final, toolResults: [] } as AgentSessionEvent);
+      };
+      const runner = createPiWorkerRunner({
+        relay: setupBroker(),
+        resolveRuntime: () => ({ model: fakeModel, thinkingLevel: "off" }),
+        sessionFactory: async (options) => {
+          captured.push(options);
+          return { session: fake };
+        },
+      });
+
+      const result = await runner({
+        run: run(cwd, recordTask),
+        task: recordTask,
+        signal: new AbortController().signal,
+        onProgress: (value) => progress.push(value),
+        sessionDir: join(cwd, "worker-sessions"),
+      });
+
+      expect(result.state).toBe("done");
+      expect(fake.prompts).toHaveLength(1);
+      expect(fake.prompts[0].text).toBe(buildPiWorkerContinuationPrompt(recordTask));
+      expect(fake.prompts[0].text).toContain("original prompt is not replayed");
+      expect(fake.prompts[0].text).not.toContain("Execute the exact assigned leaf and return the required concise report.");
+      expect(fake.prompts[0].text).not.toContain(recordTask.task);
+      expect(captured[0].sessionManager?.getSessionFile()).toBe(sessionFile);
+      expect(progress.some((value) => value.sessionFile === sessionFile)).toBe(true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("creates a durable per-worker session in the supplied session directory", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "steak-pi-session-dir-"));
+    try {
+      const recordTask = task();
+      const captured: CreateAgentSessionOptions[] = [];
+      const progress: WorkerProgress[] = [];
+      const fake = new FakeSession();
+      fake.onPrompt = async (session) => {
+        const final = assistant("Evidence: durable");
+        // FakeSession does not own the SDK journal; emulate the native append boundary.
+        captured[0].sessionManager!.appendMessage({ role: "user", content: "Run the assigned leaf", timestamp: Date.now() });
+        captured[0].sessionManager!.appendMessage({ ...final, stopReason: "stop" });
+        session.emit({ type: "turn_start" } as AgentSessionEvent);
+        session.emit({ type: "message_end", message: final } as AgentSessionEvent);
+        session.emit({ type: "turn_end", message: final, toolResults: [] } as AgentSessionEvent);
+      };
+      const runner = createPiWorkerRunner({
+        relay: setupBroker(),
+        resolveRuntime: () => ({ model: fakeModel, thinkingLevel: "off" }),
+        sessionFactory: async (options) => {
+          captured.push(options);
+          return { session: fake };
+        },
+      });
+
+      const result = await runner({
+        run: run(cwd, recordTask),
+        task: recordTask,
+        signal: new AbortController().signal,
+        onProgress: (value) => progress.push(value),
+        sessionDir: join(cwd, "worker-sessions"),
+      });
+
+      expect(result.state).toBe("done");
+      const checkpoint = captured[0].sessionManager?.getSessionFile();
+      expect(typeof checkpoint).toBe("string");
+      expect(checkpoint).toContain("worker-sessions");
+      expect(existsSync(checkpoint as string)).toBe(true);
+      expect(progress.some((value) => value.sessionFile === checkpoint)).toBe(true);
+      expect(recordTask.sessionFile).toBeUndefined();
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it("steers active peer delivery and leaves idle delivery in the mailbox", async () => {

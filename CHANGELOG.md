@@ -1,14 +1,48 @@
 # Changelog
 
+## 0.6.0 — 2026-09-20 (USAP 1.2)
+
+- Release date: 2026-09-20. Targets Pi 0.86.0 and retains the 0.85.1 peer range;
+  final hardening verification is scoped to 0.86.0. No multi-hour endurance run
+  was performed: the 8-hour worker value is a configurable deadline ceiling.
+- Distribution: install from the `v0.6.0` git tag or the GitHub release archive
+  (`steak-pi-0.6.0.tgz` + `.sha256`). The package is not published to the npm
+  registry, and the private Implose Cybernetics Homebrew tap remains a channel
+  for already-authorized operators only. Generated package archives and raw
+  internal verification logs are no longer tracked in the tree.
+- Add the optional `bin/steak-pi-dsh` managed entrypoint with
+  `docs/DEEPSEEK-HARNESS.md`: guarded persistent bash for native workers and for
+  one explicitly admitted primary-session route. Opt-in only, with no added npm
+  dependency.
+- Fix the optional DSH launcher under installed `node_modules` paths. A temporary, exact-file Node loader handles only its two reviewed TypeScript modules; it is removed before native Pi launches. Packaged-launch tests cover unsafe-option rejection and loader isolation.
+- Bind subagent tools, callbacks, results, receipts and checkpoints to the captured native session identity. Foreign or ambiguous records do not attach automatically.
+- Keep work running when a session switch or fork is cancelled; interrupt only at committed shutdown.
+- Make Todo persistence session-private within a shared workspace; retain legacy files without importing another session's plan.
+- Keep tool-result timers as recorded progress snapshots and live elapsed time in the pinned panel, avoiding timer-driven offscreen redraws.
+- Default run deadline remains 10 minutes; maximum becomes 8 hours. Per-child
+  `maxTurns` defaults to 64 and accepts 1–2,048 assistant turns.
+- Enable native worker compaction with at most one native retry. Include recorded
+  summary-call usage in worker totals; disable auxiliary cache-warming requests.
+- Checkpoint runs and native worker history per persistent parent session. Host
+  exit interrupts execution; explicit hub `resume` continues unfinished tasks
+  only in a new run with fresh budgets. No automatic restart, daemon, or
+  cross-host failover. Memory-only parent sessions have no durable recovery.
+- Add hub `diagnose` for bounded failure, budget, progress and persistence metadata.
+- Deliver background completion passively at the idle boundary, without an added
+  model call; render compact terminal cards with expandable task evidence.
+- Reconcile capacity documentation with provider-bucketed defaults; preserve
+  explicit routing and parent-owned integration/verification boundaries.
+
 ## 0.5.5
 
 - Release date: 2026-09-15.
 - Ship the `steak-pi` updater CLI (`bin/steak-pi`): Homebrew-managed installs
   upgrade through `brew` and keep the pi-side package on the same release;
-  git/npm installs re-pin to the latest published GitHub release.
-- Add the Homebrew distribution channel
-  (`brew install michael-berardi/implose-software-distribution/steak-pi`)
-  under the Implose Cybernetics distribution.
+  git installs re-pin to the latest published GitHub release.
+- Add a Homebrew distribution channel under Implose Cybernetics
+  (`brew install michael-berardi/implose-software-distribution/steak-pi`) for
+  operators already authorized on that private tap; the public install path
+  remains the git tag or a release archive.
 - Document the Homebrew install/update path in the README and keep the
   install line on the current release.
 

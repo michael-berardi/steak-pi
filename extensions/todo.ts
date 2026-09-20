@@ -1,7 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
   applyOp,
@@ -11,6 +11,29 @@ import {
   type TodoState,
   type TodoStatus,
 } from "../src/todo-core.ts";
+import { createTodoPanel, hasTodoPlan } from "../src/todo-render.ts";
+import { setPinnedPanel } from "../src/tui/pinned-panels.ts";
+
+import { canonicalSessionFile } from "../src/subagents/checkpoints.ts";
+
+interface TodoOwner {
+  ownerSessionId: string;
+  ownerSessionFile: string;
+  cwd: string;
+  dir: string;
+}
+
+function captureOwner(ctx: ExtensionContext): TodoOwner {
+  const ownerSessionId = ctx.sessionManager?.getSessionId();
+  const file = ctx.sessionManager?.getSessionFile();
+  if (!ownerSessionId?.trim() || !file?.trim()) {
+    throw new TodoError("todo requires a native session ID and session file");
+  }
+  const ownerSessionFile = canonicalSessionFile(file);
+  const cwd = path.resolve(ctx.cwd);
+  const namespace = createHash("sha256").update(JSON.stringify([ownerSessionFile, ownerSessionId])).digest("hex");
+  return { ownerSessionId, ownerSessionFile, cwd, dir: path.join(cwd, STATE_DIR, "todo", namespace) };
+}
 
 const STATE_DIR = ".steak-pi";
 const STATE_FILE = "todo.json";
@@ -108,8 +131,8 @@ function validateState(value: unknown): TodoState {
   return value as unknown as TodoState;
 }
 
-async function loadState(cwd: string): Promise<TodoState> {
-  const statePath = path.join(cwd, STATE_DIR, STATE_FILE);
+async function loadState(dir: string): Promise<TodoState> {
+  const statePath = path.join(dir, STATE_FILE);
   let raw: string;
   try {
     raw = await fs.readFile(statePath, "utf8");
@@ -136,8 +159,8 @@ async function stageWrite(target: string, content: string): Promise<string> {
   return temporary;
 }
 
-async function persist(cwd: string, state: TodoState, output: string): Promise<void> {
-  const dir = path.join(cwd, STATE_DIR);
+async function persist(dir: string, state: TodoState, output: string, check: () => void): Promise<void> {
+  check();
   const statePath = path.join(dir, STATE_FILE);
   const markdownPath = path.join(dir, MARKDOWN_FILE);
   await fs.mkdir(dir, { recursive: true });
@@ -145,10 +168,14 @@ async function persist(cwd: string, state: TodoState, output: string): Promise<v
   let stateTemp: string | undefined;
   let markdownTemp: string | undefined;
   try {
+    check();
     stateTemp = await stageWrite(statePath, JSON.stringify(state, null, 2));
+    check();
     markdownTemp = await stageWrite(markdownPath, `# TODO\n\n${output}\n`);
+    check();
     await fs.rename(markdownTemp, markdownPath);
     markdownTemp = undefined;
+    check();
     await fs.rename(stateTemp, statePath);
     stateTemp = undefined;
   } finally {
@@ -164,7 +191,47 @@ function userVisibleError(error: unknown): TodoError {
   return new TodoError(`could not update todo state: ${String(error)}`);
 }
 
+/**
+ * Publish (or clear) the pinned todo panel through the shared compositor, which
+ * owns widget identity and keeps Subagents → Todo → Composer order. Never call
+ * `ui.setWidget` directly for the todo panel. UI observation must never fail a
+ * todo operation, and an absent/partial UI context (RPC, print, tests) is fine.
+ */
+function publishPinnedTodo(ctx: ExtensionContext | undefined, state: TodoState): void {
+  const ui = ctx?.ui;
+  if (!ctx || !ui || typeof ui.setWidget !== "function") return;
+  try {
+    setPinnedPanel(
+      ctx,
+      "todo",
+      hasTodoPlan(state) ? (_tui, theme) => createTodoPanel(state, theme) : undefined,
+      JSON.stringify(state),
+    );
+  } catch {
+    // Pinned rendering is observational; the tool result is the source of truth.
+  }
+}
+
+function clearPinnedTodo(ctx: ExtensionContext | undefined): void {
+  const ui = ctx?.ui;
+  if (!ctx || !ui || typeof ui.setWidget !== "function") return;
+  try {
+    setPinnedPanel(ctx, "todo", undefined);
+  } catch {
+    // The session UI may already be tearing down.
+  }
+}
+
 export default function steakPieExtension(pi: ExtensionAPI): void {
+  let epoch = 0;
+  let activeDir: string | undefined;
+  let closed = false;
+  function guard(ctx: ExtensionContext, owner: TodoOwner, capturedEpoch: number): void {
+    if (closed || epoch !== capturedEpoch || activeDir !== owner.dir || captureOwner(ctx).dir !== owner.dir) {
+      throw new TodoError("todo context no longer owns the active session");
+    }
+  }
+
   pi.registerTool({
     name: "todo",
     label: "Todo",
@@ -174,28 +241,76 @@ export default function steakPieExtension(pi: ExtensionAPI): void {
     parameters: inputSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const op = params as TodoOp;
-      const statePath = path.join(ctx.cwd, STATE_DIR, STATE_FILE);
-
       try {
-        return await withTodoMutationQueue(statePath, async () => {
-          const state = await loadState(ctx.cwd);
+        const owner = captureOwner(ctx);
+        const capturedEpoch = epoch;
+        activeDir ??= owner.dir;
+        const check = () => guard(ctx, owner, capturedEpoch);
+        const details = (state: TodoState) => ({ state, ownerSessionId: owner.ownerSessionId, ownerSessionFile: owner.ownerSessionFile });
+        check();
+        const result = await withTodoMutationQueue(path.join(owner.dir, STATE_FILE), async () => {
+          check();
+          const state = await loadState(owner.dir);
+          check();
           if (op.op === "view") {
+            publishPinnedTodo(ctx, state);
+            check();
             return {
               content: [{ type: "text" as const, text: render(state) }],
-              details: { state },
+              details: details(state),
             };
           }
 
           const next = applyOp(state, op);
-          await persist(ctx.cwd, next.state, next.output);
+          check();
+          await persist(owner.dir, next.state, next.output, check);
+          check();
+          publishPinnedTodo(ctx, next.state);
+          check();
           return {
             content: [{ type: "text" as const, text: next.output }],
-            details: { state: next.state },
+            details: details(next.state),
           };
         });
+        check();
+        return result;
       } catch (error) {
         throw userVisibleError(error);
       }
     },
   });
+
+  // Restore the pinned plan for the session that just became active. A missing
+  // plan clears the panel; a malformed one must not resurrect a stale plan.
+  pi.on?.("session_start", async (_event, ctx) => {
+    const capturedEpoch = ++epoch;
+    activeDir = undefined;
+    closed = false;
+    let owner: TodoOwner | undefined;
+    try {
+      owner = captureOwner(ctx);
+      activeDir = owner.dir;
+      const state = await loadState(owner.dir);
+      guard(ctx, owner, capturedEpoch);
+      publishPinnedTodo(ctx, state);
+    } catch {
+      // An obsolete read must not clear a newer session's panel either.
+      if (epoch !== capturedEpoch) return;
+      if (owner) {
+        try { guard(ctx, owner, capturedEpoch); } catch { return; }
+      }
+      clearPinnedTodo(ctx);
+    }
+  });
+
+  // Only committed shutdown invalidates work; before-switch is cancellable.
+  const close = (_event: unknown, ctx: ExtensionContext) => {
+    if (activeDir) {
+      try { if (captureOwner(ctx).dir !== activeDir) return; } catch { return; }
+    }
+    ++epoch;
+    closed = true;
+    clearPinnedTodo(ctx);
+  };
+  pi.on?.("session_shutdown", close);
 }

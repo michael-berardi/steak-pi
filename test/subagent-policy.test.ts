@@ -9,9 +9,12 @@ import {
 } from "../src/subagents/policy.ts";
 import {
   DEFAULT_CONCURRENCY,
+  DEFAULT_MAX_TURNS,
   DEFAULT_TIMEOUT_MS,
   MAX_CONCURRENCY,
+  MAX_MAX_TURNS,
   MAX_TIMEOUT_MS,
+  MAX_WORKER_TURNS,
   MIN_TIMEOUT_MS,
   USAP_VERSION,
   type DispatchInput,
@@ -300,5 +303,43 @@ describe("assertOwnedPath", () => {
     symlinkSync(join(cwd, "unowned"), join(cwd, "owned", "alias"));
     expect(() => assertOwnedPath(cwd, "owned/alias/file.ts", ["owned"], "write"))
       .toThrow(/outside the task's ownership/);
+  });
+});
+
+describe("per-task turn budget", () => {
+  it("defaults to 64 turns and caps the schema ceiling at 2048", () => {
+    const { cwd } = fixture();
+    const run = normalizeDispatch(dispatch([{ label: "leaf", task: "Do the work" }]), cwd, "m", "t");
+    expect(DEFAULT_MAX_TURNS).toBe(64);
+    expect(MAX_MAX_TURNS).toBe(2048);
+    expect(MAX_WORKER_TURNS).toBe(MAX_MAX_TURNS);
+    expect(run.maxTurns).toBe(DEFAULT_MAX_TURNS);
+  });
+
+  it("accepts an explicit long-horizon budget up to the ceiling", () => {
+    const { cwd } = fixture();
+    const run = normalizeDispatch(
+      dispatch([{ label: "leaf", task: "Do the work" }], { maxTurns: MAX_MAX_TURNS }),
+      cwd,
+      "m",
+      "t",
+    );
+    expect(run.maxTurns).toBe(MAX_MAX_TURNS);
+    expect(normalizeDispatch(
+      dispatch([{ label: "leaf", task: "Do the work" }], { maxTurns: 128 }),
+      cwd,
+      "m",
+      "t",
+    ).maxTurns).toBe(128);
+  });
+
+  it.each([0, -1, 1.5, MAX_MAX_TURNS + 1, "64", null]) ("rejects an unusable maxTurns value: %s", (maxTurns) => {
+    const { cwd } = fixture();
+    expect(() => normalizeDispatch(
+      dispatch([{ label: "leaf", task: "Do the work" }], { maxTurns: maxTurns as number }),
+      cwd,
+      "m",
+      "t",
+    )).toThrow(SubagentPolicyError);
   });
 });

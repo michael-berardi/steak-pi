@@ -1,8 +1,9 @@
 # UltraTerm Subagent Protocol (USAP)
 
-Version: **1.1**. Status: canonical protocol for Steak Pi subagent orchestration.
-[`AGENT-LIFECYCLE.md`](./AGENT-LIFECYCLE.md) documents the shipped
-implementation and enforced limits. The legacy `parallel` tool is replaced and
+Version: **1.2** (Steak Pi 0.6.0). This documents the behavior implemented in
+this checkout; it is not a guarantee of end-to-end recovery in every
+environment. [`AGENT-LIFECYCLE.md`](./AGENT-LIFECYCLE.md) provides
+additional lifecycle background. The legacy `parallel` tool is replaced and
 is not a canonical USAP tool.
 
 ## 1. Scope
@@ -18,7 +19,7 @@ The canonical tool surface is:
 | Caller | Tool | Purpose |
 | --- | --- | --- |
 | Parent | `ultraterm_subagents` | Validate and dispatch a run of bounded child tasks |
-| Parent | `ultraterm_hub` | List, inspect, wait for, cancel, or message session-local runs |
+| Parent | `ultraterm_hub` | List, inspect, diagnose, explicitly resume, wait for, cancel, or message runs |
 | Child | `ultraterm_relay` | Receive and send run-local peer messages, requests, and replies |
 
 Tool schemas, process launch mechanics, storage structures, UI rendering, and
@@ -81,7 +82,8 @@ Before dispatch, the parent performs this pass:
 5. Assign one writer per path and define interfaces between leaves.
 6. Dispatch all currently independent leaves together.
 
-Size leaves for roughly 12 tool turns and pass available evidence with exact
+Prefer leaves of roughly 12 tool turns (sizing guidance, not a runtime cap)
+and pass available evidence with exact
 paths. Children inspect missing evidence rather than rediscover supplied facts.
 When paths, evidence, and acceptance contracts are already disjoint and exact,
 dispatch in the first tool turn without pre-reading child-owned files. Batch
@@ -93,7 +95,7 @@ unless state changed, then inspect the delta.
 Concurrency is a decision, not a target — but independence defaults to width.
 When several genuinely independent leaves exist, dispatch them together and let
 the wave run wide; the launch width defaults to `min(8, task count)`, so an
-unsized dispatch of N disjoint tasks launches N-wide:
+unsized dispatch requests N-wide, subject to provider/session/machine capacity:
 
 | Concurrent children | Use when |
 | --- | --- |
@@ -103,8 +105,10 @@ unsized dispatch of N disjoint tasks launches N-wide:
 | 3–5 | Several genuinely independent paths, subsystems, audits, or evidence sources exist |
 | 6–8 | Long multi-aspect work with many disjoint leaves; fill the wave instead of executing serially in the parent |
 
-Eight is the hard session-wide concurrency ceiling. GLM flash lanes fill
-8-wide waves; Luna lanes stay at or below 6 by doctrine. A run may queue more
+Eight is the hard per-run concurrency ceiling. Default per-session provider
+caps are ZAI 8, Codex 6, and other providers 8, with 14 combined. Default
+machine caps are ZAI 6, Codex 12, and other providers 12, with 24 combined.
+These configurable provider buckets are not model-specific quotas. A run may queue more
 bounded tasks than its width, but only the requested width executes at once.
 Do not invent padding work to fill slots, and do not execute a long list of
 independent leaves serially in the parent to avoid dispatching. Stop
@@ -203,7 +207,19 @@ Partial task evidence remains visible when a run fails or is aborted.
   external side effects are not rolled back;
 - **`send`** — send a host-authenticated parent message, request, reply, or
   broadcast into one run; and
-- **`inbox`** — drain bounded child-to-parent relay messages in sequence order.
+- **`inbox`** — drain bounded child-to-parent relay messages in sequence order;
+- **`diagnose`** — report budgets, task reason categories, turns, tool counts,
+  progress age, checkpoint availability, truncation and persistence warnings,
+  without worker transcripts; and
+- **`resume`** — explicitly create a new background run for unfinished tasks
+  from a healthy checkpoint; completed tasks are not replayed.
+
+A hub wait timeout ends observation only: workers continue until their actual
+deadline or cancellation. Background completion is passively displayed at the
+idle boundary (`triggerTurn: false`), without an added model call. It does not
+automatically integrate results or wake the parent for another reasoning turn.
+Compact terminal cards show task states/errors; expanded cards add bounded
+report excerpts and tool counts. Inspect retained hub evidence for acceptance.
 
 When the caller already supplies exact disjoint paths and acceptance contracts,
 the parent should dispatch in the first tool turn without pre-reading
@@ -257,17 +273,26 @@ The Steak Pi implementation profile uses these ceilings:
 
 | Resource | Bound |
 | --- | --- |
-| Concurrent children (per session) | 8 hard maximum on GLM lanes; 6 on Luna lanes; launch width defaults to a full wave (min(8, task count)) |
-| Concurrent children (machine-wide) | 6 GLM workers total across all local sessions (operator-set below the provider rate limit, leaving headroom for interactive sessions); 12 Luna; provider-bucketed and crash-safe; a global cap bounds all providers combined |
+| Concurrent children (per run) | 8 hard maximum; requested width defaults to min(8, task count), subject to capacity |
+| Concurrent children (per session) | Default provider caps: ZAI 8, Codex 6, others 8; global 14 |
+| Concurrent children (machine-wide) | Default provider caps: ZAI 6, Codex 12, others 12; global 24 across sessions |
 | Simultaneously active runs | 16; further dispatch is rejected until a run settles |
 | Tasks accepted in one run | 8 hard maximum; excess tasks remain a parent planning problem |
-| Run wall clock | finite; default 10 minutes, accepted range 1 second–30 minutes |
+| Run wall clock | finite; default 10 minutes, accepted range 1 second–8 hours (`timeoutMs`) |
 | Retained terminal runs | 50 per coordinator session; oldest terminal records are evicted while live runs remain |
-| Child turns | finite hard limit selected by the implementation and reported in status/result; never unlimited |
+| Child turns | `maxTurns`: default 64, accepted range 1–2,048 assistant turns per task, including relay follow-ups |
 | Final output retained per child | 20,000 characters, with explicit truncation metadata |
 | Relay body | 4,000 characters per envelope |
 | Recipient mailbox | 100 retained envelopes |
 | Entire run relay traffic | 500 accepted envelopes |
+
+Capacity defaults come from `src/subagents/capacity.ts`, optionally overridden
+by the operator's capacity configuration. Provider overrides accept 1–64;
+session/global overrides accept 1–64 and machine/global 1–128. They do not
+raise the eight-task/eight-concurrent-child per-run bound.
+
+Workers enable native Pi compaction and at most one native retry; neither
+makes execution unlimited. This differs from routing-specific fallback.
 
 The implementation may choose lower limits because of host or provider
 constraints, and dispatch may request lower time/concurrency limits. It must
@@ -282,10 +307,11 @@ turn.
 
 ## 8. Model guidance
 
-For routine bounded scouting, implementation, and review, prefer
-`zai/glm-5.3-flash`. It is the expected Steak Pi balance of latency, cost, and
-first-pass coding quality. Record the resolved provider/model on the run so
-results are auditable.
+For routine bounded scouting and implementation, use the configured parent
+profile defaults; built-in routine workers use OpenCode Go with the operator's
+own key. Explicit model/profile selection wins. See [PROFILES.md](./PROFILES.md)
+for reviewer defaults and route-specific fallback. Record the resolved
+provider/model on the run so results are auditable.
 
 Model price is secondary to total trajectory cost. Escalate capability when a
 leaf has high ambiguity, large blast radius, repeated failure, or requires
@@ -329,22 +355,32 @@ conformance to USAP alone does not provide one.
 
 ## 10. Persistence boundary
 
-Hub state and relay mailboxes are ephemeral, bounded runtime coordination
-state. Unless a separately documented implementation says otherwise:
+Persistent parent sessions have private, bounded run checkpoints and native
+worker history scoped to that parent session. Reopening the same persistent
+session exposes archived status and interrupted work; memory-only sessions do
+not have durable recovery. Checkpoints are local sensitive execution data, not
+public artifacts, project memory, or a cross-session relay queue.
 
-- run IDs are meaningful only to the current Pi host process/session;
-- background children do not survive host exit, extension reload, or machine
-  restart;
-- `status`, `wait`, and `cancel` work only while the run remains in the host's
-  bounded retention window;
-- relay mail is not project memory, chat history, or a cross-session queue; and
-- task prompts, mailboxes, and reports are not automatically written to
-  `AGENTS.md` or any recall store.
+- Host exit/reload interrupts workers; there is no automatic restart, detached
+  process, or recovery daemon. Recovered live tasks are marked aborted with a
+  host-interruption reason; completed tasks retain their terminal evidence.
+- Use hub `status` and metadata-only `diagnose` before explicit `resume`.
+  Persistence errors mean recovery is not guaranteed.
+- Resume creates a new run for tasks not marked `done`, with fresh explicit
+  time/turn budgets and revalidated original model/reasoning selection. Started
+  tasks need valid native history; missing/unsafe checkpoints fail closed rather
+  than silently replaying their original prompt. Never-started tasks may start.
+- The original run remains terminal. Relay mailboxes are ephemeral and are not
+  restored as durable conversations. Completion receipts are checkpointed, but
+  this is not a crash-proof exactly-once delivery guarantee.
+- Checkpoint retention is bounded; it is not an indefinite archive. Prompts,
+  histories and reports are not automatically published to `AGENTS.md` or recall.
 
-Filesystem edits and external side effects are outside this ephemeral boundary
-and may persist after failure, cancellation, or host exit. The parent must
-inspect them before retrying. Durable decisions belong in the project's
-explicit memory convention only after parent review.
+Filesystem edits and external side effects can persist after interruption.
+Inspect them before continuing: history continuation is not transactional
+rollback or proof that external actions cannot repeat. Parent verification
+remains mandatory. Durable decisions belong in the project's explicit memory
+convention only after parent review.
 
 ## 11. Integration and proof gate
 

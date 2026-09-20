@@ -1,6 +1,6 @@
 # Native worker profiles
 
-USAP 1.1 selects one native model for the whole run. Profile selection does not
+Steak Pi 0.6.0 (USAP 1.2) selects one native model for the whole run. Profile selection does not
 launch another terminal, CLI, or agent harness, and does not inherit extensions,
 skills, transcripts, or permissions from that profile.
 
@@ -29,12 +29,18 @@ conflicting selectors and unavailable routes fail before launch.
 
 ## Per-parent defaults
 
-Built-in defaults preserve the existing behavior:
+Built-in defaults use OpenCode Go for routine workers (the user's own Go key is required):
 
 | Parent profile | Routine worker | Reviewer-containing run |
 | --- | --- | --- |
-| `steak-pi/glm-5-3-flash` | `zai/glm-5.3-flash` | `zai/glm-5.3-flash` |
-| `steak-pi/gpt-6-astra` | `openai-codex/gpt-5.6-luna` | `openai-codex/gpt-6-astra` |
+| `steak-pi/opencode-go` | `opencode-go/deepseek-v4.1-flash` | `opencode-go/deepseek-v4.1-flash` |
+| `steak-pi/glm-5-3-flash` | `opencode-go/deepseek-v4.1-flash` | `opencode-go/deepseek-v4.1-flash` |
+| `steak-pi/gpt-6-astra` | `opencode-go/deepseek-v4.1-flash` | `openai-codex/gpt-6-astra` |
+
+Go can retry once on `opencode-go/glm-5.3-flash` after a transient failure before
+visible output. Authentication, billing, and region errors never trigger fallback.
+For image inspection, explicitly select an authenticated image-capable route with
+`requireImages: true`; Go's bundled primary is text-only.
 
 Native profiles are read from the existing JSON harness manifests under
 `~/.config/ultraterm/harnesses/`. A profile with one explicit
@@ -66,6 +72,20 @@ A selected profile supplies its thinking preference. Astra defaults to medium;
 request high/xhigh only with a concrete `thinkingReason`. Existing native
 capability and billing safeguards apply regardless of profile metadata.
 
+## Worker lifecycle
+
+Model/profile selection does not alter budgets: `timeoutMs` defaults to 10
+minutes (1 second–8 hours), and `maxTurns` defaults to 64 (1–2,048 assistant
+turns per task). Workers use native compaction and at most one native retry;
+this is distinct from the Go route fallback described above.
+
+Persistent parent sessions retain private run and native worker checkpoints.
+Hub `diagnose` exposes bounded metadata, not worker transcripts. Explicit
+`resume` creates a new run for unfinished tasks on the original model/reasoning
+route, rechecking availability and authorization with fresh budgets; completed
+tasks are not replayed. There is no automatic restart or detached daemon.
+Background completion is passive at idle, with no added model call.
+
 ## Evidence and activation
 
 Inspect `details.run.model` and `details.run.selection` in dispatch and hub
@@ -80,6 +100,10 @@ Advertised capability is checked before launch; actual image/tool behavior
 must also be verified against artifacts. Missing capability never causes a
 silent model substitution.
 
-Release artifacts are staged separately. Existing sessions retain their loaded
+These behaviors ship in Steak Pi 0.6.0; they are not a promise of verified
+end-to-end recovery in every environment. Persistent parent sessions keep run and
+worker checkpoints private to that session, and the 8-hour ceiling is a deadline
+setting rather than an endurance guarantee: host exit interrupts workers, and no
+automatic restart or detached daemon exists. Existing sessions retain their loaded
 schemas until an operator-coordinated activation. Never overwrite a running
 runtime tree or replace sessions to make a new selector appear.
