@@ -23,7 +23,8 @@ machinery that turns it into a complete daily driver.
 
 This checkout documents the proposed **Steak Pi 0.6 / USAP 1.2 candidate**.
 Candidate behavior below is source-level documentation, not a published-release
-or end-to-end recovery verification claim. Installation remains pinned below.
+or end-to-end recovery verification claim. The candidate targets Pi 0.86.0 and
+retains verified Pi 0.85.1 compatibility. Installation remains pinned below.
 
 ## Install
 
@@ -185,6 +186,8 @@ See [`SECURITY.md`](./SECURITY.md) and the full
 ## Proposed in 0.6 (USAP 1.2 candidate)
 
 - Native worker compaction and at most one native retry; budgets remain finite.
+  Native summaries can use model calls, and their recorded usage is included in
+  worker totals. Pi 0.86 cache-warming requests are disabled for isolated workers.
 - Private checkpoints scoped to a persistent parent session. Host exit interrupts
   workers; reopening that session exposes recovery state, not an automatic restart.
   Hub `resume` explicitly creates a new run for unfinished tasks only, continuing

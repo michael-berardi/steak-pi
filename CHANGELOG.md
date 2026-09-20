@@ -5,9 +5,11 @@
 Source-level candidate changes; publication and end-to-end release verification
 are not claimed here.
 
+- Target Pi 0.86.0 while retaining verified Pi 0.85.1 compatibility.
 - Default run deadline remains 10 minutes; maximum becomes 8 hours. Per-child
   `maxTurns` defaults to 64 and accepts 1–2,048 assistant turns.
-- Enable native worker compaction with at most one native retry.
+- Enable native worker compaction with at most one native retry. Include recorded
+  summary-call usage in worker totals; disable auxiliary cache-warming requests.
 - Checkpoint runs and native worker history per persistent parent session. Host
   exit interrupts execution; explicit hub `resume` continues unfinished tasks
   only in a new run with fresh budgets. No automatic restart or daemon.

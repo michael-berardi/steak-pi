@@ -14,6 +14,11 @@ const sdk = findPackageJSON(import.meta.resolve("@earendil-works/pi-coding-agent
 const ai = dirname(findPackageJSON("@earendil-works/pi-ai", pathToFileURL(sdk))!);
 const { createAssistantMessageEventStream } = await import(pathToFileURL(join(ai, "dist/utils/event-stream.js")).href);
 const { isRetryableAssistantError } = await import(pathToFileURL(join(ai, "dist/utils/retry.js")).href);
+const { normalizeContext } = await import(pathToFileURL(join(ai, "dist/index.js")).href);
+function emptyContext(): Parameters<Parameters<typeof guardProvider>[0]["streamSimple"]>[1] {
+  const normalize = typeof normalizeContext === "function" ? normalizeContext : (context: { messages: never[] }) => context;
+  return normalize({ messages: [] });
+}
 type Model = Parameters<Parameters<typeof guardProvider>[0]["streamSimple"]>[0];
 const model = { provider: "inco", id: "glm-5.3-flash:fast", name: "GLM Fast", api: "openai-completions", baseUrl: "https://api.inco.ai/v1" } as Model;
 const dirs: string[] = [];
@@ -47,10 +52,10 @@ describe("explicit paid route permission", () => {
     beginGoAttempt(); const key = "synthetic-test-key";
     const base = provider(); const { approve } = approval();
     const allowed = guardProvider(base, () => false, async () => key, undefined, undefined, approve);
-    expect((await drain(allowed.streamSimple(model, { messages: [] })))[0].type).toBe("done");
+    expect((await drain(allowed.streamSimple(model, emptyContext())))[0].type).toBe("done");
     expect(hasConfirmedGoExhaustion(key)).toBe(false);
     const denied = guardProvider(base, () => false, async () => key);
-    const events = await drain(denied.streamSimple(model, { messages: [] }));
+    const events = await drain(denied.streamSimple(model, emptyContext()));
     expect(events[0]).toMatchObject({ type: "error", error: { errorMessage: SUBSCRIPTION_FIRST_ERROR } });
     expect(base.streamSimple).toHaveBeenCalledTimes(1);
     expect(isRetryableAssistantError((events[0] as any).error)).toBe(false);
@@ -63,14 +68,14 @@ describe("explicit paid route permission", () => {
       isUsingOAuth: () => false, getProviderAuth: async () => ({ source: "env", auth: { apiKey: "synthetic-go" } }) };
     const { approve } = approval();
     createRegistryGuard(approve)(registry as never);
-    await drain(current.streamSimple(model, { messages: [] }));
+    await drain(current.streamSimple(model, emptyContext()));
     createRegistryGuard()(registry as never);
-    expect((await drain(current.streamSimple(model, { messages: [] })))[0].type).toBe("error");
+    expect((await drain(current.streamSimple(model, emptyContext())))[0].type).toBe("error");
     expect(base.streamSimple).toHaveBeenCalledTimes(1);
   });
   it("paid approval never overrides GPT endpoint policy", () => {
     const guarded = guardProvider(provider(), () => false, async () => "go", undefined, undefined, () => true);
-    expect(() => guarded.streamSimple({ ...model, id: "gpt-6-astra" }, { messages: [] })).toThrow(/GPT-family/);
+    expect(() => guarded.streamSimple({ ...model, id: "gpt-6-astra" }, emptyContext())).toThrow(/GPT-family/);
   });
   it("requires structured quota evidence and revokes stale/concurrent grants", () => {
     const now = Date.now(); const key = "unit-test-only";
@@ -130,7 +135,7 @@ describe("policy extension launch-only paid authorization", () => {
     };
     const dispatch = async (expected: "done" | "error") => {
       for (const method of ["stream", "streamSimple"] as const) {
-        const events = await drain(current[method](model, { messages: [] }));
+        const events = await drain(current[method](model, emptyContext()));
         if (expected === "error") {
           expect(events[0]).toMatchObject({ type: "error", error: { errorMessage: SUBSCRIPTION_FIRST_ERROR } });
           expect(isRetryableAssistantError((events[0] as any).error)).toBe(false);

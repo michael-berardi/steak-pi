@@ -14,7 +14,7 @@ import { emptyUsage, USAP_VERSION, type RunRecord, type TaskRecord, type WorkerP
 
 // Resolve the SDK's own pi-ai, rather than assuming a hoisted dependency.
 const sdkEntry = import.meta.resolve("@earendil-works/pi-coding-agent");
-const { AssistantMessageEventStream, InMemoryCredentialStore, InMemoryModelsStore } = await import(/* @vite-ignore */ new URL("../node_modules/@earendil-works/pi-ai/dist/index.js", sdkEntry).href);
+const { AssistantMessageEventStream, InMemoryCredentialStore, InMemoryModelsStore, getCurrentSystemPrompt, getCurrentTools } = await import(/* @vite-ignore */ new URL("../node_modules/@earendil-works/pi-ai/dist/index.js", sdkEntry).href);
 export const SENTINEL = "NATIVE_OFFLINE_SENTINEL_7291";
 export const localModel = {
   id: "scripted-local", name: "Scripted local", provider: "usap-offline-proof",
@@ -30,8 +30,11 @@ export async function createScriptedLocalRuntime(toolTurns = 1, pressure = false
   let taskRequests = 0;
   const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsStore: new InMemoryModelsStore(), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false });
   const stream = (_model: unknown, context: any, options?: { signal?: AbortSignal }) => {
-    contexts.push({ systemPrompt: context.systemPrompt, messages: structuredClone(context.messages) });
-    const summarizing = !context.tools?.length;
+    // Pi 0.86 normalizes declarations into transcript system messages; 0.85.1 keeps fields.
+    const systemPrompt = typeof getCurrentSystemPrompt === "function" ? getCurrentSystemPrompt(context.messages) : context.systemPrompt;
+    const tools = typeof getCurrentTools === "function" ? getCurrentTools(context.messages) : context.tools;
+    contexts.push({ systemPrompt, messages: structuredClone(context.messages) });
+    const summarizing = !tools?.length;
     if (summarizing && !JSON.stringify(context.messages).includes(SENTINEL)) throw new Error("Compaction lost the required evidence before summarization");
     if (!summarizing) taskRequests++;
     const first = !summarizing && taskRequests <= toolTurns;

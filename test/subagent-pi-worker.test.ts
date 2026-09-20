@@ -375,6 +375,7 @@ describe("native in-process Pi worker runner", () => {
     expect(captured[0].thinkingLevel).toBe("low");
     expect(captured[0].tools).toEqual(["read", "grep", "find", "ls", "ultraterm_relay"]);
     expect(captured[0].sessionManager?.getSessionFile()).toBeUndefined();
+    expect(captured[0].settingsManager?.getGlobalSettings()).toMatchObject({ cacheWarming: "off" });
     expect(captured[0].resourceLoader?.getAgentsFiles().agentsFiles).toEqual([]);
     expect(captured[0].resourceLoader?.getSystemPrompt()).toContain(recordTask.task);
   });
@@ -538,6 +539,10 @@ describe("native in-process Pi worker runner", () => {
     const fake = new FakeSession();
     fake.onPrompt = async (session) => {
       session.emit({ type: "compaction_start" } as AgentSessionEvent);
+      const compacted = { summary: "Earlier work", firstKeptEntryId: "test", tokensBefore: 128, usage: usage(3) };
+      const compactedEvent = { type: "compaction_end", result: compacted, aborted: false, willRetry: false } as AgentSessionEvent;
+      session.emit(compactedEvent);
+      session.emit(compactedEvent); // Duplicate notifications must not inflate billing.
       session.emit({ type: "tool_execution_start", toolName: "edit" } as AgentSessionEvent);
       const final = assistant("Evidence: journaled");
       session.emit({ type: "turn_start" } as AgentSessionEvent);
@@ -562,6 +567,9 @@ describe("native in-process Pi worker runner", () => {
     expect(progress.some((value) => value.currentTool === "edit")).toBe(true);
     expect(recordTask.lastStep).toBe("edit");
     expect(result.output).toContain("last step: edit");
+    expect(progress.filter((value) => value.compactions).map((value) => value.compactions)).toEqual([1]);
+    expect(result.usage.totalTokens).toBe(usage(4).totalTokens);
+    expect(result.usage.cost.total).toBeCloseTo(usage(4).cost.total);
   });
 
   it("resumes a persisted session without replaying the original prompt", async () => {
