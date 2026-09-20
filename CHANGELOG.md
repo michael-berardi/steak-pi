@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.6 candidate — unreleased (USAP 1.2)
+
+Source-level candidate changes; publication and end-to-end release verification
+are not claimed here.
+
+- Default run deadline remains 10 minutes; maximum becomes 8 hours. Per-child
+  `maxTurns` defaults to 64 and accepts 1–2,048 assistant turns.
+- Enable native worker compaction with at most one native retry.
+- Checkpoint runs and native worker history per persistent parent session. Host
+  exit interrupts execution; explicit hub `resume` continues unfinished tasks
+  only in a new run with fresh budgets. No automatic restart or daemon.
+- Add hub `diagnose` for bounded failure, budget, progress and persistence metadata.
+- Deliver background completion passively at the idle boundary, without an added
+  model call; render compact terminal cards with expandable task evidence.
+- Reconcile capacity documentation with provider-bucketed defaults; preserve
+  explicit routing and parent-owned integration/verification boundaries.
+
 ## 0.5.5
 
 - Release date: 2026-09-15.

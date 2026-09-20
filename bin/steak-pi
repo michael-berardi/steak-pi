@@ -59,13 +59,18 @@ latest_tag() {
 cmd_install() {
   need_pi
   if [ "$BREW_MODE" -eq 1 ]; then
-    say "Installing Steak Pi $VERSION for pi from the Homebrew copy:"
-    say "  pi install $PKG_ROOT"
-    exec pi install "$PKG_ROOT"
+    TARGET="$PKG_ROOT"
+  else
+    TARGET="$GIT_SPEC"
+  fi
+  current=$(pi_spec) || current=""
+  if [ -n "$current" ] && [ "$current" != "$TARGET" ]; then
+    say "Replacing the existing pi package entry ($current) to keep one canonical source..."
+    pi remove "$current" || say "pi remove reported nothing to do; continuing."
   fi
   say "Installing Steak Pi $VERSION for pi:"
-  say "  pi install $GIT_SPEC"
-  exec pi install "$GIT_SPEC"
+  say "  pi install $TARGET"
+  exec pi install "$TARGET"
 }
 
 cmd_update() {
@@ -80,9 +85,8 @@ cmd_update() {
     current=$(pi_spec) || current=""
     case "$current" in
       */opt/steak-pi*)
-        say "Re-pointing the pi package at the upgraded copy:"
-        say "  pi install $NEW_LIBEXEC"
-        exec pi install "$NEW_LIBEXEC"
+        say "Pi points at the managed opt path ($current); it picks up the upgrade automatically."
+        exit 0
         ;;
       "git:$REPO@"*)
         say "Re-pinning the pi package to v$NEW_VERSION:"

@@ -7,6 +7,37 @@ OpenAI API-key billing, custom endpoints, and batch GPT variants are rejected;
 there is no provider fallback. This verifies the subscription route, not the
 account's billing status or entitlement, which the service verifies.
 
+## Explicit paid Inco profile
+
+The user-owned `~/.pi/agent/paid-routes.json` must contain:
+
+```json
+{"version":1,"allow":[{"provider":"inco","model":"glm-5.3-flash:fast","baseUrl":"https://api.inco.ai/v1"}]}
+```
+
+Launch that exact selected model with the extension flag
+`--steak-pi-paid-route=inco/glm-5.3-flash:fast`. Both the flag and allowlist are
+required; this narrow exception only supports that Inco product and exact URL
+(no trailing slash, query, alternate endpoint, or model alias). Permission is
+captured from the selected model at session start. Switching away does not
+approve another route; returning to the same route and compaction on that route
+retain approval. Reloading captures the then-selected model again. The file is
+re-read at request dispatch so deleting or editing the entry revokes permission.
+
+This is intentional direct paid selection, independent of Go quota. It neither
+creates quota-exhaustion evidence nor changes worker defaults. Worker runtime
+guards do not receive the parent launch permission, even when reusing a provider
+previously guarded for the parent. GPT-family restrictions remain mandatory.
+Automatic metered requests while Go is configured still require the existing
+strict, short-lived, credential-bound quota evidence; unknown quota, outages,
+and authentication failures do not grant access. No automatic paid provider is
+selected by this policy. Without configured Go, the existing metered policy is
+unchanged.
+
+Policy denials use a deterministic message without transient-status keywords.
+Pi's native retry classifier treats this denial as nonretryable; real transient
+provider failures retain the existing retry behavior.
+
 ## Native USAP 1.1 selection
 
 Each run uses one frozen model for all its tasks. Set **either** `model` to an
@@ -17,8 +48,10 @@ reviewers. For example, an Astra manager can dispatch
 available paid Codex model. No CLI is launched to resolve a profile.
 
 Omitting both selectors uses the matching parent profile's `workerDefault`, or
-`reviewerDefault` for runs containing reviewers. Built-in Astra defaults remain
-Luna for routine work and Astra for review; GLM remains GLM. A `/model` change
+`reviewerDefault` for runs containing reviewers. Built-in routine workers use
+OpenCode Go (DeepSeek V4.1 Flash); Astra reviewers remain Astra. Go needs the
+user's own key and permits one transient-error retry on Go GLM 5.3 Flash before
+visible output, never for auth, billing, or region errors. A `/model` change
 cannot inherit a stale launch profile's defaults. Unmapped profiles retain the
 legacy role policy. See [profile metadata and examples](./PROFILES.md).
 
