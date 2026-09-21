@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { readSync, unlinkSync, appendFileSync, chmodSync, realpathSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
+import { readSync, unlinkSync, appendFileSync, chmodSync, realpathSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, linkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InboxConsumer, createPersistedReader, acceptedEntry, customMessage, persistedEntry, unixTransport, type Claim } from "../src/ultraterm-inbox.ts";
@@ -13,11 +13,14 @@ function harness(targetHost = host, message = claim, terminalId = "terminal") {
   let idle = true, valid = true, evidence: string | undefined, fail = "";
   const calls: any[] = [];
   const send = vi.fn();
+  const delivered = new Set<string>();
   const transport = { request: vi.fn(async (r: any) => {
     calls.push(r);
     if (fail === r.cmd) { fail = ""; throw Error("lost response"); }
     if (r.cmd === "inbox.register") return { token: "private", terminalId };
-    if (r.cmd === "inbox.poll") return { message: r.ready ? message : null };
+    // The mailbox only re-leases an entry that has not been durably recorded.
+    if (r.cmd === "inbox.poll") return { message: r.ready && !delivered.has(message.receiptId) ? message : null };
+    if (r.cmd === "inbox.record") { delivered.add(r.receiptId); return {}; }
     return {};
   }) };
   const consumer = new InboxConsumer({ host: targetHost, transport, idle: () => idle, current: () => valid, evidence: () => evidence, send });
@@ -46,19 +49,61 @@ describe("native inbox state machine", () => {
     const addressedReplacement = harness({ ...host, sessionId: "new-pi-session" }, { ...claim, toSessionId: "new-pi-session" });
     await addressedReplacement.consumer.tick(); expect(addressedReplacement.send).toHaveBeenCalledTimes(1); addressedReplacement.consumer.stop();
   });
-  it("keeps busy messages on server; idle dispatch uses canonical followUp", async () => {
-    const h = harness(); h.idle(false); await h.consumer.tick();
-    expect(h.calls.at(-1).ready).toBe(false); expect(h.send).not.toHaveBeenCalled();
-    h.idle(true); await h.consumer.tick();
-    expect(h.send).toHaveBeenCalledWith(customMessage(claim), { deliverAs: "followUp", triggerTurn: true });
+  it("steers a busy claim at the native between-tools boundary and records only persisted evidence", async () => {
+    const h = harness(); h.idle(false);
+    await h.consumer.tick();
+    // Busy is ready: the mailbox leases the claim instead of parking it until idle.
+    expect(h.calls.at(-1).cmd).toBe("inbox.poll"); expect(h.calls.at(-1).ready).toBe(true);
+    expect(h.send).toHaveBeenCalledWith(customMessage(claim), { deliverAs: "steer", triggerTurn: true });
+    expect(h.send).toHaveBeenCalledTimes(1);
+    expect(h.consumer.phase).toBe("delivery-pending");
+    expect(h.consumer.status).toContain("steering queue");
     expect(h.calls.some(r => r.cmd === "inbox.record")).toBe(false);
+    expect(h.consumer.receipt).toBeUndefined();
+    // No persisted entry yet: retry without redispatch, never a receipt.
+    await h.consumer.tick(); await h.consumer.tick();
+    expect(h.send).toHaveBeenCalledTimes(1);
+    expect(h.calls.filter(r => r.cmd === "inbox.poll").slice(1).every(r => r.ready === false)).toBe(true);
+    expect(h.calls.some(r => r.cmd === "inbox.record")).toBe(false); expect(h.consumer.receipt).toBeUndefined();
+    // The boundary persists the canonical entry, then exactly one receipt.
+    h.evidence("entry"); await h.consumer.tick();
+    expect(h.calls.find(r => r.cmd === "inbox.record")).toMatchObject({ receiptId: claim.receiptId, claimId: claim.claimId, entryId: "entry" });
+    expect(h.consumer.receipt).toEqual({ claimId: claim.claimId, entryId: "entry" });
+    expect(h.consumer.phase).toBe("persisted-history");
+    await h.consumer.tick();
+    expect(h.send).toHaveBeenCalledTimes(1); expect(h.calls.filter(r => r.cmd === "inbox.record")).toHaveLength(1);
     h.consumer.stop();
+  });
+  it("holds an unresolved lease across a session switch and never steers into the replacement session", async () => {
+    const h = harness(); h.idle(false); await h.consumer.tick();
+    expect(h.send).toHaveBeenCalledTimes(1);
+    // Ownership is lost (session switch/shutdown) before the boundary persisted anything.
+    h.valid(false); await h.consumer.tick();
+    expect(h.consumer.phase).toBe("stopped"); expect(h.consumer.status).toBe("stopped");
+    expect(h.send).toHaveBeenCalledTimes(1); expect(h.calls.some(r => r.cmd === "inbox.record")).toBe(false);
+    // The replacement Pi session refuses the stale recipient identity outright.
+    const replacement = harness({ ...host, sessionId: "next-pi-session" }, claim);
+    await replacement.consumer.tick();
+    expect(replacement.send).not.toHaveBeenCalled();
+    expect(replacement.consumer.phase).toBe("withheld");
+    expect(replacement.consumer.status).toContain("recipient session identity mismatch");
+    expect(replacement.calls.some(r => r.cmd === "inbox.record")).toBe(false);
+    replacement.consumer.stop();
+  });
+  it("withholds delivery whenever primary ownership proof is already lost", async () => {
+    for (const ownership of ["pid", "generation", "session-file"]) {
+      const h = harness(); h.idle(false); h.valid(false);
+      await h.consumer.tick();
+      expect(`${ownership}:${h.calls.length}:${h.send.mock.calls.length}:${h.consumer.phase}`).toBe(`${ownership}:0:0:stopped`);
+    }
   });
   it("void/no evidence and rejected sends never redispatch live pending calls", async () => {
     for (const reject of [false, true]) {
       const h = harness(); if (reject) h.send.mockImplementation(() => { throw Error("rejected"); });
       await h.consumer.tick(); await h.consumer.tick(); await h.consumer.tick();
       expect(h.send).toHaveBeenCalledTimes(1); expect(h.calls.some(r => r.cmd === "inbox.record")).toBe(false); h.consumer.stop();
+      // A void or rejected native call is never replayed and never a receipt.
+      expect(h.consumer.receipt).toBeUndefined();
     }
   });
   it("recovers persisted claims before sending, and retries lost record responses", async () => {
@@ -101,6 +146,25 @@ describe("persisted evidence", () => {
       writeFileSync(file, header + "{broken\n"); expect(() => persistedEntry(h, claim, root)).toThrow();
       const link = join(dir, "link.jsonl"); symlinkSync(file, link); expect(() => persistedEntry({ ...h, sessionFile: link }, claim, root)).toThrow();
       expect(() => persistedEntry(h, claim, dir + "/other")).toThrow();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("refuses hardlinked, group-writable, or forged-identity session files", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "inbox-guard-")));
+    try {
+      const dir = join(root, "cwd"); mkdirSync(dir, { mode: 0o700 });
+      const file = join(dir, "s.jsonl"), h = { ...host, sessionFile: file };
+      const header = JSON.stringify({ type: "session", id: host.sessionId }) + "\n";
+      writeFileSync(file, header + JSON.stringify({ type: "custom_message", id: "entry", ...customMessage(claim) }) + "\n", { mode: 0o600 });
+      expect(persistedEntry(h, claim, root)).toBe("entry");
+      // nlink != 1 is not a single-owner native session file.
+      const hard = join(dir, "hard.jsonl"); linkSync(file, hard);
+      expect(() => persistedEntry({ ...h, sessionFile: hard }, claim, root)).toThrow();
+      // Another user could rewrite a group/other-writable file or directory.
+      chmodSync(file, 0o666); expect(() => persistedEntry(h, claim, root)).toThrow();
+      chmodSync(file, 0o600); chmodSync(dir, 0o777); expect(() => persistedEntry(h, claim, root)).toThrow();
+      chmodSync(dir, 0o700);
+      // A forged header cannot borrow this host's receipt identity.
+      expect(() => persistedEntry({ ...h, sessionId: "forged" }, claim, root)).toThrow();
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

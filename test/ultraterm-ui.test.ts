@@ -1,27 +1,36 @@
 import { createExplicitPaidApproval } from "../src/explicit-paid-route.ts";
 import { describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
-import { decodeRequest, installUi, builtinCommands, readProfiles, publishCatalog, catalogModels } from '../extensions/ultraterm-ui.ts';
+import { ModelRegistry, ModelRuntime } from '@earendil-works/pi-coding-agent';
+import { decodeRequest, installUi, builtinCommands, readProfiles, publishCatalog, catalogModels, createConfigRefresher, configRevision, nativeConfigDir, CONFIG_POLL_MS } from '../extensions/ultraterm-ui.ts';
+import type { ConfigRefresh, NativeReloadOptions } from '../extensions/ultraterm-ui.ts';
 import type { getPrimaryHostIdentity } from '../src/primary-host.ts';
 
 const profile = { profileId: 'steak-pi/glm-5-3-flash', label: 'Flash', provider: 'zai', id: 'glm-5.3-flash', thinking: 'high' as const };
 const request = (extra = {}) => ({ version: 1, sessionId: 's1', generation: 'g1', requestId: 'r1', action: 'message', text: 'Exact\r\nmessage  ', model: { provider: profile.provider, id: profile.id }, thinking: 'high', ...extra });
 const encode = (data: unknown) => Buffer.from(JSON.stringify(data)).toString('base64url');
-function harness() {
+/** Directory that never contains native config, so unrelated tests never refresh. */
+const absentConfigDir = join(tmpdir(), 'ut20-no-native-config');
+function harness(options: { configDir?: string; refresh?: () => ConfigRefresh } = {}) {
   const handlers = new Map<string, Function>();
   const entries: any[] = [], messages: string[] = [];
   const prior = { provider: 'openai-codex', id: 'gpt-6-astra', api: 'openai-codex-responses' };
   const target = { provider: profile.provider, id: profile.id, api: 'openai-completions' };
   let model: any = prior, thinking: any = 'medium';
+  let available: any[] = [target];
   let host: any = { pid: process.pid, sessionId: 's1', sessionFile: '/session.jsonl', generation: 'g1' };
   const manager = { getSessionId: () => 's1', getSessionFile: () => '/session.jsonl', getSessionDir: () => '/sessions' };
-  const context: any = { sessionManager: manager, scopedModels: [], isIdle: () => true, waitForIdle: vi.fn(async () => {}), get model() { return model; }, ui: { notify: vi.fn() }, switchSession: vi.fn(async () => ({ cancelled: true })), modelRegistry: { getAvailable: () => [target], find: vi.fn(() => target), hasConfiguredAuth: () => true, isUsingOAuth: () => true, getApiKeyAndHeaders: async () => ({ ok: true }) } };
+  const refresh = vi.fn(async (_options: NativeReloadOptions) => ({ aborted: false, errors: new Map() }));
+  const modelRegistry: any = { getAvailable: () => available, find: vi.fn(() => target), hasConfiguredAuth: () => true, isUsingOAuth: () => true, getApiKeyAndHeaders: async () => ({ ok: true }), refresh };
+  const context: any = { sessionManager: manager, scopedModels: [], isIdle: () => true, waitForIdle: vi.fn(async () => {}), get model() { return model; }, ui: { notify: vi.fn() }, switchSession: vi.fn(async () => ({ cancelled: true })), modelRegistry };
   const pi: any = { exec: vi.fn(async () => ({ code: 0, stdout: '' })), events: { on: () => () => {}, emit: vi.fn() }, on: (name: string, fn: Function) => handlers.set(name, fn), registerCommand: (_name: string, command: any) => handlers.set('command', command.handler), appendEntry: (type: string, data: unknown) => entries.push({ type, data }), getCommands: () => [], getThinkingLevel: () => thinking, setThinkingLevel: (level: string) => { thinking = level; }, setModel: vi.fn(async (value: any) => { model = value; return true; }), sendUserMessage: (text: string) => messages.push(text) };
-  installUi(pi as ExtensionAPI, () => [profile], path => path, (() => host) as typeof getPrimaryHostIdentity, async () => []);
-  return { context, pi, entries, messages, prior, target, event: (name: string) => handlers.get(name)!({}, context), start: () => handlers.get('session_start')!({}, context), shutdown: () => handlers.get('session_shutdown')!(), run: (data: unknown = request()) => handlers.get('command')!(encode(data), context as ExtensionCommandContext), replaceHost: () => { host = { ...host, generation: 'g2' }; }, model: () => model, thinking: () => thinking };
+  const configDir = options.configDir ?? absentConfigDir;
+  const factory = options.refresh ?? (() => createConfigRefresher({ directory: configDir }));
+  installUi(pi as ExtensionAPI, () => [profile], path => path, (() => host) as typeof getPrimaryHostIdentity, async () => [], factory);
+  return { context, pi, entries, messages, prior, target, modelRegistry, refresh, event: (name: string) => handlers.get(name)!({}, context), start: () => handlers.get('session_start')!({}, context), shutdown: () => handlers.get('session_shutdown')!(), run: (data: unknown = request()) => handlers.get('command')!(encode(data), context as ExtensionCommandContext), replaceHost: () => { host = { ...host, generation: 'g2' }; }, setAvailable: (models: any[]) => { available = models; }, model: () => model, thinking: () => thinking };
 }
 
 describe('Pi UI machine control', () => {
@@ -179,6 +188,235 @@ describe('Pi UI machine control', () => {
     } finally { rmSync(directory, { recursive: true, force: true }); }
     expect(profiles).toHaveLength(1);
     expect(profiles.some(p => p.provider === 'openrouter' && p.id === 'deepseek/deepseek-v4.1-flash' && p.thinking === 'high')).toBe(true);
+  });
+
+  it('resolves the native config directory from PI_CODING_AGENT_DIR without touching HOME defaults', () => {
+    vi.stubEnv('PI_CODING_AGENT_DIR', '/tmp/ut20-agent');
+    try { expect(nativeConfigDir()).toBe('/tmp/ut20-agent'); } finally { vi.unstubAllEnvs(); }
+    expect(nativeConfigDir({})).toBe(join(homedir(), '.pi/agent'));
+    expect(nativeConfigDir({ PI_CODING_AGENT_DIR: '~/custom-agent' })).toBe(join(homedir(), 'custom-agent'));
+  });
+
+  it('hot-publishes a newly configured native model after one bounded offline reload', async () => {
+    vi.useFakeTimers(); vi.stubEnv('TMUX_BIN', '/pinned/tmux'); vi.stubEnv('TMUX_PANE', '%42');
+    const directory = mkdtempSync(join(tmpdir(), 'ut20-native-config-'));
+    const config = join(directory, 'models.json');
+    writeFileSync(config, '{"providers":{}}');
+    const h = harness({ configDir: directory });
+    const added = { provider: 'newroute', id: 'fresh-model', name: 'Fresh', api: 'openai-completions', reasoning: true };
+    try {
+      h.start(); await vi.advanceTimersByTimeAsync(1);
+      expect(h.refresh).not.toHaveBeenCalled();
+      expect(h.entries.at(-1).data.models).toEqual([profile]);
+      // The native registry only knows the model once its reload actually ran.
+      h.refresh.mockImplementation(async () => { h.setAvailable([h.target, added]); return { aborted: false, errors: new Map() }; });
+      writeFileSync(config, '{"providers":{"newroute":{"baseUrl":"http://127.0.0.1"}}}');
+      await vi.advanceTimersByTimeAsync(CONFIG_POLL_MS);
+      expect(h.refresh).toHaveBeenCalledTimes(1);
+      expect(h.refresh.mock.calls[0][0]).toMatchObject({ allowNetwork: false });
+      expect(h.refresh.mock.calls[0][0].signal).toBeInstanceOf(AbortSignal);
+      const catalog = h.entries.at(-1).data;
+      expect(catalog.version).toBe(1);
+      expect(catalog.models.map((m: any) => `${m.provider}/${m.id}`)).toEqual(['zai/glm-5.3-flash', 'newroute/fresh-model']);
+      expect(catalog.models[1]).toMatchObject({ label: 'Fresh', thinking: 'medium' });
+      // The reload must preserve the session's current model identity and effort.
+      expect(h.model()).toBe(h.prior);
+      expect(catalog.currentModel).toEqual({ provider: h.prior.provider, id: h.prior.id, thinking: 'medium' });
+      expect(h.pi.setModel).not.toHaveBeenCalled(); expect(h.messages).toEqual([]);
+      // Unchanged files must never trigger another reload or publication.
+      const published = h.entries.length;
+      await vi.advanceTimersByTimeAsync(CONFIG_POLL_MS * 20);
+      expect(h.refresh).toHaveBeenCalledTimes(1);
+      expect(h.entries).toHaveLength(published);
+    } finally { h.shutdown(); rmSync(directory, { recursive: true, force: true }); vi.useRealTimers(); vi.unstubAllEnvs(); }
+  });
+
+  it('removes a deleted native route from the running catalog on the next bounded reload', async () => {
+    vi.useFakeTimers();
+    const directory = mkdtempSync(join(tmpdir(), 'ut20-native-remove-'));
+    const config = join(directory, 'models.json');
+    writeFileSync(config, '{"providers":{"newroute":{}}}');
+    const h = harness({ configDir: directory });
+    const added = { provider: 'newroute', id: 'fresh-model', api: 'openai-completions' };
+    h.setAvailable([h.target, added]);
+    try {
+      h.start(); await vi.advanceTimersByTimeAsync(1);
+      expect(h.entries.at(-1).data.models).toHaveLength(2);
+      h.refresh.mockImplementation(async () => { h.setAvailable([h.target]); return { aborted: false, errors: new Map() }; });
+      writeFileSync(config, '{"providers":{}}');
+      await vi.advanceTimersByTimeAsync(CONFIG_POLL_MS);
+      expect(h.refresh).toHaveBeenCalledTimes(1);
+      expect(h.entries.at(-1).data.models.map((m: any) => m.id)).toEqual(['glm-5.3-flash']);
+      expect(h.pi.setModel).not.toHaveBeenCalled(); expect(h.messages).toEqual([]);
+    } finally { h.shutdown(); rmSync(directory, { recursive: true, force: true }); vi.useRealTimers(); }
+  });
+
+  it.each(['rejection', 'error-result', 'abort-result'])('keeps the last good catalog and backs off on %s', async (failure) => {
+    vi.useFakeTimers();
+    const directory = mkdtempSync(join(tmpdir(), 'ut20-native-broken-'));
+    const config = join(directory, 'models.json');
+    writeFileSync(config, '{"providers":{"broken":{}}}');
+    const h = harness({ configDir: directory });
+    h.refresh.mockImplementation(async () => {
+      h.setAvailable([]); // Native failures may already have mutated the snapshot.
+      if (failure === 'rejection') throw new Error('malformed models.json');
+      return { aborted: failure === 'abort-result', errors: new Map(failure === 'error-result' ? [['fixture', new Error('refresh failed')]] : []) };
+    });
+    try {
+      h.start(); await vi.advanceTimersByTimeAsync(1);
+      const good = h.entries.at(-1).data.models;
+      writeFileSync(config, '{"providers":{"broken":{"baseUrl":1}}}');
+      await vi.advanceTimersByTimeAsync(CONFIG_POLL_MS);
+      expect(h.refresh).toHaveBeenCalledTimes(1);
+      // A failed reload never empties the catalog and never touches the session.
+      expect(h.entries.at(-1).data.models).toEqual(good);
+      h.event('agent_end'); await vi.advanceTimersByTimeAsync(1);
+      expect(h.entries.at(-1).data.models).toEqual(good);
+      expect(h.pi.setModel).not.toHaveBeenCalled(); expect(h.messages).toEqual([]);
+      // Backoff: an unchanged failed revision is not retried on every poll.
+      await vi.advanceTimersByTimeAsync(CONFIG_POLL_MS * 2);
+      expect(h.refresh).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(CONFIG_POLL_MS);
+      expect(h.refresh).toHaveBeenCalledTimes(2);
+      // Recovery still lands immediately once the config loads again.
+      h.refresh.mockImplementation(async () => ({ aborted: false, errors: new Map() }));
+      await vi.advanceTimersByTimeAsync(CONFIG_POLL_MS * 3);
+      expect(h.refresh).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(h.refresh).toHaveBeenCalledTimes(3);
+    } finally { h.shutdown(); rmSync(directory, { recursive: true, force: true }); vi.useRealTimers(); }
+  });
+
+  it('clears the config watch and bounds an in-flight reload on session shutdown', async () => {
+    vi.useFakeTimers();
+    const directory = mkdtempSync(join(tmpdir(), 'ut20-native-stop-'));
+    const config = join(directory, 'models.json');
+    writeFileSync(config, '{"providers":{"slow":{}}}');
+    const h = harness({ configDir: directory });
+    let signal: AbortSignal | undefined;
+    h.refresh.mockImplementation(async (options: NativeReloadOptions) => { signal = options.signal; return await new Promise<never>(() => {}); });
+    try {
+      h.start(); await vi.advanceTimersByTimeAsync(1);
+      writeFileSync(config, '{"providers":{"slow":{"baseUrl":"http://127.0.0.1"}}}');
+      await vi.advanceTimersByTimeAsync(CONFIG_POLL_MS);
+      expect(h.refresh).toHaveBeenCalledTimes(1);
+      expect(signal?.aborted).toBe(false);
+      h.shutdown();
+      expect(signal?.aborted).toBe(true);
+      const published = h.entries.length, exec: number = h.pi.exec.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(h.refresh).toHaveBeenCalledTimes(1);
+      expect(h.entries).toHaveLength(published);
+      expect(h.pi.exec.mock.calls).toHaveLength(exec);
+    } finally { h.shutdown(); rmSync(directory, { recursive: true, force: true }); vi.useRealTimers(); }
+  });
+
+  it('native registry reload makes a newly configured model and credential available in-process without network', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'ut20-native-runtime-'));
+    const modelsPath = join(directory, 'models.json');
+    const authPath = join(directory, 'auth.json');
+    // Unroutable fixture endpoint: any network attempt would hang, not pass.
+    const provider = (id: string, modelId: string) => ({ [id]: { baseUrl: 'http://127.0.0.1:1/v1', api: 'openai-completions', models: [{ id: modelId, name: modelId }] } });
+    writeFileSync(modelsPath, JSON.stringify({ providers: provider('freshroute', 'fresh-model') }));
+    writeFileSync(authPath, '{}');
+    const runtime = await ModelRuntime.create({ authPath, modelsPath, allowModelNetwork: false, refreshOnCreate: false });
+    const registry = new ModelRegistry(runtime);
+    const mine = () => registry.getAvailable().map(model => `${model.provider}/${model.id}`).filter(id => id.startsWith('freshroute/') || id.startsWith('secondroute/'));
+    const reload = () => registry.refresh({ allowNetwork: false, signal: AbortSignal.timeout(5000) });
+    try {
+      await reload();
+      // Declared but unauthenticated: exactly the gap this change closes.
+      expect(registry.find('freshroute', 'fresh-model')).toBeDefined();
+      expect(runtime.hasConfiguredAuth('freshroute')).toBe(false);
+      expect(mine()).toEqual([]);
+      // A new credential is invisible to the in-memory snapshot until the reload runs.
+      writeFileSync(authPath, JSON.stringify({ freshroute: { type: 'api_key', key: 'offline-fixture-key' } }));
+      expect(runtime.hasConfiguredAuth('freshroute')).toBe(false);
+      expect(mine()).toEqual([]);
+      await reload();
+      expect(runtime.hasConfiguredAuth('freshroute')).toBe(true);
+      expect(mine()).toEqual(['freshroute/fresh-model']);
+      // A newly declared provider appears through the same bounded reload.
+      writeFileSync(modelsPath, JSON.stringify({ providers: { ...provider('freshroute', 'fresh-model'), ...provider('secondroute', 'second-model') } }));
+      expect(mine()).toEqual(['freshroute/fresh-model']);
+      writeFileSync(authPath, JSON.stringify({ freshroute: { type: 'api_key', key: 'offline-fixture-key' }, secondroute: { type: 'api_key', key: 'offline-fixture-key' } }));
+      await reload();
+      expect(mine()).toEqual(['freshroute/fresh-model', 'secondroute/second-model']);
+      // Removal updates the same snapshot.
+      writeFileSync(modelsPath, JSON.stringify({ providers: provider('freshroute', 'fresh-model') }));
+      await reload();
+      expect(mine()).toEqual(['freshroute/fresh-model']);
+      // Native refresh resolves even though the config snapshot is erroneous.
+      writeFileSync(modelsPath, '{ not json');
+      const broken = await reload();
+      expect(broken.aborted).toBe(false);
+      expect(registry.getError()).toContain('models.json');
+      writeFileSync(modelsPath, JSON.stringify({ providers: provider('freshroute', 'fresh-model') }));
+      await reload();
+      expect(mine()).toEqual(['freshroute/fresh-model']);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it.each(['models.json', 'auth.json'])('preserves publication through actual native malformed %s, then recovers offline', async (file) => {
+    const directory = mkdtempSync(join(tmpdir(), 'ut20-native-error-'));
+    const modelsPath = join(directory, 'models.json'), authPath = join(directory, 'auth.json');
+    const config = JSON.stringify({ providers: { fixtureroute: { baseUrl: 'http://127.0.0.1:1/v1', api: 'openai-completions', models: [{ id: 'fixture-model', name: 'Fixture' }] } } });
+    const auth = JSON.stringify({ fixtureroute: { type: 'api_key', key: 'synthetic-only' } });
+    const fetch = vi.fn(() => { throw new Error('Network forbidden'); });
+    vi.stubGlobal('fetch', fetch);
+    let h: ReturnType<typeof harness> | undefined;
+    try {
+      writeFileSync(modelsPath, config); writeFileSync(authPath, auth);
+      const runtime = await ModelRuntime.create({ authPath, modelsPath, allowModelNetwork: false, refreshOnCreate: false });
+      const registry = new ModelRegistry(runtime);
+      await registry.refresh({ allowNetwork: false });
+      const refresher = createConfigRefresher({ directory, backoffMs: 30_000 });
+      h = harness({ configDir: directory, refresh: () => refresher });
+      h.context.modelRegistry = registry;
+      vi.useFakeTimers();
+      h.start(); await vi.advanceTimersByTimeAsync(1);
+      const good = h.entries.at(-1).data.models;
+      expect(good.some((m: any) => m.provider === 'fixtureroute')).toBe(true);
+      const count = h.entries.length;
+      const nativeRefresh = vi.spyOn(registry, 'refresh');
+      writeFileSync(join(directory, file), '{ malformed fixture');
+      await expect(refresher.sync(registry)).rejects.toThrow('configuration unavailable');
+      const nativeResult = await nativeRefresh.mock.results[0].value;
+      expect(nativeResult.aborted).toBe(false);
+      expect(nativeResult.errors.size > 0 || !!registry.getError()).toBe(true);
+      expect(nativeRefresh.mock.calls[0][0]).toMatchObject({ allowNetwork: false });
+      h.event('agent_end'); await vi.advanceTimersByTimeAsync(1);
+      expect(h.entries).toHaveLength(count);
+      expect(h.entries.at(-1).data.models).toEqual(good);
+      await h.run(request({ model: { provider: 'fixtureroute', id: 'fixture-model' } }));
+      expect(h.entries.at(-1).data.ok).toBe(false);
+      expect(h.pi.setModel).not.toHaveBeenCalled(); expect(h.messages).toEqual([]);
+      writeFileSync(modelsPath, config); writeFileSync(authPath, auth);
+      await refresher.sync(registry);
+      h.event('agent_end'); await vi.advanceTimersByTimeAsync(1);
+      expect(h.entries.at(-1).type).toBe('ultraterm.ui.catalog');
+      expect(h.entries.at(-1).data.models).toEqual(good);
+      // Credential removal is authoritative, not restored from the UI cache.
+      rmSync(authPath);
+      await refresher.sync(registry);
+      expect(registry.hasConfiguredAuth(registry.find('fixtureroute', 'fixture-model')!)).toBe(false);
+      await h.run(request({ model: { provider: 'fixtureroute', id: 'fixture-model' } }));
+      expect(h.entries.at(-1).data.ok).toBe(false);
+      expect(h.pi.setModel).not.toHaveBeenCalled(); expect(h.messages).toEqual([]);
+      expect(fetch).not.toHaveBeenCalled();
+    } finally { h?.shutdown(); vi.useRealTimers(); vi.unstubAllGlobals(); rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it('reads a config revision from the three native config files only', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'ut20-revision-'));
+    try {
+      const absent = configRevision(directory);
+      expect(absent).toContain('models.json:absent');
+      writeFileSync(join(directory, 'models.json'), '{}');
+      expect(configRevision(directory)).not.toBe(absent);
+      writeFileSync(join(directory, 'unrelated.json'), '{}');
+      expect(configRevision(directory)).toBe(configRevision(directory));
+    } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 });
 
