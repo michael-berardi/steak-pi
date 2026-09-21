@@ -53,6 +53,126 @@ export function readProfiles(directory = join(homedir(), ".config/ultraterm/harn
   return [...new Map(out.map(profile => [`${profile.provider}/${profile.id}/${profile.thinking}`, profile])).values()];
 }
 
+// A running Pi session composes models.json/auth.json into an in-memory
+// registry snapshot, so a model or credential configured after the session
+// started would stay invisible until restart. The native registry exposes the
+// same local reload `/model` relies on: ModelRegistry.refresh() re-reads
+// models.json and re-checks the credential store. We call it only when the
+// native config files actually changed on disk, always with allowNetwork:false
+// (never a remote catalog refresh), once per observed revision, with a
+// caller-owned deadline and bounded retry backoff.
+const NATIVE_CONFIG_FILES = ["models.json", "auth.json", "models-store.json"] as const;
+/** Bounded mtime poll used to notice config changes in an otherwise idle session. */
+export const CONFIG_POLL_MS = 1500;
+const REFRESH_TIMEOUT_MS = 3000;
+const REFRESH_BACKOFF_MS = 2000;
+const REFRESH_BACKOFF_MAX_MS = 30_000;
+export type NativeReloadOptions = { allowNetwork?: boolean; signal?: AbortSignal };
+export type RefreshableRegistry = { refresh?: (options?: NativeReloadOptions) => Promise<unknown>; getError?: () => string | undefined };
+/** The agent directory Pi loads models.json/auth.json from. */
+export function nativeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.PI_CODING_AGENT_DIR;
+  if (!configured) return join(homedir(), ".pi", "agent");
+  return configured.startsWith("~/") ? join(homedir(), configured.slice(2)) : configured;
+}
+/** mtime/size revision of exactly the files Pi composes into the native registry. */
+export function configRevision(directory = nativeConfigDir()): string {
+  return NATIVE_CONFIG_FILES.map(name => {
+    try {
+      const stat = statSync(join(directory, name), { throwIfNoEntry: false });
+      return `${name}:${stat ? `${stat.mtimeMs}:${stat.size}` : "absent"}`;
+    } catch {
+      // Unreadable must stay distinguishable from unchanged so a later readable
+      // revision is still detected; never throw into the catalog publisher.
+      return `${name}:unreadable`;
+    }
+  }).join("|");
+}
+export interface ConfigRefresh {
+  /** Whether the on-disk native config differs from the last applied/attempted revision. */
+  changed(): boolean;
+  /** Apply one bounded offline reload; reject while native configuration is unhealthy. */
+  sync(registry: RefreshableRegistry): Promise<void>;
+  /** Abort a bounded in-flight reload on session teardown; the refresher stays usable. */
+  stop(): void;
+}
+export function createConfigRefresher(options: { directory?: string; timeoutMs?: number; backoffMs?: number } = {}): ConfigRefresh {
+  const directory = options.directory ?? nativeConfigDir();
+  const timeoutMs = options.timeoutMs ?? REFRESH_TIMEOUT_MS;
+  const backoffMs = options.backoffMs ?? REFRESH_BACKOFF_MS;
+  let applied = configRevision(directory), attempted = applied, retryAt = 0, failures = 0;
+  let inFlight: Promise<void> | undefined;
+  let controller: AbortController | undefined;
+  let seq = 0;
+  let unhealthy = false;
+  const unavailable = () => { throw new UiError("Native model configuration unavailable; use native /model"); };
+  const changed = () => {
+    const current = configRevision(directory);
+    return current !== applied && (current !== attempted || Date.now() >= retryAt);
+  };
+  const sync = async (registry: RefreshableRegistry): Promise<void> => {
+    if (inFlight) return inFlight;
+    if (!changed()) {
+      if (unhealthy || registry.getError?.()) unavailable();
+      return;
+    }
+    const current = configRevision(directory);
+    const refresh = registry.refresh;
+    // Compatible Pi facades expose this method. If it is missing, keep the last
+    // good native snapshot rather than fabricating a registry of our own.
+    if (typeof refresh !== "function") { unhealthy = true; unavailable(); }
+    const epoch = ++seq;
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), timeoutMs);
+    timer.unref?.();
+    controller = abort;
+    const run = (async () => {
+      // The reload must cooperate with the signal; the race below still bounds
+      // our own wait so a slow provider cannot stall catalog publication.
+      const call = Promise.resolve().then(() => refresh!.call(registry, { allowNetwork: false, signal: abort.signal })).then(result => {
+        // Native config/composition errors live in getError(), separately from
+        // provider refresh errors. A resolved promise alone is not success.
+        return object(result) && result.aborted === false && result.errors instanceof Map && result.errors.size === 0
+          && !abort.signal.aborted && !registry.getError?.();
+      }).catch(() => false);
+      const outcome = await Promise.race([call, new Promise<boolean>(resolve => {
+        if (abort.signal.aborted) resolve(false);
+        else abort.signal.addEventListener("abort", () => resolve(false), { once: true });
+      })]);
+      if (epoch !== seq) unavailable();
+      unhealthy = !outcome;
+      if (outcome) { applied = current; attempted = current; retryAt = 0; failures = 0; }
+      else {
+        // Malformed, slow or aborted config: keep the last good publication and
+        // retry rarely (bounded exponential backoff) instead of spinning.
+        attempted = current;
+        retryAt = Date.now() + Math.min(backoffMs * 2 ** failures, REFRESH_BACKOFF_MAX_MS);
+        failures++;
+        unavailable();
+      }
+    })().finally(() => {
+      clearTimeout(timer);
+      if (epoch !== seq) return;
+      inFlight = undefined;
+      if (controller === abort) controller = undefined;
+    });
+    inFlight = run;
+    await run;
+  };
+  return {
+    changed,
+    sync,
+    stop() {
+      seq++;
+      controller?.abort();
+      controller = undefined;
+      inFlight = undefined;
+      retryAt = 0;
+      failures = 0;
+    },
+  };
+}
+
 // Exactly the native /model source; profile metadata cannot add routes.
 function nativeModels(ctx: ExtensionContext) {
   return ctx.scopedModels.length ? ctx.scopedModels.map(s => s.model) : ctx.modelRegistry.getAvailable();
@@ -113,7 +233,7 @@ export async function publishCatalog(pi: ExtensionAPI, pane: string, host: unkno
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
-export function installUi(pi: ExtensionAPI, profiles: () => Profile[] = readProfiles, validatePath = validateSessionPath, hostIdentity = getPrimaryHostIdentity, builtins = builtinCommands) {
+export function installUi(pi: ExtensionAPI, profiles: () => Profile[] = readProfiles, validatePath = validateSessionPath, hostIdentity = getPrimaryHostIdentity, builtins = builtinCommands, refreshFactory: () => ConfigRefresh = createConfigRefresher) {
   const stream = createUiStream(pi, hostIdentity);
   pi.on("message_start", (event, ctx) => { stream.start(event.message, ctx); });
   pi.on("message_update", event => { stream.update(event.message); });
@@ -122,7 +242,26 @@ export function installUi(pi: ExtensionAPI, profiles: () => Profile[] = readProf
   let generation = 0;
   let queue = Promise.resolve();
   let publishTimer: ReturnType<typeof setTimeout> | undefined;
-  pi.on("session_shutdown", () => { stream.reset(); generation++; clearTimeout(publishTimer); });
+  const refresher = refreshFactory();
+  let configWatch: ReturnType<typeof setInterval> | undefined;
+  let watchContext: ExtensionContext | undefined;
+  const stopConfigWatch = () => {
+    if (configWatch !== undefined) { clearInterval(configWatch); configWatch = undefined; }
+    watchContext = undefined;
+    refresher.stop();
+  };
+  const proven = (ctx: ExtensionContext) => { try { return !!hostIdentity(ctx.sessionManager); } catch { return false; } };
+  const startConfigWatch = (ctx: ExtensionContext) => {
+    // Sub-agent sessions share this extension instance; never let one without a
+    // host-proven identity displace the session the catalog is published for.
+    if (!watchContext || !proven(watchContext) || proven(ctx)) watchContext = ctx;
+    if (configWatch !== undefined) return;
+    // Bounded unref'd mtime poll: a config change must reach a running session
+    // that is otherwise idle and therefore emits no publication event at all.
+    configWatch = setInterval(() => { if (watchContext && refresher.changed()) publish(watchContext); }, CONFIG_POLL_MS);
+    configWatch.unref?.();
+  };
+  pi.on("session_shutdown", () => { stream.reset(); generation++; clearTimeout(publishTimer); stopConfigWatch(); });
   const publish = (ctx: ExtensionContext, attempt = 0) => {
     const epoch = generation;
     clearTimeout(publishTimer);
@@ -130,6 +269,13 @@ export function installUi(pi: ExtensionAPI, profiles: () => Profile[] = readProf
       if (epoch !== generation) return;
       const host = hostIdentity(ctx.sessionManager);
       if (!host) { if (attempt < 30) publish(ctx, attempt + 1); return; }
+      // Bounded, offline native reload so a freshly configured model or
+      // credential is visible in this already-running session. It never selects
+      // a model, changes thinking, touches scopes, or performs network work.
+      // Never re-publish the native partial/error snapshot over last-good UI
+      // data. This preserves publication only, not stale native credentials.
+      try { await refresher.sync(ctx.modelRegistry); } catch { return; }
+      if (epoch !== generation || hostIdentity(ctx.sessionManager) !== host) return;
       let models: Profile[] = [], commands: Array<{ name: string; description: string; source: string }> = [], commandsAvailable = true;
       try { models = catalogModels(ctx, profiles); } catch { /* Fail closed; no model choices. */ }
       try { commands = await builtins(); } catch { commandsAvailable = false; }
@@ -160,8 +306,8 @@ export function installUi(pi: ExtensionAPI, profiles: () => Profile[] = readProf
     }, attempt ? 100 : 0);
     publishTimer.unref?.();
   };
-  pi.on("session_start", (_event, ctx) => { stream.reset(); generation++; publish(ctx); });
-  pi.on("session_tree", (_event, ctx) => { stream.reset(); generation++; publish(ctx); });
+  pi.on("session_start", (_event, ctx) => { stream.reset(); generation++; startConfigWatch(ctx); publish(ctx); });
+  pi.on("session_tree", (_event, ctx) => { stream.reset(); generation++; startConfigWatch(ctx); publish(ctx); });
   pi.on("model_select", (_event, ctx) => publish(ctx));
   pi.on("thinking_level_select", (_event, ctx) => publish(ctx));
   pi.on("agent_start", (_event, ctx) => publish(ctx));
@@ -188,6 +334,9 @@ export function installUi(pi: ExtensionAPI, profiles: () => Profile[] = readProf
             return;
           }
           const r = request;
+          // A catalog published before the change may already be stale: apply the
+          // same bounded offline reload before resolving the native route.
+          try { await refresher.sync(ctx.modelRegistry); } catch { fail("Native model configuration unavailable; use native /model"); }
           const model = nativeModels(ctx).find(p => p.provider === r.model.provider && p.id === r.model.id);
           if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) fail("Model unavailable or credentials not configured");
           if (/gpt/i.test(model.id) && (model.provider !== "openai-codex" || model.api !== "openai-codex-responses" || !ctx.modelRegistry.isUsingOAuth(model))) fail("GPT requires paid openai-codex OAuth routing");

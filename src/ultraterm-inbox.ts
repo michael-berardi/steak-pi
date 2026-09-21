@@ -148,11 +148,22 @@ export function persistedEntry(host: PrimaryHostIdentity, claim?: Claim, root = 
   return createPersistedReader(host, root)(claim)?.entryId;
 }
 
+/** Native custom-message delivery modes. "steer" is queued into the running
+ * run and injected after the current turn's tool calls finish, before the next
+ * LLM call: no tool is aborted and no Escape/idle is required. "followUp" is
+ * only safe for a caller that accepts waiting for every tool to stop, which
+ * withholds peer messages for the whole of a continuously busy run. */
+export interface NativeDelivery { deliverAs: "steer" | "followUp"; triggerTurn: true }
+
+/** Structured delivery phases. A durable receipt is only ever produced from
+ * "persisted-history"; a lease alone is never evidence of delivery. */
+export type InboxPhase = "starting" | "durable-queue" | "delivery-pending" | "persisted-history" | "withheld" | "unavailable" | "stopped";
+
 export interface InboxDependencies {
   host: PrimaryHostIdentity;
   current(): boolean;
   idle(): boolean;
-  send(message: ReturnType<typeof customMessage>, options: { deliverAs: "followUp"; triggerTurn: true }): void;
+  send(message: ReturnType<typeof customMessage>, options: NativeDelivery): void;
   evidence(claim?: Claim): string | PersistedEvidence | undefined;
   accepted?(claim: Claim): boolean;
   transport: Transport;
@@ -168,7 +179,17 @@ export class InboxConsumer {
   private running = false;
   private stopped = false;
   status = "starting";
+  phase: InboxPhase = "starting";
+  /** Durable receipt, set only from an exact canonical entry in native history. */
+  receipt?: { claimId: string; entryId: string };
   constructor(private readonly d: InboxDependencies) { this.instanceId = d.instanceId ?? randomUUID(); }
+  private set(phase: InboxPhase, status: string) { this.phase = phase; this.status = status; }
+  /** Injected-not-persisted while the run is live, or awaiting the idle turn. */
+  private pendingStatus() {
+    return this.d.idle()
+      ? "delivery pending: native idle turn, awaiting persisted evidence"
+      : "delivery pending: native steering queue (between-tools), awaiting persisted evidence";
+  }
   private valid() { return !this.stopped && this.d.current(); }
   private request(cmd: string, extra = {}) { return this.d.transport.request({ cmd, host: this.d.host, instanceId: this.instanceId, ...(this.token ? { token: this.token } : {}), ...extra }, this.controller.signal); }
   start() {
@@ -187,7 +208,11 @@ export class InboxConsumer {
         if (typeof r.token !== "string" || !r.token || typeof r.terminalId !== "string") throw Error("invalid registration");
         this.token = r.token;
       }
-      const r = await this.request("inbox.poll", { ready: !this.pending && this.d.idle() });
+      // "ready" means "able to take a lease now", not "idle". A steering
+      // custom message is queued natively while the agent runs and is injected
+      // at the between-tools boundary, so a busy agent is ready. Only a claim
+      // already injected and awaiting persisted evidence blocks the next lease.
+      const r = await this.request("inbox.poll", { ready: !this.pending });
       if (!this.valid()) return;
       if (r.message) {
         const m = r.message as Claim;
@@ -199,35 +224,47 @@ export class InboxConsumer {
         this.pending = m;
       }
       const m = this.pending;
-      if (!m) { this.status = this.d.idle() ? "idle" : "busy"; return; }
+      if (!m) { this.set("durable-queue", this.d.idle() ? "durable queue: idle, no lease" : "durable queue: busy, steerable"); return; }
       let evidence = this.d.evidence(m);
-      if (!evidence && this.d.accepted?.(m)) {
-        if (!this.invoked.has(m.receiptId) && this.invoked.size >= 4096) { this.status = "capacity exhausted"; return; }
+      const memoryAccepted = !evidence && this.d.accepted?.(m) === true;
+      if (memoryAccepted) {
+        if (!this.invoked.has(m.receiptId) && this.invoked.size >= 4096) { this.set("withheld", "capacity exhausted"); return; }
         this.invoked.add(m.receiptId);
       }
-      if (!evidence && !this.invoked.has(m.receiptId) && this.d.idle() && this.valid()) {
-        if (this.invoked.size >= 4096) { this.status = "capacity exhausted"; return; }
+      // Busy runs steer at the native between-tools boundary; they do not wait
+      // for every tool to stop and never abort one.
+      if (!evidence && !this.invoked.has(m.receiptId) && this.valid()) {
+        if (this.invoked.size >= 4096) { this.set("withheld", "capacity exhausted"); return; }
         // Mark BEFORE calling: void/throw cannot establish non-acceptance.
-        this.invoked.add(m.receiptId); this.status = "uncertain: awaiting persisted evidence";
-        this.d.send(customMessage(m), { deliverAs: "followUp", triggerTurn: true });
+        this.invoked.add(m.receiptId);
+        this.set("delivery-pending", this.pendingStatus());
+        this.d.send(customMessage(m), { deliverAs: "steer", triggerTurn: true });
         evidence = this.d.evidence(m);
       }
       if (evidence && this.valid()) {
         const proof = typeof evidence === "string" ? { entryId: evidence } : evidence;
+        this.set("persisted-history", "persisted history: canonical peer entry observed; recording receipt");
         await this.request("inbox.record", { receiptId: m.receiptId, claimId: m.claimId, ...proof });
-        if (this.valid()) { this.pending = undefined; this.status = "recorded (model-read unknown)"; }
-      } else this.status = "uncertain: awaiting persisted evidence";
+        if (this.valid()) {
+          this.receipt = { claimId: m.claimId, entryId: proof.entryId };
+          this.pending = undefined; this.set("persisted-history", "recorded (model-read unknown)");
+        }
+      } else if (memoryAccepted) this.set("delivery-pending", "delivery pending: session memory shows the canonical entry; awaiting durable receipt evidence");
+      else if (this.invoked.has(m.receiptId)) this.set("delivery-pending", this.pendingStatus());
+      else this.set("delivery-pending", "delivery pending: lease held; dispatch not attempted");
     } catch (error) { if (!this.stopped) {
-      this.status = error instanceof Error && error.message === "recipient session identity mismatch"
-        ? "recipient session identity mismatch; delivery withheld"
-        : "unavailable or uncertain; retrying without redispatch";
+      if (error instanceof Error && error.message === "recipient session identity mismatch") this.set("withheld", "recipient session identity mismatch; delivery withheld");
+      else {
+        this.phase = this.pending ? "delivery-pending" : "durable-queue";
+        this.status = "unavailable or uncertain; retrying without redispatch";
+      }
       this.token = undefined;
     } }
     finally { this.running = false; }
   }
   stop() {
     if (this.stopped) return;
-    this.stopped = true; this.status = "stopped"; clearTimeout(this.timer); this.controller.abort();
+    this.stopped = true; this.set("stopped", "stopped"); clearTimeout(this.timer); this.controller.abort();
     // Release never requeues an uncertain native call. Bounded transport closes itself.
     if (this.token) void this.d.transport.request({ cmd: "inbox.release", host: this.d.host, instanceId: this.instanceId, token: this.token }, AbortSignal.timeout(1500)).catch(() => {});
     this.token = undefined;
