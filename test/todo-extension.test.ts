@@ -2,9 +2,11 @@ import { createHash } from "node:crypto";
 import { promises as fs, realpathSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { loadSkillsFromDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import todoExtension from "../extensions/todo.ts";
+import { setPinnedPanel } from "../src/tui/pinned-panels.ts";
 import { TodoError, type TodoState } from "../src/todo-core.ts";
 
 const SESSION_ID = "7c824aae-7b2e-4a3a-a9f0-06a190b1fbc8";
@@ -201,6 +203,24 @@ describe("todo extension persistence", () => {
     ) as TodoState;
     expect(state.phases[0]?.items.map((item) => item.content))
       .toEqual(["first", "second", "third"]);
+  });
+
+  it("keeps recorded progress on an identical init and replaces on a changed one", async () => {
+    const cwd = await tempDir();
+    const execute = registerTodo();
+    const list = [{ phase: "Build", items: ["first", "second"] }];
+    await callTodo(execute, cwd, { op: "init", list });
+    await callTodo(execute, cwd, { op: "done", task: "first" });
+    await callTodo(execute, cwd, { op: "init", list });
+
+    const statePath = path.join(planDir(cwd), "todo.json");
+    const preserved = JSON.parse(await fs.readFile(statePath, "utf8")) as TodoState;
+    expect(preserved.phases[0]?.items.map((item) => item.status)).toEqual(["done", "in_progress"]);
+
+    await callTodo(execute, cwd, { op: "init", list: [{ phase: "Build", items: ["third"] }] });
+    const replaced = JSON.parse(await fs.readFile(statePath, "utf8")) as TodoState;
+    expect(replaced.phases[0]?.items.map((item) => item.content)).toEqual(["third"]);
+    expect(replaced.phases[0]?.items[0]?.status).toBe("in_progress");
   });
 });
 
@@ -447,5 +467,194 @@ describe("native session isolation", () => {
     await pending;
     expect(harness.widgets.length).toBe(count);
     expect(harness.renderPinned()).toBeUndefined();
+  });
+});
+
+const PLAN = {
+  op: "init",
+  list: [{ phase: "Release", items: ["draft-changelog", "draft-notes", "ship-artifact"] }],
+};
+const guidance = (harness: Harness, systemPrompt = "BASE PROMPT") =>
+  harness.handlers.get("before_agent_start")!({ systemPrompt }, harness.ctx);
+
+/** The instruction channel the agent actually reads: one chained system prompt. */
+describe("todo agent-facing maintenance instructions", () => {
+  it("adds the maintenance duties only while an unfinished plan exists", async () => {
+    const harness = registerHarness(await tempDir());
+    expect(harness.handlers.has("before_agent_start")).toBe(true);
+    expect(await guidance(harness)).toBeUndefined();
+
+    await harness.call(PLAN);
+    const result = await guidance(harness);
+    expect(Object.keys(result)).toEqual(["systemPrompt"]);
+    expect(result.systemPrompt.startsWith("BASE PROMPT\n\n## Active todo plan\n")).toBe(true);
+    for (const duty of [
+      'op:"start"',
+      'op:"done"',
+      'op:"block"',
+      "verified the result yourself",
+      "Do not move to a later phase",
+      'op:"view"',
+      "reconcile every item",
+      "do not re-view or re-mark the same step",
+    ]) {
+      expect(result.systemPrompt).toContain(duty);
+    }
+
+    await harness.call({ op: "done", items: ["draft-changelog", "draft-notes", "ship-artifact"] });
+    const settled = harness.widgets.length;
+    expect(await guidance(harness)).toBeUndefined();
+    expect(harness.widgets.length).toBe(settled);
+  });
+
+  it("cannot fabricate progress: no plan labels, counts, or statuses in the text", async () => {
+    const harness = registerHarness(await tempDir());
+    await harness.call(PLAN);
+    const first = (await guidance(harness)).systemPrompt;
+    await harness.call({ op: "block", task: "draft-notes", reason: "waiting on operator input" });
+    await harness.call({ op: "start", task: "ship-artifact" });
+    const second = (await guidance(harness)).systemPrompt;
+
+    expect(second).toBe(first);
+    for (const label of ["Release", "draft-changelog", "draft-notes", "ship-artifact", "waiting on operator input"]) {
+      expect(first).not.toContain(label);
+    }
+    expect(first).not.toMatch(/\d+\s*\/\s*\d+/);
+    expect(first).not.toMatch(/\[(x|>| |!)\]/);
+  });
+
+  it("never borrows another session's plan for its instructions", async () => {
+    const cwd = await tempDir();
+    const owner = registerHarness(cwd);
+    await owner.call(PLAN);
+    expect((await guidance(owner)).systemPrompt).toContain("## Active todo plan");
+
+    const foreign = registerHarness(cwd, "5b2f0f8e-6d76-4a51-9c0f-1a2b3c4d5e6f");
+    await foreign.handlers.get("session_start")!({}, foreign.ctx);
+    expect(await guidance(foreign)).toBeUndefined();
+
+    await foreign.call({ op: "init", list: [{ phase: "Foreign", items: ["other work"] }] });
+    const text = (await guidance(foreign)).systemPrompt;
+    expect(text).toContain("## Active todo plan");
+    expect(text).not.toContain("draft-changelog");
+    expect((await guidance(owner)).systemPrompt).not.toContain("other work");
+  });
+
+  it("stays silent rather than injecting a prompt while the session shuts down", async () => {
+    const harness = registerHarness(await tempDir());
+    await harness.call(PLAN);
+    expect((await guidance(harness)).systemPrompt).toContain("## Active todo plan");
+
+    await harness.handlers.get("session_shutdown")!({}, harness.ctx);
+    expect(await guidance(harness)).toBeUndefined();
+  });
+});
+
+/** Failures must stay actionable and all-or-nothing. */
+describe("todo actionable failures", () => {
+  it("names the known labels on a miss and leaves state untouched", async () => {
+    const cwd = await tempDir();
+    const harness = registerHarness(cwd);
+    await harness.call(PLAN);
+    const statePath = path.join(planDir(cwd), "todo.json");
+    const before = await fs.readFile(statePath, "utf8");
+
+    await expect(harness.call({ op: "done", task: "missing" }))
+      .rejects.toThrow(/^unknown task: missing — known tasks: draft-changelog, draft-notes, ship-artifact$/);
+    await expect(harness.call({ op: "done", task: "draft" }))
+      .rejects.toThrow(/^ambiguous task prefix: draft — known tasks: draft-changelog, draft-notes, ship-artifact$/);
+    await expect(harness.call({ op: "done", phase: "Absent" }))
+      .rejects.toThrow(/^unknown phase: Absent — known phases: Release$/);
+    await expect(harness.call({ op: "done", items: ["draft-changelog", "missing"] }))
+      .rejects.toThrow(/^unknown task: missing — known tasks: draft-changelog, draft-notes, ship-artifact$/);
+
+    expect(await fs.readFile(statePath, "utf8")).toBe(before);
+    expect((await harness.call({ op: "view" })).content[0].text).toContain("[>] draft-changelog");
+    expect(harness.renderPinned(60)!.join("\n")).not.toContain("[x] draft-changelog");
+  });
+
+  it("keeps a lookup miss a plain failure when no label is known", async () => {
+    const cwd = await tempDir();
+    const harness = registerHarness(cwd);
+    await expect(harness.call({ op: "done", task: "missing" }))
+      .rejects.toThrowError(new TodoError("unknown task: missing"));
+  });
+});
+
+/** Branch, tree, resume, and fork transitions keep one session's plan private. */
+describe("todo session transition lifecycle", () => {
+  const forkId = "9c1f4b7a-2d3e-4f50-8a91-b2c3d4e5f607";
+
+  it("restores on resume but never inherits a forked parent's plan", async () => {
+    const cwd = await tempDir();
+    const parent = registerHarness(cwd);
+    await parent.call(PLAN);
+    const parentState = await fs.readFile(path.join(planDir(cwd), "todo.json"), "utf8");
+
+    const forked = registerHarness(cwd, forkId);
+    await forked.handlers.get("session_start")!({
+      type: "session_start",
+      reason: "fork",
+      previousSessionFile: nativeContext(cwd).sessionManager.getSessionFile(),
+    }, forked.ctx);
+    expect((await forked.call({ op: "view" })).details.state.phases).toEqual([]);
+    expect(forked.renderPinned()).toBeUndefined();
+    expect(await guidance(forked)).toBeUndefined();
+    await expect(fs.access(planDir(cwd, forkId))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readFile(path.join(planDir(cwd), "todo.json"), "utf8")).toBe(parentState);
+
+    await parent.handlers.get("session_start")!({ type: "session_start", reason: "resume" }, parent.ctx);
+    expect(parent.renderPinned(60)!.join("\n")).toContain("draft-changelog");
+    expect((await guidance(parent)).systemPrompt).toContain("## Active todo plan");
+  });
+
+  it("re-publishes the current plan after tree navigation and never on a foreign context", async () => {
+    const cwd = await tempDir();
+    const harness = registerHarness(cwd);
+    await harness.call(PLAN);
+    const statePath = path.join(planDir(cwd), "todo.json");
+    const before = await fs.readFile(statePath, "utf8");
+
+    setPinnedPanel(harness.ctx as unknown as ExtensionContext, "todo", undefined);
+    expect(harness.renderPinned()).toBeUndefined();
+
+    await harness.handlers.get("session_tree")!({ newLeafId: "leaf", oldLeafId: "older" }, harness.ctx);
+    expect(harness.renderPinned(60)!.join("\n")).toContain("draft-changelog");
+    expect(await fs.readFile(statePath, "utf8")).toBe(before);
+    expect(await fs.readdir(planDir(cwd))).toEqual(["TODO.md", "todo.json"]);
+
+    setPinnedPanel(harness.ctx as unknown as ExtensionContext, "todo", undefined);
+    const foreign = nativeContext(cwd, forkId);
+    await harness.handlers.get("session_tree")!({}, { ...harness.ctx, sessionManager: foreign.sessionManager });
+    expect(harness.renderPinned()).toBeUndefined();
+    await expect(fs.access(planDir(cwd, forkId))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("leaves cancellable branch and fork transitions untouched", async () => {
+    const cwd = await tempDir();
+    const harness = registerHarness(cwd);
+    await harness.call(PLAN);
+    const before = await fs.readFile(path.join(planDir(cwd), "todo.json"), "utf8");
+
+    expect(harness.handlers.has("session_before_tree")).toBe(false);
+    expect(harness.handlers.has("session_before_fork")).toBe(false);
+    expect(harness.handlers.has("session_before_switch")).toBe(false);
+    expect(await fs.readFile(path.join(planDir(cwd), "todo.json"), "utf8")).toBe(before);
+    expect(harness.renderPinned(60)!.join("\n")).toContain("draft-changelog");
+  });
+});
+
+/** A skill only helps if native package discovery actually finds it. */
+describe("todo skill packaging", () => {
+  it("is discovered through the package skills root", () => {
+    const root = fileURLToPath(new URL("../skills", import.meta.url));
+    const discovered = loadSkillsFromDir({ dir: root, source: "package" });
+    const todo = discovered.skills.find((skill) => skill.name === "todo");
+    expect(todo?.filePath).toBe(path.join(root, "todo", "SKILL.md"));
+    expect(todo?.description).toMatch(/todo plan/);
+
+    const direct = loadSkillsFromDir({ dir: path.join(root, "todo"), source: "package" });
+    expect(direct.diagnostics).toEqual([]);
+    expect(direct.skills.map((skill) => skill.name)).toEqual(["todo"]);
   });
 });

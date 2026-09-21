@@ -11,7 +11,7 @@ import {
   type TodoState,
   type TodoStatus,
 } from "../src/todo-core.ts";
-import { createTodoPanel, hasTodoPlan } from "../src/todo-render.ts";
+import { createTodoPanel, hasTodoPlan, hasUnfinishedTodo } from "../src/todo-render.ts";
 import { setPinnedPanel } from "../src/tui/pinned-panels.ts";
 
 import { canonicalSessionFile } from "../src/subagents/checkpoints.ts";
@@ -38,6 +38,7 @@ function captureOwner(ctx: ExtensionContext): TodoOwner {
 const STATE_DIR = ".steak-pi";
 const STATE_FILE = "todo.json";
 const MARKDOWN_FILE = "TODO.md";
+const MAX_KNOWN_LABELS = 12;
 const TODO_STATUSES = new Set<TodoStatus>([
   "pending",
   "in_progress",
@@ -191,6 +192,65 @@ function userVisibleError(error: unknown): TodoError {
   return new TodoError(`could not update todo state: ${String(error)}`);
 }
 
+/** Owner for the context's own session, or undefined when native metadata is absent. */
+function ownerOf(ctx: ExtensionContext): TodoOwner | undefined {
+  try {
+    return captureOwner(ctx);
+  } catch {
+    return undefined;
+  }
+}
+
+function boundedLabels(labels: string[]): string {
+  const shown = labels.slice(0, MAX_KNOWN_LABELS).join(", ");
+  return labels.length > MAX_KNOWN_LABELS ? `${shown}, … (${labels.length} total)` : shown;
+}
+
+/**
+ * Keep the core's reason and add the labels this plan actually contains, so a
+ * failed lookup is actionable instead of a dead end. The error stays a failure:
+ * nothing is persisted for the rejected operation.
+ */
+function enrichTodoError(error: unknown, state: TodoState): TodoError {
+  const failure = userVisibleError(error);
+  const phases = state.phases.map((phase) => phase.name);
+  const tasks = [...new Set(state.phases.flatMap((phase) => phase.items.map((item) => item.content)))];
+  const isLookupMiss = /^(unknown task|unknown phase|ambiguous task prefix):/.test(failure.message);
+  if (!isLookupMiss) return failure;
+  const known = failure.message.startsWith("unknown phase:")
+    ? phases.length > 0 ? `known phases: ${boundedLabels(phases)}` : undefined
+    : tasks.length > 0 ? `known tasks: ${boundedLabels(tasks)}` : undefined;
+  return known ? new TodoError(`${failure.message} — ${known}`) : failure;
+}
+
+/**
+ * Agent-facing maintenance contract, injected only while an unfinished plan
+ * exists. It states the recording duties and never the current status, so the
+ * prompt cannot fabricate progress: the model still has to read the tool.
+ */
+const TODO_GUIDANCE = [
+  "## Active todo plan",
+  "",
+  "This session has an unfinished plan tracked by the `todo` tool; its `view` op is the only checklist.",
+  "- Before starting an item, record it with `op:\"start\"`.",
+  "- Record `op:\"done\"` only after you verified the result yourself; record `op:\"block\"` with a reason when you cannot proceed. Tool activity, edits, and passing tests never mark an item by themselves.",
+  "- Do not move to a later phase while an earlier item is unfinished or unrecorded.",
+  "- Before your final response, run `op:\"view\"` once and reconcile every item; report unfinished or blocked items as such instead of implying success.",
+  "- One update per real state change: do not re-view or re-mark the same step.",
+].join("\n");
+
+/** Guidance for the session that owns this context; never another session's plan. */
+async function loadGuidance(ctx: ExtensionContext): Promise<string | undefined> {
+  const owner = ownerOf(ctx);
+  if (!owner) return undefined;
+  try {
+    return hasUnfinishedTodo(await loadState(owner.dir)) ? TODO_GUIDANCE : undefined;
+  } catch {
+    // Guidance is advisory: a malformed or unreadable plan must not break a turn.
+    return undefined;
+  }
+}
+
 /**
  * Publish (or clear) the pinned todo panel through the shared compositor, which
  * owns widget identity and keeps Subagents → Todo → Composer order. Never call
@@ -237,7 +297,8 @@ export default function steakPieExtension(pi: ExtensionAPI): void {
     label: "Todo",
     description:
       "Phased task tracker. Use only when the operator asks for explicit " +
-      "task tracking. Ops: init|start|done|drop|block|unblock|append|rm|view. For bulk start/done/drop/block/unblock/rm, pass items (task names or unique prefixes), without task or phase; the ordered batch is atomic.",
+      "task tracking. Ops: init|start|done|drop|block|unblock|append|rm|view. For bulk start/done/drop/block/unblock/rm, pass items (task names or unique prefixes), without task or phase; the ordered batch is atomic. " +
+      "Nothing is marked automatically: record start/done/block yourself, and re-running init with an identical list keeps the recorded progress.",
     parameters: inputSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const op = params as TodoOp;
@@ -261,7 +322,12 @@ export default function steakPieExtension(pi: ExtensionAPI): void {
             };
           }
 
-          const next = applyOp(state, op);
+          let next: { state: TodoState; output: string };
+          try {
+            next = applyOp(state, op);
+          } catch (error) {
+            throw enrichTodoError(error, state);
+          }
           check();
           await persist(owner.dir, next.state, next.output, check);
           check();
@@ -278,6 +344,32 @@ export default function steakPieExtension(pi: ExtensionAPI): void {
         throw userVisibleError(error);
       }
     },
+  });
+
+  // Agent-facing maintenance: state the recording duties while an active plan
+  // exists, and stay silent when there is none. Chained systemPrompt mutation
+  // only — no extra turns, no messages, no auto-marking.
+  pi.on?.("before_agent_start", async (event, ctx) => {
+    if (closed) return;
+    const guidance = await loadGuidance(ctx);
+    if (!guidance) return;
+    return { systemPrompt: `${event.systemPrompt}\n\n${guidance}` };
+  });
+
+  // Tree navigation stays inside one session file: re-publish the persisted plan
+  // for the current owner instead of clearing it or borrowing another session's
+  // plan. Cancellable branch/fork transitions are deliberately left untouched.
+  pi.on?.("session_tree", async (_event, ctx) => {
+    const capturedEpoch = epoch;
+    const owner = ownerOf(ctx);
+    if (!owner || closed || epoch !== capturedEpoch || activeDir !== owner.dir) return;
+    try {
+      const state = await loadState(owner.dir);
+      if (closed || epoch !== capturedEpoch || activeDir !== owner.dir) return;
+      publishPinnedTodo(ctx, state);
+    } catch {
+      // A read failure leaves the existing panel alone; the tool result owns truth.
+    }
   });
 
   // Restore the pinned plan for the session that just became active. A missing

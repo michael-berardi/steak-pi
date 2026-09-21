@@ -27,7 +27,3 @@ benchmark traces. Generated package archives, internal verification prompts, and
 raw gate/ledger logs are release assets or private evidence, not tracked files.
 This project runs release checks locally and does not accept GitHub Actions
 workflows.
-
-Optional DeepSeek harness checks live in `test/deepseek-*.test.ts`; the guarded
-launcher contract is documented in [`docs/DEEPSEEK-HARNESS.md`](./docs/DEEPSEEK-HARNESS.md)
-and exercises only local files and inert fixtures.

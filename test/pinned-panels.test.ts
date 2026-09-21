@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { TuiMainScreen, type Terminal } from "@earendil-works/pi-tui";
 import { renderSubagentLive } from "../src/subagents/render.ts";
 import { setPinnedPanel, type PanelFactory } from "../src/tui/pinned-panels.ts";
+import { createTodoPanel } from "../src/todo-render.ts";
+import { render, type TodoState } from "../src/todo-core.ts";
 function fixture() {
   const setWidget = vi.fn();
   const ctx = { ui: { setWidget } } as any;
@@ -121,5 +123,30 @@ describe("pinned panel compositor", () => {
     const create = a.setWidget.mock.calls.filter(([key]) => key === "steak-pinned-panels").at(-1)![1];
     const component = create({}, {}); component.render(80); component.invalidate(); component.dispose();
     expect(invalidate).toHaveBeenCalledOnce(); expect(dispose).toHaveBeenCalledTimes(2);
+  });
+  it("keeps todo phase numbering and finished counts stable when a phase empties", () => {
+    const h = fixture();
+    const state: TodoState = {
+      phases: [
+        {
+          name: "Finished",
+          items: Array.from({ length: 13 }, (_unused, index) => ({
+            content: `task ${index + 1}`,
+            status: "done" as const,
+          })),
+        },
+        { name: "Active", items: [{ content: "current", status: "in_progress" }] },
+        { name: "Emptied", items: [] },
+      ],
+    };
+    setPinnedPanel(h.ctx, "todo", () => createTodoPanel(state), JSON.stringify(state));
+    const text = h.render().join("\n");
+    // The finished phase's count and the emptied phase's slot survive; numbering
+    // matches the tool text (`render`) instead of re-indexing around the gap.
+    expect(text).toContain("TODO 13/14 done");
+    expect(text).toContain("… 1 earlier phase");
+    expect(text).toContain("2. Active · 0/1");
+    expect(text).toContain("3. Emptied · 0/0");
+    expect(render(state)).toContain("3. Emptied (0/0)");
   });
 });

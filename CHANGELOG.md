@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.1 — unreleased (USAP 1.2)
+
+- Todo maintenance corrections, staged for review: an identical `init` list keeps
+  recorded progress instead of resetting it; a single `start` activates exactly one
+  item while a bulk `start` keeps every named task active; bulk transitions resolve
+  task names only and never complete or remove a whole phase by fallback.
+- Rejected todo operations write nothing and now name the labels the plan actually
+  contains, so a failed lookup is actionable instead of a dead end. A single
+  `done`/`drop`/`rm` still accepts a task or a phase name, with a task match
+  taking precedence over the phase-name fallback.
+- Add the `todo` skill and state the todo recording duties in the session prompt
+  only while an unfinished plan exists. Completed plans keep their pinned
+  checklist and finished counts visible until the plan is replaced or removed.
+- Admit Pi 0.86.1 to the peer range (`0.85.1 || 0.86.0 || 0.86.1`) and pin it for
+  verification dependencies. No Woodstar component is bundled in this release.
+- Remove the DeepSeek-specific DSH harness, the managed `steak-pi-dsh` launcher
+  and the vendored persistent-bash worker runtime. DeepSeek models run as
+  ordinary routes (OpenCode Go and the explicitly paid Inco DeepSeek Fast route)
+  with the existing paid-route admission unchanged.
+- No release, publication, or installed-runtime verification is claimed by this
+  entry; the package is still not published to the npm registry.
+
 ## 0.6.0 — 2026-09-20 (USAP 1.2)
 
 - Release date: 2026-09-20. Targets Pi 0.86.0 and retains the 0.85.1 peer range;
@@ -10,11 +32,6 @@
   registry, and the private Implose Cybernetics Homebrew tap remains a channel
   for already-authorized operators only. Generated package archives and raw
   internal verification logs are no longer tracked in the tree.
-- Add the optional `bin/steak-pi-dsh` managed entrypoint with
-  `docs/DEEPSEEK-HARNESS.md`: guarded persistent bash for native workers and for
-  one explicitly admitted primary-session route. Opt-in only, with no added npm
-  dependency.
-- Fix the optional DSH launcher under installed `node_modules` paths. A temporary, exact-file Node loader handles only its two reviewed TypeScript modules; it is removed before native Pi launches. Packaged-launch tests cover unsafe-option rejection and loader isolation.
 - Bind subagent tools, callbacks, results, receipts and checkpoints to the captured native session identity. Foreign or ambiguous records do not attach automatically.
 - Keep work running when a session switch or fork is cancelled; interrupt only at committed shutdown.
 - Make Todo persistence session-private within a shared workspace; retain legacy files without importing another session's plan.

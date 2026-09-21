@@ -91,8 +91,13 @@ function plural(count: number, singular: string): string {
   return `${count} ${count === 1 ? singular : `${singular}s`}`;
 }
 
-/** Pin only unfinished work. Empty/completed plans remain available in tool history. */
+/** Keep completed counts visible until the plan is explicitly cleared/replaced. */
 export function hasTodoPlan(state: TodoState): boolean {
+  return state.phases.some((phase) => phase.items.length > 0);
+}
+
+/** Maintenance instructions are needed only while real work remains. */
+export function hasUnfinishedTodo(state: TodoState): boolean {
   return state.phases.some((phase) => phase.items.some(item => item.status !== "done"));
 }
 
@@ -224,7 +229,10 @@ export function renderTodoPanelLines(
   const narrow = width < NARROW_WIDTH;
   const maxRows = Math.max(3, Math.floor(options?.maxRows ?? (narrow ? DEFAULT_MAX_ROWS_NARROW : DEFAULT_MAX_ROWS)));
   const stats = todoPanelStats(state);
-  const phases = state.phases.filter((phase) => phase.items.length > 0);
+  // Keep every phase, including ones whose items were all removed or completed:
+  // dropping them would renumber the phases below and hide recorded counts, and
+  // the numbering must keep matching the tool text (`render`) exactly.
+  const phases = state.phases;
   const activePhase = activePhaseIndex(phases);
   const phaseCap = narrow ? PHASE_CAP_NARROW : PHASE_CAP;
   const taskCap = narrow ? TASK_CAP_NARROW : TASK_CAP;
