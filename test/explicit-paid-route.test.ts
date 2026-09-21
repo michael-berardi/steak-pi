@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { findPackageJSON } from "node:module";
 import { pathToFileURL } from "node:url";
-import { createExplicitPaidApproval, PAID_ROUTE_FLAG } from "../src/explicit-paid-route.ts";
+import { createExplicitPaidApproval, PAID_INCO_BASE_URL, PAID_ROUTES, PAID_ROUTE_FLAG } from "../src/explicit-paid-route.ts";
 import { guardProvider, createRegistryGuard } from "../src/model-route-policy.ts";
 import { beginGoAttempt, observeGoQuota, hasConfirmedGoExhaustion, SUBSCRIPTION_FIRST_ERROR } from "../src/subscription-first-routing.ts";
 
@@ -24,18 +24,24 @@ const model = { provider: "inco", id: "glm-5.3-flash:fast", name: "GLM Fast", ap
 const dirs: string[] = [];
 afterEach(() => { dirs.splice(0).forEach(dir => rmSync(dir, { recursive: true, force: true })); });
 function approval() {
+  return approvalFor("inco/glm-5.3-flash:fast", model);
+}
+function approvalFor(flag: string, target: Model, allow: unknown[] = [{ provider: target.provider, model: target.id, baseUrl: target.baseUrl }]) {
   const dir = mkdtempSync(join(tmpdir(), "paid-route-test-")); dirs.push(dir);
   const path = join(dir, "paid-routes.json");
-  writeFileSync(path, JSON.stringify({ version: 1, allow: [{ provider: model.provider, model: model.id, baseUrl: model.baseUrl }] }));
-  return { path, approve: createExplicitPaidApproval("inco/glm-5.3-flash:fast", model, path) };
+  writeFileSync(path, JSON.stringify({ version: 1, allow }));
+  return { path, approve: createExplicitPaidApproval(flag, target, path) };
 }
-function provider() {
+function providerFor(target: Model) {
   const stream = vi.fn(() => {
     const output = createAssistantMessageEventStream();
-    output.push({ type: "done", reason: "stop", message: { role: "assistant", stopReason: "stop", content: [], provider: model.provider, model: model.id } });
+    output.push({ type: "done", reason: "stop", message: { role: "assistant", stopReason: "stop", content: [], provider: target.provider, model: target.id } });
     output.end(); return output;
   });
-  return { id: "inco", name: "Inco", getModels: () => [model], auth: {}, stream, streamSimple: stream } as unknown as Parameters<typeof guardProvider>[0];
+  return { id: target.provider, name: "Inco", getModels: () => [target], auth: {}, stream, streamSimple: stream } as unknown as Parameters<typeof guardProvider>[0];
+}
+function provider() {
+  return providerFor(model);
 }
 const drain = async (stream: ReturnType<Parameters<typeof guardProvider>[0]["streamSimple"]>) => { const events = []; for await (const event of stream) events.push(event); return events; };
 describe("explicit paid route permission", () => {
@@ -91,6 +97,58 @@ describe("explicit paid route permission", () => {
     beginGoAttempt();
     observeGoQuota(key, "error", evidence, now, attempt);
     expect(hasConfirmedGoExhaustion(key, now)).toBe(false);
+  });
+
+  const deepseek = { provider: "inco", id: "deepseek-v4.1-flash:fast", name: "DeepSeek V4.1 Flash Fast", api: "openai-completions", baseUrl: PAID_INCO_BASE_URL } as Model;
+  const deepseekFlag = "inco/deepseek-v4.1-flash:fast";
+
+  it("requires the exact flag, model and verified https://api.inco.ai/v1 endpoint for Inco DeepSeek", () => {
+    expect(PAID_ROUTES).toEqual([
+      { provider: "inco", id: "glm-5.3-flash:fast", baseUrl: PAID_INCO_BASE_URL },
+      { provider: "inco", id: "deepseek-v4.1-flash:fast", baseUrl: PAID_INCO_BASE_URL },
+    ]);
+    const { path, approve } = approvalFor(deepseekFlag, deepseek);
+    expect(approve(deepseek)).toBe(true);
+    for (const changed of [
+      { provider: "openrouter" }, { provider: "opencode-go" }, { provider: "inco", id: "deepseek-v4.1-flash" },
+      { id: "deepseek-v4.1-flash:fast:extra" }, { id: "deepseek-v4.1-flash:fast " }, { id: "openrouter/deepseek-v4.1-flash:fast" },
+      { baseUrl: "https://api.inco.ai/v1/" }, { baseUrl: "https://api.inco.ai/v1?proxy=1" }, { baseUrl: "https://api.inco.ai/v1#x" },
+      { baseUrl: "http://api.inco.ai/v1" }, { baseUrl: "https://api.inco.ai" }, { baseUrl: "https://api.inco.ai:443/v1" },
+      { baseUrl: "https://user:secret@api.inco.ai/v1" }, { baseUrl: "https://inco.ai/v1" }, { baseUrl: "https://evil.example/v1" },
+    ]) expect(approve({ ...deepseek, ...changed }), JSON.stringify(changed)).toBe(false);
+    // Launch intent alone, a mismatched selection, or another product's flag never grants this route.
+    expect(createExplicitPaidApproval(undefined, deepseek, path)(deepseek)).toBe(false);
+    expect(createExplicitPaidApproval(deepseekFlag, undefined, path)(deepseek)).toBe(false);
+    expect(createExplicitPaidApproval(deepseekFlag, { ...deepseek, baseUrl: "https://api.inco.ai/v1/" }, path)(deepseek)).toBe(false);
+    expect(createExplicitPaidApproval("inco/glm-5.3-flash:fast", deepseek, path)(deepseek)).toBe(false);
+    expect(createExplicitPaidApproval(deepseekFlag, model, path)(deepseek)).toBe(false);
+    expect(createExplicitPaidApproval(deepseekFlag, { provider: "opencode-go", id: "deepseek-v4.1-flash", baseUrl: "https://opencode.ai/zen/go" }, path)(deepseek)).toBe(false);
+    expect(createExplicitPaidApproval(`${deepseekFlag}\u00a0`, deepseek, path)(deepseek)).toBe(false);
+    // The user allowlist must carry this exact route; the sibling entry does not satisfy it.
+    expect(approvalFor(deepseekFlag, deepseek, [{ provider: "inco", model: "glm-5.3-flash:fast", baseUrl: PAID_INCO_BASE_URL }]).approve(deepseek)).toBe(false);
+    expect(approvalFor(deepseekFlag, deepseek, [{ provider: "inco", model: "deepseek-v4.1-flash:fast", baseUrl: "https://api.inco.ai/v1/" }]).approve(deepseek)).toBe(false);
+    // Revocation is immediate for this route too.
+    writeFileSync(path, "{}"); expect(approve(deepseek)).toBe(false);
+  });
+
+  it("never crosses the two paid products or widens into automatic routing", async () => {
+    beginGoAttempt(); const key = "synthetic-deepseek-key";
+    const base = providerFor(deepseek); const { approve } = approvalFor(deepseekFlag, deepseek);
+    const allowed = guardProvider(base, () => false, async () => key, undefined, undefined, approve);
+    expect((await drain(allowed.streamSimple(deepseek, emptyContext())))[0].type).toBe("done");
+    expect(hasConfirmedGoExhaustion(key)).toBe(false);
+    // No approval, and an approval for the sibling product, both stay blocked.
+    for (const approvalFn of [undefined, approval().approve]) {
+      const guarded = guardProvider(base, () => false, async () => key, undefined, undefined, approvalFn);
+      expect((await drain(guarded.streamSimple(deepseek, emptyContext())))[0]).toMatchObject({ type: "error", error: { errorMessage: SUBSCRIPTION_FIRST_ERROR } });
+    }
+    expect(base.streamSimple).toHaveBeenCalledTimes(1);
+    // The GLM launch approval is not broadened by the DeepSeek entry existing.
+    const glm = approval();
+    expect(glm.approve(model)).toBe(true);
+    expect(glm.approve(deepseek)).toBe(false);
+    expect(approve(deepseek)).toBe(true);
+    expect(approve(model)).toBe(false);
   });
 });
 

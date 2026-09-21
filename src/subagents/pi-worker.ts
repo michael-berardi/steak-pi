@@ -1,5 +1,3 @@
-import { PersistentBashSession } from "../../vendor/pi-dsh-minimal/bash-session.ts";
-import { adaptWorkerTools, appendHarnessPrompt, isDeepSeekHarnessRoute } from "../deepseek-harness/index.ts";
 import { readFile } from "node:fs/promises";
 import { lstatSync } from "node:fs";
 import { findPackageJSON } from "node:module";
@@ -154,8 +152,6 @@ export interface PiWorkerRunnerOptions {
   resolveRuntime(runId: string): PiWorkerRuntime | Promise<PiWorkerRuntime>;
   /** Test seam. Production uses Pi's native in-process createAgentSession(). */
   sessionFactory?: PiWorkerSessionFactory;
-  /** Explicit baseline/compatibility opt-out; never enables other model routes. */
-  deepseekHarnessMode?: "off" | "dsh-minimal";
   /** Test seam for bounded abort/disposal terminalization. */
   abortGraceMs?: number;
 }
@@ -166,8 +162,6 @@ interface GuardedToolOptions {
   cwd: string;
   task: TaskRecord;
   relay: RelayPeer;
-  /** Only supplied by the proven native runner, never a custom factory. */
-  persistentBash?: PersistentBashSession;
 }
 
 interface RelayToolInput {
@@ -474,19 +468,6 @@ export function createGuardedPiWorkerTools(options: GuardedToolOptions): AnyTool
       async execute(id, raw, signal, update, ctx) {
         const base = await nativeTool("bash", (native) => native.createBashToolDefinition(cwd, {
           exposeSessionEnvironment: false,
-          ...(options.persistentBash ? { operations: {
-            async exec(command, _cwd, execution) {
-              let exitCode: number | null = null;
-              const text = await options.persistentBash!.exec(command, {
-                signal: execution.signal,
-                timeoutMs: execution.timeout === undefined ? undefined : execution.timeout * 1000,
-                onExitCode: (code) => { exitCode = code; },
-              });
-              execution.onData(Buffer.from(text));
-              if (exitCode === null) throw new Error("Persistent shell command did not complete; its shell was reset.");
-              return { exitCode };
-            },
-          } } : {}),
         }));
         return base.execute(id, raw as { command: string; timeout?: number }, signal, update, ctx);
       },
@@ -679,7 +660,6 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
   }
   return async ({ run, task, signal, onProgress, sessionDir }): Promise<WorkerResult> => {
     let session: PiWorkerSession | undefined;
-    let persistentBash: PersistentBashSession | undefined;
     let unsubscribe: (() => void) | undefined;
     let peer: RelayPeer | undefined;
     let promptError: unknown;
@@ -766,14 +746,8 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
         );
         return steering;
       });
-      const useDeepSeekHarness = options.deepseekHarnessMode !== "off" && isDeepSeekHarnessRoute(runtime.model);
-      if (useDeepSeekHarness && !options.sessionFactory && task.allowBash && process.platform !== "win32") {
-        persistentBash = new PersistentBashSession(run.cwd);
-      }
-      const guardedTools = createGuardedPiWorkerTools({ cwd: run.cwd, task, relay: peer, persistentBash });
-      const tools = useDeepSeekHarness ? adaptWorkerTools(runtime.model, guardedTools) : guardedTools;
-      const mandatoryPrompt = buildPiWorkerSystemPrompt(run, task);
-      const systemPrompt = persistentBash ? appendHarnessPrompt(mandatoryPrompt, true) : mandatoryPrompt;
+      const tools = createGuardedPiWorkerTools({ cwd: run.cwd, task, relay: peer });
+      const systemPrompt = buildPiWorkerSystemPrompt(run, task);
       // Long-horizon leaves need native compaction to stay inside the context
       // window; retries stay capped so a flaky provider cannot eat the budget.
       const workerSettings = {
@@ -916,7 +890,6 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       if (steeringDeliveries.size > 0) {
         await settleWithin(Promise.allSettled([...steeringDeliveries]), abortGraceMs);
       }
-      try { await persistentBash?.dispose(); } catch (error) { promptError ??= error; }
       unsubscribe?.();
       try {
         session?.dispose();

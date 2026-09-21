@@ -190,10 +190,10 @@ describe("todo pinned panel renderer", () => {
     expect(renderTodoPanelLines({ phases: [{ name: "Empty", items: [] }] }, 80)).toEqual([]);
   });
 
-  it("hides a fully completed plan instead of leaving a stale pinned box", () => {
+  it("keeps the completed checklist and final count visible", () => {
     const completed = { phases: [{ name: "Finished", items: [{ content: "Task", status: "done" as const }] }] };
-    expect(hasTodoPlan(completed)).toBe(false);
-    expect(renderTodoPanelLines(completed, 80)).toEqual([]);
+    expect(hasTodoPlan(completed)).toBe(true);
+    expect(renderTodoPanelLines(completed, 80).join("\n")).toContain("TODO 1/1 done");
   });
 
   it("renders the empty-after-reset plan as no panel and keeps the tool text separate", () => {

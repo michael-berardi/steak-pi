@@ -21,29 +21,31 @@ Steak Pi is the performance-focused package for the
 transcript, tools, history, selectors, scrolling, and keybindings, then adds the
 machinery that turns it into a complete daily driver.
 
-This checkout documents release **Steak Pi 0.6.0** (USAP 1.2). It targets Pi 0.86.0
-and retains the Pi 0.85.1 peer range. Session-isolation, repaint, and packaged
-smoke checks ran on Pi 0.86.0; earlier 0.85.1 evidence predates those changes.
-The feature descriptions apply to this revision. Benchmarks below are explicitly dated historical results, not a remeasurement of 0.6.0 or a multi-hour endurance claim.
+This checkout documents staged release **Steak Pi 0.7.1** (USAP 1.2). It targets Pi
+0.86.1 and admits it alongside the retained Pi 0.85.1 and 0.86.0 peer range.
+Session-isolation, repaint, packaged, and todo checks ran on Pi 0.86.1; earlier
+0.85.1 and 0.86.0 evidence predates those changes. The feature descriptions
+apply to this revision. Benchmarks below are explicitly dated historical
+results, not a remeasurement of 0.7.1 or a multi-hour endurance claim.
 
 ## Install
 
-Release **0.6.0**. Requires Pi 0.85.1 or 0.86.0 (release-tested with 0.86.0) and
-Node.js 22.19.0 or newer. Pi 0.85.0 lacks the lifecycle/context API used by the
-companion UI. Steak Pi is distributed from this Git repository and its GitHub
+Release **0.7.1**. Requires Pi 0.85.1, 0.86.0, or 0.86.1 (staged candidate
+verified with 0.86.1) and Node.js 22.19.0 or newer. Pi 0.85.0 lacks the
+lifecycle/context API used by the companion UI. Steak Pi is distributed from this Git repository and its GitHub
 release archives; it is **not** published to the npm registry.
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.6.0
+pi install git:github.com/michael-berardi/steak-pi@v0.7.1
 ```
 
-GitHub release archives (`steak-pi-0.6.0.tgz` with its `.sha256` beside it) work
+GitHub release archives (`steak-pi-0.7.1.tgz` with its `.sha256` beside it) work
 without Git access: verify the checksum, extract, and point Pi at the extracted
 package.
 
 ```sh
-shasum -a 256 -c steak-pi-0.6.0.tgz.sha256
-tar -xzf steak-pi-0.6.0.tgz
+shasum -a 256 -c steak-pi-0.7.1.tgz.sha256
+tar -xzf steak-pi-0.7.1.tgz
 pi install "$PWD/package"
 ```
 
@@ -93,7 +95,7 @@ making every task attend the meeting:
 | **Skill catalog lite** | Full catalog under budget; compact name/path/trigger index above it, with on-demand skill reads |
 | **UltraCompress** | Local 10–300 ms compaction, lossless raw-session retention, ranked recall, and **$0 model cost per compaction** |
 | **Verify after edit** | Debounced project checks return success receipts or repairable failure output |
-| **Phased todo** | Persistent state, atomic bulk transitions, and automatic promotion |
+| **Phased todo** | Persistent session-private state, atomic bulk transitions, automatic promotion, and idempotent re-init that keeps recorded progress |
 | **Companion UI** | Responsive lifecycle, model, context, usage, cache, and cost telemetry using the active Pi theme |
 | **Memory conventions** | Durable project decisions through `AGENTS.md`; cross-session recall remains explicitly opt-in |
 
@@ -119,8 +121,8 @@ with its own built-in tools only. Medians of three runs per cell:
 
 In this historical matrix, Steak Pi completed the multi-part fixture faster,
 while direct edits and the two-file fixture were slower. Both sides passed all
-first-pass checks. These results are not a general speed guarantee or a 0.6.0
-benchmark; the new checkpoint persistence has its own local overhead. Stock Pi
+first-pass checks. These results are not a general speed guarantee or a 0.7.1
+benchmark; the checkpoint persistence has its own local overhead. Stock Pi
 alone does not include this package's bounded subagents, guarded path ownership,
 shared provider caps, verification loops, or local compaction adapter.
 
@@ -189,12 +191,25 @@ keep their existing defaults. See the
 
 **Session isolation:** Hub operations are private to the native parent session. Runs carry its captured session ID and canonical file, including after restart. Late callbacks cannot write into a switched session. Copied or unowned activity remains history, not live work. Legacy checkpoints are adopted only with matching native filename and header evidence; ambiguous records remain on disk but are not attached automatically.
 
-**Pinned plans:** Todo state is private to the native session under `.steak-pi/todo/<session-hash>/`, with its JSON and Markdown together. Legacy workspace-wide plans stay untouched and are not imported automatically. Completed or empty plans unpin; cancelled subagents unpin once their status settles. A cancelled session switch does not erase current work.
+**Pinned plans:** Todo state is private to the native session under `.steak-pi/todo/<session-hash>/`, with its JSON and Markdown together. Legacy workspace-wide plans stay untouched and are not imported automatically. A completed plan keeps its checklist and finished counts pinned until the plan is replaced or removed; empty plans unpin, and cancelled subagents unpin once their status settles. A cancelled session switch does not erase current work.
 
 **Trust boundary:** USAP is coordination, not an OS sandbox. Explicitly granting
 `allowBash` gives a child unsandboxed shell access and can bypass path ownership.
 See [`SECURITY.md`](./SECURITY.md) and the full
 [USAP protocol](./docs/ULTRATERM-SUBAGENT-PROTOCOL.md).
+
+## New in 0.7.1
+
+- Todo maintenance without auto-marking: a single `start` still activates exactly
+  one item, bulk `items` batches stay ordered and all-or-nothing, and an identical
+  `init` list preserves recorded progress instead of resetting it.
+- Failed lookups stay failures and name the labels the plan actually contains;
+  a rejected operation writes nothing.
+- While an unfinished plan exists, the session's system prompt states the
+  recording duties (start, verified done, block with reason, reconcile with
+  `view`). Completed plans keep their pinned checklist and counts visible.
+- Pi 0.86.1 is added to the 0.85.1 and 0.86.0 peer range and pinned for
+  verification dependencies. No Woodstar component is bundled in this release.
 
 ## New in 0.6.0 (USAP 1.2)
 
@@ -217,7 +232,7 @@ See [`SECURITY.md`](./SECURITY.md) and the full
 - The 8-hour maximum is the configurable `timeoutMs` deadline ceiling, not a claim
   that a session, terminal, or host stays healthy that long. No multi-hour
   endurance run was performed for this release.
-- Workers, persistent shells, and live relay state belong to the host Pi process;
+- Workers and live relay state belong to the host Pi process;
   recovery checkpoints are retained on disk. Exiting or crashing the host ends
   child execution; reopening the same
   native session exposes recovery state for inspection, and `resume` starts a new
@@ -228,18 +243,6 @@ See [`SECURITY.md`](./SECURITY.md) and the full
 - Cancel, deadline, turn, output, mailbox, and retained-run bounds are enforced
   per process lifetime; a resumed run gets new budgets instead of inheriting a
   prior allowance.
-
-### Optional DeepSeek harness launcher
-
-`bin/steak-pi-dsh` is an explicit opt-in entrypoint for a managed primary session
-on `opencode-go/deepseek-v4.1-flash` with native Pi 0.86.0, giving the session's
-native-name `bash` tool persistent shell state under the same ownership and
-verification rules. It admits only this first-party package at its canonical path
-and refuses unknown extensions, resource filters, startup hooks, or
-configuration-changing flags instead of silently dropping guards. Ordinary Pi
-loading of the extensions is unchanged. Limits, failure modes, and the guarded
-vendor adaptation are documented in
-[`docs/DEEPSEEK-HARNESS.md`](./docs/DEEPSEEK-HARNESS.md).
 
 ## New in 0.5.5
 
@@ -446,7 +449,7 @@ npm ci --ignore-scripts
 npm run verify
 ```
 
-`npm ci` installs the dev toolchain (TypeScript, Vitest, and pinned Pi 0.86.0
+`npm ci` installs the dev toolchain (TypeScript, Vitest, and pinned Pi 0.86.1
 peers) from `package-lock.json`; `npm run verify` runs typecheck, the full test
 suite, and the isolated TUI smoke test. Steak Pi itself has no runtime npm
 dependencies beyond the Pi peers declared in `package.json`.
