@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.5 — unreleased, staged for review (USAP 1.2)
+
+- Ignore hidden harness backups and staging files when loading worker profiles. Upgrade rollback copies cannot create duplicate profile IDs or block delegation.
+
 ## 0.7.4 — unreleased, staged for review (USAP 1.2)
 
 This entry records candidate work only. The package is not published, not installed and
