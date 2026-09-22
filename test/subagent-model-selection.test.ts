@@ -37,6 +37,13 @@ describe("USAP 1.1 explicit model/profile contract", () => {
   it("selects any authorized native provider without a hard-coded model allowlist", () => {
     expect(choose(astra, { model: "custom/custom-vision" }).model).toBe(other);
   });
+  it("uses the same automatic chain for an unmapped parent and its reviewers", () => {
+    for (const role of ["worker", "reviewer"] as const) {
+      const result = choose(other, { tasks: [{ label: "leaf", task: "test", role }] });
+      expect(result.model).toBe(mimoPro);
+      expect(result.selection).toMatchObject({ source: "chain", chainRoutes: ["xiaomi/mimo-v2.6-pro", "zai/glm-5.3-flash"] });
+    }
+  });
   it("selects GLM→paid Codex and retains Astra medium", () => {
     const result = choose(glm, { model: "openai-codex/gpt-6-astra" });
     expect(result.model).toBe(astra); expect(result.thinkingLevel).toBe("medium");

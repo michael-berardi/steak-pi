@@ -141,7 +141,7 @@ export function resolveWorkerSelection(
   const chosen = explicit ? selector({ ...(requested.model !== undefined ? { model: requested.model } : {}), ...(requested.profile !== undefined ? { profile: requested.profile } : {}) }, "USAP selection") : configured ? selector(configured, "USAP profile default") : undefined;
   const profile = chosen?.profile ? profileById(chosen.profile) : undefined;
   // Automatic defaults resolve the final chain; an explicit selector stays exact.
-  const automatic = !explicit && chosen?.model === undefined && profile?.autoChain === true;
+  const automatic = !explicit && (chosen === undefined || (chosen.model === undefined && profile?.autoChain === true));
   const chain = input.requireImages === true ? DEFAULT_MULTIMODAL_WORKER_CHAIN : DEFAULT_TEXT_WORKER_CHAIN;
   const key = automatic ? undefined : profile?.model ?? chosen?.model;
   const model = automatic

@@ -129,7 +129,7 @@ import { createUltratermSubagentsExtension } from "$ROOT/extensions/ultraterm-su
 import { emptyUsage } from "$ROOT/src/subagents/types.ts";
 export default function(pi) {
   const tools = new Map();
-  const model = { provider: "zai", id: "glm-5.3-flash", input: ["text"] };
+  const model = { provider: "zai", id: "glm-5.3-flash", baseUrl: "https://api.z.ai/api/coding/paas/v4", input: ["text"] };
   createUltratermSubagentsExtension({ checkpointRoot: "$TMP/completion-checkpoints", profiles: [], idFactory: () => "completion-proof", createRunner: () => async () => ({ state: "done", output: "offline proof", turns: 1, usage: emptyUsage() }) })({
     registerTool: (tool) => tools.set(tool.name, tool), on: () => {},
     appendEntry: (...args) => pi.appendEntry(...args), sendMessage: (...args) => pi.sendMessage(...args),
