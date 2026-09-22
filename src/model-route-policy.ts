@@ -1,5 +1,6 @@
 import type { ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createAllowlistApproval, findPaidRoute } from "./explicit-paid-route.ts";
+import { sharedPickerModels } from "./model-visibility.ts";
 import { eligibleGoFallback, GO_FALLBACK_MODEL, GO_PRIMARY_MODEL, withOpenCodeGoRouting } from "./opencode-go-routing.ts";
 import { authHeadersMatch, gatedMeteredStream, isSubscriptionOrLocalRoute, SUBSCRIPTION_FIRST_ERROR } from "./subscription-first-routing.ts";
 
@@ -137,7 +138,11 @@ export function guardProvider(provider: Provider, usingOAuth: () => boolean,
     ...(provider.refreshModels ? { refreshModels: provider.refreshModels.bind(provider) } : {}),
     filterModels(models, credential) {
       const filtered = provider.filterModels ? provider.filterModels(models, credential) : models;
-      return filtered.filter(isModelRouteAllowed);
+      // This snapshot is the choice source native `/model` renders and the one
+      // the machine-UI catalog publishes, so the removed OpenRouter DeepSeek
+      // Flash routes are filtered here once, never in a second model list.
+      // Dispatch coverage stays intact because getModels() is untouched above.
+      return sharedPickerModels(filtered.filter(isModelRouteAllowed));
     },
     stream(model, context, options) {
       check(model);

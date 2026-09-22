@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.7.3 — unreleased, staged for review (USAP 1.2)
+
+This entry records candidate work only. The package is not published, not installed and
+not released; nothing below is installed-runtime or native end-to-end verification. The
+changed files are still uncommitted/untracked in the candidate tree (the parent owns the
+commit).
+
+- **OpenRouter DeepSeek Flash removed from both pickers (source-level, corrected).**
+  Native `/model` and the UltraTerm composer list now read one shared availability filter
+  (`src/model-visibility.ts`, applied inside `guardModelRuntime`'s `provider.filterModels`).
+  Every plain OpenRouter DeepSeek V4 Flash / V4.1 Flash route is hidden entirely — the
+  canonical ids, the released `-0731`/`:batch` forms, the `~deepseek/…-latest` aliases and
+  the unversioned `DeepSeek Flash Latest` — because OpenCode Go Flash and INCO Fast already
+  cover Flash. The rule is provider-scoped and slug-exact: `deepseek-v4-pro`/`-0813`, the
+  `-vision-exp` capability variants, unrelated OpenRouter models and every other provider
+  (Go, INCO, Vercel gateway, Xiaomi, …) keep their routes. The provider catalog
+  (`Provider.getModels()`) keeps every route, so dispatch coverage and cost accounting are
+  untouched, and the running route is published separately as `currentModel` and is never
+  re-added as a choice.
+- **One authority for both pickers plus offline hot reload.** `catalogModels` publishes the
+  same native snapshot native `/model` renders (never a parallel list, and a stale scope
+  entry can never union a removed route back in); `createConfigRefresher` polls the native
+  config files and re-applies them with `allowNetwork:false`, so a provider/model add,
+  rename, removal and a credential add/remove reach both pickers without a restart and
+  without inference or network work. Focused tests (`test/model-visibility.test.ts`) drive
+  the real Pi 0.87 runtime and assert `getAvailableSnapshot()` equals the published catalog.
+- **Docs.** `docs/MODEL-ROUTING.md` records the shared picker source, the offline hot
+  reload and the limitation that a session which already loaded the previous extension code
+  keeps the old availability until it is restarted.
+- No release, publication, npm push, native build or installed-runtime verification is
+  claimed by this entry.
+
 ## 0.7.2 — unreleased, staged for review (USAP 1.2)
 
 This entry records candidate work only. The package is not published, not installed and

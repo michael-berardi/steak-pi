@@ -3,6 +3,7 @@ import { openSync, readSync, closeSync, realpathSync, statSync, readFileSync, mk
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, resolve, relative, join } from "node:path";
 import { getPrimaryHostIdentity } from "../src/primary-host.ts";
+import { sharedPickerModels } from "../src/model-visibility.ts";
 import { createUiStream } from "../src/ui-stream.ts";
 
 const LIMIT = 1024 * 1024;
@@ -183,16 +184,19 @@ export function createConfigRefresher(options: { directory?: string; timeoutMs?:
   };
 }
 
-// Native authenticated models remain authoritative; profile metadata cannot add
-// routes. A cycling scope must not hide another active model from the UI picker.
+// Only the native availability snapshot can add choices. A stale launch scope
+// must never resurrect a model removed from configuration; scope supplies only
+// the thinking preference when a currently available model matches it.
 function nativeModels(ctx: ExtensionContext) {
-  return [...new Map([...ctx.modelRegistry.getAvailable(), ...ctx.scopedModels.map(s => s.model)]
-    .map(model => [`${model.provider}/${model.id}`, model])).values()];
+  return ctx.modelRegistry.getAvailable();
 }
 export function catalogModels(ctx: ExtensionContext, metadata: () => Profile[] = readProfiles): Profile[] {
   let labels: Profile[] = [];
   try { labels = metadata(); } catch { /* Optional metadata must not hide native choices. */ }
-  return nativeModels(ctx).filter(model => ctx.modelRegistry.hasConfiguredAuth(model)).map(model => {
+  // The native snapshot is shared by both pickers. Metadata and stale scopes
+  // cannot add choices. The running model is published separately as
+  // currentModel; refreshing choices never selects or changes a model.
+  return sharedPickerModels(nativeModels(ctx)).filter(model => ctx.modelRegistry.hasConfiguredAuth(model)).map(model => {
     const label = labels.find(p => p.provider === model.provider && p.id === model.id);
     const scoped = ctx.scopedModels.find(s => s.model.provider === model.provider && s.model.id === model.id);
     return { profileId: label?.profileId ?? `${model.provider}/${model.id}`, label: label?.label ?? model.name ?? model.id,

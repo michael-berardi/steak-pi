@@ -140,6 +140,44 @@ there would let configuration-only providers bypass the guard. Forbidden routes
 are instead removed by the availability filter, with dispatch assertions as the
 authoritative boundary. An all-model listing may still show unavailable routes.
 
+## Picker availability, hot reload and loaded-agent limits
+
+Native `/model` and the UltraTerm composer list share exactly one source: the native
+availability snapshot (`ModelRegistry.getAvailable()` ===
+`ModelRuntime.getAvailableSnapshot()`), produced by each provider's `filterModels`.
+`guardModelRuntime` applies the shared rule there, and the machine-UI catalog publishes
+that same snapshot instead of maintaining a second list. The provider catalog
+(`Provider.getModels()`) is never filtered, so dispatch coverage, cost accounting and Pi's
+global-API bypass decision stay intact; the published `currentModel` is separate from the
+choices, so a running route keeps running and is never re-added as a selectable choice.
+
+The OpenRouter DeepSeek V4 Flash / V4.1 Flash line is removed entirely from both pickers —
+canonical `deepseek/deepseek-v4-flash` and `deepseek/deepseek-v4.1-flash`, the released
+`-0731` and `:batch` forms, the `~deepseek/…-latest` aliases and the unversioned
+`DeepSeek Flash Latest` — because `opencode-go/deepseek-v4.1-flash` (Go Flash) and
+`inco/deepseek-v4.1-flash:fast` (INCO Fast) already cover that capability. The rule is
+provider-scoped (`provider === "openrouter"`) and slug-exact, so `deepseek-v4-pro` /
+`-0813` / `:batch`, the `-vision-exp` capability variants, unrelated OpenRouter models
+(`deepseek-chat`, `deepseek-r1`, `deepseek-v3.2`, `~z-ai/glm-flash-latest`, …) and every
+other provider keep every route they have. No provider is hidden wholesale and no substring
+match can reach another provider's route.
+
+Hot reload: `createConfigRefresher` polls `models.json`, `auth.json` and
+`models-store.json` (mtime/size) and re-applies the native registry with
+`allowNetwork:false` once per observed revision. Adding, renaming or removing a configured
+provider/model, and adding or removing a credential, therefore reach both pickers in an
+already-running session without a restart, with no inference, no model switch and no
+network work. Malformed, slow or aborted config keeps the last good publication and backs
+off; a partial/error native snapshot is never published over it.
+
+Limits of already-loaded agents: this is loaded extension code. A Pi process or session
+that started before this rule was installed keeps the previous availability — the guard is
+applied when providers are composed and when the registry is refreshed, never
+retroactively to code already running — so the removal is visible only after that session
+restarts. Hot reload propagates *configuration*, never *code*. Native launch/CLI model
+scope, the parent's stale `enabledModels` cleanup and sub-agent session scope are
+parent-side concerns and are not changed here.
+
 ## Boundaries
 
 UltraTerm's managed Pi launcher also loads this policy extension (without the
@@ -174,4 +212,10 @@ selector is never upgraded into chain provenance.
 prove zero requests for forbidden extension, models.json, model-level API changes,
 and friendly-alias routes, plus allowed GLM-style dispatch with an intact image URL.
 Each fixture asserts the SDK's actual selected API, not merely its JSON input.
-Allowed live probes remain a separate release check. Production failures must never trigger OpenRouter GPT fallback.
+`test/model-visibility.test.ts` drives the real Pi 0.87 `ModelRuntime`/`ModelRegistry`
+without network: it proves the OpenRouter DeepSeek Flash routes are gone from the native
+availability snapshot while the provider catalog keeps them, that Go/INCO and other
+providers are untouched, and that `catalogModels` publishes exactly
+`getAvailableSnapshot()` after a config add, label/id rename, provider removal and a
+credential removal. Allowed live probes remain a separate release check. Production
+failures must never trigger OpenRouter GPT fallback.
