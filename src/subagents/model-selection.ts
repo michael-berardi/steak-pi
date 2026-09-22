@@ -62,7 +62,7 @@ function selector(value: WorkerSelector, label: string): WorkerSelector {
 export function loadWorkerProfiles(directory = join(homedir(), ".config", "ultraterm", "harnesses")): WorkerProfile[] {
   const profiles = new Map(BUILTIN_WORKER_PROFILES.map((profile) => [profile.id, { ...profile }]));
   let files: string[];
-  try { files = readdirSync(directory).filter((name) => name.endsWith(".json")).sort(); }
+  try { files = readdirSync(directory).filter((name) => !name.startsWith(".") && name.endsWith(".json")).sort(); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return [...profiles.values()]; throw new Error("USAP profile catalog cannot be read."); }
   const seen = new Set<string>();
   for (const file of files) {

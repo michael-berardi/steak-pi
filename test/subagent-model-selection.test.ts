@@ -29,6 +29,16 @@ function choose(parent: Model, extra: Partial<DispatchInput> = {}, r = registry(
 }
 
 describe("USAP 1.1 explicit model/profile contract", () => {
+  it("ignores hidden migration backups and staging files", () => {
+    const dir = mkdtempSync(join(tmpdir(), "usap-hidden-catalog-"));
+    try {
+      const manifest = JSON.stringify({ id: "custom", profiles: [{ id: "worker", name: "Worker", args: ["--model", "xiaomi/mimo-v2.6-pro"] }] });
+      writeFileSync(join(dir, "custom.json"), manifest);
+      writeFileSync(join(dir, ".custom.before-ultraterm-test.json"), manifest);
+      writeFileSync(join(dir, ".custom.staging.json"), "incomplete JSON");
+      expect(loadWorkerProfiles(dir).filter(profile => profile.id === "custom/worker")).toHaveLength(1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it.each(["steak-pi/glm-5-3-flash", "glm-5-3-flash"])("selects Astra→GLM profile %s with truthful receipt", (profile) => {
     const result = choose(astra, { profile, requireImages: true });
     expect(result.model).toBe(glm);
