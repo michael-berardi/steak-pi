@@ -326,6 +326,16 @@ function eligibleChainRoute(registry: ChainRegistry, step: WorkerRouteStep, requ
   if (!capable) return undefined;
   if (typeof registry.getProvider(model.provider)?.streamSimple !== "function") return undefined;
   if (!registry.hasConfiguredAuth(model)) return undefined;
+  // Expert reviews are Codex OAuth only. Localhost is normally a permitted
+  // no-spend route, but a local model labelled "openai-codex/gpt-6-astra"
+  // must not impersonate the expert or inherit any paid-route approval.
+  if (isExpertReviewModel(model)) {
+    let base: URL;
+    try { base = new URL(model.baseUrl); } catch { return undefined; }
+    if (!registry.isUsingOAuth(model) || model.api !== "openai-codex-responses" ||
+        base.origin !== "https://chatgpt.com" || base.pathname.replace(/\/$/, "") !== "/backend-api" ||
+        base.search || base.hash) return undefined;
+  }
   // Membership is checked against the published dispatch catalog, never the
   // curated picker snapshot: an ordered chain step may be reachable without
   // being a separate picker choice (the Go fallback is the operator's example).

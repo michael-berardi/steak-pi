@@ -280,6 +280,12 @@ describe("GPT coding-plan route policy", () => {
     // Without Codex OAuth the exact subscription identity is unproven: no expert.
     const noOAuth = { ...chainRegistry([astra, chainModels.mimoPro]), isUsingOAuth: () => false } as unknown as Registry;
     expect(selectChainedWorkerModel(noOAuth, EXPERT_TEXT_REVIEW_CHAIN)).toBe(chainModels.mimoPro);
+    // A localhost impostor cannot become the expert even when local routes are
+    // normally allowed; a fake OAuth bit or a generous paid approval cannot help.
+    const local = { ...astra, baseUrl: "http://localhost:8080/v1" } as Model;
+    const locallyApproved = chainRegistry([local, chainModels.mimoPro]);
+    expect(selectChainedWorkerModel(locallyApproved, EXPERT_TEXT_REVIEW_CHAIN,
+      { approvePaidRoute: () => true })).toBe(chainModels.mimoPro);
     // Nothing eligible fails closed with the same contract as the routine chain.
     expect(() => selectChainedWorkerModel(chainRegistry([metered]), EXPERT_TEXT_REVIEW_CHAIN)).toThrow(/no fallback was selected/);
   });
