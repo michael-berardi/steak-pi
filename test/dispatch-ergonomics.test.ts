@@ -16,7 +16,7 @@ function harness() {
   createUltratermSubagentsExtension({ createRunner: () => runner, profiles: [], idFactory: () => "ergonomics" })(pi);
   const cwd = mkdtempSync(join(tmpdir(), "steak-dispatch-ergonomics-"));
   dirs.push(cwd);
-  const model = { provider: "zai", id: "glm-5.3-flash", input: ["text", "image"] };
+  const model = { provider: "zai", id: "glm-5.3-flash", baseUrl: "https://api.z.ai/api/coding/paas/v4", input: ["text", "image"] };
   const ctx = { cwd, sessionManager: { getSessionId: () => cwd }, model, thinkingLevel: "medium", modelRegistry: {
     isUsingOAuth: () => false, hasConfiguredAuth: () => true, getAvailable: () => [model],
     getProvider: () => ({ streamSimple() {} }), find: () => model,

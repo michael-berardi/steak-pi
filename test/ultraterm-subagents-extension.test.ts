@@ -58,7 +58,7 @@ function harness(runnerFactory: (relay: RelayBroker) => WorkerRunner, durable?: 
   })(pi);
   const cwd = mkdtempSync(join(tmpdir(), "steak-usap-extension-"));
   dirs.push(cwd);
-  const model = { provider: "zai", id: "glm-5.3-flash", input: ["text", "image"] };
+  const model = { provider: "zai", id: "glm-5.3-flash", baseUrl: "https://api.z.ai/api/coding/paas/v4", input: ["text", "image"] };
   const ctx = {
     cwd,
     model,
