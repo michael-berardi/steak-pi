@@ -3,9 +3,9 @@
 Steak Pi keeps the parent model selected by the operator. GPT-family requests
 require `openai-codex`, OAuth subscription credentials, the Codex Responses API,
 and the official HTTPS `chatgpt.com/backend-api` endpoint. OpenRouter, generic
-OpenAI API-key billing, custom endpoints, and batch GPT variants are rejected;
-there is no provider fallback. This verifies the subscription route, not the
-account's billing status or entitlement, which the service verifies.
+OpenAI API-key billing, custom endpoints, and batch GPT variants are rejected.
+The parent session has no provider fallback. Child worker runs have exactly one
+ordered automatic chain (below); every other selection is exact.
 
 ## Explicit paid Inco profile
 
@@ -30,9 +30,11 @@ guards do not receive the parent launch permission, even when reusing a provider
 previously guarded for the parent. GPT-family restrictions remain mandatory.
 Automatic metered requests while Go is configured still require the existing
 strict, short-lived, credential-bound quota evidence; unknown quota, outages,
-and authentication failures do not grant access. No automatic paid provider is
-selected by this policy. Without configured Go, the existing metered policy is
-unchanged.
+and authentication failures do not grant access. The only automatic paid route is
+the reviewed Xiaomi Singapore Token Plan step of the default worker chain, and
+only through its own `paid-routes.json` entry (see below); the parent session's
+Inco approval never widens that. Without configured Go, the existing metered
+policy is unchanged.
 
 Policy denials use a deterministic message without transient-status keywords.
 Pi's native retry classifier treats this denial as nonretryable; real transient
@@ -43,29 +45,73 @@ provider failures retain the existing retry behavior.
 Each run uses one frozen model for all its tasks. Set **either** `model` to an
 exact authenticated `provider/model` or `profile` to a native `harness/profile`
 route. Explicit selection takes precedence over roles and defaults, including
-reviewers. For example, an Astra manager can dispatch
+reviewers, and is **exact**: an explicitly chosen route never gains
+cross-provider spending, even when the chosen route happens to be a step of an
+automatic chain. For example, an Astra manager can dispatch
 `profile: "steak-pi/glm-5-3-flash"`; a GLM manager can explicitly choose an
-available paid Codex model. No CLI is launched to resolve a profile.
+available paid Codex model; explicitly selecting
+`opencode-go/deepseek-v4.1-flash` keeps that route with only OpenCode Go's own
+same-plan retry. No CLI is launched to resolve a profile.
 
 Omitting both selectors uses the matching parent profile's `workerDefault`, or
-`reviewerDefault` for runs containing reviewers. Built-in routine workers use
-OpenCode Go (DeepSeek V4.1 Flash); Astra reviewers remain Astra. Go needs the
-user's own key and permits one transient-error retry on Go GLM 5.3 Flash before
-visible output, never for auth, billing, or region errors. A `/model` change
-cannot inherit a stale launch profile's defaults. Unmapped profiles retain the
-legacy role policy. See [profile metadata and examples](./PROFILES.md).
+`reviewerDefault` for runs containing reviewers. Profiles that resolve the
+built-in `steak-pi/opencode-go` route (the built-in default, Astra's worker and
+reviewer defaults, GLM's worker default) resolve the ordered **automatic chain**
+and record it as provenance:
+
+- text/code: `opencode-go/deepseek-v4.1-flash` → `opencode-go/glm-5.3-flash` →
+  `xiaomi/mimo-v2.6-pro`;
+- multimodal (`requireImages: true`): `xiaomi/mimo-v2.6-pro` →
+  `zai/glm-5.3-flash`.
+
+The first step that is authenticated, present in the operator's available
+catalog, capability-matching, has a native streaming adapter, and is spendable
+serves the run. A reviewed paid step (Xiaomi Singapore **Token Plan**
+`mimo-v2.6-pro`, exact `https://token-plan-sgp.xiaomimimo.com/v1`) additionally
+needs the entry in `~/.pi/agent/paid-routes.json`; that allowlist is re-read on
+every selection and every hop, so revoking it stops spending immediately. No
+metered/PAYG route and no GPT-family route is ever auto-selected: Luna is
+deliberately absent from both chains.
+
+A run frozen as an automatic chain may hop to the next eligible chain route at
+runtime — this is real routing, not a selection shortcut. The hop happens only
+when the attempt fails **before** any content or tool event (a `start` event is
+metadata only), the failure is the transient class Go already retries (429,
+5xx, rate limit, overloaded, temporary) or a proven exhausted subscription plan
+(`subscription_quota_exceeded`), and the caller has not aborted. Same-plan Go
+retry deliberately refuses the exhaustion signal, because retrying an exhausted
+plan cannot succeed; the chain is the only path that may leave that plan, and
+only for the next separately approved subscription route. Auth, permission,
+region, context and 400-class failures never hop, whatever transient wording
+they carry. The hop stops permanently at the first content/tool event, never
+revisits a route (the chain order is monotonic and the failing attempt's own
+provider/model identity is recorded), and re-enters the live registry provider
+so the metering gate and approval apply to the fallback too. Every forwarded
+event keeps the answering provider/model, and each hop is recorded as
+`from->to` in `TaskRecord.routeFallbacks`, shown in agent status and bounded session
+telemetry. A `model`/`profile` selection, a `profile-default` run, and a resumed
+run never install this hop.
+
+Go needs the user's own key and permits one transient-error retry on Go GLM 5.3
+Flash before visible output, never for auth, billing, or region errors. A
+`/model` change cannot inherit a stale launch profile's defaults. Unmapped
+profiles retain the legacy role policy (a reviewer on the operator's own parent
+route stays on that route).
 
 Selection resolves against Pi's configured authentication and available model
-catalog. Missing models, conflicting selectors, unavailable authentication,
-and missing native text/tool adapters fail before launch. Set
+catalog, so the catalog must list the route before selection can include it.
+Missing models, conflicting selectors, unavailable authentication,
+unavailable catalog entries, missing native text/tool adapters, and unapproved
+paid steps fail before launch. Set
 `requireImages: true` for visual critics and render inspection: models without
 advertised image input are rejected. Tool-adapter availability is a preflight
 check, not a guarantee that every provider/model accepts every tool schema;
-actual worker tool results remain visible. No fallback is selected.
+actual worker tool results remain visible.
 
 Dispatch receipts, hub results, and bounded session telemetry carry the resolved
 provider/model, selected profile when supplied, parent profile when matched,
-`override`/`profile-default`/`legacy-default` provenance, capabilities and effort.
+`override`/`chain`/`profile-default`/`legacy-default` provenance, the ordered
+`chainRoutes` of an automatic chain, capabilities and effort.
 Task results report native tool successes and errors. If every attempted tool
 fails, a prose completion cannot mark the task successful.
 
@@ -111,7 +157,19 @@ launch-only validation as universal request enforcement.
 
 `test/model-route-policy.test.ts` proves family matching, provider and endpoint
 denials, OAuth checks at execution time, zero delegate calls on denial,
-registration idempotence/API changes, and Luna/frontier/GLM selection.
+registration idempotence/API changes, the ordered chain and catalog/approval
+gating, and the pre-output hop against the SDK's own pi-ai event streams: a
+before-output transient failure or proven plan exhaustion serves from the next
+eligible route with the answering provider/model preserved, while content and
+tool events, aborts, auth/permission/region/context failures, unapproved or
+off-plan routes, and generic metered endpoints never hop or spend.
+`test/subagent-pi-worker.test.ts` proves the hop is installed only for
+`source: "chain"` runs (an explicit chain-step route gets none) and that each
+hop is recorded as `from->to` provenance. `test/opencode-go-routing.test.ts`
+proves the same-plan Go retry still refuses the exhaustion signal.
+`test/subagent-model-selection.test.ts` and `test/model-selection-override.test.ts`
+prove chain/override provenance, reviewer defaults, and that an explicit
+selector is never upgraded into chain provenance.
 `test/model-route-native.test.ts` uses isolated homes and a loopback server to
 prove zero requests for forbidden extension, models.json, model-level API changes,
 and friendly-alias routes, plus allowed GLM-style dispatch with an intact image URL.

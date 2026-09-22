@@ -62,7 +62,10 @@ export interface ModelSelection {
   modelId: string;
   profile?: string;
   parentProfile?: string;
-  source: "override" | "profile-default" | "legacy-default";
+  /** `chain` marks a capability-aware automatic route; explicit selectors stay `override`. */
+  source: "override" | "profile-default" | "legacy-default" | "chain";
+  /** Ordered automatic chain routes (provider/model), for auditable provenance. */
+  chainRoutes?: string[];
   images: boolean;
   tools: boolean;
 }
@@ -134,6 +137,9 @@ export interface TaskRecord extends NormalizedTask {
   changedPaths?: string[];
   /** Last observed worker step (tool name or compaction/retry phase). */
   lastStep?: string;
+  /** Pre-output runtime chain hops, journaled as `from->to` route pairs so usage and
+   * reports name the provider/model that actually served each request. */
+  routeFallbacks?: string[];
   /** Epoch ms of the last accepted progress update; drives staleness diagnosis. */
   lastProgressAt?: number;
 }

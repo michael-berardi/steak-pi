@@ -8,6 +8,93 @@ const MAX_BYTES = 2_000_000;
 const ID = /^run-[a-zA-Z0-9-]{1,120}$/;
 export interface Checkpoint { version: 1; run: RunRecord; delivered: boolean; savedAt: number; resumedAs?: string; pendingResume?: string }
 
+/** Why a contender refused to take over a checkpoint lock it does not own. */
+export type CheckpointCollisionReason = "live-owner" | "unreadable-owner";
+
+/** Typed, read-only description of the lock that was preserved untouched. */
+export interface CheckpointCollision {
+  reason: CheckpointCollisionReason;
+  /** True when the owner record names this very process (same pid namespace). */
+  sameProcess: boolean;
+  /** Owner pid recorded in the lock, when a number could be read. */
+  ownerPid?: number;
+  /** Owner token recorded in the lock, when a string could be read. */
+  ownerToken?: string;
+  /** Absolute path of the owner record that was left in place. */
+  lockPath: string;
+}
+
+/**
+ * A live (or unverifiable) owner still holds this checkpoint namespace. The
+ * typed collision facts are for read-only diagnostics; the lock itself is never
+ * read twice, rewritten or deleted. `sameProcess` is true when the owner record
+ * names this very process, which means a replacement session or a duplicate
+ * extension resource is contending with a store this process did not release —
+ * never another host.
+ */
+export class CheckpointOwnershipError extends Error {
+  readonly code = "USAP_CHECKPOINT_OWNERSHIP";
+  readonly reason: CheckpointCollisionReason;
+  readonly sameProcess: boolean;
+  readonly ownerPid?: number;
+  readonly ownerToken?: string;
+  readonly lockPath: string;
+  readonly collision: Readonly<CheckpointCollision>;
+  constructor(collision: CheckpointCollision) {
+    super(collision.reason === "unreadable-owner"
+      ? "USAP checkpoints already owned by a live host; the owner record is unreadable and resume is blocked"
+      : collision.sameProcess
+        ? "USAP checkpoints already owned by a live host in this process; resume is blocked"
+        : "USAP checkpoints already owned by a live host; resume is blocked");
+    this.name = "CheckpointOwnershipError";
+    this.reason = collision.reason;
+    this.sameProcess = collision.sameProcess;
+    this.ownerPid = collision.ownerPid;
+    this.ownerToken = collision.ownerToken;
+    this.lockPath = collision.lockPath;
+    this.collision = Object.freeze({ ...collision });
+  }
+}
+
+/** True when a checkpoint store in this process is still the live owner. */
+export function isInProcessCheckpointCollision(error: unknown): boolean {
+  if (error instanceof CheckpointOwnershipError) return error.sameProcess;
+  const candidate = error as { code?: unknown; sameProcess?: unknown; message?: unknown } | undefined;
+  if (candidate?.code === "USAP_CHECKPOINT_OWNERSHIP" && candidate.sameProcess === true) return true;
+  // Duplicate module instances cannot share a class identity; match the marker.
+  return /live host in this process/.test(typeof candidate?.message === "string" ? candidate.message : "");
+}
+
+/**
+ * Tokens whose store in THIS isolate ran `close()` to completion. `close()` is
+ * an explicit, ownership-safe release: a lock file that still names such a token
+ * was left behind by a store that provably no longer exists and provably
+ * belonged to this isolate, so a replacement may reclaim it.
+ *
+ * This is deliberately isolate-local, never a liveness proof. A second isolate
+ * (worker_threads, a container sharing the pid namespace) never sees these
+ * tokens and therefore still fails closed, exactly like a dropped store, a
+ * collected WeakRef, or any missing marker.
+ */
+const CLOSED_OWNER_TOKENS = Symbol.for("ultraterm.usap.checkpoint.closed-owners.v1");
+function closedOwnerTokens(): Set<string> {
+  const holder = globalThis as unknown as Record<symbol, Set<string> | undefined>;
+  if (!holder[CLOSED_OWNER_TOKENS]) holder[CLOSED_OWNER_TOKENS] = new Set();
+  return holder[CLOSED_OWNER_TOKENS]!;
+}
+function isClosedOwnerToken(token: unknown): boolean {
+  return typeof token === "string" && closedOwnerTokens().has(token);
+}
+
+/** Read the owner record for inspection only; never rewrite or delete it here. */
+function readOwnerRecord(lock: string): { pid?: number; token?: unknown } | undefined {
+  try {
+    const record = JSON.parse(readPrivate(lock, 1024)) as { pid?: unknown; token?: unknown } | null;
+    if (!record || typeof record !== "object") return undefined;
+    return { pid: typeof record.pid === "number" ? record.pid : undefined, token: record.token };
+  } catch { return undefined; }
+}
+
 export function canonicalSessionFile(file: string): string {
   const absolute = resolve(file);
   try { return realpathSync(absolute); } catch {
@@ -83,9 +170,30 @@ export class CheckpointStore {
     try { mkdirSync(claim, { mode: 0o700 }); } catch { throw new Error("USAP checkpoint claim is busy or interrupted; inspect the private .claim directory before recovery"); }
     try {
       if (existsSync(lock)) {
-        const prior = JSON.parse(readPrivate(lock, 1024)) as { pid: number };
-        if (alive(prior.pid)) throw new Error("USAP checkpoints already owned by a live host; resume is blocked");
+        const prior = readOwnerRecord(lock);
+        const sameProcess = prior?.pid === process.pid;
+        // Takeover needs positive proof of release, and nothing else counts:
+        //   1. the recorded pid is provably dead (`kill(pid, 0)` = ESRCH), or
+        //   2. the recorded token is tombstoned because a store in THIS isolate
+        //      completed close(), the explicit ownership-safe release.
+        // A missing registry entry or WeakRef, a collected handle, a missing or
+        // differing boot/build marker, an unreadable record, or a same-pid record
+        // are NEVER evidence of death: they fail closed and leave the lock
+        // byte-identical so a live owner (another isolate, another host) keeps
+        // working. Unknown is never treated as stale.
+        const deadOwner = prior?.pid !== undefined && !alive(prior.pid);
+        const releasedOwner = prior !== undefined && isClosedOwnerToken(prior.token);
+        if (!deadOwner && !releasedOwner) throw new CheckpointOwnershipError({
+          reason: prior === undefined ? "unreadable-owner" : "live-owner",
+          sameProcess,
+          ownerPid: prior?.pid,
+          ownerToken: typeof prior?.token === "string" ? prior.token : undefined,
+          lockPath: lock,
+        });
         unlinkSync(lock);
+        this.warnings.push(sameProcess || releasedOwner
+          ? "Reclaimed a stale checkpoint lock left by this process"
+          : `Reclaimed a checkpoint lock left by a host that is no longer running (pid ${prior!.pid})`);
       }
       const fd = openSync(lock, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
       try { writeFileSync(fd, JSON.stringify({ pid: process.pid, token: this.token })); fsyncSync(fd); } finally { closeSync(fd); }
@@ -183,9 +291,15 @@ export class CheckpointStore {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    // Record the explicit release before touching the lock: if the compare-and-
+    // swap below cannot run (unreadable record, racing rewrite), the leftover
+    // lock is still provably this store's and reclaimable in this isolate.
+    closedOwnerTokens().add(this.token);
     const lock = join(this.directory, "owner.json");
     try {
       const owner = JSON.parse(readPrivate(lock, 1024)) as { token?: string };
+      // Compare-and-swap on the recorded token: only this store's own lock is
+      // ever removed, never another owner's (live or unknown) lock.
       if (owner.token === this.token) unlinkSync(lock);
     } catch { /* Never remove another host's lock. */ }
   }

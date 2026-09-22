@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { CheckpointStore } from "../src/subagents/checkpoints.ts";
 import { normalizeDispatch } from "../src/subagents/policy.ts";
 import { tmpdir } from "node:os";
@@ -36,7 +36,7 @@ function usage(seed: number): UsageTotals {
   };
 }
 
-function harness(runnerFactory: (relay: RelayBroker) => WorkerRunner, durable?: { root: string; parent: string; prefix: string }) {
+function harness(runnerFactory: (relay: RelayBroker) => WorkerRunner, durable?: { root: string; parent: string; prefix: string }, shutdownGraceMs?: number) {
   const tools = new Map<string, any>();
   const handlers = new Map<string, (...args: any[]) => unknown>();
   const messages: any[] = [];
@@ -54,6 +54,7 @@ function harness(runnerFactory: (relay: RelayBroker) => WorkerRunner, durable?: 
     idFactory: () => `${durable?.prefix ?? "fixed"}-${++id}`,
     profiles: [],
     checkpointRoot: durable?.root,
+    shutdownGraceMs,
   })(pi);
   const cwd = mkdtempSync(join(tmpdir(), "steak-usap-extension-"));
   dirs.push(cwd);
@@ -542,6 +543,149 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     expect(launched).toEqual(["unfinished"]);
     await expect(h.tools.get("ultraterm_hub").execute("hub", { action: "resume", runId: run.id }, undefined, undefined, h.ctx)).rejects.toThrow(/Already resumed/);
     await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+
+  it("retains the checkpoint lease while a dispatched worker cannot settle, then releases and adopts it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "usap-retained-lease-")); dirs.push(root);
+    const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "retained" };
+    const probe = new CheckpointStore(durable.parent, durable.root, durable.parent);
+    const directory = probe.directory;
+    probe.close();
+    let started = false;
+    let settleWorker!: () => void;
+    const h = harness(() => async () => {
+      started = true;
+      // A real worker whose SDK stream never terminates: abort is best effort only.
+      return new Promise((resolve) => {
+        settleWorker = () => resolve({ state: "aborted" as const, output: "late flush", turns: 1, usage: emptyUsage() });
+      });
+    }, durable, 50);
+    await h.handlers.get("session_start")!({}, h.ctx);
+    const dispatched = await h.tools.get("ultraterm_subagents").execute("start", { goal: "hung worker", background: true, timeoutMs: 1_000, tasks: [{ label: "stuck", task: "stuck" }] }, undefined, undefined, h.ctx);
+    const runId = dispatched.details.run.runId;
+    await vi.waitFor(() => expect(started).toBe(true));
+    expect(existsSync(join(directory, "owner.json"))).toBe(true);
+    // The host replaces the session while the worker is still running. The bounded
+    // wait may return the UI, but an unsettled worker can still write, so the lease
+    // and live state are retained until the real shutdown settles.
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+    expect(existsSync(join(directory, "owner.json"))).toBe(true);
+    // Chat is not bricked: read-only diagnostics still explain the live lease.
+    const listed = await h.tools.get("ultraterm_hub").execute("list", { action: "list" }, undefined, undefined, h.ctx);
+    expect(listed.details.runs.map((run: any) => run.runId)).toContain(runId);
+    expect(listed.details.readOnly).toBe(true);
+    expect(listed.details.persistence).toBe("memory-only");
+    expect(listed.details.shutdownWarning).toMatch(/lease retained/);
+    const diagnostics = await h.tools.get("ultraterm_hub").execute("diag", { action: "diagnose", runId }, undefined, undefined, h.ctx);
+    expect(diagnostics.details.diagnostics.readOnly).toBe(true);
+    expect(diagnostics.details.diagnostics.persistence).toBe("memory-only");
+    expect(diagnostics.details.diagnostics.shutdownWarning).toMatch(/lease retained/);
+    expect(diagnostics.details.diagnostics.tasks[0].reason).toBe("host_interrupted");
+    // New work is refused loudly instead of silently launching memory-only.
+    await expect(h.tools.get("ultraterm_subagents").execute("blocked", { goal: "blocked", tasks: [{ label: "x", task: "x" }] }, undefined, undefined, h.ctx)).rejects.toThrow(/refused: .*lease retained/);
+    await expect(h.tools.get("ultraterm_hub").execute("blocked", { action: "resume", runId }, undefined, undefined, h.ctx)).rejects.toThrow(/refused/);
+    // Real settlement closes the captured store; the next tool call adopts it.
+    settleWorker();
+    await vi.waitFor(() => expect(existsSync(join(directory, "owner.json"))).toBe(false));
+    const recovered = await h.tools.get("ultraterm_hub").execute("list", { action: "list" }, undefined, undefined, h.ctx);
+    expect(recovered.details.runs.map((run: any) => run.runId)).toContain(runId);
+    expect(recovered.details.persistence).toBe("checkpointed");
+    expect(recovered.details.readOnly).toBe(false);
+    expect(recovered.details.shutdownWarning).toBeNull();
+    const healthy = await h.tools.get("ultraterm_hub").execute("diag", { action: "diagnose", runId }, undefined, undefined, h.ctx);
+    expect(healthy.details.diagnostics.persistence).toBe("checkpointed");
+    expect(healthy.details.diagnostics.tasks[0].reason).toBe("host_interrupted");
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+
+  it("adopts a released lease with recovery reconciliation and never replays a delivered completion", async () => {
+    const root = mkdtempSync(join(tmpdir(), "usap-adopt-")); dirs.push(root);
+    const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "adopt" };
+    const runner = vi.fn(async () => ({ state: "done" as const, output: "finished", turns: 1, usage: emptyUsage() }));
+    const owner = harness(() => runner, durable);
+    await owner.handlers.get("session_start")!({}, owner.ctx);
+    const dispatched = await owner.tools.get("ultraterm_subagents").execute("a", { goal: "durable", background: true, tasks: [{ label: "done", task: "done" }] }, undefined, undefined, owner.ctx);
+    const runId = dispatched.details.run.runId;
+    await flush();
+    expect(owner.messages).toHaveLength(1);
+    // A duplicate instance starts degraded while the live owner holds the lease.
+    const duplicate = harness(() => runner, durable);
+    await duplicate.handlers.get("session_start")!({}, duplicate.ctx);
+    const degraded = await duplicate.tools.get("ultraterm_hub").execute("b", { action: "list" }, undefined, undefined, duplicate.ctx);
+    expect(degraded.details.persistence).toBe("memory-only");
+    // The owner departs and its workers settle, so the lease is released.
+    await owner.handlers.get("session_shutdown")!({}, owner.ctx);
+    const listed = await duplicate.tools.get("ultraterm_hub").execute("c", { action: "list" }, undefined, undefined, duplicate.ctx);
+    expect(listed.details.persistence).toBe("checkpointed");
+    expect(listed.details.runs.map((run: any) => run.runId)).toContain(runId);
+    expect(listed.details.runs[0].state).toBe("done");
+    expect((await duplicate.tools.get("ultraterm_hub").execute("d", { action: "diagnose", runId }, undefined, undefined, duplicate.ctx)).details.diagnostics.persistence).toBe("checkpointed");
+    // Adoption reconciles delivery: a completed, already-delivered run is never replayed.
+    expect(duplicate.messages).toHaveLength(0);
+    await duplicate.handlers.get("agent_settled")!({}, duplicate.ctx);
+    expect(duplicate.messages).toHaveLength(0);
+    await duplicate.handlers.get("session_shutdown")!({}, duplicate.ctx);
+  });
+
+  it.each([Number.NaN, -1, Number.POSITIVE_INFINITY, 1.5])("rejects an unsafe shutdownGraceMs (%s)", (grace) => {
+    expect(() => createUltratermSubagentsExtension({ shutdownGraceMs: grace })).toThrow(RangeError);
+  });
+
+  it("accepts a zero shutdown grace and never launches memory-only work from a degraded session", async () => {
+    expect(() => createUltratermSubagentsExtension({ shutdownGraceMs: 0 })).not.toThrow();
+    const h = harness(() => async () => ({ state: "done" as const, output: "ok", turns: 1, usage: emptyUsage() }));
+    const result = await h.tools.get("ultraterm_subagents").execute("call", { goal: "memory-only", tasks: [{ label: "one", task: "one" }] }, undefined, undefined, h.ctx);
+    expect(result.details.persistence).toBe("memory-only");
+    expect(result.content[0].text).toContain("memory-only");
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+
+  it("degrades a duplicate extension instance instead of colliding with the live checkpoint owner", async () => {
+    const root = mkdtempSync(join(tmpdir(), "usap-duplicate-")); dirs.push(root);
+    const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "dup" };
+    const runner = vi.fn(async () => ({ state: "done" as const, output: "ok", turns: 1, usage: emptyUsage() }));
+    const owner = harness(() => runner, durable);
+    const probe = new CheckpointStore(durable.parent, durable.root, durable.parent);
+    const directory = probe.directory;
+    probe.close();
+    await owner.handlers.get("session_start")!({}, owner.ctx);
+    const owned = await owner.tools.get("ultraterm_subagents").execute("a", { goal: "owner", background: true, tasks: [{ label: "one", task: "one" }] }, undefined, undefined, owner.ctx);
+    const duplicate = harness(() => runner, durable);
+    await expect(duplicate.handlers.get("session_start")!({}, duplicate.ctx)).resolves.toBeUndefined();
+    const listed = await duplicate.tools.get("ultraterm_hub").execute("b", { action: "list" }, undefined, undefined, duplicate.ctx);
+    expect(listed.details.runs).toEqual([]);
+    expect(listed.details.readOnly).toBe(true);
+    // A degraded session must never silently launch memory-only work.
+    await expect(duplicate.tools.get("ultraterm_subagents").execute("c", { goal: "duplicate", tasks: [{ label: "two", task: "two" }] }, undefined, undefined, duplicate.ctx)).rejects.toThrow(/refused: .*duplicate extension resources/);
+    expect(runner).toHaveBeenCalledTimes(1);
+    // Diagnose stays available read-only so the chat is never bricked.
+    const diagnostics = await duplicate.tools.get("ultraterm_hub").execute("d", { action: "diagnose", runId: owned.details.run.runId }, undefined, undefined, duplicate.ctx);
+    expect(diagnostics.details.diagnostics.persistence).toBe("memory-only");
+    expect(diagnostics.details.diagnostics.readOnly).toBe(true);
+    expect(diagnostics.details.diagnostics.reason).toBe("run-unreadable");
+    expect(diagnostics.details.diagnostics.checkpointError).toMatch(/duplicate/i);
+    // The live owner keeps its lock, its lease, and its durable resume state.
+    expect(existsSync(join(directory, "owner.json"))).toBe(true);
+    const status = await owner.tools.get("ultraterm_hub").execute("e", { action: "status", runId: owned.details.run.runId }, undefined, undefined, owner.ctx);
+    expect(status.details.run.state).toBe("done");
+    await duplicate.handlers.get("session_shutdown")!({}, duplicate.ctx);
+    await owner.handlers.get("session_shutdown")!({}, owner.ctx);
+  });
+
+  it("fails closed on a live cross-host checkpoint lock and never rewrites or removes it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "usap-crosshost-")); dirs.push(root);
+    const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "cross" };
+    const probe = new CheckpointStore(durable.parent, durable.root, durable.parent);
+    const lock = join(probe.directory, "owner.json");
+    probe.close();
+    // A different live pid is never this process's own collision: it belongs to
+    // another host or isolate, so the extension must refuse, never steal.
+    const foreign = JSON.stringify({ pid: 1, token: "foreign-host-token" });
+    writeFileSync(lock, foreign, { mode: 0o600 });
+    const h = harness(() => async () => ({ state: "done" as const, output: "ok", turns: 1, usage: emptyUsage() }), durable);
+    await expect(h.tools.get("ultraterm_subagents").execute("a", { goal: "cross-host", tasks: [{ label: "one", task: "one" }] }, undefined, undefined, h.ctx)).rejects.toThrow(/owned by a live host; resume is blocked/);
+    await expect(h.tools.get("ultraterm_hub").execute("b", { action: "list" }, undefined, undefined, h.ctx)).rejects.toThrow(/owned by a live host/);
+    expect(readFileSync(lock, "utf8")).toBe(foreign);
   });
 
   it("keeps compact public views deterministic", () => {

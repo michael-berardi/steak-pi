@@ -27,7 +27,7 @@ describe("run-level override invariants", () => {
   // Written before the guard implementation: the missing export makes this regression fail first.
   it.each(["model", "profile"] as const)("rejects degraded provenance for explicit %s", (field) => {
     const requested = { [field]: field === "model" ? input.model : "steak-pi/gpt-6-astra" };
-    for (const source of ["profile-default", "legacy-default"] as const) {
+    for (const source of ["profile-default", "legacy-default", "chain"] as const) {
       const selection: ModelSelection = { provider: parent.provider, modelId: parent.id, source, images: false, tools: true };
       expect(() => assertWorkerSelectionOverride(requested, selection)).toThrow(/model\/profile.*override/);
     }
@@ -44,6 +44,12 @@ describe("run-level override invariants", () => {
     const result = resolveWorkerSelection(parent, "high", { ...input, model: undefined, profile: "steak-pi/gpt-6-astra" }, registry, profiles);
     expect(result.model).toBe(astra);
     expect(result.selection).toMatchObject({ source: "override", profile: "steak-pi/gpt-6-astra" });
+  });
+
+  it("never upgrades an explicit selector into automatic chain provenance", () => {
+    expect(() => assertWorkerSelectionOverride({ model: "opencode-go/deepseek-v4.1-flash" }, {
+      provider: "opencode-go", modelId: "deepseek-v4.1-flash", source: "chain", images: false, tools: true,
+    })).toThrow(/override/);
   });
 
   it("preserves the incident arguments through the registered handler without live Pi", async () => {

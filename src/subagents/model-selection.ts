@@ -2,7 +2,8 @@ import { readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { assertSubscriptionRequest, selectWorkerModel, selectWorkerThinking } from "../model-route-policy.ts";
+import { assertSubscriptionRequest, selectChainedWorkerModel, selectWorkerModel, selectWorkerThinking,
+  DEFAULT_MULTIMODAL_WORKER_CHAIN, DEFAULT_TEXT_WORKER_CHAIN, type ChainOptions } from "../model-route-policy.ts";
 import type { DispatchInput, ModelSelection } from "./types.ts";
 
 type Model = NonNullable<ExtensionContext["model"]>;
@@ -15,15 +16,24 @@ export interface WorkerProfile {
   thinking?: Thinking;
   workerDefault?: WorkerSelector;
   reviewerDefault?: WorkerSelector;
+  /** Resolve the final automatic worker chain instead of this profile's head model.
+   * Only the built-in default profile declares it; explicit selectors never chain. */
+  autoChain?: boolean;
 }
 export const BUILTIN_WORKER_PROFILES: readonly WorkerProfile[] = [
   { id: "steak-pi/glm-5-3-flash", model: "zai/glm-5.3-flash", thinking: "high",
     workerDefault: { profile: "steak-pi/opencode-go" } },
   { id: "steak-pi/gpt-6-astra", model: "openai-codex/gpt-6-astra", thinking: "medium",
     workerDefault: { profile: "steak-pi/opencode-go" },
-    reviewerDefault: { model: "openai-codex/gpt-6-astra" } },
+    // Reviewers default to the same capability-aware chain as workers: no implicit
+    // Luna and no implicit paid GPT route. An explicit selector stays exact.
+    reviewerDefault: { profile: "steak-pi/opencode-go" } },
+  // Head model stays the chain's first Go route; automatic defaults resolve the
+  // ordered chain (Go DeepSeek -> Go GLM -> MiMo V2.6 Pro Token Plan) or, for
+  // image work, MiMo V2.6 Pro Token Plan -> ZAI coding GLM 5.3 Flash. Profiles
+  // without an explicit reviewerDefault inherit this chain for reviewer runs too.
   { id: "steak-pi/opencode-go", model: "opencode-go/deepseek-v4.1-flash", thinking: "high",
-    workerDefault: { profile: "steak-pi/opencode-go" } },
+    workerDefault: { profile: "steak-pi/opencode-go" }, autoChain: true },
 ];
 const thinkingLevels = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
 
@@ -98,12 +108,14 @@ export function resolveWorkerSelection(
   registry: Registry,
   profiles: readonly WorkerProfile[] = loadWorkerProfiles(),
   parentProfileId = process.env.ULTRATERM_HARNESS_PROFILE,
+  options: ChainOptions = {},
 ): { model: Model; thinkingLevel: Thinking; selection: ModelSelection } {
   // Capture caller intent once, before consulting task/profile/registry objects.
   const requested: WorkerSelector = { model: input.model, profile: input.profile };
   if (input.tasks.some((task) => "model" in task || "profile" in task)) {
     throw new Error("USAP model/profile selection is run-level only; split different routes into separate runs.");
   }
+  if (input.requireImages !== undefined && typeof input.requireImages !== "boolean") throw new Error("requireImages must be a boolean.");
   const explicit = requested.model !== undefined || requested.profile !== undefined;
   const parentKey = route(parent);
   const profileById = (id: string): WorkerProfile => {
@@ -119,8 +131,14 @@ export function resolveWorkerSelection(
   const configured = review ? parentProfile?.reviewerDefault ?? parentProfile?.workerDefault : parentProfile?.workerDefault;
   const chosen = explicit ? selector({ ...(requested.model !== undefined ? { model: requested.model } : {}), ...(requested.profile !== undefined ? { profile: requested.profile } : {}) }, "USAP selection") : configured ? selector(configured, "USAP profile default") : undefined;
   const profile = chosen?.profile ? profileById(chosen.profile) : undefined;
-  const key = profile?.model ?? chosen?.model;
-  const model = key ? findModel(key, registry) : selectWorkerModel(parent, input.tasks.map((task) => task.role), registry);
+  // Automatic defaults resolve the final chain; an explicit selector stays exact.
+  const automatic = !explicit && chosen?.model === undefined && profile?.autoChain === true;
+  const chain = input.requireImages === true ? DEFAULT_MULTIMODAL_WORKER_CHAIN : DEFAULT_TEXT_WORKER_CHAIN;
+  const key = automatic ? undefined : profile?.model ?? chosen?.model;
+  const model = automatic
+    ? selectChainedWorkerModel(registry, chain, options)
+    : key ? findModel(key, registry)
+    : selectWorkerModel(parent, input.tasks.map((task) => task.role), registry, options);
   assertSubscriptionRequest(model, registry.isUsingOAuth(model));
   if (!registry.hasConfiguredAuth(model) || !registry.getAvailable().some((candidate) => route(candidate) === route(model))) {
     throw new Error(`USAP model ${route(model)} is not available with configured authentication. Authenticate that provider in Pi; no fallback was selected.`);
@@ -128,7 +146,6 @@ export function resolveWorkerSelection(
   if (!model.input?.includes("text") || typeof registry.getProvider(model.provider)?.streamSimple !== "function") {
     throw new Error(`USAP model ${route(model)} needs a native text/tool streaming adapter.`);
   }
-  if (input.requireImages !== undefined && typeof input.requireImages !== "boolean") throw new Error("requireImages must be a boolean.");
   const images = model.input.includes("image");
   if (input.requireImages && !images) throw new Error(`USAP model ${route(model)} does not advertise image input. Select an authenticated vision model for image inspection; no fallback was selected.`);
   const thinkingLevel = selectWorkerThinking(model, profile?.thinking ?? inheritedThinking, input.thinking, input.thinkingReason);
@@ -138,7 +155,9 @@ export function resolveWorkerSelection(
       provider: model.provider, modelId: model.id,
       ...(profile ? { profile: profile.id } : {}),
       ...(parentProfile ? { parentProfile: parentProfile.id } : {}),
-      source: explicit ? "override" : configured ? "profile-default" : "legacy-default",
+      source: explicit ? "override" : automatic ? "chain" : configured ? "profile-default" : "legacy-default",
+      // Ordered automatic routes, so a receipt shows the chain that produced the run.
+      ...(automatic ? { chainRoutes: chain.map((step) => `${step.provider}/${step.id}`) } : {}),
       images, tools: true,
     },
   };

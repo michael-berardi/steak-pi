@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { findPackageJSON } from "node:module";
 import { pathToFileURL } from "node:url";
-import { createExplicitPaidApproval, PAID_INCO_BASE_URL, PAID_ROUTES, PAID_ROUTE_FLAG } from "../src/explicit-paid-route.ts";
+import { createAllowlistApproval, createExplicitPaidApproval, createSelectedRouteApproval, isAllowlistedPaidRoute, PAID_INCO_BASE_URL, PAID_ROUTES, PAID_ROUTE_FLAG, readApprovedPaidRoutes } from "../src/explicit-paid-route.ts";
 import { guardProvider, createRegistryGuard } from "../src/model-route-policy.ts";
 import { beginGoAttempt, observeGoQuota, hasConfirmedGoExhaustion, SUBSCRIPTION_FIRST_ERROR } from "../src/subscription-first-routing.ts";
 
@@ -106,6 +106,8 @@ describe("explicit paid route permission", () => {
     expect(PAID_ROUTES).toEqual([
       { provider: "inco", id: "glm-5.3-flash:fast", baseUrl: PAID_INCO_BASE_URL },
       { provider: "inco", id: "deepseek-v4.1-flash:fast", baseUrl: PAID_INCO_BASE_URL },
+      { provider: "xiaomi", id: "mimo-v2.6-pro", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1" },
+      { provider: "xiaomi", id: "mimo-v2.6-flash", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1" },
     ]);
     const { path, approve } = approvalFor(deepseekFlag, deepseek);
     expect(approve(deepseek)).toBe(true);
@@ -131,6 +133,18 @@ describe("explicit paid route permission", () => {
     writeFileSync(path, "{}"); expect(approve(deepseek)).toBe(false);
   });
 
+  it("pins Xiaomi Token Plan approvals to Singapore and never grants PAYG or automatic routing", () => {
+    for (const id of ["mimo-v2.6-pro", "mimo-v2.6-flash"]) {
+      const selected = { ...model, provider: "xiaomi", id, baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1" } as Model;
+      const { path, approve } = approvalFor(`xiaomi/${id}`, selected);
+      expect(approve(selected)).toBe(true);
+      expect(createExplicitPaidApproval(undefined, selected, path)(selected)).toBe(false);
+      for (const baseUrl of ["https://api.xiaomimimo.com/v1", "https://token-plan-cn.xiaomimimo.com/v1", "https://token-plan-sgp.xiaomimimo.com/v1/"]) expect(approve({ ...selected, baseUrl })).toBe(false);
+      expect(approve({ ...selected, id: "mimo-v2.6-pro-ultraspeed" })).toBe(false);
+      writeFileSync(path, "{}"); expect(approve(selected)).toBe(false);
+    }
+  });
+
   it("never crosses the two paid products or widens into automatic routing", async () => {
     beginGoAttempt(); const key = "synthetic-deepseek-key";
     const base = providerFor(deepseek); const { approve } = approvalFor(deepseekFlag, deepseek);
@@ -153,7 +167,7 @@ describe("explicit paid route permission", () => {
 });
 
 
-describe("policy extension launch-only paid authorization", () => {
+describe("operator /model paid authorization across all approved profiles", () => {
   const go = { ...model, provider: "opencode-go", id: "glm-5.3" };
   const launchFlag = "inco/glm-5.3-flash:fast";
   const transitions = [
@@ -165,11 +179,14 @@ describe("policy extension launch-only paid authorization", () => {
   ] as const;
   afterEach(() => vi.restoreAllMocks());
 
-  function setup(flag: string | undefined, initialModel: Model) {
-    const { path } = approval();
-    const create = paidRoute.createExplicitPaidApproval;
+  function setup(flag: string | undefined, initialModel: Model, allow: unknown[] = [{ provider: model.provider, model: model.id, baseUrl: model.baseUrl }]) {
+    const { path } = approvalFor(launchFlag, model, allow);
+    const createLaunch = paidRoute.createExplicitPaidApproval;
+    const createSelected = paidRoute.createSelectedRouteApproval;
     const factory = vi.spyOn(paidRoute, "createExplicitPaidApproval")
-      .mockImplementation((intent, selected) => create(intent, selected, path));
+      .mockImplementation((intent, selected) => createLaunch(intent, selected, path));
+    vi.spyOn(paidRoute, "createSelectedRouteApproval")
+      .mockImplementation(getSelected => createSelected(getSelected, path));
     const base = provider();
     let current = base;
     const registry = {
@@ -201,57 +218,64 @@ describe("policy extension launch-only paid authorization", () => {
       }
     };
     expect(registerFlag).toHaveBeenCalledWith(PAID_ROUTE_FLAG, expect.objectContaining({ type: "string" }));
-    return { base, ctx, emit, dispatch, factory, getFlag,
+    return { base, ctx, emit, dispatch, factory, getFlag, path,
       replaceProvider: () => { current = base; } };
   }
 
-  for (const [reason, flag, initial] of [
-    ["missing flag", undefined, model],
-    ["wrong initial launch model", launchFlag, go],
-  ] as const) {
-    it.each(transitions)(`${reason}: %s/%s cannot authorize paid dispatch`, async (event, source) => {
-      const h = setup(flag, initial);
-      await h.emit("session_start");
-      expect(h.getFlag).toHaveBeenCalledWith(PAID_ROUTE_FLAG);
-      expect(h.factory).toHaveBeenCalledWith(flag, initial);
-      await h.dispatch("error");
-      h.ctx.model = model;
-      // A fresh native registration must also be protected by each event hook.
-      h.replaceProvider();
-      await h.emit(event, source);
-      await h.dispatch("error");
-      expect(h.factory).toHaveBeenCalledTimes(1);
-      expect(h.ctx.ui.confirm).not.toHaveBeenCalled();
-      expect(h.base.streamSimple).not.toHaveBeenCalled();
-    });
-  }
-
-  it("preserves an approved flagged Inco launch across selection, agent and compaction events", async () => {
-    beginGoAttempt();
-    const h = setup(launchFlag, model);
+  it("authorizes an allowlisted route switched in through /model without any launch flag", async () => {
+    const h = setup(undefined, go);
     await h.emit("session_start");
-    await h.dispatch("done");
+    expect(h.getFlag).toHaveBeenCalledWith(PAID_ROUTE_FLAG);
+    expect(h.factory).toHaveBeenCalledWith(undefined, go);
+    // The launch route is not the allowlisted paid route, so dispatch stays blocked.
+    await h.dispatch("error");
+    h.ctx.model = model;
     for (const [event, source] of transitions) {
       h.replaceProvider();
       await h.emit(event, source);
       await h.dispatch("done");
     }
-    expect(h.base.streamSimple).toHaveBeenCalledTimes(12);
-    expect(h.factory).toHaveBeenCalledTimes(1);
+    expect(h.base.streamSimple).toHaveBeenCalledTimes(10);
     expect(h.ctx.ui.confirm).not.toHaveBeenCalled();
     expect(hasConfirmedGoExhaustion("synthetic-extension-go")).toBe(false);
   });
 
-  it.each(["missing flag", "wrong initial model"])("session replacement clears previous approval: %s", async reason => {
+  it("never authorizes a selected route the user allowlist does not carry", async () => {
+    const h = setup(undefined, model, []);
+    await h.emit("session_start");
+    await h.dispatch("error");
+    h.ctx.model = model;
+    for (const [event, source] of transitions) {
+      h.replaceProvider();
+      await h.emit(event, source);
+      await h.dispatch("error");
+    }
+    expect(h.factory).toHaveBeenCalledTimes(1);
+    expect(h.base.streamSimple).not.toHaveBeenCalled();
+  });
+
+  it("requires the exact reviewed endpoint, not a sibling entry or a near miss", async () => {
+    const h = setup(undefined, model, [
+      { provider: "inco", model: "glm-5.3-flash:fast", baseUrl: `${PAID_INCO_BASE_URL}/` },
+    ]);
+    await h.emit("session_start");
+    await h.dispatch("error");
+    h.ctx.model = model;
+    for (const [event, source] of transitions) {
+      await h.emit(event, source);
+      await h.dispatch("error");
+    }
+    expect(h.base.streamSimple).not.toHaveBeenCalled();
+  });
+
+  it("keeps a launch-flag grant while the flagged route stays selected, and honors revocation", async () => {
     const h = setup(launchFlag, model);
     await h.emit("session_start");
     await h.dispatch("done");
     expect(h.base.streamSimple).toHaveBeenCalledTimes(2);
     vi.mocked(h.base.streamSimple).mockClear();
-    h.ctx.sessionManager = {};
-    if (reason === "missing flag") h.getFlag.mockReturnValue(undefined);
-    else h.ctx.model = go;
-    // Keep the old guarded provider to exercise rebinding of its approval closure.
+    // The user revokes the route; the re-launched session re-reads the file.
+    writeFileSync(h.path, JSON.stringify({ version: 1, allow: [] }));
     await h.emit("session_start");
     await h.dispatch("error");
     h.ctx.model = model;
@@ -264,3 +288,56 @@ describe("policy extension launch-only paid authorization", () => {
     expect(h.base.streamSimple).not.toHaveBeenCalled();
   });
 });
+
+describe("reviewed-route allowlist reads", () => {
+  const deepseek = { ...model, id: "deepseek-v4.1-flash:fast" };
+  function tempAllow(allow: unknown, version = 1) {
+    const dir = mkdtempSync(join(tmpdir(), "paid-route-allow-")); dirs.push(dir);
+    const path = join(dir, "paid-routes.json");
+    writeFileSync(path, JSON.stringify({ version, allow }));
+    return path;
+  }
+
+  it("fails closed on missing, malformed, wrong-version, or unreviewed allowlists", () => {
+    const missing = join(tmpdir(), "paid-routes-absent.json");
+    expect(readApprovedPaidRoutes(missing)).toEqual([]);
+    expect(isAllowlistedPaidRoute(model, missing)).toBe(false);
+    expect(createAllowlistApproval(missing)(model)).toBe(false);
+    expect(readApprovedPaidRoutes(tempAllow([{ provider: "inco", model: "glm-5.3-flash:fast", baseUrl: PAID_INCO_BASE_URL }], 2))).toEqual([]);
+    // Entries outside the reviewed table are never promoted into reviewed routes.
+    expect(readApprovedPaidRoutes(tempAllow([
+      { provider: "openai-codex", model: "gpt-6-astra", baseUrl: "https://chatgpt.com/backend-api" },
+      { provider: "inco", model: "glm-5.3-flash:fast", baseUrl: `${PAID_INCO_BASE_URL}/` },
+    ]))).toEqual([]);
+  });
+
+  it("resolves only exact reviewed identities into the allowlist", () => {
+    const path = tempAllow([
+      { provider: "inco", model: "glm-5.3-flash:fast", baseUrl: PAID_INCO_BASE_URL },
+      { provider: "xiaomi", model: "mimo-v2.6-pro", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1" },
+      { provider: "inco", model: "glm-5.3-flash:fast", baseUrl: "https://api.inco.ai/v2" },
+    ]);
+    expect(readApprovedPaidRoutes(path)).toEqual([
+      { provider: "inco", id: "glm-5.3-flash:fast", baseUrl: PAID_INCO_BASE_URL },
+      { provider: "xiaomi", id: "mimo-v2.6-pro", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1" },
+    ]);
+    expect(isAllowlistedPaidRoute(model, path)).toBe(true);
+    expect(createAllowlistApproval(path)(model)).toBe(true);
+    expect(isAllowlistedPaidRoute(deepseek, path)).toBe(false);
+  });
+
+  it("scopes selection approval to the exact allowlisted route currently selected", () => {
+    const path = tempAllow([{ provider: "inco", model: "glm-5.3-flash:fast", baseUrl: PAID_INCO_BASE_URL }]);
+    let selected: typeof model | undefined = model;
+    const approve = createSelectedRouteApproval(() => selected, path);
+    expect(approve(model)).toBe(true);
+    expect(approve(deepseek)).toBe(false);
+    expect(approve({ ...model, baseUrl: `${PAID_INCO_BASE_URL}/` })).toBe(false);
+    selected = deepseek;
+    expect(approve(model)).toBe(false);
+    selected = undefined;
+    expect(approve(model)).toBe(false);
+    expect(createSelectedRouteApproval(() => model, tempAllow([]))(model)).toBe(false);
+  });
+});
+
