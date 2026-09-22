@@ -178,11 +178,18 @@ uses `requireImages: true`. See [profiles and examples](./docs/PROFILES.md).
 
 **GPT routing:** GPT-family requests use the paid Codex subscription route only,
 never OpenRouter, API-key billing, or batch variants. Built-in routine workers
-use OpenCode Go (DeepSeek V4.1 Flash); Astra reviewers retain Astra. Go requires
-your own key and can retry once on Go GLM 5.3 Flash for a transient failure before
-visible output, never for auth, billing, or region errors. Explicit selections
-take precedence; missing authentication or
-capability fails closed without fallback. Astra workers default
+default to MiMo V2.6 Pro with ZAI coding GLM 5.3 Flash as the only automatic
+fallback; the default reviewer role resolves the Astra-first expert chain
+(`gpt-6-astra` via paid Codex OAuth when available, then the same routine
+order), and `gpt-6-sol`/`gpt-6-luna` are explicit-selection profiles only. Astra
+is a scarce expert for hard planning/debugging and review/validation, never
+routine orchestration; a failed expert review is reported honestly, never
+silently downgraded, and weaker implementers must request one bounded Astra
+final review before commit/push/deploy without ever fabricating expert approval.
+Go requires your own key and can retry once on Go GLM 5.3 Flash for a transient
+failure before visible output, never for auth, billing, or region errors.
+Explicit selections take precedence; missing authentication or capability fails
+closed without fallback. Astra workers default
 to **medium** reasoning, independently of the parent's current effort. Set
 `thinking: "high"` or `"xhigh"` only with a concrete task benefit in
 `thinkingReason`; reviewer role alone does not escalate effort. Other models

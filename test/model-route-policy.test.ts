@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   assertModelRoute, assertSubscriptionRequest, guardProvider, selectWorkerModel, selectWorkerThinking,
-  createRegistryGuard, GPT_ROUTE_ERROR, isModelRouteAllowed, guardModelRuntime,
+  createRegistryGuard, GPT_ROUTE_ERROR, isModelRouteAllowed, guardModelRuntime, isExpertReviewModel,
   selectChainedWorkerModel, DEFAULT_TEXT_WORKER_CHAIN, DEFAULT_MULTIMODAL_WORKER_CHAIN, ROUTINE_GPT_MODEL,
+  EXPERT_TEXT_REVIEW_CHAIN, EXPERT_MULTIMODAL_REVIEW_CHAIN,
   eligibleChainFallback, type WorkerRouteStep,
 } from "../src/model-route-policy.ts";
 import { eligibleGoFallback } from "../src/opencode-go-routing.ts";
@@ -40,6 +41,7 @@ type Registry = Parameters<typeof selectWorkerModel>[2];
 const astra = {
   id: "gpt-6-astra", name: "GPT-6 Astra", provider: "openai-codex",
   api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api",
+  input: ["text", "image"],
 } as Model;
 const luna = { ...astra, id: "gpt-5.6-luna", name: "GPT-5.6 Luna" };
 const glm = { ...astra, id: "glm-5.3-flash", name: "GLM-5.3 Flash", provider: "zai", api: "openai-completions", baseUrl: "https://api.z.ai/api/coding/paas/v4" } as Model;
@@ -247,10 +249,39 @@ describe("GPT coding-plan route policy", () => {
     const chain = chainRegistry();
     expect(selectWorkerModel(astra, ["scout", "worker"], chain)).toEqual(chainModels.mimoPro);
     expect(selectWorkerModel(astra, [undefined], chain)).toEqual(chainModels.mimoPro);
+    // Reviewer role prefers the scarce Astra expert; with the expert route absent
+    // from this registry, the legacy fallback still retains the parent exactly.
     expect(selectWorkerModel(astra, ["worker", "reviewer"], chain)).toBe(astra);
     // Unmapped non-GPT parents keep their own model; automatic routing never
     // substitutes a paid route for a parent the operator already selected.
     expect(selectWorkerModel(glm, ["worker"], chain)).toBe(glm);
+  });
+  it("prefers the scarce Astra expert for the default reviewer role, never a metered substitute", () => {
+    // The expert review chains are pinned exactly: Astra first, then the routine
+    // subscription order. Astra is deliberately absent from the routine chains.
+    expect([...EXPERT_TEXT_REVIEW_CHAIN]).toEqual([
+      { provider: "openai-codex", id: "gpt-6-astra" },
+      { provider: "xiaomi", id: "mimo-v2.6-pro" }, { provider: "zai", id: "glm-5.3-flash" }]);
+    expect(EXPERT_MULTIMODAL_REVIEW_CHAIN).toEqual(EXPERT_TEXT_REVIEW_CHAIN);
+    expect(isExpertReviewModel(astra)).toBe(true);
+    expect(isExpertReviewModel({ ...astra, id: "gpt-5.6-luna" })).toBe(false);
+    expect(DEFAULT_TEXT_WORKER_CHAIN.some(isExpertReviewModel)).toBe(false);
+    // Subscription-authenticated Astra serves the default reviewer role.
+    const withAstra = chainRegistry([astra, chainModels.mimoPro, chainModels.zaiGlm]);
+    expect(selectWorkerModel(chainModels.mimoPro, ["reviewer"], withAstra)).toBe(astra);
+    expect(selectChainedWorkerModel(withAstra, EXPERT_TEXT_REVIEW_CHAIN)).toBe(astra);
+    // An API-key/metered Astra-shaped route is never the expert: the chain skips
+    // it and lands on the routine prepaid subscription order instead.
+    const metered = { ...astra, baseUrl: "https://api.openai.com/v1" } as Model;
+    expect(selectChainedWorkerModel(chainRegistry([metered, chainModels.mimoPro, chainModels.zaiGlm]), EXPERT_TEXT_REVIEW_CHAIN))
+      .toBe(chainModels.mimoPro);
+    expect(selectWorkerModel(chainModels.mimoPro, ["reviewer"], chainRegistry([metered, chainModels.mimoPro])))
+      .toBe(chainModels.mimoPro);
+    // Without Codex OAuth the exact subscription identity is unproven: no expert.
+    const noOAuth = { ...chainRegistry([astra, chainModels.mimoPro]), isUsingOAuth: () => false } as unknown as Registry;
+    expect(selectChainedWorkerModel(noOAuth, EXPERT_TEXT_REVIEW_CHAIN)).toBe(chainModels.mimoPro);
+    // Nothing eligible fails closed with the same contract as the routine chain.
+    expect(() => selectChainedWorkerModel(chainRegistry([metered]), EXPERT_TEXT_REVIEW_CHAIN)).toThrow(/no fallback was selected/);
   });
   it("never auto-selects GPT-5.6 Luna and fails closed without an authenticated chain route", () => {
     const { registry } = fakeRegistry();

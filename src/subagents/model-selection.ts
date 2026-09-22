@@ -3,7 +3,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { assertSubscriptionRequest, selectChainedWorkerModel, selectWorkerModel, selectWorkerThinking,
-  DEFAULT_MULTIMODAL_WORKER_CHAIN, DEFAULT_TEXT_WORKER_CHAIN, type ChainOptions } from "../model-route-policy.ts";
+  DEFAULT_MULTIMODAL_WORKER_CHAIN, DEFAULT_TEXT_WORKER_CHAIN,
+  EXPERT_MULTIMODAL_REVIEW_CHAIN, EXPERT_TEXT_REVIEW_CHAIN, type ChainOptions } from "../model-route-policy.ts";
 import type { DispatchInput, ModelSelection } from "./types.ts";
 
 type Model = NonNullable<ExtensionContext["model"]>;
@@ -26,14 +27,29 @@ export const BUILTIN_WORKER_PROFILES: readonly WorkerProfile[] = [
     reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: "steak-pi/gpt-6-astra", model: "openai-codex/gpt-6-astra", thinking: "medium",
     workerDefault: { profile: "steak-pi/mimo-v2-6-pro" },
-    // Reviewers default to the same capability-aware chain as workers: no implicit
-    // Luna and no implicit paid GPT route. An explicit selector stays exact.
+    // Reviewers keep the same automatic resolution as every other profile: the
+    // expert review chain (scarce Astra first, then the routine subscription
+    // chain). Astra stays scarce — it is never a routine worker default, and an
+    // explicit selector stays exact.
     reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
-  // Operator default (2026-09-23) for every worker and reviewer: MiMo V2.6 Pro on the
+  // Parent-added GPT-6 routes (2026-09-23): exact explicit-selection profiles only.
+  // Their workerDefault keeps routine workers on the MiMo→ZAI automatic chain, so
+  // launching or selecting them never makes Sol or Luna an automatic worker, and
+  // reviewer runs still resolve the expert review chain (Astra first). High
+  // reasoning applies to explicit runs of these profiles.
+  { id: "steak-pi/gpt-6-sol", model: "openai-codex/gpt-6-sol", thinking: "high",
+    workerDefault: { profile: "steak-pi/mimo-v2-6-pro" },
+    reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+  { id: "steak-pi/gpt-6-luna", model: "openai-codex/gpt-6-luna", thinking: "high",
+    workerDefault: { profile: "steak-pi/mimo-v2-6-pro" },
+    reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+  // Operator default (2026-09-23) for every routine worker: MiMo V2.6 Pro on the
   // reviewed Singapore Token Plan endpoint, resolved through the ordered automatic
   // chain (MiMo V2.6 Pro, then the ZAI coding subscription route) instead of this
-  // profile's head model. Profiles without an explicit reviewerDefault inherit the
-  // same chain for reviewer runs.
+  // profile's head model. Reviewer runs resolve the expert review chain
+  // (openai-codex/gpt-6-astra first, then the same routine chain). Profiles whose
+  // reviewerDefault names an exact model — or a profile without autoChain — stay
+  // exact and never gain the expert preference.
   { id: "steak-pi/mimo-v2-6-pro", model: "xiaomi/mimo-v2.6-pro", thinking: "high",
     workerDefault: { profile: "steak-pi/mimo-v2-6-pro" },
     reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" }, autoChain: true },
@@ -142,7 +158,13 @@ export function resolveWorkerSelection(
   const profile = chosen?.profile ? profileById(chosen.profile) : undefined;
   // Automatic defaults resolve the final chain; an explicit selector stays exact.
   const automatic = !explicit && (chosen === undefined || (chosen.model === undefined && profile?.autoChain === true));
-  const chain = input.requireImages === true ? DEFAULT_MULTIMODAL_WORKER_CHAIN : DEFAULT_TEXT_WORKER_CHAIN;
+  // The default reviewer role rides the expert review chain: the scarce Astra
+  // expert through its paid Codex OAuth coding plan when available, then the same
+  // routine subscription routes — never a metered substitute. Routine workers
+  // keep the MiMo→ZAI chain, and explicit model/profile overrides stay exact.
+  const chain = automatic && review
+    ? (input.requireImages === true ? EXPERT_MULTIMODAL_REVIEW_CHAIN : EXPERT_TEXT_REVIEW_CHAIN)
+    : (input.requireImages === true ? DEFAULT_MULTIMODAL_WORKER_CHAIN : DEFAULT_TEXT_WORKER_CHAIN);
   const key = automatic ? undefined : profile?.model ?? chosen?.model;
   const model = automatic
     ? selectChainedWorkerModel(registry, chain, options)

@@ -289,6 +289,27 @@ export const DEFAULT_MULTIMODAL_WORKER_CHAIN: readonly WorkerRouteStep[] = [
 export const noChainRouteError = (multimodal: boolean) =>
   `No authenticated route in the default ${multimodal ? "multimodal" : "text"} worker chain; no fallback was selected.`;
 
+/** Astra (openai-codex/gpt-6-astra) is the scarce expert reviewer: hard planning and
+ * debugging plus review/validation. It is never routine implementation or
+ * orchestration, so it is deliberately absent from the routine worker chains above.
+ * The default reviewer role prefers it through the paid Codex OAuth coding plan only:
+ * eligibility below requires the exact subscription identity (OAuth, Codex API,
+ * official chatgpt.com backend), so a batch id, API-key endpoint, or other metered
+ * substitute never enters. When the expert route is unavailable the run honestly
+ * resolves the routine subscription chain instead, and an expert review that fails
+ * at runtime fails visibly — it is never silently downgraded to a weaker model. */
+export const EXPERT_REVIEW_MODEL: WorkerRouteStep = { provider: "openai-codex", id: "gpt-6-astra" };
+export const EXPERT_TEXT_REVIEW_CHAIN: readonly WorkerRouteStep[] = [
+  EXPERT_REVIEW_MODEL, ...DEFAULT_TEXT_WORKER_CHAIN,
+];
+export const EXPERT_MULTIMODAL_REVIEW_CHAIN: readonly WorkerRouteStep[] = [
+  EXPERT_REVIEW_MODEL, ...DEFAULT_MULTIMODAL_WORKER_CHAIN,
+];
+export const expertReviewChain = (requireImages: boolean): readonly WorkerRouteStep[] =>
+  requireImages ? EXPERT_MULTIMODAL_REVIEW_CHAIN : EXPERT_TEXT_REVIEW_CHAIN;
+export const isExpertReviewModel = (model: Pick<Model, "provider" | "id">): boolean =>
+  model.provider === EXPERT_REVIEW_MODEL.provider && model.id === EXPERT_REVIEW_MODEL.id;
+
 export type ChainOptions = { requireImages?: boolean; approvePaidRoute?: (model: Model) => boolean };
 
 /** The user allowlist is the only spending grant for automatic chain routing: a
@@ -421,15 +442,25 @@ export function selectChainedWorkerModel(registry: Registry, chain: readonly Wor
   throw new Error(noChainRouteError(options.requireImages === true));
 }
 
-/** Runs retain one explicit model for accurate telemetry; mixed/review runs stay frontier. */
+/** Runs retain one explicit model for accurate telemetry; mixed/review runs stay frontier.
+ * The default reviewer role prefers the scarce Astra expert when its authenticated
+ * paid Codex OAuth route is available; any metered substitute is skipped and the
+ * prior exact behavior applies (reviewers of a mapped-parent default never reach
+ * this legacy path at all — they resolve the expert review chain). */
 export function selectWorkerModel(parent: Model, roles: readonly (string | undefined)[], registry: Registry,
   options: ChainOptions = {}): Model {
   assertModelRoute(parent);
+  if (roles.some((role) => role === "reviewer")) {
+    const expert = eligibleChainRoute(registry, EXPERT_REVIEW_MODEL, options.requireImages === true,
+      options.approvePaidRoute ?? AUTOMATIC_CHAIN_APPROVAL);
+    if (expert) return expert;
+  }
   if (!isGptFamily(parent)) return parent;
   assertSubscriptionRequest(parent, registry.isUsingOAuth(parent));
   // Legacy unmapped-profile fallback: reviewers inherit the operator's own parent
-  // route and nothing is auto-selected there (no implicit Luna, no paid GPT hop).
-  // Defaulted runs resolve the capability-aware chain through reviewerDefault.
+  // route and nothing else is auto-selected there (no implicit Luna, no paid GPT
+  // hop beyond the expert preference above). Defaulted runs resolve the
+  // capability-aware chain through reviewerDefault.
   if (roles.some((role) => role === "reviewer")) return parent;
   return selectChainedWorkerModel(registry,
     options.requireImages === true ? DEFAULT_MULTIMODAL_WORKER_CHAIN : DEFAULT_TEXT_WORKER_CHAIN, options);

@@ -51,11 +51,32 @@ same-plan retry. No CLI is launched to resolve a profile.
 
 Omitting both selectors uses the matching parent profile's `workerDefault`, or
 `reviewerDefault` for runs containing reviewers. Profiles that resolve the
-built-in `steak-pi/mimo-v2-6-pro` default resolve one **automatic chain** for workers and reviewers and record it as provenance:
+built-in `steak-pi/mimo-v2-6-pro` default resolve one **automatic chain** and
+record it as provenance:
 
-- Text and images: `xiaomi/mimo-v2.6-pro` → `zai/glm-5.3-flash`.
+- Routine workers, text and images: `xiaomi/mimo-v2.6-pro` → `zai/glm-5.3-flash`.
+- Default reviewer role: `openai-codex/gpt-6-astra` → `xiaomi/mimo-v2.6-pro` →
+  `zai/glm-5.3-flash` (the expert review chain; see below).
 
 The main app also defaults to MiMo V2.6 Pro. Explicitly chosen profiles remain exact; selecting OpenCode Go does not select this cross-provider chain.
+
+## Scarce expert reviewer (Astra)
+
+`openai-codex/gpt-6-astra` is the scarce expert for hard planning/debugging and
+review/validation — never routine implementation or orchestration. A run whose
+tasks include a reviewer role resolves the expert review chain when no explicit
+selector is given: it selects the authenticated Astra **paid Codex OAuth coding
+plan** route when available and otherwise honestly resolves the same routine
+subscription chain as workers. Eligibility is the exact subscription identity
+(OAuth, Codex Responses API, official `chatgpt.com/backend-api`), so a batch id,
+API-key endpoint, or other metered substitute never serves as the expert. A
+reviewer frozen on Astra gets **no runtime hop**: a failed expert review fails
+visibly and is reported — it is never silently downgraded to a weaker model, and
+no output may claim expert approval that did not happen. Astra keeps its medium
+reasoning default; reviewer role alone does not raise effort. Astra is never a
+routine worker default: parent-added `steak-pi/gpt-6-sol` and
+`steak-pi/gpt-6-luna` profiles are explicit-selection routes only, whose own
+`workerDefault` keeps workers on the MiMo → ZAI chain.
 
 The first step that is authenticated, present in the operator's available
 catalog, capability-matching, has a native streaming adapter, and is spendable
@@ -219,7 +240,8 @@ off-plan routes, and generic metered endpoints never hop or spend.
 hop is recorded as `from->to` provenance. `test/opencode-go-routing.test.ts`
 proves the same-plan Go retry still refuses the exhaustion signal.
 `test/subagent-model-selection.test.ts` and `test/model-selection-override.test.ts`
-prove chain/override provenance, reviewer defaults, and that an explicit
+prove chain/override provenance, reviewer defaults (the Astra-first expert chain
+with honest routine fallback and no metered substitute), and that an explicit
 selector is never upgraded into chain provenance.
 `test/model-route-native.test.ts` uses isolated homes and a loopback server to
 prove zero requests for forbidden extension, models.json, model-level API changes,

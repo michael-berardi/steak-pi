@@ -307,11 +307,22 @@ turn.
 
 ## 8. Model guidance
 
-For routine bounded scouting and implementation, use the configured parent
-profile defaults; built-in routine workers use OpenCode Go with the operator's
-own key. Explicit model/profile selection wins. See [PROFILES.md](./PROFILES.md)
+Routine bounded scouting and implementation use the configured parent profile
+defaults: built-in routine workers resolve MiMo V2.6 Pro → ZAI coding GLM 5.3
+Flash. The default reviewer role resolves the expert review chain — scarce
+`openai-codex/gpt-6-astra` via its paid Codex OAuth coding plan when
+authenticated, then the same routine order, never a metered substitute.
+`gpt-6-sol` and `gpt-6-luna` are explicit-selection profiles only, never
+automatic workers. Explicit model/profile selection wins. See [PROFILES.md](./PROFILES.md)
 for reviewer defaults and route-specific fallback. Record the resolved
 provider/model on the run so results are auditable.
+
+**Expert-review end-gate.** USAP instructions never grant commit, push, or
+deploy permission. Before a weaker implementer's work is committed, pushed, or
+deployed, the leaf requests exactly one bounded Astra expert review through the
+parent. If Astra is unavailable, the worker reports that honestly in its final
+report; no worker may claim, imply, or fabricate expert approval, and a missing
+Astra review is a parent decision, not a silent pass.
 
 Model price is secondary to total trajectory cost. Escalate capability when a
 leaf has high ambiguity, large blast radius, repeated failure, or requires
