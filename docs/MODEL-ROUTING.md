@@ -82,9 +82,7 @@ run never install this hop.
 
 Go needs the user's own key and permits one transient-error retry on Go GLM 5.3
 Flash before visible output, never for auth, billing, or region errors. A
-`/model` change cannot inherit a stale launch profile's defaults. Unmapped
-profiles retain the legacy role policy (a reviewer on the operator's own parent
-route stays on that route).
+`/model` change cannot inherit a stale launch profile's defaults. Parents without an explicit profile default use the same MiMo → ZAI automatic chain, including reviewer runs.
 
 Selection resolves against Pi's configured authentication and available model
 catalog, so the catalog must list the route before selection can include it.
