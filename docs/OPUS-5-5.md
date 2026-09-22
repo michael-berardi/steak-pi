@@ -21,8 +21,10 @@ included. With no configured Anthropic credential the registered model remains
 unavailable. Add your own credential later using Pi's normal Anthropic setup.
 Billing and access depend on the credential actually configured; an API key can
 incur metered charges. A Claude subscription does not imply API entitlement.
-Cache prices have not been verified here: zero cache cost fields are unknown
-accounting placeholders, **not free caching**; displayed totals may undercount.
+Official pricing lists cache reads at $0.20 and 5-minute cache writes at $5 per
+million tokens. The configuration uses those standard rates. One-hour cache
+writes cost $8 and require separate accounting if enabled. Source:
+https://platform.claude.com/docs/en/about-claude/pricing (checked 2026-09-22).
 No cache-warming metadata is enabled.
 
 The app catalog appends `steak-pi/claude-opus-5-5` without changing the active
