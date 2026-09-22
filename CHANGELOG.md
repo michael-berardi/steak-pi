@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.6 — unreleased, staged for review
+
+- Ship an opt-in, credential-free first-party Opus 5.5 model fragment with adaptive thinking and explicit high effort compatibility tests for Pi 0.87. No SDK/runtime patch, automatic activation, or provider auth replacement.
+
 ## 0.7.5 — unreleased, staged for review (USAP 1.2)
 
 - Ignore hidden harness backups and staging files when loading worker profiles. Upgrade rollback copies cannot create duplicate profile IDs or block delegation.
