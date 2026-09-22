@@ -1,7 +1,8 @@
 import type { ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createAllowlistApproval, findPaidRoute } from "./explicit-paid-route.ts";
-import { sharedPickerModels } from "./model-visibility.ts";
-import { eligibleGoFallback, GO_FALLBACK_MODEL, GO_PRIMARY_MODEL, withOpenCodeGoRouting } from "./opencode-go-routing.ts";
+import { curatedPickerScope } from "./harness-profiles.ts";
+import { curatedPickerModels, sharedPickerModels } from "./model-visibility.ts";
+import { eligibleGoFallback, withOpenCodeGoRouting } from "./opencode-go-routing.ts";
 import { authHeadersMatch, gatedMeteredStream, isSubscriptionOrLocalRoute, SUBSCRIPTION_FIRST_ERROR } from "./subscription-first-routing.ts";
 
 type Registry = ExtensionContext["modelRegistry"];
@@ -18,10 +19,14 @@ type NativeStream = ReturnType<Provider["streamSimple"]>;
 type GuardMark = { root: Provider; approval?: PaidApproval; chain?: ChainFallbackOptions };
 const guardMark = (provider: Provider) => (provider as unknown as Record<symbol, unknown>)[GUARD_MARKER] as GuardMark | undefined;
 
-/** Registry surface an ordered chain needs; Pi's ModelRegistry and ModelRuntime both satisfy it. */
+/** Registry surface an ordered chain needs; Pi's ModelRegistry and ModelRuntime both satisfy it.
+ * `getAll()` is the published dispatch catalog and is deliberately *not* the curated
+ * picker snapshot: a fallback route (for example the Go GLM step) must stay reachable
+ * even when the operator's harness manifest does not offer it as a separate choice. */
 export interface ChainRegistry {
   find(provider: string, id: string): Model | undefined;
   getAvailable(): Model[];
+  getAll?(): Model[];
   hasConfiguredAuth(model: Model): boolean;
   isUsingOAuth(model: Model): boolean;
   getProvider(id: string): Provider | undefined;
@@ -139,10 +144,11 @@ export function guardProvider(provider: Provider, usingOAuth: () => boolean,
     filterModels(models, credential) {
       const filtered = provider.filterModels ? provider.filterModels(models, credential) : models;
       // This snapshot is the choice source native `/model` renders and the one
-      // the machine-UI catalog publishes, so the removed OpenRouter DeepSeek
-      // Flash routes are filtered here once, never in a second model list.
-      // Dispatch coverage stays intact because getModels() is untouched above.
-      return sharedPickerModels(filtered.filter(isModelRouteAllowed));
+      // the machine-UI catalog publishes, so both picker rules live here once,
+      // never in a second model list: the curated harness-manifest scope and the
+      // removed OpenRouter DeepSeek Flash routes. Dispatch coverage stays intact
+      // because getModels() is untouched above.
+      return curatedPickerModels(sharedPickerModels(filtered.filter(isModelRouteAllowed)), curatedPickerScope());
     },
     stream(model, context, options) {
       check(model);
@@ -225,6 +231,7 @@ export function guardModelRuntime(runtime: ModelRuntime, fallback?: ChainFallbac
     registry: {
       find: (provider, id) => runtime.getModel(provider, id),
       getAvailable: () => [...runtime.getAvailableSnapshot()],
+      getAll: () => [...runtime.getModels()],
       hasConfiguredAuth: (model) => runtime.hasConfiguredAuth(model.provider),
       isUsingOAuth: (model) => runtime.isUsingOAuth(model.provider),
       getProvider: (id) => runtime.getProvider(id),
@@ -260,18 +267,21 @@ export function selectWorkerThinking(
 
 export interface WorkerRouteStep { provider: string; id: string }
 
-/** FINAL automatic worker routing (operator scope, 2026-09-22). Ordered selection
- * priority plus one pre-output runtime hop inside the same order: the first
- * authenticated route serves the run, and a before-output transient failure may hop
- * to the next eligible route. The hop stops permanently at the first content/tool
- * event and each event keeps its real provider/model. Reviewed paid/Token Plan steps
- * (MiMo V2.6 Pro) require the operator's exact allowlist grant. GPT-5.6 Luna is
- * deliberately absent, and no chain step is GPT. */
+/** FINAL automatic worker routing (operator scope, 2026-09-23). One unified text and
+ * image chain, ordered selection priority plus one pre-output runtime hop inside the
+ * same order: the first authenticated route serves the run, and a before-output
+ * transient failure may hop to the next eligible route. The hop stops permanently at
+ * the first content/tool event and each event keeps its real provider/model. The
+ * default route is MiMo V2.6 Pro on the reviewed Singapore Token Plan endpoint, so it
+ * is a prepaid subscription rather than a metered API route; the only automatic fallback is the
+ * ZAI coding subscription route. No Go, Inco, OpenRouter or metered PAYG step is
+ * reachable automatically, and GPT-5.6 Luna is deliberately absent. */
 export const DEFAULT_TEXT_WORKER_CHAIN: readonly WorkerRouteStep[] = [
-  { provider: "opencode-go", id: GO_PRIMARY_MODEL },
-  { provider: "opencode-go", id: GO_FALLBACK_MODEL },
   { provider: "xiaomi", id: "mimo-v2.6-pro" },
+  { provider: "zai", id: "glm-5.3-flash" },
 ];
+/** The image chain is the same two routes: MiMo V2.6 Pro is multimodal and the ZAI
+ * coding route advertises image input, so text and image runs share one order. */
 export const DEFAULT_MULTIMODAL_WORKER_CHAIN: readonly WorkerRouteStep[] = [
   { provider: "xiaomi", id: "mimo-v2.6-pro" },
   { provider: "zai", id: "glm-5.3-flash" },
@@ -295,10 +305,14 @@ function eligibleChainRoute(registry: ChainRegistry, step: WorkerRouteStep, requ
   if (!capable) return undefined;
   if (typeof registry.getProvider(model.provider)?.streamSimple !== "function") return undefined;
   if (!registry.hasConfiguredAuth(model)) return undefined;
-  if (!registry.getAvailable().some((candidate) => candidate.provider === model.provider && candidate.id === model.id)) return undefined;
-  if (findPaidRoute(model)) {
-    if (!approve(model)) return undefined;
-  } else if (!isSubscriptionOrLocalRoute(model, registry.isUsingOAuth(model))) return undefined;
+  // Membership is checked against the published dispatch catalog, never the
+  // curated picker snapshot: an ordered chain step may be reachable without
+  // being a separate picker choice (the Go fallback is the operator's example).
+  const catalog = registry.getAll?.() ?? registry.getAvailable();
+  if (!catalog.some((candidate) => candidate.provider === model.provider && candidate.id === model.id)) return undefined;
+  if (!isSubscriptionOrLocalRoute(model, registry.isUsingOAuth(model))) {
+    if (!findPaidRoute(model) || !approve(model)) return undefined;
+  }
   return model;
 }
 

@@ -43,6 +43,10 @@ export function isSubscriptionOrLocalRoute(model: Pick<Model, "provider" | "base
   if (url.protocol !== "https:" || url.port) return false;
   if (model.provider === "opencode-go") return url.hostname === "opencode.ai" && /^\/zen\/go(?:\/|$)/.test(url.pathname);
   if (model.provider === "zai") return ["api.z.ai", "open.bigmodel.cn"].includes(url.hostname) && /^\/api\/coding\/paas\/v4(?:\/|$)/.test(url.pathname);
+  // The dedicated Singapore Token Plan endpoint spends prepaid subscription
+  // credits, not the separate Xiaomi pay-as-you-go account balance.
+  if (model.provider === "xiaomi") return url.hostname === "token-plan-sgp.xiaomimimo.com" &&
+    /^\/(?:v1|anthropic)\/?$/.test(url.pathname) && !url.search && !url.hash;
   if (!oauth) return false;
   if (model.provider === "openai-codex") return url.hostname === "chatgpt.com" && /^\/backend-api(?:\/|$)/.test(url.pathname);
   if (model.provider === "anthropic") return url.hostname === "api.anthropic.com";

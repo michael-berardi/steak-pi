@@ -1,16 +1,17 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { openSync, readSync, closeSync, realpathSync, statSync, readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { openSync, readSync, closeSync, realpathSync, statSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, resolve, relative, join } from "node:path";
 import { getPrimaryHostIdentity } from "../src/primary-host.ts";
-import { sharedPickerModels } from "../src/model-visibility.ts";
+import { activeHarnessId, harnessManifestPaths, harnessProfileDirs, levels, readHarnessProfiles, type HarnessProfile, type Thinking } from "../src/harness-profiles.ts";
+import { isModelRouteAllowed } from "../src/model-route-policy.ts";
+import { curatedPickerModels, sharedPickerModels } from "../src/model-visibility.ts";
 import { createUiStream } from "../src/ui-stream.ts";
 
 const LIMIT = 1024 * 1024;
-const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-type Thinking = typeof levels[number];
 type Request = { version: 1; requestId?: string; sessionId: string; generation: string } & ({ action: "resume"; path: string } | ({ action: "message"; text: string } | { action: "model" }) & { model: { provider: string; id: string }; thinking: Thinking });
-export type Profile = { profileId: string; label: string; provider: string; id: string; thinking: Thinking };
+/** Curated picker profile: one exact native route from the selected harness manifest. */
+export type Profile = HarnessProfile;
 class UiError extends Error {}
 function fail(message: string): never { throw new UiError(message); }
 const object = (x: unknown): x is Record<string, any> => !!x && typeof x === "object" && !Array.isArray(x);
@@ -32,36 +33,16 @@ export function decodeRequest(encoded: string): Request {
   return r as Request;
 }
 
-export function readProfiles(directory = join(homedir(), ".config/ultraterm/harnesses")): Profile[] {
-  const out: Profile[] = [];
-  for (const harness of ["steak-pi", "pi"]) {
-    let raw: Buffer;
-    try { raw = readFileSync(join(directory, `${harness}.json`)); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
-    if (raw.length > LIMIT) fail("Profile config too large");
-    const config = JSON.parse(raw.toString("utf8"));
-    if (config.schemaVersion !== 1 || !Array.isArray(config.profiles)) fail("Unsupported profile schema");
-    for (const p of config.profiles) {
-      // Deliberately refuse tool/system-prompt/extension/launcher overrides: no profile transfer.
-      if (!object(p) || !clean(p.id) || !clean(p.name) || !Array.isArray(p.args) || !p.args.every(clean) || Object.keys(p).some(k => !["id", "name", "description", "args", "workerDefault", "reviewerDefault"].includes(k))) continue;
-      // This flag authorizes the launch, not a transferable tool/prompt override.
-      // Recognize it only when it names the same model; execution remains guarded.
-      const args: string[] = [], grants: string[] = [];
-      for (let i = 0; i < p.args.length; i++) {
-        const arg = p.args[i] as string;
-        if (arg === "--steak-pi-paid-route") grants.push(p.args[++i] ?? "");
-        else if (arg.startsWith("--steak-pi-paid-route=")) grants.push(arg.slice("--steak-pi-paid-route=".length));
-        else args.push(arg);
-      }
-      if (args.length !== 4 || args[0] !== "--model" || args[2] !== "--thinking" || !levels.includes(args[3] as Thinking) || grants.length > 1 || grants.some(route => route !== args[1])) continue;
-      const slash = args[1].indexOf("/");
-      if (slash < 1 || slash === args[1].length - 1) continue;
-      const previous = out.findIndex(profile => profile.profileId === `${harness}/${p.id}`);
-      if (previous >= 0) out.splice(previous, 1);
-      out.push({ profileId: `${harness}/${p.id}`, label: p.name, provider: args[1].slice(0, slash), id: args[1].slice(slash + 1), thinking: args[3] as Thinking });
-    }
-  }
-  return [...new Map(out.map(profile => [`${profile.provider}/${profile.id}/${profile.thinking}`, profile])).values()];
+/**
+ * Curated profile metadata for the selected harness: the live operator manifest
+ * under `~/.config/ultraterm/harnesses/{harness}.json`, else the app-bundled
+ * manifest. The selected harness identity comes from the existing launcher env
+ * metadata (`ULTRATERM_HARNESS_ID` / `ULTRATERM_HARNESS`). A manifest that exists
+ * is authority, so adding, renaming or removing a profile changes both pickers
+ * with no code change; when none exists the caller keeps native choices.
+ */
+export function readProfiles(sources: string | readonly string[] = harnessProfileDirs(), harness: string = activeHarnessId()): Profile[] {
+  return readHarnessProfiles(sources, harness);
 }
 
 // A running Pi session composes models.json/auth.json into an in-memory
@@ -87,8 +68,8 @@ export function nativeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
   return configured.startsWith("~/") ? join(homedir(), configured.slice(2)) : configured;
 }
 /** mtime/size revision of exactly the files Pi composes into the native registry. */
-export function configRevision(directory = nativeConfigDir()): string {
-  return NATIVE_CONFIG_FILES.map(name => {
+export function configRevision(directory = nativeConfigDir(), manifests: readonly string[] = harnessManifestPaths()): string {
+  const native = NATIVE_CONFIG_FILES.map(name => {
     try {
       const stat = statSync(join(directory, name), { throwIfNoEntry: false });
       return `${name}:${stat ? `${stat.mtimeMs}:${stat.size}` : "absent"}`;
@@ -97,7 +78,19 @@ export function configRevision(directory = nativeConfigDir()): string {
       // revision is still detected; never throw into the catalog publisher.
       return `${name}:unreadable`;
     }
-  }).join("|");
+  });
+  // The selected harness manifest is part of the picker's input, so a profile
+  // add, rename or removal must be observable as a new revision and reach both
+  // pickers on the same bounded offline reload as a native config change.
+  const curated = [`harness:${activeHarnessId()}`, ...manifests.map(path => {
+    try {
+      const stat = statSync(path, { throwIfNoEntry: false });
+      return `harness:${path}:${stat ? `${stat.mtimeMs}:${stat.size}` : "absent"}`;
+    } catch {
+      return `harness:${path}:unreadable`;
+    }
+  })];
+  return [...native, ...curated].join("|");
 }
 export interface ConfigRefresh {
   /** Whether the on-disk native config differs from the last applied/attempted revision. */
@@ -107,18 +100,19 @@ export interface ConfigRefresh {
   /** Abort a bounded in-flight reload on session teardown; the refresher stays usable. */
   stop(): void;
 }
-export function createConfigRefresher(options: { directory?: string; timeoutMs?: number; backoffMs?: number } = {}): ConfigRefresh {
+export function createConfigRefresher(options: { directory?: string; timeoutMs?: number; backoffMs?: number; manifests?: readonly string[] } = {}): ConfigRefresh {
   const directory = options.directory ?? nativeConfigDir();
+  const manifests = options.manifests ?? harnessManifestPaths();
   const timeoutMs = options.timeoutMs ?? REFRESH_TIMEOUT_MS;
   const backoffMs = options.backoffMs ?? REFRESH_BACKOFF_MS;
-  let applied = configRevision(directory), attempted = applied, retryAt = 0, failures = 0;
+  let applied = configRevision(directory, manifests), attempted = applied, retryAt = 0, failures = 0;
   let inFlight: Promise<void> | undefined;
   let controller: AbortController | undefined;
   let seq = 0;
   let unhealthy = false;
   const unavailable = () => { throw new UiError("Native model configuration unavailable; use native /model"); };
   const changed = () => {
-    const current = configRevision(directory);
+    const current = configRevision(directory, manifests);
     return current !== applied && (current !== attempted || Date.now() >= retryAt);
   };
   const sync = async (registry: RefreshableRegistry): Promise<void> => {
@@ -127,7 +121,7 @@ export function createConfigRefresher(options: { directory?: string; timeoutMs?:
       if (unhealthy || registry.getError?.()) unavailable();
       return;
     }
-    const current = configRevision(directory);
+    const current = configRevision(directory, manifests);
     const refresh = registry.refresh;
     // Compatible Pi facades expose this method. If it is missing, keep the last
     // good native snapshot rather than fabricating a registry of our own.
@@ -184,22 +178,35 @@ export function createConfigRefresher(options: { directory?: string; timeoutMs?:
   };
 }
 
-// Only the native availability snapshot can add choices. A stale launch scope
-// must never resurrect a model removed from configuration; scope supplies only
-// the thinking preference when a currently available model matches it.
+// Only the native availability snapshot can add picker choices, and the selected
+// harness manifest narrows that snapshot to its own exact configured routes. A
+// stale launch scope must never resurrect a model removed from configuration;
+// scope supplies only the thinking preference when an available curated model
+// matches it.
 function nativeModels(ctx: ExtensionContext) {
   return ctx.modelRegistry.getAvailable();
 }
+/**
+ * The composer picker list: exact curated profile routes of the selected harness
+ * that are authenticated and policy-valid, published from the same native
+ * availability snapshot native `/model` renders. Profile labels and effort are
+ * metadata. A readable manifest is authority even when it names no route (empty
+ * picker, parity with the sidebar); unreadable/unknown metadata keeps the native
+ * choices instead of hiding them, and the native snapshot fails open the same way.
+ */
 export function catalogModels(ctx: ExtensionContext, metadata: () => Profile[] = readProfiles): Profile[] {
-  let labels: Profile[] = [];
-  try { labels = metadata(); } catch { /* Optional metadata must not hide native choices. */ }
-  // The native snapshot is shared by both pickers. Metadata and stale scopes
-  // cannot add choices. The running model is published separately as
-  // currentModel; refreshing choices never selects or changes a model.
-  return sharedPickerModels(nativeModels(ctx)).filter(model => ctx.modelRegistry.hasConfiguredAuth(model)).map(model => {
-    const label = labels.find(p => p.provider === model.provider && p.id === model.id);
+  let curated: Profile[] | undefined;
+  try { curated = metadata(); } catch { /* Optional metadata must not hide native choices. */ }
+  const native = curatedPickerModels(
+    sharedPickerModels(nativeModels(ctx)).filter(model => ctx.modelRegistry.hasConfiguredAuth(model)).filter(isModelRouteAllowed),
+    curated && new Set(curated.map(profile => `${profile.provider}/${profile.id}`)),
+  );
+  const roster = new Map((curated ?? []).map(profile => [`${profile.provider}/${profile.id}`, profile]));
+  return native.map(model => {
+    const key = `${model.provider}/${model.id}`;
+    const label = roster.get(key);
     const scoped = ctx.scopedModels.find(s => s.model.provider === model.provider && s.model.id === model.id);
-    return { profileId: label?.profileId ?? `${model.provider}/${model.id}`, label: label?.label ?? model.name ?? model.id,
+    return { profileId: label?.profileId ?? key, label: label?.label ?? model.name ?? model.id,
       provider: model.provider, id: model.id, thinking: scoped?.thinkingLevel ?? label?.thinking ?? (model.reasoning ? "medium" : "off") };
   });
 }

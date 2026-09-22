@@ -750,7 +750,7 @@ const chainStep = (provider: string, id: string) => ({ provider, id } as never);
 
 describe("worker automatic-chain selection gate", () => {
   it("installs the pre-output hop only for an automatic chain selection", () => {
-    const hop = workerChainFallback({ source: "chain", images: false }, chainStep("opencode-go", "deepseek-v4.1-flash"));
+    const hop = workerChainFallback({ source: "chain", images: false }, chainStep("xiaomi", "mimo-v2.6-pro"));
     expect(hop).toMatchObject({ chain: DEFAULT_TEXT_WORKER_CHAIN, requireImages: false });
     expect(hop!.approvePaidRoute).toBe(AUTOMATIC_CHAIN_APPROVAL);
     expect(workerChainFallback({ source: "chain", images: true }, chainStep("xiaomi", "mimo-v2.6-pro")))
@@ -761,7 +761,7 @@ describe("worker automatic-chain selection gate", () => {
     // The crucial regression: an explicit model/profile that names a chain step is
     // still an exact operator choice and must not acquire spending fallback.
     for (const source of ["override", "profile-default", "legacy-default"] as const) {
-      expect(workerChainFallback({ source, images: false }, chainStep("opencode-go", "deepseek-v4.1-flash"))).toBeUndefined();
+      expect(workerChainFallback({ source, images: false }, chainStep("xiaomi", "mimo-v2.6-pro"))).toBeUndefined();
       expect(workerChainFallback({ source, images: true }, chainStep("xiaomi", "mimo-v2.6-pro"))).toBeUndefined();
     }
     // A chain selection whose frozen route is not a step of its chain never hops.

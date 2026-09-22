@@ -30,11 +30,7 @@ guards do not receive the parent launch permission, even when reusing a provider
 previously guarded for the parent. GPT-family restrictions remain mandatory.
 Automatic metered requests while Go is configured still require the existing
 strict, short-lived, credential-bound quota evidence; unknown quota, outages,
-and authentication failures do not grant access. The only automatic paid route is
-the reviewed Xiaomi Singapore Token Plan step of the default worker chain, and
-only through its own `paid-routes.json` entry (see below); the parent session's
-Inco approval never widens that. Without configured Go, the existing metered
-policy is unchanged.
+and authentication failures do not grant access. Xiaomi's dedicated Singapore Token Plan endpoint is a prepaid subscription, not its separate pay-as-you-go API. It does not need a paid-route grant. General Xiaomi API endpoints remain metered and guarded. A parent session's Inco approval never widens worker permissions.
 
 Policy denials use a deterministic message without transient-status keywords.
 Pi's native retry classifier treats this denial as nonretryable; real transient
@@ -55,23 +51,15 @@ same-plan retry. No CLI is launched to resolve a profile.
 
 Omitting both selectors uses the matching parent profile's `workerDefault`, or
 `reviewerDefault` for runs containing reviewers. Profiles that resolve the
-built-in `steak-pi/opencode-go` route (the built-in default, Astra's worker and
-reviewer defaults, GLM's worker default) resolve the ordered **automatic chain**
-and record it as provenance:
+built-in `steak-pi/mimo-v2-6-pro` default resolve one **automatic chain** for workers and reviewers and record it as provenance:
 
-- text/code: `opencode-go/deepseek-v4.1-flash` → `opencode-go/glm-5.3-flash` →
-  `xiaomi/mimo-v2.6-pro`;
-- multimodal (`requireImages: true`): `xiaomi/mimo-v2.6-pro` →
-  `zai/glm-5.3-flash`.
+- Text and images: `xiaomi/mimo-v2.6-pro` → `zai/glm-5.3-flash`.
+
+The main app also defaults to MiMo V2.6 Pro. Explicitly chosen profiles remain exact; selecting OpenCode Go does not select this cross-provider chain.
 
 The first step that is authenticated, present in the operator's available
 catalog, capability-matching, has a native streaming adapter, and is spendable
-serves the run. A reviewed paid step (Xiaomi Singapore **Token Plan**
-`mimo-v2.6-pro`, exact `https://token-plan-sgp.xiaomimimo.com/v1`) additionally
-needs the entry in `~/.pi/agent/paid-routes.json`; that allowlist is re-read on
-every selection and every hop, so revoking it stops spending immediately. No
-metered/PAYG route and no GPT-family route is ever auto-selected: Luna is
-deliberately absent from both chains.
+serves the run. MiMo must use the exact Singapore Token Plan host, with `/v1` or `/anthropic`; ZAI must use its coding subscription endpoint. Lookalike hosts and general paid API endpoints do not qualify. No INCO, OpenRouter, metered/PAYG or GPT-family route is part of this default chain.
 
 A run frozen as an automatic chain may hop to the next eligible chain route at
 runtime — this is real routing, not a selection shortcut. The hop happens only
@@ -151,6 +139,32 @@ that same snapshot instead of maintaining a second list. The provider catalog
 global-API bypass decision stay intact; the published `currentModel` is separate from the
 choices, so a running route keeps running and is never re-added as a selectable choice.
 
+The picker scope is curated by the *selected harness*: the one UltraTerm launched this
+session (`ULTRATERM_HARNESS_ID` / `ULTRATERM_HARNESS`, `ULTRATERM_HARNESS_DIR`, and the
+app-bundled `ULTRATERM_HARNESS_RESOURCES` fallback; live operator manifests live under
+`~/.config/ultraterm/harnesses/{harness}.json`). `src/harness-profiles.ts` parses only
+exact `--model provider/id` profiles with an explicit valid `--thinking` level, and both
+pickers keep exactly those routes of the native snapshot that are authenticated and
+policy-valid. The sidebar profile list, native `/model` and the composer therefore show the
+same set: adding, renaming or removing a profile needs no code change and no route is
+hard-coded. Profile labels and thinking levels are metadata only — tools, system prompts,
+extensions, launchers and credentials in a manifest are never executed or transferred.
+
+Unknown metadata fails open. When the selected harness has no readable manifest anywhere
+(broken or packaged install, malformed or unreadable file) the scope is unknown and the
+previous native availability is kept rather than hiding every model; a manifest that exists
+is authority, including one that declares no native route (empty picker, matching the
+sidebar). A manifest route the native runtime cannot offer — a removed OpenRouter DeepSeek
+Flash route or a policy-refused GPT route — never becomes a choice.
+
+Dispatch stays unfiltered. Curation lives only in the picker snapshot; `Provider.getModels()`
+/ `ModelRuntime.getModels()` keep every route, and ordered-chain membership plus USAP worker
+preflight check that published dispatch catalog (`registry.getAll()`) instead of the curated
+choices, so a fallback step such as `opencode-go/glm-5.3-flash` remains eligible even when
+the operator did not list it as a separate picker profile. A standalone Steak Pi run without
+the UltraTerm launcher metadata, and every route a manifest does not configure, keeps its
+normal authentication and dispatch behavior.
+
 The OpenRouter DeepSeek V4 Flash / V4.1 Flash line is removed entirely from both pickers —
 canonical `deepseek/deepseek-v4-flash` and `deepseek/deepseek-v4.1-flash`, the released
 `-0731` and `:batch` forms, the `~deepseek/…-latest` aliases and the unversioned
@@ -162,13 +176,14 @@ provider-scoped (`provider === "openrouter"`) and slug-exact, so `deepseek-v4-pr
 other provider keep every route they have. No provider is hidden wholesale and no substring
 match can reach another provider's route.
 
-Hot reload: `createConfigRefresher` polls `models.json`, `auth.json` and
-`models-store.json` (mtime/size) and re-applies the native registry with
-`allowNetwork:false` once per observed revision. Adding, renaming or removing a configured
-provider/model, and adding or removing a credential, therefore reach both pickers in an
-already-running session without a restart, with no inference, no model switch and no
-network work. Malformed, slow or aborted config keeps the last good publication and backs
-off; a partial/error native snapshot is never published over it.
+Hot reload: `createConfigRefresher` polls `models.json`, `auth.json`,
+`models-store.json` and the selected harness manifest (mtime/size) and re-applies the native
+registry with `allowNetwork:false` once per observed revision. Adding, renaming or removing a
+configured provider/model or harness profile, and adding or removing a credential,
+therefore reach both pickers in an already-running session without a restart, with no
+inference, no model switch and no network work. Malformed, slow or aborted config keeps the
+last good publication and backs off; a partial/error native snapshot is never published
+over it.
 
 Limits of already-loaded agents: this is loaded extension code. A Pi process or session
 that started before this rule was installed keeps the previous availability — the guard is
@@ -213,9 +228,15 @@ prove zero requests for forbidden extension, models.json, model-level API change
 and friendly-alias routes, plus allowed GLM-style dispatch with an intact image URL.
 Each fixture asserts the SDK's actual selected API, not merely its JSON input.
 `test/model-visibility.test.ts` drives the real Pi 0.87 `ModelRuntime`/`ModelRegistry`
-without network: it proves the OpenRouter DeepSeek Flash routes are gone from the native
-availability snapshot while the provider catalog keeps them, that Go/INCO and other
-providers are untouched, and that `catalogModels` publishes exactly
-`getAvailableSnapshot()` after a config add, label/id rename, provider removal and a
-credential removal. Allowed live probes remain a separate release check. Production
+without network, with `HOME`/`PI_CODING_AGENT_DIR` isolated and ambient provider credentials
+cleared so the operator's live auth and manifests cannot decide an assertion: it proves the
+OpenRouter DeepSeek Flash routes are gone from the native availability snapshot while the
+provider catalog keeps them, that Go/INCO and other providers are untouched, that the
+curated harness scope is the only picker source, that unknown metadata keeps the full native
+catalog, that a manifest with no native route is an empty picker, that `catalogModels`
+publishes exactly `getAvailableSnapshot()` after a config add, label/id rename, provider
+removal and credential removal, and that the unfiltered dispatch catalog still serves the
+chain fallback. `test/model-profile-catalog.test.ts` covers profile additions, removals and
+renames for the sidebar list and the shared scope plus the native/composer/sidebar equality.
+Allowed live probes remain a separate release check. Production
 failures must never trigger OpenRouter GPT fallback.

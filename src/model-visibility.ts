@@ -1,6 +1,10 @@
 /**
- * Shared availability rule for the OpenRouter DeepSeek Flash routes the
- * operator removed from the interactive model pickers.
+ * Shared availability rules for the interactive model pickers.
+ *
+ * One rule is the curated scope: native `/model` and the UltraTerm composer list
+ * show the profiles of the selected harness manifest (see `harness-profiles.ts`)
+ * instead of every authenticated provider-library model. The other is the
+ * OpenRouter DeepSeek Flash removal.
  *
  * Native `/model` and the UltraTerm composer picker both render the same native
  * availability snapshot (`ModelRegistry.getAvailable()` ===
@@ -59,4 +63,15 @@ export function isRemovedOpenRouterFlash(model: Route): boolean {
  */
 export function sharedPickerModels<T extends Route>(models: readonly T[]): T[] {
   return models.filter(model => !isRemovedOpenRouterFlash(model));
+}
+
+/**
+ * Curated scope: keep only exact `provider/id` routes the selected harness
+ * manifest configures. `undefined` means the harness manifest is unknown (no live
+ * or bundled manifest yet), and callers keep the previous availability rather
+ * than hiding every model in a broken install. An empty set is authority too: a
+ * harness whose manifest declares no native route shows no picker choices.
+ */
+export function curatedPickerModels<T extends Route>(models: readonly T[], scope: ReadonlySet<string> | undefined): T[] {
+  return scope ? models.filter(model => scope.has(`${model.provider}/${model.id}`)) : models.filter(() => true);
 }

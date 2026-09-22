@@ -29,18 +29,9 @@ conflicting selectors and unavailable routes fail before launch.
 
 ## Per-parent defaults
 
-Built-in defaults use OpenCode Go for routine workers (the user's own Go key is required):
+All built-in parent profiles default workers and reviewers to **MiMo V2.6 Pro** on the Xiaomi Token Plan, with **GLM 5.3 Flash on the ZAI coding subscription** as the only automatic fallback. The main app also defaults to MiMo V2.6 Pro.
 
-| Parent profile | Routine worker | Reviewer-containing run |
-| --- | --- | --- |
-| `steak-pi/opencode-go` | `opencode-go/deepseek-v4.1-flash` | `opencode-go/deepseek-v4.1-flash` |
-| `steak-pi/glm-5-3-flash` | `opencode-go/deepseek-v4.1-flash` | `opencode-go/deepseek-v4.1-flash` |
-| `steak-pi/gpt-6-astra` | `opencode-go/deepseek-v4.1-flash` | `openai-codex/gpt-6-astra` |
-
-Go can retry once on `opencode-go/glm-5.3-flash` after a transient failure before
-visible output. Authentication, billing, and region errors never trigger fallback.
-For image inspection, explicitly select an authenticated image-capable route with
-`requireImages: true`; Go's bundled primary is text-only.
+The same chain serves text and image work; use `requireImages: true` for image inspection. Fallback is restricted to eligible failures before any content or tool activity. Authentication, permission, region and context errors never trigger a hop. Explicit run model/profile selections stay exact, including OpenCode Go and approved paid profiles.
 
 Native profiles are read from the existing JSON harness manifests under
 `~/.config/ultraterm/harnesses/`. A profile with one explicit
@@ -48,6 +39,14 @@ Native profiles are read from the existing JSON harness manifests under
 Only model, thinking and worker-default metadata are consumed. Executables,
 other arguments and credentials are never executed or copied by this resolver.
 The built-in routes also work when that directory is absent.
+
+The manifest of the harness UltraTerm launched this session is also the picker
+scope: native `/model` and the UltraTerm composer list show exactly its exact
+`provider/model` profiles that are authenticated and policy-valid, so they agree
+with the sidebar profile list and a profile add, rename or removal needs no code
+change. When no manifest is readable the pickers keep the previous native
+availability instead of hiding every model, and dispatch and fallback eligibility
+are never narrowed by the manifest — see [`MODEL-ROUTING.md`](./MODEL-ROUTING.md).
 
 An owner may add these fields to a profile entry to configure GLM for both
 routine and reviewer work from that parent:
