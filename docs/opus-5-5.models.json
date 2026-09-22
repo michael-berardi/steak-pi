@@ -26,8 +26,8 @@
           "cost": {
             "input": 4,
             "output": 20,
-            "cacheRead": 0,
-            "cacheWrite": 0
+            "cacheRead": 0.2,
+            "cacheWrite": 5
           },
           "compat": {
             "forceAdaptiveThinking": true
