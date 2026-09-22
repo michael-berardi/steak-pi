@@ -114,6 +114,27 @@ describe("USAP 1.1 explicit model/profile contract", () => {
     expect(explicit.selection).toMatchObject({ source: "override", provider: "zai", modelId: "glm-5.3-flash" });
     expect(explicit.selection.chainRoutes).toBeUndefined();
   });
+  it("treats the shipped Astra reviewerDefault as an expert chain, not an exact-only route", () => {
+    const profiles = BUILTIN_WORKER_PROFILES.map(p => p.id === "steak-pi/glm-5-3-flash"
+      ? { ...p, reviewerDefault: { profile: "steak-pi/gpt-6-astra" } }
+      : p);
+    const request = { tasks: [{ label: "r", task: "review", role: "reviewer" as const }] };
+    const selected = choose(glm, request, registry(), profiles);
+    expect(selected.model).toBe(astra);
+    expect(selected.selection).toMatchObject({ source: "chain", profile: "steak-pi/gpt-6-astra",
+      chainRoutes: ["openai-codex/gpt-6-astra", "xiaomi/mimo-v2.6-pro", "zai/glm-5.3-flash"] });
+    expect(choose(glm, request, registry([glm, mimoPro]), profiles).model).toBe(mimoPro);
+    expect(choose(glm, { ...request, profile: "steak-pi/gpt-6-astra" }, registry(), profiles).selection.source).toBe("override");
+  });
+  it("skips text-only chain heads for image requests rather than rejecting a capable fallback", () => {
+    const textOnlyAstra = { ...astra, input: ["text"] } as Model;
+    const textOnlyMimo = { ...mimoPro, input: ["text"] } as Model;
+    const reviewer = choose(glm, { requireImages: true, tasks: [{ label: "r", task: "inspect image", role: "reviewer" }] },
+      registry([textOnlyAstra, mimoPro, glm]));
+    expect(reviewer.model).toBe(mimoPro);
+    const worker = choose(glm, { requireImages: true }, registry([textOnlyMimo, glm]));
+    expect(worker.model).toBe(glm);
+  });
   it("keeps an explicit chain-step model exact: no cross-provider chain provenance", () => {
     const result = choose(astra, { model: "opencode-go/deepseek-v4.1-flash" });
     expect(result.model).toBe(go);

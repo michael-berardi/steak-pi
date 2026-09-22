@@ -105,6 +105,9 @@ async function nativeRuntime(configDir: string) {
   guardModelRuntime(runtime);
   const registry = new ModelRegistry(runtime);
   await registry.refresh({ allowNetwork: false, signal: AbortSignal.timeout(5000) });
+  // File-backed auth can settle after the model refresh; explicitly await the
+  // real runtime's availability read before asserting its synchronous snapshot.
+  await runtime.getAvailable();
   return { runtime, registry };
 }
 

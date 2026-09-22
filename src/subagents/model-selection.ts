@@ -20,12 +20,14 @@ export interface WorkerProfile {
   /** Resolve the final automatic worker chain instead of this profile's head model.
    * Only the built-in default profile declares it; explicit selectors never chain. */
   autoChain?: boolean;
+  /** Astra defaults prefer the expert chain only for reviewer-role runs. */
+  autoReviewChain?: boolean;
 }
 export const BUILTIN_WORKER_PROFILES: readonly WorkerProfile[] = [
   { id: "steak-pi/glm-5-3-flash", model: "zai/glm-5.3-flash", thinking: "high",
     workerDefault: { profile: "steak-pi/mimo-v2-6-pro" },
     reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
-  { id: "steak-pi/gpt-6-astra", model: "openai-codex/gpt-6-astra", thinking: "medium",
+  { id: "steak-pi/gpt-6-astra", model: "openai-codex/gpt-6-astra", thinking: "medium", autoReviewChain: true,
     workerDefault: { profile: "steak-pi/mimo-v2-6-pro" },
     // Reviewers keep the same automatic resolution as every other profile: the
     // expert review chain (scarce Astra first, then the routine subscription
@@ -157,7 +159,7 @@ export function resolveWorkerSelection(
   const chosen = explicit ? selector({ ...(requested.model !== undefined ? { model: requested.model } : {}), ...(requested.profile !== undefined ? { profile: requested.profile } : {}) }, "USAP selection") : configured ? selector(configured, "USAP profile default") : undefined;
   const profile = chosen?.profile ? profileById(chosen.profile) : undefined;
   // Automatic defaults resolve the final chain; an explicit selector stays exact.
-  const automatic = !explicit && (chosen === undefined || (chosen.model === undefined && profile?.autoChain === true));
+  const automatic = !explicit && (chosen === undefined || (chosen.model === undefined && (profile?.autoChain === true || (review && profile?.autoReviewChain === true))));
   // The default reviewer role rides the expert review chain: the scarce Astra
   // expert through its paid Codex OAuth coding plan when available, then the same
   // routine subscription routes — never a metered substitute. Routine workers
@@ -167,7 +169,7 @@ export function resolveWorkerSelection(
     : (input.requireImages === true ? DEFAULT_MULTIMODAL_WORKER_CHAIN : DEFAULT_TEXT_WORKER_CHAIN);
   const key = automatic ? undefined : profile?.model ?? chosen?.model;
   const model = automatic
-    ? selectChainedWorkerModel(registry, chain, options)
+    ? selectChainedWorkerModel(registry, chain, { ...options, requireImages: input.requireImages === true })
     : key ? findModel(key, registry)
     : selectWorkerModel(parent, input.tasks.map((task) => task.role), registry, options);
   assertSubscriptionRequest(model, registry.isUsingOAuth(model));
