@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { BUILTIN_WORKER_PROFILES, loadWorkerProfiles, resolveWorkerSelection } from "../src/subagents/model-selection.ts";
-import type { ChainOptions } from "../src/model-route-policy.ts";
+import { DEFAULT_TEXT_WORKER_CHAIN, type ChainOptions } from "../src/model-route-policy.ts";
 import type { DispatchInput } from "../src/subagents/types.ts";
 
 type Model = Parameters<typeof resolveWorkerSelection>[0];
@@ -47,12 +47,16 @@ describe("USAP 1.1 explicit model/profile contract", () => {
   it("selects any authorized native provider without a hard-coded model allowlist", () => {
     expect(choose(astra, { model: "custom/custom-vision" }).model).toBe(other);
   });
-  it("uses the same automatic chain for an unmapped parent and its reviewers", () => {
-    for (const role of ["worker", "reviewer"] as const) {
-      const result = choose(other, { tasks: [{ label: "leaf", task: "test", role }] });
-      expect(result.model).toBe(mimoPro);
-      expect(result.selection).toMatchObject({ source: "chain", chainRoutes: ["xiaomi/mimo-v2.6-pro", "zai/glm-5.3-flash"] });
-    }
+  it("keeps the automatic worker chain routine while reviewers get the expert chain", () => {
+    // Routine workers stay on MiMo→ZAI regardless of role wording; the reviewer
+    // role alone is what prefers the scarce Astra expert first.
+    const worker = choose(other, { tasks: [{ label: "leaf", task: "test", role: "worker" }] });
+    expect(worker.model).toBe(mimoPro);
+    expect(worker.selection).toMatchObject({ source: "chain", chainRoutes: ["xiaomi/mimo-v2.6-pro", "zai/glm-5.3-flash"] });
+    const reviewer = choose(other, { tasks: [{ label: "leaf", task: "test", role: "reviewer" }] });
+    expect(reviewer.model).toBe(astra);
+    expect(reviewer.selection).toMatchObject({ source: "chain",
+      chainRoutes: ["openai-codex/gpt-6-astra", "xiaomi/mimo-v2.6-pro", "zai/glm-5.3-flash"] });
   });
   it("selects GLM→paid Codex and retains Astra medium", () => {
     const result = choose(glm, { model: "openai-codex/gpt-6-astra" });
@@ -64,7 +68,7 @@ describe("USAP 1.1 explicit model/profile contract", () => {
   it("preserves omitted default routes and configured per-profile overrides", () => {
     expect(choose(astra).model).toBe(mimoPro);
     expect(choose(astra).selection.source).toBe("chain");
-    expect(choose(astra, { tasks: [{ label: "r", task: "review", role: "reviewer" }] }).model).toBe(mimoPro);
+    expect(choose(astra, { tasks: [{ label: "r", task: "review", role: "reviewer" }] }).model).toBe(astra);
     expect(choose(glm).model).toBe(mimoPro);
     const profiles = [{ id: "steak-pi/gpt-6-astra", model: "openai-codex/gpt-6-astra", workerDefault: { profile: "steak-pi/glm-5-3-flash" } }, BUILTIN_WORKER_PROFILES[0]];
     expect(choose(astra, {}, registry(), profiles).model).toBe(glm);
@@ -89,12 +93,22 @@ describe("USAP 1.1 explicit model/profile contract", () => {
     // Go routes are no automatic chain step: with neither subscription step present, fail closed.
     expect(() => choose(astra, {}, registry([go]), BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => true })).toThrow(/no fallback was selected/);
   });
-  it("routes automatic reviewer defaults through the same MiMo→ZAI chain, with exact explicit reviewers", () => {
+  it("routes automatic reviewer defaults through the Astra-first expert chain, with honest fallback and exact explicit reviewers", () => {
     const review = choose(astra, { tasks: [{ label: "r", task: "review", role: "reviewer" }] });
-    expect(review.model).toBe(mimoPro);
-    expect(review.selection).toMatchObject({ source: "chain", provider: "xiaomi", modelId: "mimo-v2.6-pro",
+    expect(review.model).toBe(astra);
+    expect(review.selection).toMatchObject({ source: "chain", provider: "openai-codex", modelId: "gpt-6-astra",
       parentProfile: "steak-pi/gpt-6-astra", profile: "steak-pi/mimo-v2-6-pro",
-      chainRoutes: ["xiaomi/mimo-v2.6-pro", "zai/glm-5.3-flash"] });
+      chainRoutes: ["openai-codex/gpt-6-astra", "xiaomi/mimo-v2.6-pro", "zai/glm-5.3-flash"] });
+    // Astra unavailable (not authenticated/not catalogued): the run honestly
+    // resolves the routine MiMo→ZAI subscription chain instead.
+    expect(choose(astra, { tasks: [{ label: "r", task: "review", role: "reviewer" }] }, registry([glm, mimoPro])).model).toBe(mimoPro);
+    // A metered Astra substitute (API-key endpoint, no Codex OAuth) is never an
+    // expert: the chain skips it and keeps the honest routine fallback.
+    const metered = registry([{ ...astra, baseUrl: "https://api.openai.com/v1" } as Model, glm, mimoPro]);
+    expect(choose(astra, { tasks: [{ label: "r", task: "review", role: "reviewer" }] }, metered).model).toBe(mimoPro);
+    // requireImages keeps the expert chain capability-matching end to end.
+    const visual = choose(astra, { tasks: [{ label: "r", task: "review", role: "reviewer" }], requireImages: true });
+    expect(visual.model).toBe(astra);
     // An explicit reviewer choice still wins exactly, with override provenance.
     const explicit = choose(astra, { model: "zai/glm-5.3-flash", tasks: [{ label: "r", task: "review", role: "reviewer" }] });
     expect(explicit.selection).toMatchObject({ source: "override", provider: "zai", modelId: "glm-5.3-flash" });
@@ -105,6 +119,28 @@ describe("USAP 1.1 explicit model/profile contract", () => {
     expect(result.model).toBe(go);
     expect(result.selection).toMatchObject({ source: "override", provider: "opencode-go", modelId: "deepseek-v4.1-flash" });
     expect(result.selection.chainRoutes).toBeUndefined();
+  });
+  it("keeps parent-added GPT-6 Sol/Luna profiles explicit-only", () => {
+    const sol = { ...astra, id: "gpt-6-sol", name: "GPT-6 Sol" } as Model;
+    const added = BUILTIN_WORKER_PROFILES.filter((profile) => ["steak-pi/gpt-6-sol", "steak-pi/gpt-6-luna"].includes(profile.id));
+    expect(added.map((profile) => profile.id)).toEqual(["steak-pi/gpt-6-sol", "steak-pi/gpt-6-luna"]);
+    for (const profile of added) {
+      // Never an automatic worker default: routine workers stay on the chain.
+      expect(profile.workerDefault).toEqual({ profile: "steak-pi/mimo-v2-6-pro" });
+      expect(DEFAULT_TEXT_WORKER_CHAIN.some((step) => step.id === profile.model.split("/")[1])).toBe(false);
+    }
+    // Explicit selection is exact, with the profile's high thinking preference.
+    const explicit = choose(astra, { profile: "steak-pi/gpt-6-sol" }, registry([astra, sol, glm, mimoPro]));
+    expect(explicit.model).toBe(sol);
+    expect(explicit.selection).toMatchObject({ source: "override", provider: "openai-codex", modelId: "gpt-6-sol", profile: "steak-pi/gpt-6-sol" });
+    expect(explicit.thinkingLevel).toBe("high");
+    // A Sol parent keeps workers on the routine chain and reviewers on the
+    // expert chain (Astra first) — Sol itself is never an automatic default.
+    const solParent = choose(sol, {}, registry([astra, sol, glm, mimoPro]));
+    expect(solParent.model).toBe(mimoPro);
+    expect(solParent.selection).toMatchObject({ source: "chain", parentProfile: "steak-pi/gpt-6-sol" });
+    const solReview = choose(sol, { tasks: [{ label: "r", task: "review", role: "reviewer" }] }, registry([astra, sol, glm, mimoPro]));
+    expect(solReview.model).toBe(astra);
   });
   it("requires the authenticated available catalog before operator selection includes a route", () => {
     const approved = { approvePaidRoute: () => true };

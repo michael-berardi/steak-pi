@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.7 — unreleased, staged for review
+
+- **Scarce Astra expert-review default.** Runs containing reviewers resolve an Astra-first expert review chain (`openai-codex/gpt-6-astra` via the paid Codex OAuth coding plan, then the routine MiMo V2.6 Pro → ZAI coding GLM 5.3 Flash subscription order) instead of the routine chain. A metered substitute (batch id, API-key endpoint) never serves as the expert; an unavailable Astra honestly falls back to the routine chain; a reviewer frozen on Astra gets no runtime hop, so a failed expert review is reported, never silently downgraded. Astra remains out of every routine worker chain, explicit model/profile overrides stay exact, and parent-added `steak-pi/gpt-6-sol` / `steak-pi/gpt-6-luna` are explicit-selection profiles only whose `workerDefault` keeps workers on the routine chain.
+- **Expert-review end-gate in the worker contract.** The bounded child prompt states that USAP grants no commit/push/deploy permission, requires exactly one bounded Astra final review before commit/push/deploy, and forbids claiming or fabricating expert approval when Astra review is unavailable. Protocol docs encode the same end-gate; role-routing tests pin the expert chain, the honest fallback and the explicit-only Sol/Luna profiles.
+
 ## 0.7.6 — unreleased, staged for review
 
 - Ship an opt-in, credential-free first-party Opus 5.5 model fragment with adaptive thinking and explicit high effort compatibility tests for Pi 0.87. No SDK/runtime patch, automatic activation, or provider auth replacement.

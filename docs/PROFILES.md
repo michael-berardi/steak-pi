@@ -29,9 +29,18 @@ conflicting selectors and unavailable routes fail before launch.
 
 ## Per-parent defaults
 
-All built-in parent profiles default workers and reviewers to **MiMo V2.6 Pro** on the Xiaomi Token Plan, with **GLM 5.3 Flash on the ZAI coding subscription** as the only automatic fallback. The main app also defaults to MiMo V2.6 Pro.
+Routine workers on every built-in parent profile default to **MiMo V2.6 Pro** on the Xiaomi Token Plan, with **GLM 5.3 Flash on the ZAI coding subscription** as the only automatic fallback. The main app also defaults to MiMo V2.6 Pro.
 
-The same chain serves text and image work; use `requireImages: true` for image inspection. Fallback is restricted to eligible failures before any content or tool activity. Authentication, permission, region and context errors never trigger a hop. Explicit run model/profile selections stay exact, including OpenCode Go and approved paid profiles.
+Runs containing reviewers resolve the **expert review chain** instead:
+`openai-codex/gpt-6-astra` (paid Codex OAuth coding plan, when authenticated)
+first, then the same MiMo → ZAI order. Astra is the scarce expert for hard
+planning/debugging and review/validation — never routine implementation. A
+metered substitute never serves as the expert, an unavailable Astra is honestly
+reported, and Astra-frozen reviewer runs never hop at runtime. Weaker
+implementers must request exactly one bounded Astra final review before their
+work is committed, pushed, or deployed, and must never claim expert approval
+that did not happen; USAP instructions grant no commit/push/deploy permission.
+The same chain serves text and image work; use `requireImages: true` for image inspection. Fallback is restricted to eligible failures before any content or tool activity. Authentication, permission, region and context errors never trigger a hop. Explicit run model/profile selections stay exact, including OpenCode Go, GPT-6 Sol/Luna and approved paid profiles.
 
 Native profiles are read from the existing JSON harness manifests under
 `~/.config/ultraterm/harnesses/`. A profile with one explicit
