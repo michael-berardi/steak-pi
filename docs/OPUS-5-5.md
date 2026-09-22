@@ -34,8 +34,9 @@ profile or existing defaults. Launch arguments are only:
 --model anthropic/claude-opus-5-5 --thinking high
 ```
 
-Its worker default stays on the same explicit first-party profile, never a
-substitute provider. No new automatic fallback or paid-route approval is added.
+Default workers retain MiMo V2.6 Pro and its existing ZAI fallback, like every
+other profile. Opus requires explicit selection. No new automatic Opus fallback
+or paid-route approval is added.
 
 ## Compatibility proof and limits
 
