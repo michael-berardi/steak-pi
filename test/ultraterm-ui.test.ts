@@ -47,7 +47,7 @@ describe('Pi UI machine control', () => {
       expect(h.messages).toEqual([]); expect(h.pi.setModel).not.toHaveBeenCalled();
     } finally { h.shutdown(); vi.useRealTimers(); vi.unstubAllEnvs(); }
   });
-  it('shares all four native routes and honors scope over registry and metadata', () => {
+  it('shares all active native routes while retaining scoped effort preferences', () => {
     const h = harness();
     const models = [h.target, h.prior, { provider: 'opencode-go', id: 'deepseek-v4.1-flash' }, { provider: 'inco', id: 'glm-5.3-flash:fast' }];
     h.context.modelRegistry.getAvailable = () => models;
@@ -55,7 +55,9 @@ describe('Pi UI machine control', () => {
       'zai/glm-5.3-flash', 'openai-codex/gpt-6-astra', 'opencode-go/deepseek-v4.1-flash', 'inco/glm-5.3-flash:fast',
     ]);
     h.context.scopedModels = [{ model: models[3], thinkingLevel: 'high' }];
-    expect(catalogModels(h.context, () => [profile])).toEqual([expect.objectContaining({ provider: 'inco', thinking: 'high' })]);
+    const catalog = catalogModels(h.context, () => [profile]);
+    expect(catalog).toHaveLength(4);
+    expect(catalog).toContainEqual(expect.objectContaining({ provider: 'inco', thinking: 'high' }));
     h.context.modelRegistry.hasConfiguredAuth = () => false;
     expect(catalogModels(h.context, () => [])).toEqual([]);
   });

@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.7.2 — unreleased, staged for review (USAP 1.2)
+
+This entry records candidate work only. The package is not published, not installed and
+not released; nothing below is installed-runtime or native end-to-end verification. The
+new and changed files are still uncommitted/untracked in the candidate tree (the parent
+owns the commit).
+
+- **Pi 0.87.0 (candidate).** Admit 0.87.0 to the peer range
+  (`0.85.1 || 0.86.0 || 0.86.1 || 0.87.0`) and pin it for development/verification
+  dependencies (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`); package
+  version moves to `0.7.2`. The bundled Pi archive pin and the native version gate live in
+  UltraTerm resources/`src-tauri` and are **pending**: no local activation, no packaged-app
+  acceptance and no signed-installer path has been exercised, and running sessions are
+  untouched.
+- **Final automatic worker chains (source-level).** `DEFAULT_TEXT_WORKER_CHAIN` =
+  opencode-go/deepseek-v4.1-flash → opencode-go/glm-5.3-flash → xiaomi/mimo-v2.6-pro
+  (Token Plan); `DEFAULT_MULTIMODAL_WORKER_CHAIN` = xiaomi/mimo-v2.6-pro →
+  zai/glm-5.3-flash. Chain steps require configured auth, availability and either a
+  subscription/local route or an injected paid-route grant, and fail closed with
+  "no fallback was selected" otherwise; an unapproved paid step is never taken. No
+  automatic GPT-5.6 Luna worker or reviewer exists, and explicit `model`/`profile`
+  selections stay exact. Focused unit tests pass; no native/UI end-to-end or provider spend
+  is claimed.
+- **Steered durable inbox, bounded receipt waits and truthful receipts (candidate, under
+  review).** Addressed messages are claimed at the between-tools boundary with a
+  sender-UUID pin, `waitMs` (1–120000) is served by an event-driven waiter, and receipts
+  expose `waitSupported`/`waitSatisfied`/`timedOut` plus `hostRegistered`/`hostReady`/
+  `supportsSteering`/`deliveryState` diagnostics. A receipt is durable mailbox state only:
+  `recorded:true` is never agent acknowledgment or a model read, and `agentAcknowledged`/
+  `modelRead` stay `false`. Focused CLI/mailbox/wait tests pass; the real native-agent/TUI
+  end-to-end acceptance gate is **still pending**, so this is staged, not shipped.
+- **Deterministic edit diagnostics (candidate, under review).** New
+  `src/verification-artifacts.ts` (private retained raw stdout/stderr/producer status) and
+  `src/verification-report.ts` (explicit bounded Vitest JSON report validation), and
+  `verify-after-edit` now runs bash with a scrubbed `BASH_ENV`/`ENV` and appends the
+  retained-artifact line to its receipt. The stale, never-run orphan
+  `extensions/verification-tests/receipt.test.ts` was removed. Some branches (env scrub,
+  report `configurationError`, admission contention) still lack a committed CI test, so this
+  is staged for review rather than declared complete.
+- **Session-replacement checkpoint repair (STILL UNDER REVIEW — do not ship as-is).**
+  `CheckpointOwnershipError`/`sameProcess` classification, an in-process owner registry,
+  bounded teardown that always closes the store, and in-process collision degradation to
+  memory-only. An independent review found the same-process reclaim rule can unlink a
+  *live* owner's lock from a second isolate (`worker_threads`) that shares the pid and a
+  different registry key, which can lose a running worker's checkpoint; the reclaim rule
+  is therefore not accepted. No live lock, process, runtime or setting was touched.
+- **Local MiMo credit dial (UltraTerm UI, not this package).** The shared API/ledger/
+  enrollment scope is dropped. The dial reports the current calendar month's usage as a
+  monthly percentage computed from local telemetry only, with no `Local estimate` label
+  (an unobtrusive tooltip may identify the device/calendar scope). It is never an
+  API-reported balance. Recorded here only so it is not mistaken for a shipped shared
+  feature.
+- No release, publication, npm push, native build or installed-runtime verification is
+  claimed by this entry.
+
 ## 0.7.1 — unreleased (USAP 1.2)
 
 - Todo maintenance corrections, staged for review: an identical `init` list keeps

@@ -1,7 +1,8 @@
-import { promises as fs, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { promises as fs, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import verifyAfterEditExtension, {
   formatAppendix,
@@ -9,7 +10,14 @@ import verifyAfterEditExtension, {
   runVerify,
   shellInvocation,
   shouldVerify,
+  verificationTreeHash,
 } from "../extensions/verify-after-edit.ts";
+
+const storage = vi.hoisted(() => ({ root: undefined as string | undefined }));
+vi.mock("../src/verification-artifacts.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/verification-artifacts.ts")>();
+  return { ...actual, beginVerification: (root?: string) => actual.beginVerification(root ?? storage.root) };
+});
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -28,7 +36,7 @@ const CONFIG = { command: "npm run -s typecheck", failLimit: 2, timeoutMs: 90_00
 const tempDirs: string[] = [];
 
 async function tempDir(): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "steak-pi-verify-"));
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "steak-pi-verify-")));
   tempDirs.push(dir);
   return dir;
 }
@@ -51,6 +59,8 @@ async function writeConfig(
     JSON.stringify({ verify }),
   );
 }
+
+beforeEach(async () => { storage.root = path.join(await tempDir(), "logs"); });
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -81,13 +91,33 @@ describe("verify-after-edit", () => {
 
   it("uses a fixed shell executable and passes the configured command as one argument", () => {
     expect(shellInvocation("echo $HOME", "darwin")).toEqual({
-      executable: "/bin/sh",
-      args: ["-c", "echo $HOME"],
+      executable: "/bin/bash",
+      args: ["--noprofile", "--norc", "-o", "pipefail", "-c", "echo $HOME"],
     });
     expect(shellInvocation("echo %USERPROFILE%", "win32")).toEqual({
       executable: "C:\\Windows\\System32\\cmd.exe",
       args: ["/d", "/s", "/c", "echo %USERPROFILE%"],
     });
+  });
+
+  it("does not hide a failed pipeline producer behind a successful filter", async () => {
+    const cwd = await tempDir();
+    const result = await runVerify({ command: "false | true", failLimit: 2, timeoutMs: 2000 }, cwd);
+    expect(result.failed).toBe(true);
+  });
+
+  it("retains native reports and rejects failed suites or stale reports without rerunning", async () => {
+    const cwd = await tempDir();
+    const report = { success: true, numTotalTests: 1, numPassedTests: 1, numFailedTests: 0, numPendingTests: 0, numFailedTestSuites: 1, testResults: [{ status: "passed", assertionResults: [{ status: "passed" }] }, { status: "failed", assertionResults: [] }] };
+    const command = nodeCommand(`const fs=require('node:fs');fs.appendFileSync('runs','x');fs.writeFileSync('report.json',${JSON.stringify(JSON.stringify(report))})`);
+    const result = await runVerify({ command, failLimit: 2, timeoutMs: 2000, vitestReport: "report.json" }, cwd);
+    expect(result.failed).toBe(true);
+    expect(result.tail).toContain("1 failed suites");
+    expect(JSON.parse(await fs.readFile(path.join(result.artifact!, "native-report.json"), "utf8"))).toEqual(report);
+    expect(await fs.readFile(path.join(cwd, "runs"), "utf8")).toBe("x");
+    const stale = await runVerify({ command: "true", failLimit: 2, timeoutMs: 2000, vitestReport: "report.json" }, cwd);
+    expect(stale.failed).toBe(true);
+    expect(stale.tail).toContain("stale");
   });
 
   it("bounds failure output", async () => {
@@ -100,6 +130,8 @@ describe("verify-after-edit", () => {
     expect(result.failed).toBe(true);
     expect(result.tail).toHaveLength(4_000);
     expect(result.tail).toBe("x".repeat(4_000));
+    expect(await fs.readFile(path.join(result.artifact!, "stderr.log"), "utf8")).toBe("x".repeat(10_000));
+    expect(JSON.parse(await fs.readFile(path.join(result.artifact!, "result.json"), "utf8"))).toMatchObject({ failed: true, exitCode: 1, complete: true, bytes: 10_000 });
   });
 
   it("times out, cleans up the process tree, and accepts caller aborts", async () => {
@@ -110,7 +142,7 @@ describe("verify-after-edit", () => {
       "setInterval(() => {}, 1000)",
     );
     const timedOut = await runVerify({ command, failLimit: 2, timeoutMs: 40 }, cwd);
-    expect(timedOut).toEqual({
+    expect(timedOut).toMatchObject({
       failed: true,
       tail: "verification timed out after 40ms",
     });
@@ -124,7 +156,7 @@ describe("verify-after-edit", () => {
       timeoutMs: 5_000,
     }, cwd, controller.signal);
     setTimeout(() => controller.abort(), 40);
-    await expect(pending).resolves.toEqual({ failed: true, tail: "verification aborted" });
+    await expect(pending).resolves.toMatchObject({ failed: true, tail: "verification aborted" });
   });
 
   it("never executes project config when the event context is untrusted", async () => {
@@ -200,7 +232,7 @@ describe("verify-after-edit", () => {
     const second = await handler(event, ctx);
     expect(second.content.at(-1).text).toContain("attempt 2/3");
     expect(second.content.at(-1).text).toContain("changed");
-    expect(reads).toHaveBeenCalledTimes(2);
+    expect(reads.mock.calls.filter(([name]) => String(name).endsWith(path.join(".steak-pi", "config.json")))).toHaveLength(2);
   });
 
   it("reports the failure that reaches failLimit, then suppresses later runs", async () => {
@@ -243,5 +275,103 @@ describe("verify-after-edit", () => {
     expect(text).toContain("npm run -s typecheck");
     expect(text).toContain("error TS2322: x");
     expect(text).toContain("Fix the reported problem before finishing.");
+  });
+
+  it("hashes working-tree content, ignores ignored files, and never follows symlinks", async () => {
+    const cwd = await tempDir();
+    execFileSync("git", ["init", "--quiet", cwd]);
+    writeFileSync(path.join(cwd, ".gitignore"), "ignored\n");
+    writeFileSync(path.join(cwd, "file"), "a");
+    const first = verificationTreeHash(cwd);
+    expect(first).toMatch(/^[a-f0-9]{16}$/);
+    writeFileSync(path.join(cwd, "ignored"), "ignored content");
+    expect(verificationTreeHash(cwd)).toBe(first);
+    writeFileSync(path.join(cwd, "file"), "b");
+    expect(verificationTreeHash(cwd)).not.toBe(first);
+    symlinkSync("ignored", path.join(cwd, "link"));
+    const linked = verificationTreeHash(cwd);
+    writeFileSync(path.join(cwd, "ignored"), "different ignored content");
+    expect(verificationTreeHash(cwd)).toBe(linked);
+  });
+
+  it("debounces concurrent edits into one batch and appends a success receipt naming a private artifact root", async () => {
+    const cwd = await tempDir();
+    await fs.mkdir(path.join(cwd, ".steak-pi"), { recursive: true });
+    await fs.writeFile(path.join(cwd, ".steak-pi", "config.json"), JSON.stringify({ verify: { command: "printf x >> runs" } }));
+    const handler = registeredHandler();
+    const ctx = { cwd, isProjectTrusted: () => true, signal: undefined };
+    const event = { toolName: "edit", isError: false, content: [{ type: "text", text: "edited" }] };
+    const started = performance.now();
+    const pending = handler(event, ctx);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(await handler({ ...event, toolName: "write" }, ctx)).toBeUndefined();
+    const result = await pending;
+    expect(performance.now() - started).toBeGreaterThanOrEqual(790);
+    expect(await fs.readFile(path.join(cwd, "runs"), "utf8")).toBe("x");
+    expect(result.content[0]).toEqual(event.content[0]);
+    expect(result.content[1].text).toMatch(/^\[steak-pi\] verify passed: printf x >> runs \| tree=unavailable \| \d+ms\nRetained stdout, stderr, and producer status: .+$/);
+    const artifact = result.content[1].text.split("status: ")[1];
+    expect(artifact.startsWith(storage.root!)).toBe(true);
+    // A sequential edit is a new batch, never skipped by a last-run throttle.
+    await handler(event, ctx);
+    expect(await fs.readFile(path.join(cwd, "runs"), "utf8")).toBe("xx");
+  });
+
+  it("scrubs caller BASH_ENV and ENV so their scripts cannot run inside verification", async () => {
+    const cwd = await tempDir();
+    const bashEnv = path.join(cwd, "bash-env.sh");
+    const envScript = path.join(cwd, "env.sh");
+    const bashMarker = path.join(cwd, "bash-env-ran");
+    const envMarker = path.join(cwd, "env-ran");
+    await fs.writeFile(bashEnv, `touch ${shellQuote(bashMarker)}\n`);
+    await fs.writeFile(envScript, `touch ${shellQuote(envMarker)}\n`);
+    const saved = { BASH_ENV: process.env.BASH_ENV, ENV: process.env.ENV };
+    process.env.BASH_ENV = bashEnv;
+    process.env.ENV = envScript;
+    try {
+      const result = await runVerify({ command: "true", failLimit: 2, timeoutMs: 5_000 }, cwd, undefined, { artifactRoot: path.join(cwd, "logs") });
+      expect(result.failed).toBe(false);
+    } finally {
+      if (saved.BASH_ENV === undefined) delete process.env.BASH_ENV; else process.env.BASH_ENV = saved.BASH_ENV;
+      if (saved.ENV === undefined) delete process.env.ENV; else process.env.ENV = saved.ENV;
+    }
+    await expect(fs.access(bashMarker)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.access(envMarker)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("fails closed on an invalid vitestReport configuration without running the command", async () => {
+    const cwd = await tempDir();
+    await fs.mkdir(path.join(cwd, ".steak-pi"), { recursive: true });
+    await fs.writeFile(
+      path.join(cwd, ".steak-pi", "config.json"),
+      JSON.stringify({ verify: { command: nodeCommand("require('node:fs').writeFileSync('ran', 'yes')"), vitestReport: 123 } }),
+    );
+    const config = loadVerifyConfig(cwd);
+    expect(config?.configurationError).toContain("vitestReport");
+    const result = await runVerify(config!, cwd, undefined, { artifactRoot: path.join(cwd, "logs") });
+    expect(result.failed).toBe(true);
+    expect(result.tail).toContain("vitestReport");
+    await expect(fs.access(path.join(cwd, "ran"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("retains a passing run's private root and complete producer status", async () => {
+    const cwd = await tempDir();
+    const logs = path.join(cwd, "logs");
+    const result = await runVerify({ command: nodeCommand("process.stdout.write('ok')"), failLimit: 2, timeoutMs: 5_000 }, cwd, undefined, { artifactRoot: logs });
+    expect(result.failed).toBe(false);
+    expect(statSync(logs).mode & 0o777).toBe(0o700);
+    expect(statSync(result.artifact!).mode & 0o777).toBe(0o700);
+    expect(JSON.parse(await fs.readFile(path.join(result.artifact!, "result.json"), "utf8")))
+      .toMatchObject({ failed: false, complete: true, exitCode: 0, bytes: 2, finished: true });
+    expect(await fs.readFile(path.join(result.artifact!, "stdout.log"), "utf8")).toBe("ok");
+  });
+
+  it("decodes split and invalid console bytes without crashing or corrupting the tail", async () => {
+    const cwd = await tempDir();
+    const script = "process.stdout.write(Buffer.from([0xc3])); setTimeout(() => process.stdout.write(Buffer.from([0xa9, 0xff])), 20); setTimeout(() => { process.exitCode = 1; }, 60)";
+    const result = await runVerify({ command: nodeCommand(script), failLimit: 2, timeoutMs: 5_000 }, cwd, undefined, { artifactRoot: path.join(cwd, "logs") });
+    expect(result.failed).toBe(true);
+    expect(result.tail).toContain("\u00e9");
+    expect(result.tail).toContain("\uFFFD");
   });
 });

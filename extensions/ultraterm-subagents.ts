@@ -5,13 +5,14 @@ import { Type, type TSchema } from "typebox";
 import { SubagentCoordinator, CoordinatorWaitTimeoutError } from "../src/subagents/coordinator.ts";
 import { normalizeDispatch, SubagentPolicyError } from "../src/subagents/policy.ts";
 import { resolveWorkerSelection, type WorkerProfile } from "../src/subagents/model-selection.ts";
+import { AUTOMATIC_CHAIN_APPROVAL, type ChainOptions } from "../src/model-route-policy.ts";
 import {
   RelayBroker,
   RUN_BROADCAST_TARGET,
   type RelayPeer,
 } from "../src/subagents/relay.ts";
 import { SessionScheduler } from "../src/subagents/scheduler.ts";
-import { canonicalSessionFile, CheckpointStore, diagnoseRun, recoveredRun } from "../src/subagents/checkpoints.ts";
+import { canonicalSessionFile, CheckpointStore, diagnoseRun, isInProcessCheckpointCollision, recoveredRun, type Checkpoint } from "../src/subagents/checkpoints.ts";
 import { renderSubagentCall, renderSubagentResult, renderSubagentLive } from "../src/subagents/render.ts";
 import type { PiWorkerRuntime, PiWorkerRunnerOptions } from "../src/subagents/pi-worker.ts";
 import {
@@ -34,6 +35,24 @@ export const MAX_TOOL_CONTENT = 48_000;
 export const MAX_COMPLETION_MESSAGE = 4_000;
 export const USAP_TELEMETRY_CUSTOM_TYPE = "ultraterm-usap-telemetry";
 export const USAP_TELEMETRY_VERSION = 1; // Additive route metadata preserves existing readers.
+/** Bounded teardown wait. The host UI is released after this deadline, but the
+ * checkpoint lease and live state are retained until the real
+ * `coordinator.shutdown()` promise settles: a worker that never settles must
+ * never be able to write after its lease was released. */
+export const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
+
+/** Operator-visible warning retained until a bounded teardown really settles. */
+export const RETAINED_LEASE_WARNING = "USAP checkpoint lease retained until an unsettled worker exits; new dispatch and resume are refused";
+
+/** A hostile or sloppy value must never silently degrade to a ~1ms grace that
+ * releases the checkpoint lease before live workers can flush final state. */
+function shutdownGraceMsOrThrow(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_SHUTDOWN_GRACE_MS;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError("shutdownGraceMs must be a non-negative safe integer");
+  }
+  return value;
+}
 
 // Equivalent JSON Schema shape to pi-ai's StringEnum, kept local so this
 // extension does not add a direct runtime dependency solely for enum schemas.
@@ -147,9 +166,14 @@ export interface RunView {
   tasks: SettledTaskView[];
 }
 
+/** Durable recovery capability of the runtime that produced a view. */
+export type Persistence = "checkpointed" | "memory-only";
+
 export interface DispatchDetails {
   mode: "foreground" | "background";
   run: RunView;
+  /** Never infer durability: a memory-only launch cannot be resumed. */
+  persistence: Persistence;
   summary: {
     model: string;
     profile: string | null;
@@ -174,16 +198,36 @@ export interface HubDetails {
   changed?: boolean;
   timedOut?: boolean;
   relay?: unknown;
+  persistence?: Persistence;
+  /** True when the run data came from a lease this session may not write. */
+  readOnly?: boolean;
+  checkpointError?: string | null;
+  shutdownWarning?: string | null;
 }
 
 export interface UltratermSubagentsDependencies {
   createRunner?: (pi: ExtensionAPI, relay: RelayBroker) => WorkerRunner;
   createScheduler?: () => SessionScheduler;
   profiles?: readonly WorkerProfile[];
+  /**
+   * Operator grant decision for a reviewed paid/Token Plan route inside an automatic
+   * chain. Defaults to the on-disk allowlist, re-read per selection, so the real
+   * dispatch boundary consumes the same approval the paid-route flag governs instead
+   * of relying on unit-test-only wiring.
+   */
+  approvePaidRoute?: ChainOptions["approvePaidRoute"];
   createRelay?: () => RelayBroker;
   now?: () => number;
   idFactory?: () => string;
   checkpointRoot?: string;
+  shutdownGraceMs?: number;
+}
+
+/** Automatic chains may spend only through the operator's exact allowlist grant, so
+ * a dispatched run resolves the same approval the paid-route flag governs. The seam
+ * lets a caller pin the decision instead of reading paid-routes.json. */
+function automaticChainOptions(dependencies: UltratermSubagentsDependencies): ChainOptions {
+  return { approvePaidRoute: dependencies.approvePaidRoute ?? AUTOMATIC_CHAIN_APPROVAL };
 }
 
 interface RunBinding {
@@ -192,6 +236,12 @@ interface RunBinding {
   completion: Promise<RunRecord>;
   usageClaimed: boolean;
   onUpdate?: (result: { content: Array<{ type: "text"; text: string }>; details: DispatchDetails }) => void;
+}
+
+interface RetainedTeardown {
+  owner: string;
+  runtime: SessionRuntime;
+  warning: string;
 }
 
 interface SessionRuntime {
@@ -214,6 +264,17 @@ interface SessionRuntime {
   deliveryRetries: number;
   store?: CheckpointStore;
   checkpointError?: string;
+  /** Set when a duplicate owner in this process holds the namespace. */
+  checkpointCollision?: string;
+  /** A durable namespace exists but this runtime cannot claim it: never launch
+   * memory-only work from here, and never silently pretend it is durable. */
+  checkpointDegraded: boolean;
+  /** Read-only checkpoints from a lease this process retains until settlement. */
+  readOnlyCheckpoints?: () => Checkpoint[] | undefined;
+  /** Operator-visible teardown warning surfaced by status and diagnose. */
+  shutdownWarning?: string;
+  /** Adopt a store claimed after a previous in-process collision cleared. */
+  attachStore?: (store: CheckpointStore, ctx?: ExtensionContext) => void;
   /** True until an agent run starts; cleared/refreshed by agent lifecycle events. */
   agentIdle: boolean;
 }
@@ -281,6 +342,10 @@ export function usapTelemetrySnapshot(run: RunRecord) {
       ...(Number.isFinite(task.startedAt) && task.startedAt! >= 0 ? { startedAt: task.startedAt } : {}),
       ...(Number.isFinite(task.endedAt) && task.endedAt! >= 0 ? { endedAt: task.endedAt } : {}),
       ...(task.currentTool ? { currentTool: task.currentTool.slice(0, 80) } : {}),
+      // Real per-request provenance: each pre-output hop names both routes.
+      ...(task.routeFallbacks?.length
+        ? { routeFallbacks: task.routeFallbacks.slice(-8).map((hop) => hop.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 96)) }
+        : {}),
       toolErrors: task.toolErrors ?? 0,
       toolSuccesses: task.toolSuccesses ?? 0,
     })),
@@ -409,10 +474,11 @@ export function renderSessionStatus(runs: readonly RunRecord[]): string | undefi
   return `USAP ${live.length} run${live.length === 1 ? "" : "s"} · ${settled}/${total} settled`;
 }
 
-function dispatchDetails(run: RunRecord): DispatchDetails {
+function dispatchDetails(run: RunRecord, persistence: Persistence): DispatchDetails {
   return {
     mode: run.background ? "background" : "foreground",
     run: toRunView(run),
+    persistence,
     summary: {
       model: run.model,
       profile: run.selection?.profile ?? null,
@@ -468,11 +534,23 @@ function defaultWorkerRunner(
 export function createUltratermSubagentsExtension(
   dependencies: UltratermSubagentsDependencies = {},
 ): (pi: ExtensionAPI) => void {
+  // Validated once at construction: a bad value must never reach a live teardown.
+  const shutdownGraceMs = shutdownGraceMsOrThrow(dependencies.shutdownGraceMs);
   return function ultratermSubagentsExtension(pi: ExtensionAPI): void {
     let runtime: SessionRuntime | undefined;
     let clearedStatusUi: ExtensionContext["ui"] | undefined;
     // Replacements share leases with any late-disposing prior initialization.
     const scheduler = dependencies.createScheduler?.() ?? new SessionScheduler(MAX_CONCURRENCY);
+    /** Teardowns whose workers had not settled at the bounded deadline. Their
+     * checkpoint lease and live state stay retained (never force-released, never
+     * stolen) until the real `coordinator.shutdown()` promise settles. */
+    const retainedTeardowns: RetainedTeardown[] = [];
+    /** Survives the runtime it described so a successor session can report it. */
+    let lastShutdownWarning: { at: number; owner: string; message: string } | undefined;
+
+    const persistenceOf = (current: SessionRuntime): Persistence => current.store ? "checkpointed" : "memory-only";
+    const sessionWarning = (current: SessionRuntime): string | undefined =>
+      current.shutdownWarning ?? (lastShutdownWarning?.owner === current.owner ? lastShutdownWarning.message : undefined);
 
     const setStatus = (current: SessionRuntime, ctx?: ExtensionContext): void => {
       const target = ctx ?? current.statusContext;
@@ -517,6 +595,78 @@ export function createUltratermSubagentsExtension(
       }
     };
 
+    /** Bounded so the host UI is never blocked by a worker that cannot settle.
+     * Settlement is a real proof: the coordinator only completes a dispatched
+     * task after its worker returned, so a settled shutdown means no worker can
+     * write again. The checkpoint lease is therefore a separate decision. */
+    const boundedShutdown = async (shutdown: Promise<void>): Promise<boolean> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const grace = new Promise<"grace">((resolve) => {
+        timer = setTimeout(() => resolve("grace"), shutdownGraceMs);
+        timer.unref?.();
+      });
+      try {
+        const settled = await Promise.race([
+          shutdown.then(() => "settled" as const),
+          grace,
+        ]);
+        return settled === "settled";
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
+    /** Keep disposal-time final reports and changed paths. Shutdown interruption
+     * is distinct from an explicit operator cancellation and stays resumable. */
+    const finalShutdownSave = (current: SessionRuntime): void => {
+      for (const run of current.coordinator.list()) {
+        for (const task of run.tasks) {
+          if (task.state === "aborted" && /Coordinator shut down/.test(task.error ?? "")) task.error = "Host interrupted; inspect checkpoint and explicitly resume unfinished work";
+        }
+        try { current.store?.save(run, true); } catch { current.checkpointError = "Final shutdown checkpoint failed"; }
+      }
+    };
+
+    /** Release a retained lease only after the real shutdown settles. The captured
+     * store is closed against the captured runtime: no successor runtime, status
+     * or telemetry callback is ever touched from here. */
+    const settleRetainedTeardown = (entry: RetainedTeardown): void => {
+      try { finalShutdownSave(entry.runtime); } catch { /* A failed final save never blocks the release decision. */ }
+      try { entry.runtime.store?.close(); } catch { /* Never remove another host's lock. */ }
+      entry.runtime.workerRuntimes.clear();
+      const index = retainedTeardowns.indexOf(entry);
+      if (index >= 0) retainedTeardowns.splice(index, 1);
+      // The warning only described the retained lease; drop it once every lease
+      // for that session has actually settled.
+      if (lastShutdownWarning?.owner === entry.owner && !retainedTeardowns.some((other) => other.owner === entry.owner)) {
+        lastShutdownWarning = undefined;
+      }
+    };
+
+    const releaseRuntimeUi = (current: SessionRuntime, ctx: ExtensionContext | undefined, warning?: string): void => {
+      if (runtime !== current) return;
+      runtime = undefined;
+      const target = ctx ?? current.statusContext;
+      if (!ownsContext(current, target)) return;
+      try {
+        target?.ui.setStatus("usap", undefined);
+        target?.ui.setStatus("usap-delivery", undefined);
+        target?.ui.setStatus("usap-checkpoint", warning);
+        if (target) setPinnedPanel(target, "subagents", undefined);
+      } catch {
+        // The session UI may already be tearing down.
+      }
+    };
+
+    const closeBindings = (current: SessionRuntime): void => {
+      for (const [runId, binding] of current.bindings) {
+        binding.parent.close();
+        current.relay.cleanupRun(runId);
+      }
+      current.bindings.clear();
+      current.telemetrySignatures.clear();
+    };
+
     const destroyRuntime = async (ctx?: ExtensionContext, persist = true): Promise<void> => {
       const current = runtime;
       if (!current) {
@@ -529,39 +679,86 @@ export function createUltratermSubagentsExtension(
       for (const run of current.coordinator.list()) {
         try { current.store?.save(run, true); } catch { current.checkpointError = "Checkpoint write failed during host shutdown"; }
       }
-      await current.coordinator.shutdown();
-      // Keep disposal-time final reports and changed paths. Shutdown interruption
-      // is distinct from an explicit operator cancellation and remains resumable.
-      for (const run of current.coordinator.list()) {
-        for (const task of run.tasks) {
-          if (task.state === "aborted" && /Coordinator shut down/.test(task.error ?? "")) task.error = "Host interrupted; inspect checkpoint and explicitly resume unfinished work";
+      // Keep one authoritative shutdown promise. Calling shutdown again could
+      // observe a different task set and is not evidence that the first settled.
+      const shutdown = Promise.resolve().then(() => current.coordinator.shutdown());
+      let disposed = true;
+      try { disposed = await boundedShutdown(shutdown); } catch { disposed = false; }
+      if (disposed) {
+        try { finalShutdownSave(current); } finally {
+          // Settled: every dispatched worker returned, so nothing can write after
+          // this release and no successor may collide with a dead lease.
+          try { current.store?.close(); } catch { /* Never remove another host's lock. */ }
         }
-        try { current.store?.save(run, true); } catch { current.checkpointError = "Final shutdown checkpoint failed"; }
+        // appendEntry targets the current host session, never a stale replacement.
+        if (persist && runtime === current) {
+          for (const run of current.coordinator.list()) persistTelemetry(current, run);
+        }
+        closeBindings(current);
+        current.workerRuntimes.clear();
+        releaseRuntimeUi(current, ctx);
+        return;
       }
-      current.store?.close();
-      // appendEntry targets the current host session, never a stale replacement.
-      if (persist && runtime === current) {
-        for (const run of current.coordinator.list()) persistTelemetry(current, run);
-      }
-      for (const [runId, binding] of current.bindings) {
-        binding.parent.close();
-        current.relay.cleanupRun(runId);
-      }
-      current.bindings.clear();
-      current.workerRuntimes.clear();
-      current.telemetrySignatures.clear();
-      if (runtime !== current) return;
-      runtime = undefined;
-      if (!ownsContext(current, ctx ?? current.statusContext)) return;
+      // The bounded deadline may return the UI to the host, but the checkpoint
+      // lease and live state are RETAINED: an unsettled worker can still run tool
+      // calls and append to its native session file, so its lease is never
+      // released and never stolen. The lease closes on real settlement only.
+      const entry: RetainedTeardown = { owner: current.owner, runtime: current, warning: RETAINED_LEASE_WARNING };
+      retainedTeardowns.push(entry);
+      lastShutdownWarning = { at: Date.now(), owner: current.owner, message: RETAINED_LEASE_WARNING };
+      current.shutdownWarning = RETAINED_LEASE_WARNING;
+      current.checkpointError = RETAINED_LEASE_WARNING;
+      // Frozen worker runtimes stay resolvable: a live worker still needs its route.
+      closeBindings(current);
+      void shutdown.then(
+        () => settleRetainedTeardown(entry),
+        () => {
+          // Rejection is not proof that every worker stopped. Keep the lease;
+          // recovery must fail closed rather than race an unknown live writer.
+          const message = "Worker shutdown failed; checkpoint lease retained because worker termination is unconfirmed";
+          current.checkpointError = message;
+          current.shutdownWarning = message;
+          lastShutdownWarning = { at: Date.now(), owner: current.owner, message };
+        },
+      );
+      releaseRuntimeUi(current, ctx, RETAINED_LEASE_WARNING);
+    };
+
+    /** Durable checkpoints need the lock; a duplicate in-process owner must not
+     * brick the session. Cross-host live owners still fail closed. */
+    const claimStore = (ctx: ExtensionContext, sessionFile: string | undefined, ownerSessionId: string): { store?: CheckpointStore; degraded: boolean; collision?: string; error?: string } => {
+      if (!sessionFile) return { degraded: false };
       try {
-        (ctx ?? current.statusContext)?.ui.setStatus("usap", undefined);
-        (ctx ?? current.statusContext)?.ui.setStatus("usap-delivery", undefined);
-        (ctx ?? current.statusContext)?.ui.setStatus("usap-checkpoint", undefined);
-        const target = ctx ?? current.statusContext;
-        if (target) setPinnedPanel(target, "subagents", undefined);
-      } catch {
-        // The session UI may already be tearing down.
+        return { store: new CheckpointStore(sessionFile, dependencies.checkpointRoot, ownerSessionId), degraded: false };
+      } catch (error) {
+        if (!isInProcessCheckpointCollision(error)) throw error;
+        const cause = error instanceof Error ? error.message : String(error);
+        // Our own unsettled worker still holds the lease: the collision is real but
+        // it is this session's retained lease, not a foreign duplicate instance.
+        const retained = retainedTeardowns.some((entry) => entry.owner === sessionOwner(ctx));
+        if (retained) {
+          try { ctx.ui.setStatus("usap-checkpoint", `USAP checkpoints unavailable: ${RETAINED_LEASE_WARNING}`); } catch { /* UI may not be attached yet. */ }
+          return { degraded: true, collision: RETAINED_LEASE_WARNING, error: `Checkpoint store unavailable: ${RETAINED_LEASE_WARNING}` };
+        }
+        try { ctx.ui.setStatus("usap-checkpoint", `USAP checkpoints memory-only: ${cause}`); } catch { /* UI may not be attached yet. */ }
+        return {
+          degraded: true,
+          collision: "Another live store in this process owns this session's checkpoints; this session stays read-only until that owner releases them",
+          error: `Checkpoint store unavailable: duplicate extension resources own this session's checkpoints (${cause})`,
+        };
       }
+    };
+
+    /** Read-only evidence for a namespace this runtime may not write. */
+    const readOnlyCheckpointsFor = (owner: string): Checkpoint[] | undefined =>
+      retainedTeardowns.find((entry) => entry.owner === owner)?.runtime.store?.list();
+
+    /** A degraded runtime must never launch work that only exists in memory: the
+     * operator would have no durable recovery path. Chat, list and diagnose stay
+     * available read-only until the live owner releases the lease. */
+    const assertDurableForNewWork = (current: SessionRuntime, action = "New dispatch"): void => {
+      if (current.store || !current.checkpointDegraded) return;
+      throw new Error(`${action} is refused: ${current.checkpointError ?? "this session cannot own its durable checkpoint store"}. A run started now could not be resumed; hub list and hub diagnose stay read-only.`);
     };
 
     const ensureRuntime = (ctx: ExtensionContext): SessionRuntime => {
@@ -571,11 +768,27 @@ export function createUltratermSubagentsExtension(
       if (runtime && !runtime.closed) {
         if (runtime.owner !== owner) throw new Error("USAP session ownership mismatch; access refused until the session lifecycle is initialized.");
         runtime.statusContext = ctx;
+        // A duplicate in-process owner, or a retained teardown whose workers have
+        // now settled, may have released this session's lock since startup.
+        if (!runtime.store && runtime.checkpointDegraded) {
+          try {
+            const reclaimed = claimStore(ctx, ctx.sessionManager?.getSessionFile?.(), ownerSessionId);
+            if (reclaimed.store) {
+              // Same adoption path as initial creation: reconcile recovery and
+              // never emit a second completion for already-observed runs.
+              runtime.attachStore?.(reclaimed.store, ctx);
+              // Durability is restored, so the retained-lease warning is stale.
+              runtime.shutdownWarning = undefined;
+              ctx.ui.setStatus("usap-checkpoint", undefined);
+            }
+          } catch { /* Stay read-only; never remove another owner's lock. */ }
+        }
         return runtime;
       }
 
       const sessionFile = ctx.sessionManager?.getSessionFile?.();
-      const store = sessionFile ? new CheckpointStore(sessionFile, dependencies.checkpointRoot, ownerSessionId) : undefined;
+      const claim = claimStore(ctx, sessionFile, ownerSessionId);
+      let store = claim.store;
       const relay = dependencies.createRelay?.() ?? new RelayBroker();
       const workerRuntimes = new Map<string, PiWorkerRuntime>();
       let created!: SessionRuntime;
@@ -601,13 +814,32 @@ export function createUltratermSubagentsExtension(
           try {
             binding.onUpdate({
               content: [{ type: "text", text: renderRunProgress(event.run) }],
-              details: dispatchDetails(event.run),
+              details: dispatchDetails(event.run, persistenceOf(created)),
             });
           } catch {
             // Pi scopes onUpdate to a live tool call; observers never own execution.
           }
         },
       });
+      /** Adopt a newly claimed store exactly like initial creation: reconcile
+       * recovery, mark observed deliveries, and buffer unfinished background runs
+       * without ever replaying a completion the session already observed. */
+      const adoptStore = (candidate: CheckpointStore, adoptCtx?: ExtensionContext): void => {
+        store = candidate;
+        created.store = candidate;
+        created.checkpointError = undefined;
+        created.checkpointCollision = undefined;
+        created.checkpointDegraded = false;
+        const observed = observedCompletionIds(adoptCtx ?? ctx);
+        for (const checkpoint of candidate.list()) {
+          if (observed?.has(checkpoint.run.id)) candidate.markDelivered(checkpoint.run.id);
+          const recovered = recoveredRun(checkpoint);
+          if (checkpoint.run.state === "running") candidate.save(recovered, true);
+          if (!checkpoint.delivered && !observed?.has(checkpoint.run.id) && recovered.background) {
+            created.completionBuffer.push({ runId: recovered.id, text: renderCompletionMessage(recovered) });
+          }
+        }
+      };
       created = {
         owner,
         ownerSessionId,
@@ -624,17 +856,20 @@ export function createUltratermSubagentsExtension(
         awaitingReceipt: new Set(),
         deliveryRetries: 0,
         store,
+        checkpointDegraded: claim.degraded,
+        checkpointCollision: claim.collision,
+        checkpointError: claim.error,
+        readOnlyCheckpoints: () => readOnlyCheckpointsFor(owner),
+        shutdownWarning: lastShutdownWarning?.owner === owner ? lastShutdownWarning.message : undefined,
+        attachStore: (candidate: CheckpointStore, adoptCtx?: ExtensionContext) => adoptStore(candidate, adoptCtx),
         agentIdle: true,
       };
       runtime = created;
-      const observed = observedCompletionIds(ctx);
-      for (const checkpoint of store?.list() ?? []) {
-        if (observed?.has(checkpoint.run.id)) store?.markDelivered(checkpoint.run.id);
-        const recovered = recoveredRun(checkpoint);
-        if (checkpoint.run.state === "running") store?.save(recovered, true);
-        if (!checkpoint.delivered && !observed?.has(checkpoint.run.id) && recovered.background) {
-          created.completionBuffer.push({ runId: recovered.id, text: renderCompletionMessage(recovered) });
-        }
+      if (store) adoptStore(store, ctx);
+      // Surface a retained lease (and its refusal of new work) in live status.
+      const warning = sessionWarning(created);
+      if (warning && !created.store) {
+        try { ctx.ui.setStatus("usap-checkpoint", warning); } catch { /* UI may not be attached yet. */ }
       }
       return created;
     };
@@ -652,7 +887,7 @@ export function createUltratermSubagentsExtension(
         try {
           if (ownsContext(current, current.statusContext)) binding.onUpdate?.({
             content: [{ type: "text", text: renderRunProgress(run) }],
-            details: dispatchDetails(run),
+            details: dispatchDetails(run, persistenceOf(current)),
           });
         } catch {
           // A settled tool call may no longer accept updates.
@@ -802,7 +1037,7 @@ export function createUltratermSubagentsExtension(
       description: "Dispatch 1-8 bounded child tasks as one parallel wave. Foreground default. ownedPaths = writable ownership (omit for read-only tasks). allowBash = unsandboxed shell.",
       promptSnippet: "Dispatch bounded independent child tasks with explicit permissions and path ownership",
       promptGuidelines: [
-        "Fan out by default: independent leaves (disjoint files, modules, screens, angles) dispatch in ONE parallel wave — width defaults to min(8, task count); GLM lanes fill 8, Luna lanes stay at 6 or fewer.",
+        "Fan out by default: independent leaves (disjoint files, modules, screens, angles) dispatch in ONE parallel wave — width defaults to min(8, task count); automatic Go/GLM/MiMo chain lanes fill 8, explicit Luna lanes stay at 6 or fewer.",
         "Delegation must buy completion speed; modest token premiums for real throughput are correct. Trivial or tightly coupled edits and direct answers stay in the parent.",
         "Parent owns decomposition, integration, verification; workers own leaves end to end. With exact disjoint paths and acceptance contracts in hand, dispatch in the first tool turn without pre-reading child-owned files; do not duplicate child discovery in the parent.",
         "model or profile picks an explicit authenticated route (mutually exclusive, overrides roles). Every GPT choice requires paid openai-codex OAuth — never OpenRouter, API-key, or batch GPT. Astra workers default to medium reasoning; high/xhigh needs a concrete thinkingReason. requireImages=true for visual critics or render inspection.",
@@ -817,7 +1052,13 @@ export function createUltratermSubagentsExtension(
         const params = rawParams as UltratermSubagentsParams;
         if (!ctx.model) throw new Error("ultraterm_subagents requires a resolved current model");
         const current = ensureRuntime(ctx);
-        const resolved = resolveWorkerSelection(ctx.model, ctx.thinkingLevel, params, ctx.modelRegistry, dependencies.profiles);
+        // Never launch a run this session could not recover from its durable store.
+        assertDurableForNewWork(current);
+        const persistence = persistenceOf(current);
+        const persistenceNote = current.store
+          ? ""
+          : `USAP checkpoints are unavailable in this session (${current.checkpointError ?? "no native session file"}): this run is memory-only and cannot be resumed.\n`;
+        const resolved = resolveWorkerSelection(ctx.model, ctx.thinkingLevel, params, ctx.modelRegistry, dependencies.profiles, undefined, automaticChainOptions(dependencies));
         const frozenWorkerRuntime: PiWorkerRuntime = Object.freeze({
           model: Object.freeze({ ...resolved.model }),
           thinkingLevel: resolved.thinkingLevel,
@@ -892,9 +1133,9 @@ export function createUltratermSubagentsExtension(
           return {
             content: [{
               type: "text" as const,
-              text: `Started USAP run ${run.id} · ${model} · ${resolved.selection.source}${resolved.selection.profile ? ` · ${resolved.selection.profile}` : ""}: ${run.tasks.map((task) => task.id).join(", ")}\nDispatch summary: ${JSON.stringify(dispatchDetails(snapshot).summary)}`,
+              text: `${persistenceNote}Started USAP run ${run.id} · ${model} · ${resolved.selection.source}${resolved.selection.profile ? ` · ${resolved.selection.profile}` : ""}: ${run.tasks.map((task) => task.id).join(", ")}\nDispatch summary: ${JSON.stringify(dispatchDetails(snapshot, persistence).summary)}`,
             }],
-            details: dispatchDetails(snapshot),
+            details: dispatchDetails(snapshot, persistence),
           };
         }
 
@@ -906,8 +1147,8 @@ export function createUltratermSubagentsExtension(
           assertOwner(current, ctx);
           binding.usageClaimed = true;
           return {
-            content: [{ type: "text" as const, text: `Dispatch summary: ${JSON.stringify(dispatchDetails(settled).summary)}\n${renderRunResult(settled)}` }],
-            details: dispatchDetails(settled),
+            content: [{ type: "text" as const, text: `${persistenceNote}Dispatch summary: ${JSON.stringify(dispatchDetails(settled, persistence).summary)}\n${renderRunResult(settled)}` }],
+            details: dispatchDetails(settled, persistence),
             // Nested worker usage belongs only here, never under details/results.
             usage: usageCopy(settled.usage),
           };
@@ -939,33 +1180,67 @@ export function createUltratermSubagentsExtension(
         if (params.action === "list") {
           const live = current.coordinator.list();
           const liveIds = new Set(live.map((run) => run.id));
-          const runs = [...(current.store?.list() ?? []).filter((item) => !liveIds.has(item.run.id)).map(recoveredRun), ...live];
+          // A retained lease is diagnostic read-only evidence, never a write path.
+          const readOnly = current.store ? [] : (current.readOnlyCheckpoints?.() ?? []);
+          const runs = [...(current.store?.list() ?? readOnly).filter((item) => !liveIds.has(item.run.id)).map(recoveredRun), ...live];
+          const warning = sessionWarning(current);
           return {
             content: [{
               type: "text" as const,
               text: runs.length === 0
-                ? "No USAP runs in this session."
+                ? `No USAP runs in this session.${warning ? `\n${warning}` : ""}`
                 : runs.map((run) => renderRunProgress(run)).join("\n").slice(0, MAX_TOOL_CONTENT),
             }],
-            details: { action: "list" as const, runs: runs.map(toRunView) },
+            details: { action: "list" as const, runs: runs.map(toRunView), persistence: persistenceOf(current), readOnly: !current.store && current.checkpointDegraded, checkpointError: current.checkpointError ?? null, shutdownWarning: warning ?? null },
           };
         }
 
         const runId = requireRunId(params);
         const binding = current.bindings.get(runId);
-        const checkpoint = current.store?.get(runId);
+        const checkpoint = current.store?.get(runId)
+          ?? current.readOnlyCheckpoints?.()?.find((item) => item.run.id === runId);
         const snapshot = current.coordinator.snapshot(runId) ?? (checkpoint ? recoveredRun(checkpoint) : undefined);
-        if (!snapshot) throw new Error(`Unknown USAP run: ${runId}`);
+        if (!snapshot) {
+          // Diagnose is the operator's escape hatch: a session that cannot claim
+          // its durable store still explains why instead of bricking the chat.
+          if (params.action === "diagnose" && (current.checkpointError || current.checkpointCollision)) {
+            const diagnostics = {
+              persistence: persistenceOf(current),
+              readOnly: true,
+              reason: "run-unreadable",
+              checkpointError: current.checkpointError ?? null,
+              checkpointCollision: current.checkpointCollision ?? null,
+              shutdownWarning: sessionWarning(current) ?? null,
+              note: "This session cannot read its durable checkpoint namespace, so no run data is available for this id.",
+            };
+            return { content: [{ type: "text" as const, text: JSON.stringify(diagnostics, null, 2) }], details: { action: "diagnose" as const, diagnostics } };
+          }
+          throw new Error(`Unknown USAP run: ${runId}`);
+        }
 
         if (params.action === "diagnose") {
-          const diagnostics = { ...diagnoseRun(snapshot), persistence: current.store ? "checkpointed" : "memory-only", checkpointError: current.checkpointError ?? null, warnings: current.store?.warnings ?? [], waitTimeoutMeaning: "A hub wait timeout stops observing, never the worker." };
-          return { content: [{ type: "text" as const, text: JSON.stringify(diagnostics, null, 2) }], details: { action: "diagnose", diagnostics } };
+          const warning = sessionWarning(current);
+          const diagnostics = {
+            ...diagnoseRun(snapshot),
+            persistence: persistenceOf(current),
+            // True when this view came from a lease this session may not write.
+            readOnly: !current.store && current.checkpointDegraded,
+            checkpointError: current.checkpointError ?? null,
+            checkpointCollision: current.checkpointCollision ?? null,
+            shutdownWarning: warning ?? null,
+            warnings: current.store?.warnings ?? [],
+            waitTimeoutMeaning: "A hub wait timeout stops observing, never the worker.",
+          };
+          return { content: [{ type: "text" as const, text: JSON.stringify(diagnostics, null, 2) }], details: { action: "diagnose" as const, diagnostics } };
         }
 
         if (params.action === "resume") {
           if (snapshot.state === "running") throw new Error("Run is still active; resume would duplicate work");
           if (checkpoint?.resumedAs) throw new Error(`Already resumed as ${checkpoint.resumedAs}; inspect that run instead`);
           if (checkpoint?.pendingResume) throw new Error("Resume reservation interrupted; reload the host to recover it before retrying");
+          // A retained lease or a duplicate in-process owner must refuse loudly
+          // rather than continue a run whose session file may still be written.
+          assertDurableForNewWork(current, "Resume");
           if (!current.store || current.checkpointError) throw new Error("Healthy durable checkpoints are required to resume");
           if (snapshot.version !== USAP_VERSION) throw new Error("Checkpoint policy version is incompatible; inspect history before a new dispatch");
           if (!statSync(snapshot.cwd).isDirectory()) throw new Error("Checkpoint workspace is unavailable");
@@ -979,13 +1254,19 @@ export function createUltratermSubagentsExtension(
           const input: DispatchInput = {
             goal: snapshot.goal, constraints: snapshot.constraints, contract: snapshot.contract,
             model: snapshot.model, thinking: snapshot.thinkingLevel as DispatchInput["thinking"],
+            requireImages: snapshot.selection?.images === true,
             thinkingReason: "Continue the explicitly budgeted checkpoint on its original model and reasoning level.",
             concurrency: snapshot.concurrency, timeoutMs: snapshot.timeoutMs, maxTurns: snapshot.maxTurns,
             background: true, tasks: unfinished.map((task) => ({ label: task.label, task: task.task, role: task.role, mayEdit: task.mayEdit, ...(task.mayEdit ? { ownedPaths: task.ownedPaths } : {}), allowBash: task.allowBash })),
           };
-          const resolved = resolveWorkerSelection(ctx.model, ctx.thinkingLevel, input, ctx.modelRegistry, dependencies.profiles);
+          const resolved = resolveWorkerSelection(ctx.model, ctx.thinkingLevel, input, ctx.modelRegistry, dependencies.profiles, undefined, automaticChainOptions(dependencies));
           const run = normalizeDispatch(input, snapshot.cwd, snapshot.model, String(resolved.thinkingLevel), dependencies.now?.() ?? Date.now(), dependencies.idFactory);
-          run.selection = { ...resolved.selection };
+          run.selection = { ...resolved.selection,
+            ...(snapshot.selection?.source === "chain" ? {
+              source: "chain" as const,
+              chainRoutes: snapshot.selection.chainRoutes ? [...snapshot.selection.chainRoutes] : undefined,
+            } : {}),
+          };
           run.ownerSessionId = current.ownerSessionId;
           run.ownerSessionFile = current.ownerSessionFile;
           run.tasks.forEach((task, index) => {
@@ -1003,14 +1284,15 @@ export function createUltratermSubagentsExtension(
             current.bindings.set(run.id, resumed);
             resumed.completion = attachCompletion(current, run.id);
             setStatus(current, ctx);
-            return { content: [{ type: "text" as const, text: `Resumed ${unfinished.length} unfinished tasks as ${run.id}. Completed tasks were not replayed. A fresh explicit budget applies; inspect prior side effects.` }], details: dispatchDetails(started) };
+            return { content: [{ type: "text" as const, text: `Resumed ${unfinished.length} unfinished tasks as ${run.id}. Completed tasks were not replayed. A fresh explicit budget applies; inspect prior side effects.` }], details: dispatchDetails(started, persistenceOf(current)) };
           } catch (error) { parent.close(); current.relay.cleanupRun(run.id); current.workerRuntimes.delete(run.id); throw error; }
         }
 
         if (params.action === "status") {
+          const warning = sessionWarning(current);
           return {
-            content: [{ type: "text" as const, text: renderRunResult(snapshot) }],
-            details: { action: "status" as const, run: toRunView(snapshot) },
+            content: [{ type: "text" as const, text: warning ? `${renderRunResult(snapshot)}\n${warning}` : renderRunResult(snapshot) }],
+            details: { action: "status" as const, run: toRunView(snapshot), persistence: persistenceOf(current), readOnly: !current.store && current.checkpointDegraded, shutdownWarning: warning ?? null },
           };
         }
 

@@ -203,7 +203,7 @@ export class InboxConsumer {
       if (!this.valid()) { this.stop(); return; }
       this.d.evidence();
       if (!this.token) {
-        const r = await this.request("inbox.register");
+        const r = await this.request("inbox.register", { supportsSteering: true });
         if (!this.valid()) return;
         if (typeof r.token !== "string" || !r.token || typeof r.terminalId !== "string") throw Error("invalid registration");
         this.token = r.token;

@@ -69,4 +69,14 @@ describe("authorized OpenCode Go routing", () => {
     expect(result.model).toBe(fallback.id); expect(result.stopReason).toBe("error"); expect(stream).toHaveBeenCalledTimes(2);
   });
   it("never treats permission errors with transient wording as eligible", () => expect(eligibleGoFallback("403 temporarily unavailable region")).toBe(false));
+  it("leaves an exhausted plan to the outer chain instead of retrying the same plan", async () => {
+    // Same-plan retry cannot succeed on exhaustion, so it stays ineligible here;
+    // the ordered chain may leave the plan for a separately approved route.
+    expect(eligibleGoFallback("subscription_quota_exceeded")).toBe(false);
+    const { wrapped, stream } = setup("subscription_quota_exceeded");
+    const result = await wrapped.streamSimple(primary, emptyContext(), { sessionId: "one" }).result();
+    expect(result.model).toBe(primary.id);
+    expect(result.stopReason).toBe("error");
+    expect(stream).toHaveBeenCalledTimes(1);
+  });
 });

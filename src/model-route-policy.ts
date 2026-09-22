@@ -1,5 +1,6 @@
 import type { ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { withOpenCodeGoRouting } from "./opencode-go-routing.ts";
+import { createAllowlistApproval, findPaidRoute } from "./explicit-paid-route.ts";
+import { eligibleGoFallback, GO_FALLBACK_MODEL, GO_PRIMARY_MODEL, withOpenCodeGoRouting } from "./opencode-go-routing.ts";
 import { authHeadersMatch, gatedMeteredStream, isSubscriptionOrLocalRoute, SUBSCRIPTION_FIRST_ERROR } from "./subscription-first-routing.ts";
 
 type Registry = ExtensionContext["modelRegistry"];
@@ -12,8 +13,54 @@ type GuardRegistry = Pick<Registry, "getAll" | "getProvider" | "getRegisteredNat
 };
 const GUARD_MARKER = Symbol.for("steak-pi.model-route-policy.v4-explicit-paid");
 type PaidApproval = (model: Model) => boolean;
-type GuardMark = { root: Provider; approval?: PaidApproval };
+type NativeStream = ReturnType<Provider["streamSimple"]>;
+type GuardMark = { root: Provider; approval?: PaidApproval; chain?: ChainFallbackOptions };
 const guardMark = (provider: Provider) => (provider as unknown as Record<symbol, unknown>)[GUARD_MARKER] as GuardMark | undefined;
+
+/** Registry surface an ordered chain needs; Pi's ModelRegistry and ModelRuntime both satisfy it. */
+export interface ChainRegistry {
+  find(provider: string, id: string): Model | undefined;
+  getAvailable(): Model[];
+  hasConfiguredAuth(model: Model): boolean;
+  isUsingOAuth(model: Model): boolean;
+  getProvider(id: string): Provider | undefined;
+}
+
+/**
+ * Pre-output runtime hop inside one ordered automatic chain. The wrapper replays
+ * the identical request only while nothing has been emitted or executed, only for
+ * a failure class that can plausibly succeed elsewhere (never auth, permission,
+ * region or context), and only on a route that is itself authenticated and either
+ * subscription/local or covered by the operator's exact allowlist grant. Every
+ * forwarded event keeps the real answering provider/model, so usage and
+ * transcripts name the route that actually served the request.
+ */
+export interface ChainFallbackOptions {
+  chain: readonly WorkerRouteStep[];
+  requireImages?: boolean;
+  approvePaidRoute?: PaidApproval;
+  registry: ChainRegistry;
+  onFallback?: (from: WorkerRouteStep, to: Model) => void;
+}
+
+/** Caller-facing half of {@link ChainFallbackOptions}; the runtime supplies the registry. */
+export type ChainFallbackInput = Omit<ChainFallbackOptions, "registry">;
+
+/**
+ * Failure class that may leave a chain step for the *next* step. It is the class Go
+ * already retries (`eligibleGoFallback`) plus one deliberate addition: a proven
+ * exhausted Go subscription plan. Same-plan retry deliberately refuses that signal
+ * (retrying an exhausted plan on the same plan cannot succeed), while the ordered
+ * chain may leave the plan for the next route — and that route still has to be an
+ * authenticated, separately approved reviewed subscription (Singapore Token Plan),
+ * never generic PAYG. Auth, permission, region, context and 400-class failures
+ * never hop, whatever transient wording they carry.
+ */
+export function eligibleChainFallback(message: string): boolean {
+  if (/abort|cancel|auth|permission|region|context|invalid|\b(?:400|401|403|404)\b/i.test(message)) return false;
+  return eligibleGoFallback(message) || /subscription_quota_exceeded|quota[_ -]?(?:exhausted|exceeded|reached)/i.test(message);
+}
+/** Never auto-selected: the operator scope removed automatic Luna workers/reviewers. */
 export const ROUTINE_GPT_MODEL = "gpt-5.6-luna";
 export const GPT_ROUTE_ERROR = "GPT-family models require the paid openai-codex subscription route, non-batch. OpenRouter and API-key routes are not permitted.";
 
@@ -46,10 +93,11 @@ export function assertSubscriptionRequest(model: Model, usingOAuth: boolean): vo
 
 /** Supported native-provider composition; exceptions here stop dispatch, unlike event hooks. */
 export function guardProvider(provider: Provider, usingOAuth: () => boolean,
-  getGoKey: () => Promise<string | undefined> = async () => {
+  getGoKey: (() => Promise<string | undefined>) | undefined = async () => {
     throw new Error(`${SUBSCRIPTION_FIRST_ERROR} Provider authentication introspection is unavailable.`);
   }, original?: Provider,
-  getProviderAuth?: GuardRegistry["getProviderAuth"], approval?: PaidApproval): Provider {
+  getProviderAuth?: GuardRegistry["getProviderAuth"], approval?: PaidApproval,
+  chain?: ChainFallbackOptions): Provider {
   // Rebind policy closures without nesting an earlier guard/Go retry wrapper.
   const previous = guardMark(provider);
   if (previous) provider = previous.root;
@@ -59,6 +107,9 @@ export function guardProvider(provider: Provider, usingOAuth: () => boolean,
     if (model.provider !== provider.id) throw new Error(GPT_ROUTE_ERROR);
     assertSubscriptionRequest(model, !isGptFamily(model) || usingOAuth());
   };
+  // Registries without authentication introspection cannot gate metered routes.
+  const metering: (() => Promise<string | undefined>) | undefined =
+    typeof getGoKey === "function" ? getGoKey : undefined;
   const requestOAuth = async (model: Model, options: Pick<NonNullable<Parameters<Provider["streamSimple"]>[2]>, "apiKey" | "headers"> | undefined): Promise<boolean> => {
     let oauth = usingOAuth();
     if (oauth) {
@@ -90,22 +141,24 @@ export function guardProvider(provider: Provider, usingOAuth: () => boolean,
     },
     stream(model, context, options) {
       check(model);
-      if (getGoKey && !isSubscriptionOrLocalRoute(model, false)) {
-        return gatedMeteredStream(model, () => requestOAuth(model, options), getGoKey, () => provider.stream(model, context, options), options?.signal, () => approval?.(model) === true);
-      }
-      return provider.stream(model, context, options);
+      const inner = metering && !isSubscriptionOrLocalRoute(model, false)
+        ? gatedMeteredStream(model, () => requestOAuth(model, options), metering, () => provider.stream(model, context, options), options?.signal, () => approval?.(model) === true)
+        : provider.stream(model, context, options);
+      return chain ? withPreOutputChainFallback(inner as unknown as NativeStream, model, options?.signal, chain,
+        (target) => chainRouteStream(chain, target, options, (provider, target) => provider.stream(target, context, options))) : inner;
     },
     streamSimple(model, context, options) {
       check(model);
-      if (getGoKey && !isSubscriptionOrLocalRoute(model, false)) {
-        return gatedMeteredStream(model, () => requestOAuth(model, options), getGoKey, () => provider.streamSimple(model, context, options), options?.signal, () => approval?.(model) === true);
-      }
-      return provider.streamSimple(model, context, options);
+      const inner = metering && !isSubscriptionOrLocalRoute(model, false)
+        ? gatedMeteredStream(model, () => requestOAuth(model, options), metering, () => provider.streamSimple(model, context, options), options?.signal, () => approval?.(model) === true)
+        : provider.streamSimple(model, context, options);
+      return chain ? withPreOutputChainFallback(inner, model, options?.signal, chain,
+        (target) => chainRouteStream(chain, target, options, (provider, target) => provider.streamSimple(target, context, options))) : inner;
     },
     ...(provider.fetchDeferred ? { fetchDeferred: ((model, handle, options) => {
       check(model);
-      if (getGoKey && !isSubscriptionOrLocalRoute(model, false)) {
-        return gatedMeteredStream(model, () => requestOAuth(model, options), getGoKey, () => provider.fetchDeferred!(model, handle, options), options?.signal, () => approval?.(model) === true);
+      if (metering && !isSubscriptionOrLocalRoute(model, false)) {
+        return gatedMeteredStream(model, () => requestOAuth(model, options), metering, () => provider.fetchDeferred!(model, handle, options), options?.signal, () => approval?.(model) === true);
       }
       return provider.fetchDeferred!(model, handle, options);
     }) as NonNullable<Provider["fetchDeferred"]> } : {}),
@@ -114,12 +167,12 @@ export function guardProvider(provider: Provider, usingOAuth: () => boolean,
       return provider.cancelDeferred!(model, handle, options);
     }) as NonNullable<Provider["cancelDeferred"]> } : {}),
   };
-  Object.defineProperty(guarded, GUARD_MARKER, { value: { root, approval } satisfies GuardMark });
+  Object.defineProperty(guarded, GUARD_MARKER, { value: { root, approval, chain } satisfies GuardMark });
   return guarded;
 }
 
 /** Re-check registration provenance after reload/model changes without stacking wrappers. */
-export function createRegistryGuard(approval?: PaidApproval): (registry: GuardRegistry) => void {
+export function createRegistryGuard(approval?: PaidApproval, chain?: ChainFallbackOptions): (registry: GuardRegistry) => void {
   const installed = new WeakSet<Provider>();
   return (registry) => {
     // One catalog pass rather than filtering every model once per provider on
@@ -135,7 +188,7 @@ export function createRegistryGuard(approval?: PaidApproval): (registry: GuardRe
       const mark = native && guardMark(native);
       if (native && (installed.has(native) || mark)) {
         const covered = new Set(native.getModels().map(model => model.api));
-        if (mark?.approval === approval && [...apis].every(api => covered.has(api))) continue;
+        if (mark?.approval === approval && mark?.chain === chain && [...apis].every(api => covered.has(api))) continue;
         // Recompose from the original unguarded provider when a new API appears.
         // Skipping this lets the SDK bypass native guards through its global API;
         // wrapping the guarded composition instead stacks same-provider retries.
@@ -151,16 +204,28 @@ export function createRegistryGuard(approval?: PaidApproval): (registry: GuardRe
         }
         return key;
       } : undefined;
-      const guarded = guardProvider(provider, () => registry.isUsingOAuth({ provider: id } as Model), getGoKey, mark?.root, registry.getProviderAuth?.bind(registry), approval);
+      const guarded = guardProvider(provider, () => registry.isUsingOAuth({ provider: id } as Model), getGoKey, mark?.root, registry.getProviderAuth?.bind(registry), approval, chain);
       registry.registerProvider(guarded);
       installed.add(guarded);
     }
   };
 }
 
-/** Reapply after configuration refresh and at each controlled worker turn. */
-export function guardModelRuntime(runtime: ModelRuntime): void {
-  createRegistryGuard()({
+/** Reapply after configuration refresh and at each controlled worker turn. The
+ * optional chain installs the same pre-output hop inside an isolated child runtime. */
+export function guardModelRuntime(runtime: ModelRuntime, fallback?: ChainFallbackInput): void {
+  const approval = fallback?.approvePaidRoute;
+  const chain: ChainFallbackOptions | undefined = fallback && {
+    ...fallback,
+    registry: {
+      find: (provider, id) => runtime.getModel(provider, id),
+      getAvailable: () => [...runtime.getAvailableSnapshot()],
+      hasConfiguredAuth: (model) => runtime.hasConfiguredAuth(model.provider),
+      isUsingOAuth: (model) => runtime.isUsingOAuth(model.provider),
+      getProvider: (id) => runtime.getProvider(id),
+    },
+  };
+  createRegistryGuard(approval, chain)({
     getAll: () => [...runtime.getModels()],
     getProvider: (id) => runtime.getProvider(id),
     getRegisteredNativeProvider: (id) => runtime.getRegisteredNativeProvider(id),
@@ -188,16 +253,165 @@ export function selectWorkerThinking(
   return requested ?? (/(?:^|\/)gpt-6-astra$/i.test(model.id) ? "medium" : inherited ?? "off");
 }
 
+export interface WorkerRouteStep { provider: string; id: string }
+
+/** FINAL automatic worker routing (operator scope, 2026-09-22). Ordered selection
+ * priority plus one pre-output runtime hop inside the same order: the first
+ * authenticated route serves the run, and a before-output transient failure may hop
+ * to the next eligible route. The hop stops permanently at the first content/tool
+ * event and each event keeps its real provider/model. Reviewed paid/Token Plan steps
+ * (MiMo V2.6 Pro) require the operator's exact allowlist grant. GPT-5.6 Luna is
+ * deliberately absent, and no chain step is GPT. */
+export const DEFAULT_TEXT_WORKER_CHAIN: readonly WorkerRouteStep[] = [
+  { provider: "opencode-go", id: GO_PRIMARY_MODEL },
+  { provider: "opencode-go", id: GO_FALLBACK_MODEL },
+  { provider: "xiaomi", id: "mimo-v2.6-pro" },
+];
+export const DEFAULT_MULTIMODAL_WORKER_CHAIN: readonly WorkerRouteStep[] = [
+  { provider: "xiaomi", id: "mimo-v2.6-pro" },
+  { provider: "zai", id: "glm-5.3-flash" },
+];
+export const noChainRouteError = (multimodal: boolean) =>
+  `No authenticated route in the default ${multimodal ? "multimodal" : "text"} worker chain; no fallback was selected.`;
+
+export type ChainOptions = { requireImages?: boolean; approvePaidRoute?: (model: Model) => boolean };
+
+/** The user allowlist is the only spending grant for automatic chain routing: a
+ * reviewed Token Plan step is reachable without inheriting a launch profile's paid
+ * flag, and it is re-read on every call so revocation takes effect immediately. */
+export const AUTOMATIC_CHAIN_APPROVAL: PaidApproval = createAllowlistApproval();
+
+/** Exact, authenticated, capability-matching, spendable chain route. */
+function eligibleChainRoute(registry: ChainRegistry, step: WorkerRouteStep, requireImages: boolean, approve: PaidApproval): Model | undefined {
+  const model = registry.find(step.provider, step.id);
+  // Exact route identity only: a fake/collapsed registry must not satisfy a step.
+  if (!model || model.provider !== step.provider || model.id !== step.id) return undefined;
+  const capable = requireImages ? model.input?.includes("image") === true : model.input?.includes("text") === true;
+  if (!capable) return undefined;
+  if (typeof registry.getProvider(model.provider)?.streamSimple !== "function") return undefined;
+  if (!registry.hasConfiguredAuth(model)) return undefined;
+  if (!registry.getAvailable().some((candidate) => candidate.provider === model.provider && candidate.id === model.id)) return undefined;
+  if (findPaidRoute(model)) {
+    if (!approve(model)) return undefined;
+  } else if (!isSubscriptionOrLocalRoute(model, registry.isUsingOAuth(model))) return undefined;
+  return model;
+}
+
+/** First eligible route strictly after `from`; undefined fails closed. Chain order is
+ * monotonic, so one request can never re-attempt a route it already used. */
+export function nextChainRoute(registry: ChainRegistry, chain: readonly WorkerRouteStep[], from: WorkerRouteStep,
+  options: ChainOptions = {}): Model | undefined {
+  const start = chain.findIndex((step) => step.provider === from.provider && step.id === from.id);
+  if (start < 0) return undefined;
+  const approve = options.approvePaidRoute ?? AUTOMATIC_CHAIN_APPROVAL;
+  for (const step of chain.slice(start + 1)) {
+    const model = eligibleChainRoute(registry, step, options.requireImages === true, approve);
+    if (model) return model;
+  }
+  return undefined;
+}
+
+/** Hop through the live registry so the registry's own guarded provider enforces the
+ * metering gate and approval on the fallback request as well. */
+function chainRouteStream(chain: ChainFallbackOptions, target: Model, options: { signal?: AbortSignal } | undefined,
+  invoke: (provider: Provider, target: Model) => NativeStream): NativeStream | undefined {
+  const targetProvider = chain.registry.getProvider(target.provider);
+  if (!targetProvider || typeof targetProvider.streamSimple !== "function") return undefined;
+  return invoke(targetProvider, target);
+}
+
+/**
+ * Pre-output-only hop to the next authenticated route of one ordered chain. It fires
+ * only when the attempt failed before any content/tool event with a class
+ * {@link eligibleChainFallback} accepts (transient transport plus a proven exhausted
+ * subscription plan), so nothing observed or executed is ever replayed. Each
+ * forwarded event keeps the real answering provider/model, and the wrapper never
+ * revisits a route. This is the runtime half of the automatic chain, not a selection
+ * shortcut: a route absent from the registry is skipped at selection instead.
+ */
+export function withPreOutputChainFallback(
+  first: NativeStream,
+  from: Model,
+  signal: AbortSignal | undefined,
+  fallback: ChainFallbackOptions,
+  invoke: (model: Model) => NativeStream | undefined,
+): NativeStream {
+  const Stream = first.constructor as new () => NativeStream;
+  const output = new Stream();
+  void (async () => {
+    let terminal = false;
+    try {
+      let source = first;
+      let current: WorkerRouteStep = { provider: from.provider, id: from.id };
+      const attempted = new Set([`${from.provider}/${from.id}`]);
+      for (;;) {
+        let hop: { model: Model; stream: NativeStream } | undefined;
+        let emitted = false;
+        for await (const event of source) {
+          // A start event is only metadata; content/tool starts permanently end fallback.
+          if (event.type !== "start" && event.type !== "error") emitted = true;
+          if (event.type === "error" && !emitted && !signal?.aborted && event.error.stopReason !== "aborted" &&
+              eligibleChainFallback(event.error.errorMessage ?? "")) {
+            // Trust the error's own identity: a same-provider retry inside a provider
+            // wrapper must not make the chain hop back to the route that just failed.
+            const failed: WorkerRouteStep = { provider: event.error.provider ?? current.provider, id: event.error.model ?? current.id };
+            attempted.add(`${failed.provider}/${failed.id}`);
+            const candidate = nextChainRoute(fallback.registry, fallback.chain, failed,
+              { requireImages: fallback.requireImages, approvePaidRoute: fallback.approvePaidRoute });
+            const stream = candidate && !attempted.has(`${candidate.provider}/${candidate.id}`) ? invoke(candidate) : undefined;
+            if (candidate && stream) {
+              hop = { model: candidate, stream };
+              continue;
+            }
+          }
+          output.push(event);
+          if (event.type === "done" || event.type === "error") terminal = true;
+        }
+        if (!hop) break;
+        fallback.onFallback?.(current, hop.model);
+        attempted.add(`${hop.model.provider}/${hop.model.id}`);
+        current = { provider: hop.model.provider, id: hop.model.id };
+        source = hop.stream;
+      }
+      if (!terminal) throw new Error("Provider stream ended without a terminal event.");
+    } catch (error) {
+      if (!terminal) {
+        const reason = signal?.aborted ? "aborted" as const : "error" as const;
+        output.push({ type: "error", reason, error: {
+          role: "assistant" as const, content: [], api: from.api, provider: from.provider, model: from.id,
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+          stopReason: reason, errorMessage: error instanceof Error ? error.message : "Chain fallback failed.", timestamp: Date.now(),
+        } });
+      }
+    }
+    output.end();
+  })();
+  return output;
+}
+
+/** One authenticated chain route or a fail-closed error. Reviewed paid/Token Plan
+ * steps need the operator's exact allowlist grant (re-read per selection); an
+ * unreviewed metered endpoint never enters an automatic chain. */
+export function selectChainedWorkerModel(registry: Registry, chain: readonly WorkerRouteStep[], options: ChainOptions = {}): Model {
+  const approve = options.approvePaidRoute ?? AUTOMATIC_CHAIN_APPROVAL;
+  for (const step of chain) {
+    const model = eligibleChainRoute(registry, step, options.requireImages === true, approve);
+    if (model) return model;
+  }
+  throw new Error(noChainRouteError(options.requireImages === true));
+}
+
 /** Runs retain one explicit model for accurate telemetry; mixed/review runs stay frontier. */
-export function selectWorkerModel(parent: Model, roles: readonly (string | undefined)[], registry: Registry): Model {
+export function selectWorkerModel(parent: Model, roles: readonly (string | undefined)[], registry: Registry,
+  options: ChainOptions = {}): Model {
   assertModelRoute(parent);
   if (!isGptFamily(parent)) return parent;
   assertSubscriptionRequest(parent, registry.isUsingOAuth(parent));
+  // Legacy unmapped-profile fallback: reviewers inherit the operator's own parent
+  // route and nothing is auto-selected there (no implicit Luna, no paid GPT hop).
+  // Defaulted runs resolve the capability-aware chain through reviewerDefault.
   if (roles.some((role) => role === "reviewer")) return parent;
-  const luna = registry.find("openai-codex", ROUTINE_GPT_MODEL);
-  if (!luna || !registry.hasConfiguredAuth(luna)) {
-    throw new Error(`Routine GPT work requires available paid openai-codex/${ROUTINE_GPT_MODEL}; no fallback was selected.`);
-  }
-  assertSubscriptionRequest(luna, registry.isUsingOAuth(luna));
-  return luna;
+  return selectChainedWorkerModel(registry,
+    options.requireImages === true ? DEFAULT_MULTIMODAL_WORKER_CHAIN : DEFAULT_TEXT_WORKER_CHAIN, options);
 }

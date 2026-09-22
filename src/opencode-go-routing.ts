@@ -4,8 +4,11 @@ import { authHeadersMatch, beginGoAttempt, observeGoQuota } from "./subscription
 type Registry = ExtensionContext["modelRegistry"];
 type Provider = NonNullable<ReturnType<Registry["getProvider"]>>;
 type Model = NonNullable<ExtensionContext["model"]>;
-const PRIMARY = "deepseek-v4.1-flash";
-const FALLBACK = "glm-5.3-flash";
+/** Same-provider Go hop of the default text chain: primary then one pre-output retry. */
+export const GO_PRIMARY_MODEL = "deepseek-v4.1-flash";
+export const GO_FALLBACK_MODEL = "glm-5.3-flash";
+const PRIMARY = GO_PRIMARY_MODEL;
+const FALLBACK = GO_FALLBACK_MODEL;
 /** Symbol.for keeps the guard idempotent across module reloads. */
 export const GO_ROUTING_MARKER = Symbol.for("steak-pi.opencode-go-routing.v1");
 

@@ -2,7 +2,10 @@ import { createHash } from "node:crypto";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { beginVerification } from "../src/verification-artifacts.ts";
+import { inspectVitestReport, prepareVitestReport } from "../src/verification-report.ts";
 
 const EDIT_TOOLS: Record<string, true> = { edit: true, write: true };
 const DEBOUNCE_MS = 500;
@@ -16,6 +19,8 @@ export interface VerifyConfig {
   command: string;
   failLimit: number;
   timeoutMs: number;
+  vitestReport?: string;
+  configurationError?: string;
 }
 
 /**
@@ -26,7 +31,7 @@ export function loadVerifyConfig(cwd: string): VerifyConfig | null {
   try {
     const raw = fs.readFileSync(path.join(cwd, ".steak-pi", "config.json"), "utf8");
     const parsed = JSON.parse(raw) as {
-      verify?: { command?: unknown; failLimit?: unknown; timeoutMs?: unknown };
+      verify?: { command?: unknown; failLimit?: unknown; timeoutMs?: unknown; vitestReport?: unknown };
     };
     const verify = parsed?.verify ?? {};
     const command = verify.command;
@@ -43,7 +48,10 @@ export function loadVerifyConfig(cwd: string): VerifyConfig | null {
       verify.timeoutMs > 0
         ? verify.timeoutMs
         : DEFAULT_TIMEOUT_MS;
-    return { command, failLimit, timeoutMs };
+    if (verify.vitestReport !== undefined && (typeof verify.vitestReport !== "string" || !verify.vitestReport.trim() || verify.vitestReport.length > 4096)) {
+      return { command, failLimit, timeoutMs, configurationError: "verify.vitestReport must name a Vitest JSON file inside the project" };
+    }
+    return { command, failLimit, timeoutMs, ...(typeof verify.vitestReport === "string" ? { vitestReport: verify.vitestReport } : {}) };
   } catch {
     return null;
   }
@@ -84,7 +92,7 @@ export function shellInvocation(
       args: ["/d", "/s", "/c", command],
     };
   }
-  return { executable: "/bin/sh", args: ["-c", command] };
+  return { executable: "/bin/bash", args: ["--noprofile", "--norc", "-o", "pipefail", "-c", command] };
 }
 
 function appendTail(current: string, chunk: string): string {
@@ -116,21 +124,32 @@ export async function runVerify(
   config: VerifyConfig,
   cwd: string,
   signal?: AbortSignal,
-): Promise<{ failed: boolean; tail: string }> {
+  options: { artifactRoot?: string } = {},
+): Promise<{ failed: boolean; tail: string; artifact?: string }> {
   if (signal?.aborted) {
     return { failed: true, tail: "verification aborted" };
   }
 
+  if (config.configurationError) return { failed: true, tail: config.configurationError };
+  let artifact: ReturnType<typeof beginVerification>;
+  let readReport: ReturnType<typeof prepareVitestReport> | undefined;
+  try {
+    readReport = config.vitestReport ? prepareVitestReport(cwd, config.vitestReport) : undefined;
+    artifact = beginVerification(options.artifactRoot);
+  }
+  catch (error) { return { failed: true, tail: String(error).slice(-OUTPUT_TAIL) }; }
   const shell = shellInvocation(config.command);
   return await new Promise((resolve) => {
     let tail = "";
     let settled = false;
+    let exitCode: number | null = null;
     let terminationReason: string | undefined;
     let forceKillTimer: NodeJS.Timeout | undefined;
     let killSettleTimer: NodeJS.Timeout | undefined;
 
     const child = spawn(shell.executable, shell.args, {
       cwd,
+      env: { ...process.env, BASH_ENV: undefined, ENV: undefined },
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
@@ -146,7 +165,19 @@ export async function runVerify(
       if (settled) return;
       settled = true;
       cleanup();
-      resolve({ failed, tail: failed ? resultTail.slice(-OUTPUT_TAIL) : "" });
+      if (readReport && exitCode !== null && !terminationReason) {
+        try {
+          const bytes = readReport();
+          artifact.retainReport(bytes);
+          const report = inspectVitestReport(bytes.toString("utf8"), exitCode);
+          failed ||= report.failed;
+          if (failed) resultTail = appendReason(resultTail, report.summary);
+        } catch { failed = true; resultTail = appendReason(resultTail, "Vitest report missing, stale, unsafe, incomplete, or over its size limit; verification not accepted"); }
+      }
+      try { artifact.finish({ failed, exitCode, complete: exitCode !== null && !terminationReason,
+        ...(terminationReason ? { reason: terminationReason } : {}) }); }
+      catch { failed = true; resultTail = appendReason(resultTail, "could not finalize retained verification output"); }
+      resolve({ failed, tail: failed ? resultTail.slice(-OUTPUT_TAIL) : "", artifact: artifact.directory });
     };
     const terminate = (reason: string): void => {
       if (settled || terminationReason) return;
@@ -164,18 +195,20 @@ export async function runVerify(
       config.timeoutMs,
     );
 
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      tail = appendTail(tail, chunk);
-    });
-    child.stderr.on("data", (chunk: string) => {
-      tail = appendTail(tail, chunk);
-    });
+    const decoders = { stdout: new StringDecoder("utf8"), stderr: new StringDecoder("utf8") };
+    const capture = (stream: "stdout" | "stderr", chunk: Buffer): void => {
+      if (settled || terminationReason) return;
+      try { artifact.write(stream, chunk); tail = appendTail(tail, decoders[stream].write(chunk)); }
+      catch (error) { terminate(String(error).slice(-500)); }
+    };
+    child.stdout.on("data", (chunk: Buffer) => capture("stdout", chunk));
+    child.stderr.on("data", (chunk: Buffer) => capture("stderr", chunk));
     child.on("error", (error) => {
       finish(true, appendReason(tail, String(error)));
     });
     child.on("close", (code, closeSignal) => {
+      exitCode = code;
+      tail = appendTail(tail, decoders.stdout.end() + decoders.stderr.end());
       if (terminationReason) {
         // The shell may exit before a descendant that ignored SIGTERM. Kill the
         // detached process group once more before clearing the escalation timer.
@@ -264,18 +297,19 @@ export default function verifyAfterEditExtension(pi: ExtensionAPI): void {
         const batch = revision;
         const tree = verificationTreeHash(ctx.cwd);
         const started = performance.now();
-        const { failed, tail } = await runVerify(config, ctx.cwd, ctx.signal);
+        const { failed, tail, artifact } = await runVerify(config, ctx.cwd, ctx.signal);
+        const retained = artifact ? `\nRetained stdout, stderr, and producer status: ${artifact}` : "";
         const duration = Math.round(performance.now() - started);
         if (failed) {
           consecutive += 1;
           return { content: [...event.content, { type: "text", text:
-            formatAppendix(config.command, consecutive, config.failLimit, tail) }] };
+            formatAppendix(config.command, consecutive, config.failLimit, tail) + retained }] };
         }
         consecutive = 0;
         if (revision !== batch) continue;
         const changed = verificationTreeHash(ctx.cwd) !== tree;
         return { content: [...event.content, { type: "text", text:
-          `[steak-pi] verify passed: ${config.command.replace(/\s+/g, " ").trim()} | tree=${tree}${changed ? " (changed during verification)" : ""} | ${duration}ms` }] };
+          `[steak-pi] verify passed: ${config.command.replace(/\s+/g, " ").trim()} | tree=${tree}${changed ? " (changed during verification)" : ""} | ${duration}ms${retained}` }] };
       }
     } finally {
       running = false;

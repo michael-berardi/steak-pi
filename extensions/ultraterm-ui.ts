@@ -42,12 +42,22 @@ export function readProfiles(directory = join(homedir(), ".config/ultraterm/harn
     if (config.schemaVersion !== 1 || !Array.isArray(config.profiles)) fail("Unsupported profile schema");
     for (const p of config.profiles) {
       // Deliberately refuse tool/system-prompt/extension/launcher overrides: no profile transfer.
-      if (!object(p) || !clean(p.id) || !clean(p.name) || !Array.isArray(p.args) || p.args.length !== 4 || p.args[0] !== "--model" || p.args[2] !== "--thinking" || !levels.includes(p.args[3]) || !clean(p.args[1]) || Object.keys(p).some(k => !["id", "name", "description", "args", "workerDefault"].includes(k))) continue;
-      const slash = p.args[1].indexOf("/");
-      if (slash < 1 || slash === p.args[1].length - 1) continue;
+      if (!object(p) || !clean(p.id) || !clean(p.name) || !Array.isArray(p.args) || !p.args.every(clean) || Object.keys(p).some(k => !["id", "name", "description", "args", "workerDefault", "reviewerDefault"].includes(k))) continue;
+      // This flag authorizes the launch, not a transferable tool/prompt override.
+      // Recognize it only when it names the same model; execution remains guarded.
+      const args: string[] = [], grants: string[] = [];
+      for (let i = 0; i < p.args.length; i++) {
+        const arg = p.args[i] as string;
+        if (arg === "--steak-pi-paid-route") grants.push(p.args[++i] ?? "");
+        else if (arg.startsWith("--steak-pi-paid-route=")) grants.push(arg.slice("--steak-pi-paid-route=".length));
+        else args.push(arg);
+      }
+      if (args.length !== 4 || args[0] !== "--model" || args[2] !== "--thinking" || !levels.includes(args[3] as Thinking) || grants.length > 1 || grants.some(route => route !== args[1])) continue;
+      const slash = args[1].indexOf("/");
+      if (slash < 1 || slash === args[1].length - 1) continue;
       const previous = out.findIndex(profile => profile.profileId === `${harness}/${p.id}`);
       if (previous >= 0) out.splice(previous, 1);
-      out.push({ profileId: `${harness}/${p.id}`, label: p.name, provider: p.args[1].slice(0, slash), id: p.args[1].slice(slash + 1), thinking: p.args[3] });
+      out.push({ profileId: `${harness}/${p.id}`, label: p.name, provider: args[1].slice(0, slash), id: args[1].slice(slash + 1), thinking: args[3] as Thinking });
     }
   }
   return [...new Map(out.map(profile => [`${profile.provider}/${profile.id}/${profile.thinking}`, profile])).values()];
@@ -173,9 +183,11 @@ export function createConfigRefresher(options: { directory?: string; timeoutMs?:
   };
 }
 
-// Exactly the native /model source; profile metadata cannot add routes.
+// Native authenticated models remain authoritative; profile metadata cannot add
+// routes. A cycling scope must not hide another active model from the UI picker.
 function nativeModels(ctx: ExtensionContext) {
-  return ctx.scopedModels.length ? ctx.scopedModels.map(s => s.model) : ctx.modelRegistry.getAvailable();
+  return [...new Map([...ctx.modelRegistry.getAvailable(), ...ctx.scopedModels.map(s => s.model)]
+    .map(model => [`${model.provider}/${model.id}`, model])).values()];
 }
 export function catalogModels(ctx: ExtensionContext, metadata: () => Profile[] = readProfiles): Profile[] {
   let labels: Profile[] = [];
@@ -337,12 +349,15 @@ export function installUi(pi: ExtensionAPI, profiles: () => Profile[] = readProf
           // A catalog published before the change may already be stale: apply the
           // same bounded offline reload before resolving the native route.
           try { await refresher.sync(ctx.modelRegistry); } catch { fail("Native model configuration unavailable; use native /model"); }
+          const scopeRevision = () => JSON.stringify(ctx.scopedModels.map(s => [s.model.provider, s.model.id, s.thinkingLevel]));
+          const requestedScope = scopeRevision();
           const model = nativeModels(ctx).find(p => p.provider === r.model.provider && p.id === r.model.id);
           if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) fail("Model unavailable or credentials not configured");
           if (/gpt/i.test(model.id) && (model.provider !== "openai-codex" || model.api !== "openai-codex-responses" || !ctx.modelRegistry.isUsingOAuth(model))) fail("GPT requires paid openai-codex OAuth routing");
           const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
           if (!auth.ok) fail("Model credentials could not be resolved");
           guard();
+          if (scopeRevision() !== requestedScope) fail("Model scope changed while credentials were resolving; retry the selection");
           if (!nativeModels(ctx).some(p => p.provider === model.provider && p.id === model.id) || !ctx.modelRegistry.hasConfiguredAuth(model)) fail("Model no longer available in native scope");
           const previous = ctx.model, effort = pi.getThinkingLevel();
           if (!previous) fail("Cannot safely restore an unknown previous model");

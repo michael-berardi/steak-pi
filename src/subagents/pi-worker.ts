@@ -13,7 +13,16 @@ import { Type } from "typebox";
 import { assertOwnedPath } from "./policy.ts";
 import { finalWorkerReport, workerJournal } from "./coordinator.ts";
 import { assertWorkerDependencies, resolveWorkerDependency } from "./dependency-preflight.ts";
-import { assertModelRoute, assertSubscriptionRequest, guardModelRuntime } from "../model-route-policy.ts";
+import {
+  assertModelRoute,
+  assertSubscriptionRequest,
+  AUTOMATIC_CHAIN_APPROVAL,
+  DEFAULT_MULTIMODAL_WORKER_CHAIN,
+  DEFAULT_TEXT_WORKER_CHAIN,
+  guardModelRuntime,
+  type ChainFallbackInput,
+  type WorkerRouteStep,
+} from "../model-route-policy.ts";
 import type { RelayBroker, RelayPeer, RelaySendResult } from "./relay.ts";
 import {
   OUTPUT_LIMIT,
@@ -23,8 +32,10 @@ import {
   DEFAULT_MAX_TURNS,
   MAX_MAX_TURNS,
   type RunRecord,
+  type ModelSelection,
   type TaskRecord,
   type UsageTotals,
+  type WorkerProgress,
   type WorkerResult,
   type WorkerRunner,
 } from "./types.ts";
@@ -649,6 +660,44 @@ function relaySteeringText(envelope: Parameters<NonNullable<Parameters<RelayBrok
   ].join("\n");
 }
 
+/** FINAL automatic chains are the only order a pre-output runtime hop may follow,
+ * and only a selection the executor froze *because* it is an automatic chain step
+ * (`source: "chain"`) may hop. An explicit `model`/`profile` choice, a
+ * profile-default route, and a resumed or legacy route all stay exact even when
+ * their frozen route happens to name a chain step: no explicit pick may acquire
+ * cross-provider spending. Go's own same-plan retry is unaffected (it lives in the
+ * Go provider wrapper, not here), and a run whose frozen route is not a step of
+ * its chain gets no hop at all. */
+export function workerChainFallback(selection: Pick<ModelSelection, "source" | "images"> | undefined,
+  model: PiModel, onFallback?: ChainFallbackInput["onFallback"]): ChainFallbackInput | undefined {
+  if (selection?.source !== "chain") return undefined;
+  const images = selection.images === true;
+  const chain = images ? DEFAULT_MULTIMODAL_WORKER_CHAIN : DEFAULT_TEXT_WORKER_CHAIN;
+  if (!chain.some((step) => step.provider === model.provider && step.id === model.id)) return undefined;
+  return {
+    chain,
+    requireImages: images,
+    // The same exact-route allowlist grant the dispatch boundary used; re-read on
+    // every hop so a revoked entry stops spending mid-run.
+    approvePaidRoute: AUTOMATIC_CHAIN_APPROVAL,
+    ...(onFallback ? { onFallback } : {}),
+  };
+}
+
+/** Receipt for a real pre-output hop: `from->to` in chain order plus the answering
+ * route as the last step, so a transcript names every route that served the run.
+ * Exported so the receipt is exercised directly instead of only through a live
+ * SDK runtime. */
+export function createChainFallbackReporter(task: TaskRecord,
+  onProgress: (progress: WorkerProgress) => void): NonNullable<ChainFallbackInput["onFallback"]> {
+  return (from: WorkerRouteStep, to: PiModel) => {
+    const hop = `${from.provider}/${from.id}->${to.provider}/${to.id}`;
+    task.routeFallbacks = [...(task.routeFallbacks ?? []), hop];
+    task.lastStep = `model-fallback:${hop}`;
+    onProgress({ state: "running", currentTool: `model-fallback:${to.provider}/${to.id}` });
+  };
+}
+
 /** Create the production in-process Pi worker runner. */
 export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunner {
   if (!options || typeof options.resolveRuntime !== "function" || !options.relay) {
@@ -677,6 +726,8 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
     const accountedCompactions = new WeakSet<object>();
     const steeringDeliveries = new Set<Promise<boolean>>();
     let releasePromptWait = () => {};
+    // Pre-output chain hops are real provider/model provenance, not a silent swap.
+    const chainFallback = createChainFallbackReporter(task, onProgress);
     let initializationCleanup: Promise<void> | undefined;
     const initialize = <T>(pending: Promise<T>, disposeLate?: (value: T) => void): Promise<T> =>
       new Promise<T>((resolve, reject) => {
@@ -727,6 +778,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       signal.throwIfAborted();
       if (!runtime?.model || !runtime.thinkingLevel) throw new Error(`No child runtime resolved for ${run.id}`);
       assertModelRoute(runtime.model);
+      const chain = workerChainFallback(run.selection, runtime.model, chainFallback);
       const sdk = options.sessionFactory ? undefined : await initialize(loadPiSdk());
       signal.throwIfAborted();
       const nativeManagers = sdk ?? managers;
@@ -763,7 +815,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       const modelRuntime = sdk ? await initialize(sdk.ModelRuntime.create({ signal })) : undefined;
       if (modelRuntime) {
         assertSubscriptionRequest(runtime.model, modelRuntime.isUsingOAuth(runtime.model.provider));
-        guardModelRuntime(modelRuntime);
+        guardModelRuntime(modelRuntime, chain);
       }
       signal.throwIfAborted();
       const created = await initialize(sessionFactory({
@@ -783,7 +835,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       session = created.session;
       // Session creation may refresh model configuration. Guard the resulting
       // catalog again, and each subsequent controlled turn, before dispatch.
-      if (modelRuntime) guardModelRuntime(modelRuntime);
+      if (modelRuntime) guardModelRuntime(modelRuntime, chain);
       // Surface the checkpoint path so the parent can persist continuation state.
       const checkpoint = sessionManager.getSessionFile();
       if (typeof checkpoint === "string" && checkpoint.length > 0) {
@@ -835,7 +887,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
           return;
         }
         if (event.type === "turn_start") {
-          if (modelRuntime) guardModelRuntime(modelRuntime);
+          if (modelRuntime) guardModelRuntime(modelRuntime, chain);
           if (turnLimitReached) return;
           if (turns >= maxTurns) {
             turnLimitReached = true;
