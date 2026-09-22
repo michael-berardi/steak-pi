@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.7.4 — unreleased, staged for review (USAP 1.2)
+
+This entry records candidate work only. The package is not published, not installed and
+not released; nothing below is installed-runtime or native end-to-end verification. The
+changed files are still uncommitted in the candidate tree at the time of writing (the
+parent owns the commit and the app-resource packaging).
+
+- **One curated picker scope from the selected harness manifest.** Native `/model` and the
+  UltraTerm composer list no longer offer the whole authenticated provider library: they
+  publish exactly the exact `provider/model` profiles of the harness UltraTerm launched
+  this session (`src/harness-profiles.ts` reads `ULTRATERM_HARNESS_ID`/`ULTRATERM_HARNESS`,
+  `ULTRATERM_HARNESS_DIR`, and the bundled `ULTRATERM_HARNESS_RESOURCES` directory, with
+  `~/.config/ultraterm/harnesses/{harness}.json` as the live operator location). The
+  sidebar profile list, native `/model` and the composer therefore show the same routes,
+  and adding, renaming or removing a profile reaches both pickers without a code change and
+  without any route being hard-coded. Only `--model provider/id` plus an explicit valid
+  `--thinking` level is consumed; tools, system prompts, extensions, launchers and
+  credentials are still refused and never transferred.
+- **Match the effective sidebar catalog.** Bundled and external manifests follow the native merge rules, including protected built-ins, compatible custom additions and rejected invalid overrides. Both manifest revisions are watched. Unknown metadata preserves ordinary standalone availability. Removed OpenRouter DeepSeek Flash and policy-refused GPT routes stay out of the choices.
+- **Curation preserves dispatch coverage.** Curation happens only in
+  `guardModelRuntime`'s `provider.filterModels` picker snapshot; `Provider.getModels()` /
+  `ModelRuntime.getModels()` keep every route, and ordered-chain membership and USAP worker
+  preflight check that published dispatch catalog (`registry.getAll()`) rather than the
+  curated picker snapshot, so a fallback step (for example `opencode-go/glm-5.3-flash`)
+  stays reachable even when it is not a separate picker choice. A standalone Steak/Pi run
+  without the UltraTerm launcher metadata, and any route the manifest does not configure,
+  keeps its normal authentication and dispatch behavior.
+- **Offline hot reload covers the manifest.** `createConfigRefresher` now folds the selected
+  harness manifest revision into the same poll as `models.json`/`auth.json`/
+  `models-store.json`, so a profile add, rename or removal republishes both pickers on the
+  next bounded `allowNetwork:false` reload without a restart, inference or model switch.
+- **Focused tests.** `test/model-profile-catalog.test.ts` covers profile additions,
+  removals, label/route renames and the sidebar/native/composer equality over one scope;
+  `test/model-visibility.test.ts` drives the real Pi 0.87 `ModelRuntime`/`ModelRegistry`
+  with an isolated `HOME`/`PI_CODING_AGENT_DIR` and no ambient provider credentials, and
+  proves the curated snapshot, the fail-open unknown-metadata case, the empty-manifest case,
+  the unfiltered dispatch catalog and the chain fallback. No release, publication, npm push,
+  native build or installed-runtime verification is claimed by this entry.
+- **Unified worker default.** Text and image workers/reviewers default to MiMo V2.6 Pro, with ZAI coding subscription GLM 5.3 Flash as the only automatic fallback. Explicit run selections stay exact. The dedicated Singapore Token Plan endpoint is classified as prepaid subscription traffic; generic Xiaomi PAYG and lookalike endpoints remain guarded. Stream tests cover primary success and pre-output fallback with real answering-route provenance.
+- **Docs.** `docs/MODEL-ROUTING.md`, `docs/PROFILES.md` and `docs/COMPANION-UI.md` record
+  the curated picker scope, the fail-open rule and the dispatch/fallback boundary.
+
 ## 0.7.3 — unreleased, staged for review (USAP 1.2)
 
 This entry records candidate work only. The package is not published, not installed and

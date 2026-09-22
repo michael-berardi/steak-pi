@@ -70,7 +70,7 @@ animation timers, or extra dependencies.
 
 ## UltraTerm UI Mode controls
 
-The bundled `ultraterm-ui` bridge exposes the current Pi model scope and saved-session controls to a compatible UltraTerm UI Mode. Model-only selection changes an idle session without sending a prompt. Confirmation comes from the runtime; stale requests fail without discarding the draft. Older bridges retain a next-message override rather than claiming an immediate change.
+The bundled `ultraterm-ui` bridge exposes the current Pi model scope and saved-session controls to a compatible UltraTerm UI Mode. Its published catalog is curated by the selected harness manifest (`~/.config/ultraterm/harnesses/{harness}.json`, or the app-bundled manifest): it lists exactly the manifest's authenticated, policy-valid native routes, matching native `/model` and the sidebar profile list, and a profile add, rename or removal republishes it on the bounded offline reload without a restart. Model-only selection changes an idle session without sending a prompt. Confirmation comes from the runtime; stale requests fail without discarding the draft. Older bridges retain a next-message override rather than claiming an immediate change.
 
 In UltraTerm UI Mode, `/session` opens the saved-session picker, as does `/resume`. Native Pi's `/session` command still shows session statistics. The picker supports filtering and preview; its search input has no focus ring or glow.
 

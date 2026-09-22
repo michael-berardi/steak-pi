@@ -14,7 +14,7 @@ const request = (extra = {}) => ({ version: 1, sessionId: 's1', generation: 'g1'
 const encode = (data: unknown) => Buffer.from(JSON.stringify(data)).toString('base64url');
 /** Directory that never contains native config, so unrelated tests never refresh. */
 const absentConfigDir = join(tmpdir(), 'ut20-no-native-config');
-function harness(options: { configDir?: string; refresh?: () => ConfigRefresh } = {}) {
+function harness(options: { configDir?: string; refresh?: () => ConfigRefresh; profiles?: () => any[]; manifests?: string[] } = {}) {
   const handlers = new Map<string, Function>();
   const entries: any[] = [], messages: string[] = [];
   const prior = { provider: 'openai-codex', id: 'gpt-6-astra', api: 'openai-codex-responses' };
@@ -28,8 +28,10 @@ function harness(options: { configDir?: string; refresh?: () => ConfigRefresh } 
   const context: any = { sessionManager: manager, scopedModels: [], isIdle: () => true, waitForIdle: vi.fn(async () => {}), get model() { return model; }, ui: { notify: vi.fn() }, switchSession: vi.fn(async () => ({ cancelled: true })), modelRegistry };
   const pi: any = { exec: vi.fn(async () => ({ code: 0, stdout: '' })), events: { on: () => () => {}, emit: vi.fn() }, on: (name: string, fn: Function) => handlers.set(name, fn), registerCommand: (_name: string, command: any) => handlers.set('command', command.handler), appendEntry: (type: string, data: unknown) => entries.push({ type, data }), getCommands: () => [], getThinkingLevel: () => thinking, setThinkingLevel: (level: string) => { thinking = level; }, setModel: vi.fn(async (value: any) => { model = value; return true; }), sendUserMessage: (text: string) => messages.push(text) };
   const configDir = options.configDir ?? absentConfigDir;
-  const factory = options.refresh ?? (() => createConfigRefresher({ directory: configDir }));
-  installUi(pi as ExtensionAPI, () => [profile], path => path, (() => host) as typeof getPrimaryHostIdentity, async () => [], factory);
+  // Native-revision tests pass `manifests: []` so they stay independent of the
+  // operator's live harness manifests; manifest watching has its own test.
+  const factory = options.refresh ?? (() => createConfigRefresher({ directory: configDir, manifests: options.manifests ?? [] }));
+  installUi(pi as ExtensionAPI, options.profiles ?? (() => [profile]), path => path, (() => host) as typeof getPrimaryHostIdentity, async () => [], factory);
   return { context, pi, entries, messages, prior, target, modelRegistry, refresh, event: (name: string) => handlers.get(name)!({}, context), start: () => handlers.get('session_start')!({}, context), shutdown: () => handlers.get('session_shutdown')!(), run: (data: unknown = request()) => handlers.get('command')!(encode(data), context as ExtensionCommandContext), replaceHost: () => { host = { ...host, generation: 'g2' }; }, setAvailable: (models: any[]) => { available = models; }, model: () => model, thinking: () => thinking };
 }
 
@@ -47,24 +49,32 @@ describe('Pi UI machine control', () => {
       expect(h.messages).toEqual([]); expect(h.pi.setModel).not.toHaveBeenCalled();
     } finally { h.shutdown(); vi.useRealTimers(); vi.unstubAllEnvs(); }
   });
-  it('shares all active native routes while retaining scoped effort preferences', () => {
+  it('narrows the composer picker to the exact configured profile routes', () => {
     const h = harness();
     const models = [h.target, h.prior, { provider: 'opencode-go', id: 'deepseek-v4.1-flash' }, { provider: 'inco', id: 'glm-5.3-flash:fast' }];
     h.context.modelRegistry.getAvailable = () => models;
-    expect(catalogModels(h.context, () => []).map(p => `${p.provider}/${p.id}`)).toEqual([
-      'zai/glm-5.3-flash', 'openai-codex/gpt-6-astra', 'opencode-go/deepseek-v4.1-flash', 'inco/glm-5.3-flash:fast',
-    ]);
+    // The whole authenticated library stays hidden: only configured routes are choices.
+    expect(catalogModels(h.context, () => [profile]).map(p => `${p.provider}/${p.id}`)).toEqual(['zai/glm-5.3-flash']);
+    // Metadata is labels plus effort, never authority: a profile naming a route the
+    // native snapshot does not have adds nothing, and one without a profile keeps
+    // its native availability once it is configured.
+    const extra = { profileId: 'steak-pi/inco', label: 'Fast', provider: 'inco', id: 'glm-5.3-flash:fast', thinking: 'low' as const };
+    const routed = [profile, extra, { profileId: 'steak-pi/absent', label: 'Absent', provider: 'absent', id: 'nothing', thinking: 'low' as const }];
+    expect(catalogModels(h.context, () => routed).map(p => `${p.provider}/${p.id}`)).toEqual(['zai/glm-5.3-flash', 'inco/glm-5.3-flash:fast']);
+    // Scoped effort wins over the profile label for the same route.
     h.context.scopedModels = [{ model: models[3], thinkingLevel: 'high' }];
-    const catalog = catalogModels(h.context, () => [profile]);
-    expect(catalog).toHaveLength(4);
+    const catalog = catalogModels(h.context, () => routed);
+    expect(catalog).toHaveLength(2);
     expect(catalog).toContainEqual(expect.objectContaining({ provider: 'inco', thinking: 'high' }));
     h.context.modelRegistry.hasConfiguredAuth = () => false;
+    expect(catalogModels(h.context, () => routed)).toEqual([]);
+    // A readable manifest with no native route is authority: an empty picker, not the library.
     expect(catalogModels(h.context, () => [])).toEqual([]);
   });
   it('uses medium rather than unsupported off when a reasoning model has no profile metadata', () => {
     const h = harness();
     h.context.modelRegistry.getAvailable = () => [{ ...h.prior, reasoning: true }, { ...h.target, reasoning: false }];
-    expect(catalogModels(h.context, () => []).map(model => model.thinking)).toEqual(['medium', 'off']);
+    expect(catalogModels(h.context, () => { throw new Error('unreadable metadata'); }).map(model => model.thinking)).toEqual(['medium', 'off']);
   });
   it('switches without inference and republishes current native selection and thinking', async () => {
     vi.useFakeTimers(); const h = harness();
@@ -204,7 +214,7 @@ describe('Pi UI machine control', () => {
     const directory = mkdtempSync(join(tmpdir(), 'ut20-native-config-'));
     const config = join(directory, 'models.json');
     writeFileSync(config, '{"providers":{}}');
-    const h = harness({ configDir: directory });
+    const h = harness({ configDir: directory, profiles: () => [profile, { profileId: 'steak-pi/fresh', label: 'Fresh', provider: 'newroute', id: 'fresh-model', thinking: 'high' as const }] });
     const added = { provider: 'newroute', id: 'fresh-model', name: 'Fresh', api: 'openai-completions', reasoning: true };
     try {
       h.start(); await vi.advanceTimersByTimeAsync(1);
@@ -220,7 +230,7 @@ describe('Pi UI machine control', () => {
       const catalog = h.entries.at(-1).data;
       expect(catalog.version).toBe(1);
       expect(catalog.models.map((m: any) => `${m.provider}/${m.id}`)).toEqual(['zai/glm-5.3-flash', 'newroute/fresh-model']);
-      expect(catalog.models[1]).toMatchObject({ label: 'Fresh', thinking: 'medium' });
+      expect(catalog.models[1]).toMatchObject({ label: 'Fresh', thinking: 'high' });
       // The reload must preserve the session's current model identity and effort.
       expect(h.model()).toBe(h.prior);
       expect(catalog.currentModel).toEqual({ provider: h.prior.provider, id: h.prior.id, thinking: 'medium' });
@@ -238,7 +248,7 @@ describe('Pi UI machine control', () => {
     const directory = mkdtempSync(join(tmpdir(), 'ut20-native-remove-'));
     const config = join(directory, 'models.json');
     writeFileSync(config, '{"providers":{"newroute":{}}}');
-    const h = harness({ configDir: directory });
+    const h = harness({ configDir: directory, profiles: () => [profile, { profileId: 'steak-pi/fresh', label: 'Fresh', provider: 'newroute', id: 'fresh-model', thinking: 'high' as const }] });
     const added = { provider: 'newroute', id: 'fresh-model', api: 'openai-completions' };
     h.setAvailable([h.target, added]);
     try {
@@ -372,8 +382,8 @@ describe('Pi UI machine control', () => {
       const runtime = await ModelRuntime.create({ authPath, modelsPath, allowModelNetwork: false, refreshOnCreate: false });
       const registry = new ModelRegistry(runtime);
       await registry.refresh({ allowNetwork: false });
-      const refresher = createConfigRefresher({ directory, backoffMs: 30_000 });
-      h = harness({ configDir: directory, refresh: () => refresher });
+      const refresher = createConfigRefresher({ directory, backoffMs: 30_000, manifests: [] });
+      h = harness({ configDir: directory, refresh: () => refresher, profiles: () => [profile, { profileId: 'steak-pi/fixture', label: 'Fixture', provider: 'fixtureroute', id: 'fixture-model', thinking: 'high' as const }] });
       h.context.modelRegistry = registry;
       vi.useFakeTimers();
       h.start(); await vi.advanceTimersByTimeAsync(1);
@@ -409,16 +419,63 @@ describe('Pi UI machine control', () => {
     } finally { h?.shutdown(); vi.useRealTimers(); vi.unstubAllGlobals(); rmSync(directory, { recursive: true, force: true }); }
   });
 
-  it('reads a config revision from the three native config files only', () => {
+  it('reads a config revision from the three native config files and the selected harness manifest', () => {
     const directory = mkdtempSync(join(tmpdir(), 'ut20-revision-'));
+    const manifests = mkdtempSync(join(tmpdir(), 'ut20-revision-harness-'));
+    const manifest = join(manifests, 'steak-pi.json');
     try {
-      const absent = configRevision(directory);
+      const absent = configRevision(directory, [manifest]);
       expect(absent).toContain('models.json:absent');
+      expect(absent).toContain(`${manifest}:absent`);
       writeFileSync(join(directory, 'models.json'), '{}');
-      expect(configRevision(directory)).not.toBe(absent);
+      expect(configRevision(directory, [manifest])).not.toBe(absent);
       writeFileSync(join(directory, 'unrelated.json'), '{}');
-      expect(configRevision(directory)).toBe(configRevision(directory));
-    } finally { rmSync(directory, { recursive: true, force: true }); }
+      expect(configRevision(directory, [manifest])).toBe(configRevision(directory, [manifest]));
+      // A profile add/rename/removal is a picker input, so it must be a revision.
+      writeFileSync(manifest, '{"schemaVersion":1,"profiles":[]}');
+      const created = configRevision(directory, [manifest]);
+      expect(created).not.toBe(absent);
+      expect(created).not.toBe(configRevision(directory, [join(manifests, 'other.json')]));
+      writeFileSync(manifest, '{"schemaVersion":1,"profiles":[{"id":"a","name":"A","args":["--model","zai/glm-5.3-flash","--thinking","high"]}]}');
+      expect(configRevision(directory, [manifest])).not.toBe(created);
+    } finally { rmSync(directory, { recursive: true, force: true }); rmSync(manifests, { recursive: true, force: true }); }
+  });
+
+  it('watches the selected harness manifest and republishes the curated picker without switching the model', async () => {
+    vi.useFakeTimers();
+    const directory = mkdtempSync(join(tmpdir(), 'ut20-harness-config-'));
+    const manifests = mkdtempSync(join(tmpdir(), 'ut20-harness-live-'));
+    const manifest = join(manifests, 'steak-pi.json');
+    const configured = (label: string, route: string) => ({ id: route.replace(/\W/g, '-'), name: label, args: ['--model', route, '--thinking', 'high'] });
+    writeFileSync(manifest, JSON.stringify({ schemaVersion: 1, profiles: [configured('Flash', 'zai/glm-5.3-flash')] }));
+    vi.stubEnv('ULTRATERM_HARNESS_DIR', manifests);
+    vi.stubEnv('ULTRATERM_HARNESS_RESOURCES', join(manifests, 'none'));
+    vi.stubEnv('ULTRATERM_HARNESS_ID', 'steak-pi');
+    const added = { provider: 'newroute', id: 'fresh-model', api: 'openai-completions' };
+    const h = harness({ configDir: directory, profiles: () => readProfiles(), manifests: [manifest] });
+    try {
+      h.start(); await vi.advanceTimersByTimeAsync(1);
+      expect(h.entries.at(-1).data.models.map((m: any) => `${m.provider}/${m.id}`)).toEqual(['zai/glm-5.3-flash']);
+      // Adding a configured profile reaches the composer on the bounded reload, so
+      // a profile rename or addition needs no native config edit and no code change.
+      h.refresh.mockImplementation(async () => { h.setAvailable([h.target, added]); return { aborted: false, errors: new Map() }; });
+      writeFileSync(manifest, JSON.stringify({ schemaVersion: 1, profiles: [configured('Flash', 'zai/glm-5.3-flash'), configured('Fresh', 'newroute/fresh-model')] }));
+      await vi.advanceTimersByTimeAsync(CONFIG_POLL_MS);
+      expect(h.refresh).toHaveBeenCalledTimes(1);
+      expect(h.entries.at(-1).data.models.map((m: any) => `${m.provider}/${m.id}`)).toEqual(['zai/glm-5.3-flash', 'newroute/fresh-model']);
+      expect(h.model()).toBe(h.prior);
+      expect(h.pi.setModel).not.toHaveBeenCalled();
+      // Removal is authoritative too: the route leaves the choices without a reload
+      // of anything else and without touching the running session model.
+      writeFileSync(manifest, JSON.stringify({ schemaVersion: 1, profiles: [configured('Fresh', 'newroute/fresh-model')] }));
+      await vi.advanceTimersByTimeAsync(CONFIG_POLL_MS);
+      expect(h.entries.at(-1).data.models.map((m: any) => `${m.provider}/${m.id}`)).toEqual(['newroute/fresh-model']);
+      expect(h.model()).toBe(h.prior);
+      // An unchanged manifest never republishes.
+      const published = h.entries.length;
+      await vi.advanceTimersByTimeAsync(CONFIG_POLL_MS * 20);
+      expect(h.entries).toHaveLength(published);
+    } finally { h.shutdown(); rmSync(directory, { recursive: true, force: true }); rmSync(manifests, { recursive: true, force: true }); vi.useRealTimers(); vi.unstubAllEnvs(); }
   });
 });
 

@@ -22,18 +22,27 @@ export interface WorkerProfile {
 }
 export const BUILTIN_WORKER_PROFILES: readonly WorkerProfile[] = [
   { id: "steak-pi/glm-5-3-flash", model: "zai/glm-5.3-flash", thinking: "high",
-    workerDefault: { profile: "steak-pi/opencode-go" } },
+    workerDefault: { profile: "steak-pi/mimo-v2-6-pro" },
+    reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: "steak-pi/gpt-6-astra", model: "openai-codex/gpt-6-astra", thinking: "medium",
-    workerDefault: { profile: "steak-pi/opencode-go" },
+    workerDefault: { profile: "steak-pi/mimo-v2-6-pro" },
     // Reviewers default to the same capability-aware chain as workers: no implicit
     // Luna and no implicit paid GPT route. An explicit selector stays exact.
-    reviewerDefault: { profile: "steak-pi/opencode-go" } },
-  // Head model stays the chain's first Go route; automatic defaults resolve the
-  // ordered chain (Go DeepSeek -> Go GLM -> MiMo V2.6 Pro Token Plan) or, for
-  // image work, MiMo V2.6 Pro Token Plan -> ZAI coding GLM 5.3 Flash. Profiles
-  // without an explicit reviewerDefault inherit this chain for reviewer runs too.
+    reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+  // Operator default (2026-09-23) for every worker and reviewer: MiMo V2.6 Pro on the
+  // reviewed Singapore Token Plan endpoint, resolved through the ordered automatic
+  // chain (MiMo V2.6 Pro, then the ZAI coding subscription route) instead of this
+  // profile's head model. Profiles without an explicit reviewerDefault inherit the
+  // same chain for reviewer runs.
+  { id: "steak-pi/mimo-v2-6-pro", model: "xiaomi/mimo-v2.6-pro", thinking: "high",
+    workerDefault: { profile: "steak-pi/mimo-v2-6-pro" },
+    reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" }, autoChain: true },
+  // Legacy Go profile, kept for exact explicit selection and for owner manifests that
+  // still declare `workerDefault: steak-pi/opencode-go`: it carries the same automatic
+  // chain, so an unmigrated owner default never falls back to a Go automatic route.
   { id: "steak-pi/opencode-go", model: "opencode-go/deepseek-v4.1-flash", thinking: "high",
-    workerDefault: { profile: "steak-pi/opencode-go" }, autoChain: true },
+    workerDefault: { profile: "steak-pi/mimo-v2-6-pro" },
+    reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" }, autoChain: true },
 ];
 const thinkingLevels = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
 
@@ -140,7 +149,11 @@ export function resolveWorkerSelection(
     : key ? findModel(key, registry)
     : selectWorkerModel(parent, input.tasks.map((task) => task.role), registry, options);
   assertSubscriptionRequest(model, registry.isUsingOAuth(model));
-  if (!registry.hasConfiguredAuth(model) || !registry.getAvailable().some((candidate) => route(candidate) === route(model))) {
+  // Authentication and dispatch membership consult the published catalog, never the
+  // curated picker snapshot: an operator can still dispatch an authenticated route
+  // that is deliberately not a picker choice (the ordered chain's Go fallback).
+  const dispatchCatalog = registry.getAll?.() ?? registry.getAvailable();
+  if (!registry.hasConfiguredAuth(model) || !dispatchCatalog.some((candidate) => route(candidate) === route(model))) {
     throw new Error(`USAP model ${route(model)} is not available with configured authentication. Authenticate that provider in Pi; no fallback was selected.`);
   }
   if (!model.input?.includes("text") || typeof registry.getProvider(model.provider)?.streamSimple !== "function") {
