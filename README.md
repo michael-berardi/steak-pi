@@ -22,7 +22,7 @@ transcript, tools, history, selectors, scrolling, and keybindings, then adds the
 machinery that turns it into a complete daily driver.
 
 This checkout documents the **unreleased Steak Pi 0.8.0 candidate** (USAP 1.3),
-the runtime bundled with the UltraTerm 2.3.1 candidate. The Pi peer range is
+the runtime bundled with the UltraTerm 2.3.5 candidate. The Pi peer range is
 deliberately permissive (`"*"` in `package.json`); the development and
 verification toolchain is pinned to Pi 0.87.0 — npm's published latest at the
 time of this checkout is 0.87.1 — and the worker SDK preflight expects a Pi
@@ -35,7 +35,7 @@ results, not a remeasurement of this candidate or a multi-hour endurance claim.
 
 Release **0.8.0 — unreleased candidate**. It is **not published**: no `v0.8.0`
 Git tag, GitHub release archive, or npm package exists. This candidate ships
-bundled with the UltraTerm 2.3.1 candidate; obtain it from that bundle or a
+bundled with the UltraTerm 2.3.5 candidate; obtain it from that bundle or a
 checkout of this exact worktree. Published versions remain distributed from
 this Git repository's tags and GitHub release archives (the latest published
 tag at the time of this checkout is `v0.6.0`); Steak Pi is **not** published to
@@ -59,7 +59,7 @@ pi install "$PWD/package"
 Requires Node.js 22.19.0 or newer and a Pi host with an ESM SDK import export
 (Pi 0.87 or newer). The development toolchain pins Pi 0.87.0; this candidate's
 typecheck, full test suite and TUI smoke also pass against Pi 0.87.1, the
-version bundled with UltraTerm 2.3.1.
+version bundled with UltraTerm 2.3.5.
 
 **Homebrew is conditional.** The Implose Cybernetics tap
 (`michael-berardi/implose-software-distribution`) is private, so
