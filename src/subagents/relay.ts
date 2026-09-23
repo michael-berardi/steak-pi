@@ -36,7 +36,8 @@ export type RelayRejectCode =
   | "self_send"
   | "no_recipients"
   | "mailbox_full"
-  | "run_full";
+  | "run_full"
+  | "unsupported_harness";
 
 export type RelaySendResult =
   | {

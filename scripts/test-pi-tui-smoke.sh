@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SESSION="smoke"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/steak-pi-smoke.XXXXXX")"
+printf 'TUI workspace: %s (new, disposable)\n' "$TMP"
 TMUX_SOCKET="$TMP/tmux.sock"
 SAFE_PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
@@ -15,11 +16,53 @@ tmux_private() {
     tmux -S "$TMUX_SOCKET" "$@"
 }
 
+SERVER_PID=""
+SERVER_IDENTITY=""
+SOCKET_IDENTITY=""
+PANE_PIDS=()
+PANE_STARTS=()
+process_identity() { ps -p "$1" -o pid=,lstart=,comm= 2>/dev/null || true; }
+socket_identity() { python3 -c 'import os,sys; s=os.lstat(sys.argv[1]); print(f"{s.st_dev}:{s.st_ino}")' "$TMUX_SOCKET" 2>/dev/null || true; }
+record_ownership() {
+  local pane
+  if [[ -z "$SERVER_PID" ]]; then
+    SERVER_PID="$(tmux_private display-message -p -t "$SESSION" '#{pid}')"
+    SERVER_IDENTITY="$(process_identity "$SERVER_PID")"
+    SOCKET_IDENTITY="$(socket_identity)"
+  fi
+  pane="$(tmux_private display-message -p -t "$SESSION" '#{pane_pid}')"
+  PANE_PIDS+=("$pane")
+  PANE_STARTS+=("$(ps -p "$pane" -o lstart=)")
+  printf 'TUI ownership: server=%s; pane=%s; cwd=%s; socket=%s\n' "$SERVER_IDENTITY" "$(process_identity "$pane")" "$ROOT" "$TMUX_SOCKET"
+}
 cleanup() {
-  tmux_private kill-server >/dev/null 2>&1 || true
+  local i alive=0
+  if [[ -n "$SERVER_PID" && -n "$(process_identity "$SERVER_PID")" ]]; then
+    if [[ "$(process_identity "$SERVER_PID")" != "$SERVER_IDENTITY" || "$(socket_identity)" != "$SOCKET_IDENTITY" ]]; then
+      echo "TUI cleanup identity changed; preserving $TMP" >&2
+      return 1
+    fi
+    tmux_private kill-server >/dev/null 2>&1 || true
+  fi
+  # The private server owns the pane shutdown; never signal a name/port match.
+  for _ in {1..30}; do
+    alive=0
+    for ((i=0; i<${#PANE_PIDS[@]}; i++)); do
+      if [[ "$(ps -p "${PANE_PIDS[$i]}" -o lstart= 2>/dev/null || true)" == "${PANE_STARTS[$i]}" ]]; then alive=1; fi
+    done
+    [[ "$alive" == 0 ]] && break
+    sleep 0.1
+  done
+  if [[ "$alive" != 0 || ( -n "$SERVER_PID" && "$(process_identity "$SERVER_PID")" == "$SERVER_IDENTITY" ) ]]; then
+    echo "TUI processes have not exited; preserving $TMP" >&2
+    return 1
+  fi
   rm -rf "$TMP"
+  [[ ! -e "$TMP" ]] && echo "TUI cleanup verified: owned server/panes exited; private socket and workspace absent."
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 PI_EXECUTABLE="${PI_EXECUTABLE:-$ROOT/node_modules/.bin/pi}"
 STEAK_PACKAGE="${STEAK_PACKAGE:-$ROOT}"
@@ -30,8 +73,8 @@ mkdir -p "$TMP/config" "$TMP/sessions" "$TMP/home" \
 PI_VERSION="$(env -i HOME="$TMP/home" PATH="$SAFE_PATH" \
   PI_CODING_AGENT_DIR="$TMP/config" PI_OFFLINE=1 PI_TELEMETRY=0 \
   "$PI_EXECUTABLE" --version)"
-[[ "$PI_VERSION" == "0.85.1" || "$PI_VERSION" == "0.86.0" || "$PI_VERSION" == "0.86.1" || "$PI_VERSION" == "0.87.0" ]] || {
-  echo "Steak Pi smoke requires reviewed Pi 0.85.1, 0.86.0, 0.86.1 or 0.87.0; found $PI_VERSION" >&2
+[[ "$PI_VERSION" == "0.85.1" || "$PI_VERSION" == "0.86.0" || "$PI_VERSION" == "0.86.1" || "$PI_VERSION" == "0.87.0" || "$PI_VERSION" == "0.87.1" ]] || {
+  echo "Steak Pi smoke requires reviewed Pi 0.85.1, 0.86.0, 0.86.1, 0.87.0 or 0.87.1; found $PI_VERSION" >&2
   exit 1
 }
 
@@ -151,6 +194,7 @@ tmux_private -f /dev/null new-session -d -x 80 -y 24 -s "$SESSION" \
   "cd '$ROOT' && exec $PI_ENV '$PI_EXECUTABLE' --offline --approve \
     --session-dir '$TMP/sessions' --extension '$TMP/completion-proof.ts' --no-skills --no-prompt-templates \
     --no-context-files --use-theme dark"
+record_ownership
 
 wait_for "STEAK PI"
 wait_for_current "● ready"
@@ -242,6 +286,7 @@ SESSION="light"
 tmux_private new-session -d -x 80 -y 24 -s "$SESSION" \
   "cd '$ROOT' && exec $PI_ENV '$PI_EXECUTABLE' --offline --approve --no-session \
     --no-skills --no-prompt-templates --no-context-files --use-theme light"
+record_ownership
 wait_for "STEAK PI"
 wait_for_current "● ready"
 assert_ansi_width 80

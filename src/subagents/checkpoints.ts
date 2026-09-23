@@ -336,7 +336,9 @@ export function recoveredRun(checkpoint: Checkpoint): RunRecord {
     for (const task of run.tasks) {
       if (["queued", "starting", "running", "waiting"].includes(task.state)) {
         task.state = "aborted";
-        task.error = "Host interrupted; inspect checkpoint and explicitly resume unfinished work";
+        task.error = run.harness === "claude-code" && task.startedAt !== undefined
+          ? "Host interrupted; Claude CLI tasks have no persistent history. Inspect partial work before a new dispatch."
+          : "Host interrupted; inspect checkpoint and explicitly resume unfinished work";
         task.endedAt = checkpoint.savedAt;
         delete task.currentTool;
       }

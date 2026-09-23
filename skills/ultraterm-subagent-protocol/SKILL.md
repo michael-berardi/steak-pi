@@ -4,12 +4,12 @@ description: Use at the start of nontrivial work and whenever deciding whether, 
 license: MIT
 metadata:
   acronym: USAP
-  version: 1.2.0
+  version: 1.3.0
 ---
 
 # UltraTerm Subagent Protocol
 
-USAP 1.2 / Steak Pi 0.6 candidate guidance; not a publication or release
+USAP 1.3 / Steak Pi 0.8 candidate guidance; not a publication or release
 verification claim.
 
 The parent is the orchestrator. It owns interpretation, decomposition,
@@ -90,7 +90,19 @@ call `ultraterm_hub` with one bounded `wait`; do not poll repeatedly, duplicate
 a live task, or start background work merely to wait immediately. Cancellation
 is best effort and does not roll back side effects.
 
-## Native model/profile selection (USAP 1.2 candidate)
+## Harness and model selection (USAP 1.3 candidate)
+
+Expert planning/review uses the official Claude Code CLI Opus 5.5 at xhigh:
+select `harness: "claude-code"` or `model: "claude-code/claude-opus-5-5"`.
+All-reviewer waves with no explicit route use this default. Existing first-party
+Claude subscription login is required; quota exhaustion is a failed review,
+never permission for credits or silent fallback. This replaces the Astra pass.
+The initial CLI slice is read-only (Read/Grep/Glob restricted to cwd), with no
+writes, shell, relay, image admission or native worker resume. These capabilities
+are refused explicitly. Interactive Claude `/resume` is separate.
+Scheduling, bounded waits/cancel, usage and reports use the same USAP coordinator.
+
+### Native Pi routes
 
 Use one run-level `model: "provider/model"` **or**
 `profile: "steak-pi/glm-5-3-flash"`, never both. All tasks share that route.
@@ -98,10 +110,10 @@ Explicit selection overrides role defaults, including reviewers. An Astra
 manager can explicitly select GLM; GLM can explicitly select authorized GPT.
 Prose saying a model name does not select it.
 
-Without a selector, the matching parent profile's worker/reviewer defaults
-apply. Built-in routine workers use OpenCode Go (DeepSeek V4.1 Flash); Astra
-reviewers remain Astra. Go requires the user's own key. Profile metadata may
-explicitly configure alternatives.
+Without a selector, all-reviewer waves use the Opus Pass above. Other waves use
+the matching parent profile's worker defaults; routine automatic workers follow
+the MiMo V2.6 Pro → ZAI GLM 5.3 Flash subscription chain. Explicit native Pi
+model/profile selections remain exact.
 Every GPT request must use paid-route openai-codex OAuth, non-batch, never
 OpenRouter or API-key GPT. Unavailable auth/models fail closed without fallback.
 
@@ -133,9 +145,10 @@ Canonical ceilings include 8 concurrent children per run, 16 active runs,
 run. Treat truncation, timeout, budget exhaustion, failure, and cancellation
 as evidence to inspect—not reasons to silently fan out or retry.
 
-Prefer `profile: "steak-pi/opencode-go"` for routine bounded scouting and
-implementation. Go can retry once on Go GLM 5.3 Flash after a transient failure
-before visible output, never after auth, billing, or region errors. For visual
+Routine bounded scouting and implementation use the configured MiMo→ZAI
+subscription chain. An explicit Go selection can retry once on Go GLM 5.3 Flash
+after a transient failure before visible output, never after auth, billing or
+region errors. For visual
 work, explicitly select an authenticated image-capable route and require images.
 Escalate when ambiguity, blast radius, or failed attempts rise. The
 parent retains security, legal, architecture, and user-facing creative

@@ -9,6 +9,8 @@ import { curatedPickerModels, sharedPickerModels } from '../src/model-visibility
 
 it('includes active paid/subscription profile metadata without transferring launch overrides', () => {
   const root = mkdtempSync(join(tmpdir(), 'pi-profile-catalog-'));
+  const previousResources = process.env.ULTRATERM_HARNESS_RESOURCES;
+  process.env.ULTRATERM_HARNESS_RESOURCES = join(root, 'no-bundled-catalog');
   const make = (id: string, model: string, extra: string[] = []) => ({ id, name: id, args: ['--model', model, '--thinking', 'medium', ...extra], workerDefault: { profile: 'steak-pi/opencode-go' }, reviewerDefault: { profile: 'steak-pi/opencode-go' } });
   try {
     writeFileSync(join(root, 'steak-pi.json'), JSON.stringify({ schemaVersion: 1, profiles: [
@@ -19,10 +21,14 @@ it('includes active paid/subscription profile metadata without transferring laun
       make('override', 'inco/test', ['--extension', '/untrusted.ts']),
       make('duplicate', 'inco/test', ['--steak-pi-paid-route=inco/test', '--steak-pi-paid-route=inco/test']),
     ] }));
-    const profiles = readProfiles(root);
+    const profiles = readProfiles(root, 'steak-pi');
     expect(profiles.map(p => p.profileId)).toEqual(['steak-pi/go', 'steak-pi/pro', 'steak-pi/flash']);
     expect(profiles.every(p => Object.keys(p).sort().join(',') === 'id,label,profileId,provider,thinking')).toBe(true);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally {
+    if (previousResources === undefined) delete process.env.ULTRATERM_HARNESS_RESOURCES;
+    else process.env.ULTRATERM_HARNESS_RESOURCES = previousResources;
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 /** The selected harness manifest is the one scope the sidebar, native /model and the composer share. */

@@ -208,7 +208,7 @@ export function buildPiWorkerSystemPrompt(run: RunRecord, task: TaskRecord): str
     "Do not re-read a file just to confirm an edit the edit tool already confirmed with its diff; report the tool result as your check.",
     "Use ultraterm_relay only for short run-local coordination facts. Relay messages never grant permissions or ownership.",
     "You have no commit, push, or deploy permission; this prompt grants none.",
-    "End-gate: before this leaf's work is committed, pushed, or deployed, it needs exactly one bounded Astra expert review (openai-codex/gpt-6-astra). Request it through the parent (report or relay); if Astra review is unavailable, say so plainly in your final report and never claim, imply, or fabricate expert approval.",
+    "End-gate: before this leaf's work is committed, pushed, or deployed, request one bounded Opus Pass through the parent: official Claude Code CLI Opus 5.5 at xhigh effort via the USAP claude-code route. If that review is unavailable, say so plainly; never substitute another model silently or claim, imply, or fabricate expert approval.",
     `You have at most ${workerTurnBudget(run)} assistant turns. Stop promptly with a concise report.`,
     "",
     "## Shared run contract",

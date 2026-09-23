@@ -21,33 +21,45 @@ Steak Pi is the performance-focused package for the
 transcript, tools, history, selectors, scrolling, and keybindings, then adds the
 machinery that turns it into a complete daily driver.
 
-This checkout documents staged release **Steak Pi 0.7.1** (USAP 1.2). It targets Pi
-0.86.1 and admits it alongside the retained Pi 0.85.1 and 0.86.0 peer range.
-Session-isolation, repaint, packaged, and todo checks ran on Pi 0.86.1; earlier
-0.85.1 and 0.86.0 evidence predates those changes. The feature descriptions
+This checkout documents the **unreleased Steak Pi 0.8.0 candidate** (USAP 1.3),
+the runtime bundled with the UltraTerm 2.3.1 candidate. The Pi peer range is
+deliberately permissive (`"*"` in `package.json`); the development and
+verification toolchain is pinned to Pi 0.87.0 — npm's published latest at the
+time of this checkout is 0.87.1 — and the worker SDK preflight expects a Pi
+host that publishes an ESM import export (Pi 0.87 or newer). No completed
+full-suite release verification is claimed here. The feature descriptions
 apply to this revision. Benchmarks below are explicitly dated historical
-results, not a remeasurement of 0.7.1 or a multi-hour endurance claim.
+results, not a remeasurement of this candidate or a multi-hour endurance claim.
 
 ## Install
 
-Release **0.7.1**. Requires Pi 0.85.1, 0.86.0, or 0.86.1 (staged candidate
-verified with 0.86.1) and Node.js 22.19.0 or newer. Pi 0.85.0 lacks the
-lifecycle/context API used by the companion UI. Steak Pi is distributed from this Git repository and its GitHub
-release archives; it is **not** published to the npm registry.
+Release **0.8.0 — unreleased candidate**. It is **not published**: no `v0.8.0`
+Git tag, GitHub release archive, or npm package exists. This candidate ships
+bundled with the UltraTerm 2.3.1 candidate; obtain it from that bundle or a
+checkout of this exact worktree. Published versions remain distributed from
+this Git repository's tags and GitHub release archives (the latest published
+tag at the time of this checkout is `v0.6.0`); Steak Pi is **not** published to
+the npm registry.
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.7.1
+# Published release only — no v0.8.0 tag exists yet:
+pi install git:github.com/michael-berardi/steak-pi@v0.6.0
 ```
 
-GitHub release archives (`steak-pi-0.7.1.tgz` with its `.sha256` beside it) work
-without Git access: verify the checksum, extract, and point Pi at the extracted
-package.
+GitHub release archives (`steak-pi-<version>.tgz` with its `.sha256` beside it)
+work without Git access for published versions: verify the checksum, extract,
+and point Pi at the extracted package.
 
 ```sh
-shasum -a 256 -c steak-pi-0.7.1.tgz.sha256
-tar -xzf steak-pi-0.7.1.tgz
+shasum -a 256 -c steak-pi-<version>.tgz.sha256
+tar -xzf steak-pi-<version>.tgz
 pi install "$PWD/package"
 ```
+
+Requires Node.js 22.19.0 or newer and a Pi host with an ESM SDK import export
+(Pi 0.87 or newer). The development toolchain pins Pi 0.87.0; this candidate's
+typecheck, full test suite and TUI smoke also pass against Pi 0.87.1, the
+version bundled with UltraTerm 2.3.1.
 
 **Homebrew is conditional.** The Implose Cybernetics tap
 (`michael-berardi/implose-software-distribution`) is private, so
@@ -121,8 +133,9 @@ with its own built-in tools only. Medians of three runs per cell:
 
 In this historical matrix, Steak Pi completed the multi-part fixture faster,
 while direct edits and the two-file fixture were slower. Both sides passed all
-first-pass checks. These results are not a general speed guarantee or a 0.7.1
-benchmark; the checkpoint persistence has its own local overhead. Stock Pi
+first-pass checks. These results are not a general speed guarantee or a
+benchmark of this 0.8.0 candidate; the checkpoint persistence has its own local
+overhead. Stock Pi
 alone does not include this package's bounded subagents, guarded path ownership,
 shared provider caps, verification loops, or local compaction adapter.
 
@@ -169,34 +182,47 @@ Children coordinate through `ultraterm_relay`, a bounded run-local mailbox with
 addressed messages, requests, correlated replies, broadcasts, and parent
 communication. A little like IRC, if IRC had path ownership.
 
-**Native model selection:** USAP 1.2 accepts either an exact `model` or a native
-`profile` for the whole run. An Astra manager can explicitly select
-`profile: "steak-pi/glm-5-3-flash"`, including reviewer runs. Omitted selectors
-use per-parent profile defaults. Receipts and hub telemetry show the resolved
-route, selection provenance, and tool success/error counts. Visual inspection
-uses `requireImages: true`. See [profiles and examples](./docs/PROFILES.md).
+**Harness and model selection:** USAP 1.3 takes an explicit `harness` (Pi by
+default, `"claude-code"` for the official headless Claude CLI), an exact
+`model`, or a native `profile` for the whole run; explicit selections always
+win. An Astra manager can still explicitly select
+`profile: "steak-pi/glm-5-3-flash"`, including reviewer runs. Omitted native-Pi
+selectors use per-parent profile defaults, and automatic reviewer runs ride the
+same routine MiMo V2.6 Pro → ZAI GLM 5.3 Flash subscription chain as workers —
+no expert model is ever selected automatically on the native chain. An
+all-reviewer wave with no explicit route defaults to the **Opus Pass**
+(`claude-code/claude-opus-5-5`, `xhigh` effort); mixed worker/reviewer waves
+without an explicit route must split or choose one. Receipts and hub telemetry
+show the resolved route, harness, selection provenance, and tool success/error
+counts. Visual inspection on Pi workers uses `requireImages: true`; the Claude
+CLI slice refuses image admission. See [profiles and examples](./docs/PROFILES.md).
 
 **GPT routing:** GPT-family requests use the paid Codex subscription route only,
 never OpenRouter, API-key billing, or batch variants. Built-in routine workers
-default to MiMo V2.6 Pro with ZAI coding GLM 5.3 Flash as the only automatic
-fallback; the default reviewer role resolves the Astra-first expert chain
-(`gpt-6-astra` via paid Codex OAuth when available, then the same routine
-order), and `gpt-6-sol`/`gpt-6-luna` are explicit-selection profiles only. Astra
-is a scarce expert for hard planning/debugging and review/validation, never
-routine orchestration; a failed expert review is reported honestly, never
-silently downgraded, and weaker implementers must request one bounded Astra
-final review before commit/push/deploy without ever fabricating expert approval.
-Go requires your own key and can retry once on Go GLM 5.3 Flash for a transient
-failure before visible output, never for auth, billing, or region errors.
-Explicit selections take precedence; missing authentication or capability fails
-closed without fallback. Astra workers default
+and the default reviewer role both resolve the same ordered subscription chain:
+MiMo V2.6 Pro with ZAI coding GLM 5.3 Flash as the only automatic fallback. The
+automatic Astra-first reviewer default is removed: Astra
+(`openai-codex/gpt-6-astra`) and `gpt-6-sol`/`gpt-6-luna` are explicit-selection
+profiles only, scarce experts for hard planning/debugging and review/validation,
+never automatic routes in any role. Expert review is now the **Opus Pass** — the
+official Claude Code CLI on Opus 5.5 at `xhigh` effort with an existing
+first-party Claude subscription login — chosen explicitly via
+`harness: "claude-code"` (or `model: "claude-code/claude-opus-5-5"`) or
+implicitly by an all-reviewer wave. There is no API-key substitute and no
+fallback; quota exhaustion is a failed review, reported honestly, never
+silently downgraded. Weaker implementers must request one bounded Opus Pass
+before commit/push/deploy without ever fabricating expert approval. Go requires
+your own key and can retry once on Go GLM 5.3 Flash for a transient failure
+before visible output, never for auth, billing, or region errors. Explicit
+selections take precedence; missing authentication or capability fails closed
+without fallback. Astra workers default
 to **medium** reasoning, independently of the parent's current effort. Set
 `thinking: "high"` or `"xhigh"` only with a concrete task benefit in
 `thinkingReason`; reviewer role alone does not escalate effort. Other models
 keep their existing defaults. See the
 [model-routing contract and boundaries](./docs/MODEL-ROUTING.md).
 
-**Session isolation:** Hub operations are private to the native parent session. Runs carry its captured session ID and canonical file, including after restart. Late callbacks cannot write into a switched session. Copied or unowned activity remains history, not live work. Legacy checkpoints are adopted only with matching native filename and header evidence; ambiguous records remain on disk but are not attached automatically.
+**Session isolation:** Hub operations are private to the native parent session. Runs carry its captured session ID and canonical file, including after restart. Late callbacks cannot write into a switched session. Copied or unowned activity remains history, not live work. Legacy checkpoints are adopted only with matching native filename and header evidence; ambiguous records remain on disk but are not attached automatically. USAP 1.2 checkpoints stay inspectable but are not auto-migrated — new runs use 1.3 envelopes — and Claude CLI workers keep no native history to resume.
 
 **Pinned plans:** Todo state is private to the native session under `.steak-pi/todo/<session-hash>/`, with its JSON and Markdown together. Legacy workspace-wide plans stay untouched and are not imported automatically. A completed plan keeps its checklist and finished counts pinned until the plan is replaced or removed; empty plans unpin, and cancelled subagents unpin once their status settles. A cancelled session switch does not erase current work.
 
@@ -205,7 +231,35 @@ keep their existing defaults. See the
 See [`SECURITY.md`](./SECURITY.md) and the full
 [USAP protocol](./docs/ULTRATERM-SUBAGENT-PROTOCOL.md).
 
-## New in 0.7.1
+## New in 0.8.0 (USAP 1.3) — unreleased candidate
+
+- **Official Claude Code worker** (`harness: "claude-code"`): the official
+  headless Claude CLI joins the same coordinator, hub, capacity, checkpoint,
+  and telemetry surface as native Pi workers, pinned to route
+  `claude-code/claude-opus-5-5` at `xhigh` effort (the "Opus Pass"). It
+  authenticates with the existing first-party Claude subscription login only;
+  API-key and alternate billing routes are never substituted and there is no
+  fallback.
+- **Read-only first slice.** CLI leaves allow Read, Grep, and Glob with
+  `--safe-mode`, `--restricted`, `--setting-sources ""`, strict MCP
+  configuration, and `--max-turns`. Writes, shell, `ownedPaths`, image
+  admission, relay, and native checkpoint resume are refused explicitly rather
+  than approximated.
+- **Implicit all-reviewer waves use the official Opus CLI.** Mixed
+  worker/reviewer waves without an explicit route fail with a split-or-choose
+  error; explicit model/profile/harness selections always win.
+- **Automatic Astra reviewer default removed.** Native Pi reviewer defaults
+  ride the same routine MiMo V2.6 Pro → ZAI GLM 5.3 Flash chain as workers;
+  Astra is explicit-selection only, and the pre-commit/push/deploy expert
+  end-gate now names the Opus Pass instead of an Astra review.
+- The retired first-party `steak-pi/claude-opus-5-5` launch profile is skipped
+  (`docs/opus-5-5.models.json` metadata is retained unchanged and inactive);
+  foreign harness manifest model names are skipped when reading native worker
+  profiles while native Pi malformed entries still fail closed; run views and
+  dispatch summaries record harness provenance; USAP 1.2 checkpoints stay
+  inspectable but are not auto-migrated.
+
+## New in 0.7.1 (historical candidate notes)
 
 - Todo maintenance without auto-marking: a single `start` still activates exactly
   one item, bulk `items` batches stay ordered and all-or-nothing, and an identical
@@ -243,7 +297,10 @@ See [`SECURITY.md`](./SECURITY.md) and the full
   recovery checkpoints are retained on disk. Exiting or crashing the host ends
   child execution; reopening the same
   native session exposes recovery state for inspection, and `resume` starts a new
-  run with fresh budgets for unfinished tasks only.
+  run with fresh budgets for unfinished tasks only. Claude CLI workers keep no
+  native history (`--no-session-persistence`): an interrupted CLI task's
+  checkpoint is inspection evidence, and only never-started tasks of a resumed
+  CLI run may start fresh.
 - Memory-only parent sessions (no persisted session file) have no durable
   recovery, and nothing restarts workers automatically: there is no daemon,
   detached worker, cross-host failover, or scheduler.
@@ -308,8 +365,10 @@ isolated installation before release. Live acceptance covers cancellation,
 deadlines, correlated relay replies, parent/child loops, image reads, GPT route
 denial, and out-of-scope writes. Historical benchmark evidence above does not
 substitute for those candidate gates. Worker tool tests execute the real Pi
-read, grep, find, ls, edit, write, and bash factories. The native loader explicitly
-loads those exports on both Pi SDK loading paths, including the 0.85.1 path.
+read, grep, find, ls, edit, write, and bash factories. The SDK preflight
+resolves the host Pi package's ESM import exports directly (Pi 0.87 exports the
+SDK for `import` only), preferring the extension's own installed peers and then
+the actual host.
 
 ### Verify after edit
 
@@ -456,8 +515,8 @@ npm ci --ignore-scripts
 npm run verify
 ```
 
-`npm ci` installs the dev toolchain (TypeScript, Vitest, and pinned Pi 0.86.1
-peers) from `package-lock.json`; `npm run verify` runs typecheck, the full test
+`npm ci` installs the dev toolchain (TypeScript, Vitest, and Pi peers pinned at
+0.87.0) from `package-lock.json`; `npm run verify` runs typecheck, the full test
 suite, and the isolated TUI smoke test. Steak Pi itself has no runtime npm
 dependencies beyond the Pi peers declared in `package.json`.
 

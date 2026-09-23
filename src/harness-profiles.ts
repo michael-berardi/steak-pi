@@ -53,7 +53,7 @@ const MAX_MANIFEST_BYTES = 128 * 1024;
 /** First-party Steak Pi profile retired in 2.2.0; the bundled catalog ships the
  * same route as the canonical `opencode-go` profile without the removed flag. */
 const STEAK_PI_HARNESS = "steak-pi";
-const RETIRED_STEAK_PI_DSH_PROFILE = "opencode-go-dsh";
+const RETIRED_STEAK_PI_PROFILES = new Set(["opencode-go-dsh", "claude-opus-5-5"]);
 
 const object = (x: unknown): x is Record<string, any> => !!x && typeof x === "object" && !Array.isArray(x);
 const clean = (x: unknown): x is string => typeof x === "string" && x.length > 0 && !/[\x00-\x1f\x7f-\x9f]/u.test(x);
@@ -120,7 +120,7 @@ function sourcesOf(sources: string | readonly string[]): readonly string[] {
  * harness and profile id — including a custom harness that happens to reuse the
  * retired string — is user-owned and is never rewritten or dropped. */
 function isRetiredFirstPartyProfile(harness: string, profileId: unknown): boolean {
-  return harness === STEAK_PI_HARNESS && profileId === RETIRED_STEAK_PI_DSH_PROFILE;
+  return harness === STEAK_PI_HARNESS && typeof profileId === "string" && RETIRED_STEAK_PI_PROFILES.has(profileId);
 }
 
 /** The native `validate()` rules a manifest must satisfy, minus
