@@ -4,7 +4,7 @@ Official model reference: https://platform.claude.com/docs/en/models/opus-5-5/ov
 (parent-verified). Model ID `claude-opus-5-5`: text/images, 1M context,
 128K output, $4 input / $20 output per million tokens. Adaptive thinking is
 always on; effort controls its depth. This legacy Pi fragment verifies `high`.
-The UltraTerm 2.3.1 expert default is instead the official Claude Code CLI at
+The UltraTerm 2.3.5 expert default is instead the official Claude Code CLI at
 `xhigh`, through USAP 1.3. This fragment is retained unchanged and inactive.
 
 ## Opt-in configuration (Pi 0.87.0)
@@ -31,7 +31,7 @@ writes cost $8 and require separate accounting if enabled. Source:
 https://platform.claude.com/docs/en/about-claude/pricing (checked 2026-09-22).
 No cache-warming metadata is enabled.
 
-The old `steak-pi/claude-opus-5-5` launch profile is retired in UltraTerm 2.3.1.
+The old `steak-pi/claude-opus-5-5` launch profile is retired in UltraTerm 2.3.5.
 Use the Claude Code harness for Opus instead. Keeping this file does not activate
 an Anthropic API route, alter credentials or grant paid-route approval.
 Routine workers retain MiMo V2.6 Pro and the ZAI subscription fallback; expert
