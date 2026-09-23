@@ -5,6 +5,7 @@ import {
   DEFAULT_CONCURRENCY,
   DEFAULT_MAX_TURNS,
   DEFAULT_TIMEOUT_MS,
+  HARNESS_IDS,
   MAX_CONCURRENCY,
   MAX_MAX_TURNS,
   MAX_TASKS,
@@ -13,6 +14,7 @@ import {
   USAP_VERSION,
   emptyUsage,
   type DispatchInput,
+  type HarnessId,
   type RunRecord,
   type SubagentRole,
 } from "./types.ts";
@@ -155,6 +157,14 @@ export function assertOwnedPath(
   return candidate.lexical;
 }
 
+function normalizeHarness(value: unknown, field: string): HarnessId {
+  if (value === undefined) return "pi";
+  if (typeof value !== "string" || !(HARNESS_IDS as readonly string[]).includes(value)) {
+    fail(`${field} must be one of ${HARNESS_IDS.join(", ")}`);
+  }
+  return value as HarnessId;
+}
+
 function normalizeRole(value: unknown, field: string): SubagentRole {
   if (value === undefined) return "worker";
   if (value !== "scout" && value !== "worker" && value !== "reviewer") {
@@ -231,6 +241,7 @@ export function normalizeDispatch(
     "maxTurns",
   );
   const background = booleanOrDefault(input.background, false, "background");
+  const harness = normalizeHarness(input.harness, "harness");
   const runId = `run-${safeDisplayId(idFactory())}`;
   const labels = new Set<string>();
   const ownership: Array<{ task: string; lexical: string; physical: string }> = [];
@@ -247,6 +258,15 @@ export function normalizeDispatch(
     const role = normalizeRole(source.role, `${field}.role`);
     const mayEdit = booleanOrDefault(source.mayEdit, false, `${field}.mayEdit`);
     const allowBash = booleanOrDefault(source.allowBash, false, `${field}.allowBash`);
+    // Foreign-harness first slice: the headless Claude CLI can genuinely enforce
+    // a read-only tool allowlist, but this leaf has no CLI-enforced write
+    // ownership or shell boundary. Refuse rather than trust the prompt.
+    if (harness === "claude-code" && (mayEdit || (Array.isArray(source.ownedPaths) && source.ownedPaths.length > 0))) {
+      fail(`${field} on harness claude-code is read-only in this USAP slice: mayEdit/ownedPaths are refused because no CLI-enforced write ownership exists`);
+    }
+    if (harness === "claude-code" && allowBash) {
+      fail(`${field} on harness claude-code cannot use bash: shell is outside the read-only first slice and has no CLI-enforced boundary`);
+    }
     if (source.ownedPaths !== undefined && !Array.isArray(source.ownedPaths)) {
       fail(`${field}.ownedPaths must be an array`);
     }
@@ -299,6 +319,7 @@ export function normalizeDispatch(
     ...(contract === undefined ? {} : { contract }),
     cwd: root.lexical,
     model: model.trim(),
+    ...(harness === "pi" ? {} : { harness }),
     thinkingLevel: thinking.trim(),
     concurrency,
     timeoutMs,

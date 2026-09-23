@@ -36,7 +36,7 @@ Policy denials use a deterministic message without transient-status keywords.
 Pi's native retry classifier treats this denial as nonretryable; real transient
 provider failures retain the existing retry behavior.
 
-## Native USAP 1.1 selection
+## Native USAP selection
 
 Each run uses one frozen model for all its tasks. Set **either** `model` to an
 exact authenticated `provider/model` or `profile` to a native `harness/profile`
@@ -55,24 +55,32 @@ built-in `steak-pi/mimo-v2-6-pro` default resolve one **automatic chain** and
 record it as provenance:
 
 - Routine workers, text and images: `xiaomi/mimo-v2.6-pro` → `zai/glm-5.3-flash`.
-- Default reviewer role: `openai-codex/gpt-6-astra` → `xiaomi/mimo-v2.6-pro` →
-  `zai/glm-5.3-flash` (the expert review chain; see below).
+- Default reviewer role: the same `xiaomi/mimo-v2.6-pro` → `zai/glm-5.3-flash`
+  routine chain. No expert model is ever selected automatically on the native
+  chain; expert review is the Opus Pass CLI route (explicit, or the implicit
+  all-reviewer-wave default) described below.
 
 The main app also defaults to MiMo V2.6 Pro. Explicitly chosen profiles remain exact; selecting OpenCode Go does not select this cross-provider chain.
 
 ## Scarce expert reviewer (Astra)
 
 `openai-codex/gpt-6-astra` is the scarce expert for hard planning/debugging and
-review/validation — never routine implementation or orchestration. A run whose
-tasks include a reviewer role resolves the expert review chain when no explicit
-selector is given: it selects the authenticated Astra **paid Codex OAuth coding
-plan** route when available and otherwise honestly resolves the same routine
-subscription chain as workers. Eligibility is the exact subscription identity
-(OAuth, Codex Responses API, official `chatgpt.com/backend-api`), so a batch id,
-API-key endpoint, or other metered substitute never serves as the expert. A
-reviewer frozen on Astra gets **no runtime hop**: a failed expert review fails
-visibly and is reported — it is never silently downgraded to a weaker model, and
-no output may claim expert approval that did not happen. Astra keeps its medium
+review/validation — never routine implementation or orchestration. USAP 1.3
+removed the automatic Astra-first reviewer default: a run whose tasks include a
+reviewer role resolves the same routine MiMo → ZAI subscription chain as
+workers when no explicit selector is given. Expert review is instead the **Opus
+Pass** — the official Claude Code CLI on `claude-code/claude-opus-5-5` at
+`xhigh` effort with an existing first-party Claude subscription login — chosen
+explicitly or implied by an all-reviewer wave with no explicit route; a failed
+or quota-blocked CLI review is reported honestly, never silently downgraded,
+and never substituted with another model or billing route. Astra itself is
+reachable only through an exact explicit selector on the paid Codex OAuth coding
+plan; eligibility is the exact subscription identity (OAuth, Codex Responses
+API, official `chatgpt.com/backend-api`), so a batch id, API-key endpoint, or
+other metered substitute never serves as the expert. An explicitly selected
+Astra gets **no runtime hop**: a failed expert review fails visibly and is
+reported — it is never silently downgraded to a weaker model, and no output may
+claim expert approval that did not happen. Astra keeps its medium
 reasoning default; reviewer role alone does not raise effort. Astra is never a
 routine worker default: parent-added `steak-pi/gpt-6-sol` and
 `steak-pi/gpt-6-luna` profiles are explicit-selection routes only, whose own
@@ -240,8 +248,8 @@ off-plan routes, and generic metered endpoints never hop or spend.
 hop is recorded as `from->to` provenance. `test/opencode-go-routing.test.ts`
 proves the same-plan Go retry still refuses the exhaustion signal.
 `test/subagent-model-selection.test.ts` and `test/model-selection-override.test.ts`
-prove chain/override provenance, reviewer defaults (the Astra-first expert chain
-with honest routine fallback and no metered substitute), and that an explicit
+prove chain/override provenance, reviewer defaults (the same routine MiMo→ZAI
+chain as workers, never an automatic expert step), and that an explicit
 selector is never upgraded into chain provenance.
 `test/model-route-native.test.ts` uses isolated homes and a loopback server to
 prove zero requests for forbidden extension, models.json, model-level API changes,

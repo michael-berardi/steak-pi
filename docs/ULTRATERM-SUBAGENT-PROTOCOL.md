@@ -1,6 +1,6 @@
 # UltraTerm Subagent Protocol (USAP)
 
-Version: **1.2** (Steak Pi 0.6.0). This documents the behavior implemented in
+Version: **1.3** (Steak Pi 0.8.0 candidate). This documents the behavior implemented in
 this checkout; it is not a guarantee of end-to-end recovery in every
 environment. [`AGENT-LIFECYCLE.md`](./AGENT-LIFECYCLE.md) provides
 additional lifecycle background. The legacy `parallel` tool is replaced and
@@ -137,16 +137,54 @@ Permissions: may edit, may use shell, and any other narrowed capability
 Ownership: exclusive files or mutable boundaries
 ```
 
-### Native model/profile selection
+### Harness selection (1.3)
+
+USAP uses one coordinator, hub, capacity limiter, checkpoint store and telemetry
+surface for both Pi workers and the official headless Claude Code CLI. An absent
+`harness` means Pi except for an all-reviewer wave with no explicit route: that
+wave defaults to the **Opus Pass**, Claude Code Opus 5.5 at `xhigh` effort.
+Explicit Pi/model/profile selections still win.
+
+Select `harness: "claude-code"` or `model: "claude-code/claude-opus-5-5"` for
+expert planning or review. This exact route runs `claude --print` with
+`--model claude-opus-5-5 --effort xhigh`. Authentication preflight must report an
+existing first-party Claude subscription login. API-key/provider override
+environment variables are not inherited, and there is no fallback to another
+model, route, or billing arrangement. Quota exhaustion is a failed review,
+not permission to buy credits or an expert approval.
+
+| Capability | Pi | Claude Code first slice |
+| --- | --- | --- |
+| Scheduling, status, bounded wait/cancel, telemetry | Supported | Same coordinator |
+| Tools | Guarded native tools | Read/Grep/Glob only, restricted to cwd |
+| Writes / shell | Explicit grants | Refused |
+| Relay / hub send and inbox | Supported | Explicitly unsupported |
+| Native worker history continuation | Supported | Unsupported; no session persistence |
+| Image review admission | Capability-checked | Refused pending verification |
+| Model selection | Native registry | Exact Opus 5.5/xhigh only |
+
+The CLI runs with safe mode, restricted mode and strict MCP configuration, so
+inherited hooks, skills and plugin bridges cannot create nested agents. Output,
+turns, lifetime and cancellation are bounded. The child is not an OS sandbox;
+these CLI controls narrow its available operations. Native `/resume` in an
+interactive Claude pane is separate and remains available. A CLI worker
+checkpoint cannot be passed to Pi or silently replayed as a new conversation.
+Protocol 1.2 Pi checkpoints remain readable; a new run uses 1.3 envelopes.
+
+### Native Pi model/profile selection
 
 A run may supply `model: "provider/model"` **or** `profile: "harness/profile"`,
 never both. Selection applies to every task in that run; per-task selectors are
 not supported. Explicit selection is never overridden by a reviewer role or a
-profile default. Omitted selectors use the matching parent profile's configured
-worker/reviewer default, retaining legacy role defaults when none is configured.
+profile default. Omitted selectors on a Pi wave use the matching parent profile's
+configured worker/reviewer default, retaining legacy role defaults when none is
+configured; automatic native-Pi reviewer defaults ride the same MiMo→ZAI
+subscription chain as routine workers, with no automatic expert step. An
+all-reviewer wave without an explicit route uses the CLI default
+above instead.
 Profiles select route metadata, not a separate CLI or inherited permissions.
 
-Only authenticated, available native registry routes may run. GPT-family models
+Only authenticated, available native registry routes may run Pi workers. GPT-family models
 always require paid-route `openai-codex` OAuth, the official Codex endpoint and
 non-batch execution. An explicit non-GPT choice from a GPT manager is supported.
 Invalid or unavailable selections fail before any child starts; no silent
@@ -291,8 +329,9 @@ by the operator's capacity configuration. Provider overrides accept 1–64;
 session/global overrides accept 1–64 and machine/global 1–128. They do not
 raise the eight-task/eight-concurrent-child per-run bound.
 
-Workers enable native Pi compaction and at most one native retry; neither
-makes execution unlimited. This differs from routing-specific fallback.
+Pi workers enable native compaction and at most one native retry; neither
+makes execution unlimited. Claude CLI workers never retry or silently switch
+routes; partial execution is not replayed. This differs from routing-specific fallback.
 
 The implementation may choose lower limits because of host or provider
 constraints, and dispatch may request lower time/concurrency limits. It must
@@ -309,9 +348,12 @@ turn.
 
 Routine bounded scouting and implementation use the configured parent profile
 defaults: built-in routine workers resolve MiMo V2.6 Pro → ZAI coding GLM 5.3
-Flash. The default reviewer role resolves the expert review chain — scarce
-`openai-codex/gpt-6-astra` via its paid Codex OAuth coding plan when
-authenticated, then the same routine order, never a metered substitute.
+Flash, and explicitly native-Pi reviewer chains resolve that same subscription
+chain — the legacy "expert review chain" name is a native-Pi routing label, not
+expert sign-off. All-reviewer waves with no explicit route use the official Claude Code
+Opus 5.5/xhigh pass. Existing explicitly selected Pi profiles keep their native
+route semantics. No failed Opus review silently falls back to Astra or another
+model.
 `gpt-6-sol` and `gpt-6-luna` are explicit-selection profiles only, never
 automatic workers. Explicit model/profile selection wins. See [PROFILES.md](./PROFILES.md)
 for reviewer defaults and route-specific fallback. Record the resolved
@@ -319,10 +361,10 @@ provider/model on the run so results are auditable.
 
 **Expert-review end-gate.** USAP instructions never grant commit, push, or
 deploy permission. Before a weaker implementer's work is committed, pushed, or
-deployed, the leaf requests exactly one bounded Astra expert review through the
-parent. If Astra is unavailable, the worker reports that honestly in its final
-report; no worker may claim, imply, or fabricate expert approval, and a missing
-Astra review is a parent decision, not a silent pass.
+deployed, the leaf requests one bounded Opus 5.5/xhigh review through the parent.
+If the CLI route or its subscription allowance is unavailable, report that
+honestly. No worker may claim, imply, or fabricate expert approval. A missing
+Opus Pass is a parent decision, not a silent pass.
 
 Model price is secondary to total trajectory cost. Escalate capability when a
 leaf has high ambiguity, large blast radius, repeated failure, or requires

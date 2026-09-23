@@ -16,6 +16,20 @@ function setup() {
 afterEach(() => { for (const store of stores.splice(0)) store.close(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 describe("durable USAP checkpoints", () => {
+  it("does not promise native resume for an interrupted Claude CLI task", () => {
+    const { store, run } = setup();
+    run.harness = "claude-code";
+    run.model = "claude-code/claude-opus-5-5";
+    run.state = "running";
+    run.tasks[0].state = "running";
+    run.tasks[0].startedAt = Date.now();
+    store.save(run, true);
+    const recovered = recoveredRun(store.get(run.id)!);
+    expect(recovered.tasks[0].error).toMatch(/Claude CLI.*new dispatch/);
+    expect(recovered.tasks[0].error).not.toMatch(/explicitly resume/);
+    expect(recovered.tasks[0].sessionFile).toBeUndefined();
+  });
+
   it("separates native identities even when their session filename is reused", () => {
     const { root, run } = setup();
     const parent = join(root, "reused.jsonl"), checkpoints = join(root, "scoped");

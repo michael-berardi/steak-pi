@@ -45,7 +45,7 @@ describe("dispatch ergonomics regressions", () => {
       { label: "read", task: "mayEdit mentioned only in prose", role: "reviewer" },
     ] });
     expect(result.details.summary).toEqual({
-      model: "zai/glm-5.3-flash", profile: null, thinking: "medium", background,
+      harness: "pi", model: "zai/glm-5.3-flash", profile: null, thinking: "medium", background,
       tasks: [
         { label: "edit", role: "worker", mayEdit: true, allowBash: true, ownedPaths: 1, modelRoute: "zai/glm-5.3-flash", selectionSource: "override" },
         { label: "read", role: "reviewer", mayEdit: false, allowBash: false, ownedPaths: 0, modelRoute: "zai/glm-5.3-flash", selectionSource: "override" },

@@ -1,4 +1,13 @@
-export const USAP_VERSION = "1.2" as const;
+export const USAP_VERSION = "1.3" as const;
+/** Execution harness that serves a run's leaves. `"pi"` is the native default;
+ * `"claude-code"` is the official headless Claude CLI runner (read-only first
+ * slice). The field is omitted on records that never left the Pi default. */
+export const HARNESS_IDS = ["pi", "claude-code"] as const;
+export type HarnessId = (typeof HARNESS_IDS)[number];
+/** Never infer durability or capability from an absent field: absent means Pi. */
+export function harnessOf(value: HarnessId | undefined): HarnessId {
+  return value ?? "pi";
+}
 export const MAX_TASKS = 8;
 export const MAX_ACTIVE_RUNS = 16;
 export const MAX_RETAINED_TERMINAL_RUNS = 50;
@@ -66,6 +75,8 @@ export interface ModelSelection {
   source: "override" | "profile-default" | "legacy-default" | "chain";
   /** Ordered automatic chain routes (provider/model), for auditable provenance. */
   chainRoutes?: string[];
+  /** Foreign runners keep their harness identity instead of a native route. */
+  harness?: HarnessId;
   images: boolean;
   tools: boolean;
 }
@@ -75,6 +86,8 @@ export interface DispatchInput {
   /** Run-level, mutually exclusive native route selectors. */
   model?: string;
   profile?: string;
+  /** Explicit execution harness; omitted and "pi" are identical. */
+  harness?: HarnessId;
   requireImages?: boolean;
   constraints?: string[];
   contract?: string;
@@ -155,6 +168,8 @@ export interface RunRecord {
   contract?: string;
   cwd: string;
   model: string;
+  /** Set only for non-Pi harnesses; absence is the Pi default. */
+  harness?: HarnessId;
   selection?: ModelSelection;
   thinkingLevel: string;
   concurrency: number;

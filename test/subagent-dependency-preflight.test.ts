@@ -1,9 +1,9 @@
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { assertWorkerDependencies, WORKER_PI_DEPENDENCIES } from "../src/subagents/dependency-preflight.ts";
+import { assertWorkerDependencies, resolveWorkerDependency, WORKER_PI_DEPENDENCIES } from "../src/subagents/dependency-preflight.ts";
 
 // Native ESM resolution only: this process never imports SDK code or launches a worker.
 function fixture(healthy: number, check: (entry: string, resolve: (s: string) => string) => void) {
@@ -24,6 +24,35 @@ function fixture(healthy: number, check: (entry: string, resolve: (s: string) =>
     check(entry, resolve);
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
+
+describe("worker dependency ESM host fallback", () => {
+  it("resolves import-only Pi SDK and TUI from the real host behind a launcher symlink", () => {
+    const root = mkdtempSync(join(import.meta.dirname, ".dependency-host-"));
+    try {
+      const namespace = join(root, "node_modules", "@earendil-works");
+      const sdk = join(namespace, "pi-coding-agent");
+      const tui = join(namespace, "pi-tui");
+      mkdirSync(join(sdk, "dist"), { recursive: true });
+      mkdirSync(join(tui, "dist"), { recursive: true });
+      writeFileSync(join(sdk, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "0.88.0", type: "module", exports: { ".": { import: "./dist/index.js" } } }));
+      writeFileSync(join(tui, "package.json"), JSON.stringify({ name: "@earendil-works/pi-tui", version: "0.88.0", type: "module", main: "dist/index.js" }));
+      for (const dir of [sdk, tui]) writeFileSync(join(dir, "dist/index.js"), "throw Error('must never execute SDK code');");
+      const cli = join(sdk, "dist/cli.js");
+      writeFileSync(cli, "// inert Pi CLI entrypoint");
+      const launcher = join(root, "managed-pi");
+      symlinkSync(cli, launcher);
+      const missing = Object.assign(new Error("missing extension peer"), { code: "ERR_MODULE_NOT_FOUND" });
+      const local = () => { throw missing; };
+      expect(resolveWorkerDependency("@earendil-works/pi-coding-agent", local, launcher)).toBe(pathToFileURL(join(sdk, "dist/index.js")).href);
+      expect(resolveWorkerDependency("@earendil-works/pi-tui", local, launcher)).toBe(pathToFileURL(join(tui, "dist/index.js")).href);
+      expect(() => resolveWorkerDependency("@earendil-works/pi-ai", local, launcher)).toThrow(missing);
+      rmSync(join(sdk, "dist/index.js"));
+      expect(() => resolveWorkerDependency("@earendil-works/pi-coding-agent", local, launcher)).toThrow(missing);
+      // Import-only SDKs lack a CommonJS export; a require() fallback failed
+      // before workers started despite an installed host SDK.
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
 
 describe("worker dependency preflight", () => {
   it("retains missing-package cause and gives path-scoped repair guidance", () => {

@@ -194,10 +194,16 @@ describe('Pi UI machine control', () => {
   it('reads arbitrary safe profile labels without making profiles catalog authority', () => {
     const directory = mkdtempSync(join(tmpdir(), 'ut20-profile-test-'));
     let profiles: ReturnType<typeof readProfiles>;
+    const previousResources = process.env.ULTRATERM_HARNESS_RESOURCES;
+    process.env.ULTRATERM_HARNESS_RESOURCES = join(directory, "no-bundled-catalog");
     try {
       writeFileSync(join(directory, 'steak-pi.json'), JSON.stringify({ schemaVersion: 1, id: 'steak-pi', profiles: [{ id: 'arbitrary-new-profile-id', name: 'DeepSeek V4.1 Flash', args: ['--model', 'openrouter/deepseek/deepseek-v4.1-flash', '--thinking', 'high'] }] }));
-      profiles = readProfiles(directory);
-    } finally { rmSync(directory, { recursive: true, force: true }); }
+      profiles = readProfiles(directory, "steak-pi");
+    } finally {
+      if (previousResources === undefined) delete process.env.ULTRATERM_HARNESS_RESOURCES;
+      else process.env.ULTRATERM_HARNESS_RESOURCES = previousResources;
+      rmSync(directory, { recursive: true, force: true });
+    }
     expect(profiles).toHaveLength(1);
     expect(profiles.some(p => p.provider === 'openrouter' && p.id === 'deepseek/deepseek-v4.1-flash' && p.thinking === 'high')).toBe(true);
   });

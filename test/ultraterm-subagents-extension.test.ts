@@ -86,6 +86,52 @@ afterEach(() => {
 });
 
 describe("UltraTerm Subagent Protocol Pi extension", () => {
+  it("routes explicit headless Claude and default reviewer waves through the same coordinator without the Pi registry", async () => {
+    const runner = vi.fn(async (_context: Parameters<WorkerRunner>[0]) => ({ state: "done" as const, output: "reviewed", turns: 1, usage: emptyUsage() }));
+    const h = harness(() => runner);
+    h.ctx.modelRegistry.find = () => { throw new Error("must not query Pi models"); };
+    h.ctx.modelRegistry.getAvailable = () => { throw new Error("must not query Pi models"); };
+    for (const route of [{ harness: "claude-code" }, { model: "claude-code/claude-opus-5-5" }, {}]) {
+      const result = await h.tools.get("ultraterm_subagents").execute("review", {
+        goal: "Opus Pass", ...route, tasks: [{ label: "Review", task: "Read only", role: "reviewer" }],
+      }, undefined, undefined, h.ctx);
+      expect(result.details.run.harness).toBe("claude-code");
+      expect(result.details.run.model).toBe("claude-code/claude-opus-5-5");
+      expect(runner.mock.calls.at(-1)?.[0].run.thinkingLevel).toBe("xhigh");
+      const relay = await h.tools.get("ultraterm_hub").execute("send", { action: "send", runId: result.details.run.runId, to: "#run", body: "not delivered" }, undefined, undefined, h.ctx);
+      expect(relay.content[0].text).toMatch(/unsupported|not support/i);
+    }
+    expect(runner).toHaveBeenCalledTimes(3);
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+
+  it("requires an explicit route for mixed reviewer waves instead of silently substituting an expert", async () => {
+    const runnerFactory = vi.fn((_relay: RelayBroker): WorkerRunner => async () => ({ state: "done" as const, output: "checked", usage: emptyUsage(), turns: 1 }));
+    const h = harness(runnerFactory);
+    const tasks = [{ label: "Work", task: "Inspect", role: "worker" }, { label: "Review", task: "Review", role: "reviewer" }];
+    await expect(h.tools.get("ultraterm_subagents").execute("mixed", { goal: "Mixed", tasks }, undefined, undefined, h.ctx))
+      .rejects.toThrow(/split routine workers from the Opus review wave/);
+    expect(runnerFactory).not.toHaveBeenCalled();
+    for (const route of [{ harness: "pi" }, { model: "zai/glm-5.3-flash" }]) {
+      const result = await h.tools.get("ultraterm_subagents").execute("explicit-mixed", { goal: "Explicit native review", ...route, tasks }, undefined, undefined, h.ctx);
+      expect(result.details.run.model).toBe("zai/glm-5.3-flash");
+      expect(result.details.run.harness).not.toBe("claude-code");
+      expect(result.details.run.tasks.every((task: any) => task.state === "done")).toBe(true);
+    }
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+
+  it("fails closed for Claude writes, alternate models and effort", async () => {
+    const runner = vi.fn(async (_context: Parameters<WorkerRunner>[0]) => ({ state: "done" as const, output: "unexpected", turns: 1, usage: emptyUsage() }));
+    const h = harness(() => runner);
+    const base = { goal: "review", harness: "claude-code", tasks: [{ label: "Review", task: "read" }] };
+    await expect(h.tools.get("ultraterm_subagents").execute("bad", { ...base, thinking: "medium" }, undefined, undefined, h.ctx)).rejects.toThrow(/xhigh/);
+    await expect(h.tools.get("ultraterm_subagents").execute("bad", { ...base, model: "anthropic/claude-opus-5-5" }, undefined, undefined, h.ctx)).rejects.toThrow(/pins/);
+    const invalid = await h.tools.get("ultraterm_subagents").execute("bad", { ...base, tasks: [{ label: "write", task: "write", mayEdit: true, ownedPaths: [h.ctx.cwd] }] }, undefined, undefined, h.ctx);
+    expect(invalid.isError).toBe(true);
+    expect(runner).not.toHaveBeenCalled();
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
   it("refuses every foreign-session hub action and dispatch before exposing a run", async () => {
     const runner = vi.fn(async () => ({ state: "done" as const, output: "owner-only evidence", turns: 1, usage: emptyUsage() }));
     const h = harness(() => runner);

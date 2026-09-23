@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0 — unreleased candidate (USAP 1.3)
+
+- Add a headless official Claude Code runner to the existing USAP coordinator. Read-only expert planning/review uses exact Opus 5.5/xhigh with existing first-party subscription login; no API-key route, metered fallback or inherited hook/plugin execution.
+- All-reviewer waves without an explicit route default to this Opus Pass. Explicit selections remain exact. The initial CLI slice refuses writes, shell, image admission, relay and native worker resume instead of claiming unsupported parity.
+- Record harness provenance in run views and dispatch summaries. Preserve native Pi scheduling and parent ownership; keep old Pi checkpoints readable.
+- Recognize the pinned Xiaomi Singapore Token Plan as a subscription, preserve the MiMo→ZAI routine chain, skip foreign CLI model names when reading native worker profiles, and retire the old Steak Pi Claude launch profile while retaining opt-in model metadata unchanged.
+- Improve Pi SDK dependency preflight for the reviewed 0.87.1 app pairing. This entry is not publication, installation or final expert sign-off evidence.
+
 ## 0.7.8 — local candidate
 
 - Reviewer defaults that name the bundled Astra profile enter the same Astra-first expert chain, with the MiMo→ZAI honest fallback if OAuth is unavailable. Explicitly selected Astra stays exact. This aligns owner manifest migrations with the 0.7.7 expert-review policy and is covered by a regression test.

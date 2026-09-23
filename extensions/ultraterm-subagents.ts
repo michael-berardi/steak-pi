@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type, type TSchema } from "typebox";
 import { SubagentCoordinator, CoordinatorWaitTimeoutError } from "../src/subagents/coordinator.ts";
 import { normalizeDispatch, SubagentPolicyError } from "../src/subagents/policy.ts";
-import { resolveWorkerSelection, type WorkerProfile } from "../src/subagents/model-selection.ts";
+import { resolveWorkerSelection, resolveClaudeCodeSelection, CLAUDE_CODE_ROUTE, type WorkerProfile } from "../src/subagents/model-selection.ts";
 import { AUTOMATIC_CHAIN_APPROVAL, type ChainOptions } from "../src/model-route-policy.ts";
 import {
   RelayBroker,
@@ -15,6 +15,7 @@ import { SessionScheduler } from "../src/subagents/scheduler.ts";
 import { canonicalSessionFile, CheckpointStore, diagnoseRun, isInProcessCheckpointCollision, recoveredRun, type Checkpoint } from "../src/subagents/checkpoints.ts";
 import { renderSubagentCall, renderSubagentResult, renderSubagentLive } from "../src/subagents/render.ts";
 import type { PiWorkerRuntime, PiWorkerRunnerOptions } from "../src/subagents/pi-worker.ts";
+import type { ClaudeSpawn, ClaudeWorkerRunnerOptions } from "../src/subagents/claude-worker.ts";
 import {
   USAP_VERSION,
   MAX_CONCURRENCY,
@@ -22,7 +23,9 @@ import {
   MAX_TIMEOUT_MS,
   MAX_WORKER_TURNS,
   RELAY_MAILBOX_LIMIT,
+  harnessOf,
   type DispatchInput,
+  type HarnessId,
   type RunRecord,
   type TaskRecord,
   type UsageTotals,
@@ -82,6 +85,7 @@ export const ultratermSubagentsSchema = Type.Object({
   goal: Type.String({ minLength: 1, maxLength: 8_000 }),
   model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Exact authenticated provider/model for all tasks; mutually exclusive with profile." })),
   profile: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Native harness/profile route (e.g. steak-pi/glm-5-3-flash); mutually exclusive with model." })),
+  harness: Type.Optional(Type.Unsafe<"pi" | "claude-code">({ type: "string", enum: ["pi", "claude-code"], description: "Execution harness. pi (default) is the native runner; claude-code is the official headless Claude CLI on its explicit Opus 5.5 xhigh route, read-only leaves only." })),
   requireImages: Type.Optional(Type.Boolean({ description: "Require advertised image input; no silent fallback." })),
   constraints: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4_000 }), { maxItems: 64 })),
   contract: Type.Optional(Type.String({ minLength: 1, maxLength: 8_000 })),
@@ -156,6 +160,8 @@ export interface RunView {
   goal: string;
   state: RunRecord["state"];
   model: string;
+  /** Absent means the Pi default harness. */
+  harness?: HarnessId;
   selection?: RunRecord["selection"];
   thinkingLevel: string;
   background: boolean;
@@ -176,6 +182,7 @@ export interface DispatchDetails {
   persistence: Persistence;
   summary: {
     model: string;
+    harness: HarnessId;
     profile: string | null;
     thinking: string;
     background: boolean;
@@ -217,6 +224,9 @@ export interface UltratermSubagentsDependencies {
    */
   approvePaidRoute?: ChainOptions["approvePaidRoute"];
   createRelay?: () => RelayBroker;
+  /** Test seam injected into the default claude-code runner; production spawns
+   * the real official CLI once per task. Never used for harness "pi" runs. */
+  claudeSpawn?: ClaudeSpawn;
   now?: () => number;
   idFactory?: () => string;
   checkpointRoot?: string;
@@ -333,6 +343,7 @@ export function usapTelemetrySnapshot(run: RunRecord) {
     ...(run.ownerSessionId ? { ownerSessionId: run.ownerSessionId } : {}),
     ...(run.ownerSessionFile ? { ownerSessionFile: run.ownerSessionFile } : {}),
     runState: run.state,
+    ...(run.harness === undefined ? {} : { harness: run.harness }),
     ...(run.selection ? { selection: { ...run.selection }, model: run.model, thinkingLevel: run.thinkingLevel } : {}),
     tasks: run.tasks.map((task) => ({
       taskId: task.id,
@@ -357,6 +368,27 @@ function requireString(value: unknown, field: string): string {
     throw new TypeError(`${field} is required`);
   }
   return value;
+}
+
+/** Honest capability boundary: foreign headless children have no relay tool, so
+ * send/inbox are refused instead of silently buffering messages nobody reads. */
+function relayUnsupportedHarness(action: "send" | "inbox", run: RunRecord): {
+  content: Array<{ type: "text"; text: string }>;
+  details: {
+    action: "send" | "inbox";
+    run: RunView;
+    relay: { ok: false; status: "rejected"; code: "unsupported_harness"; message: string; accepted: 0; queued: 0; delivered: 0 };
+  };
+} {
+  const message = "USAP relay is unsupported for harness claude-code in this slice: the headless CLI child has no relay tool and cannot send or receive peer messages. Pass coordination in task text or dispatch a new run.";
+  return {
+    content: [{ type: "text", text: message }],
+    details: {
+      action,
+      run: toRunView(run),
+      relay: { ok: false, status: "rejected", code: "unsupported_harness", message, accepted: 0, queued: 0, delivered: 0 },
+    },
+  };
 }
 
 function requireRunId(params: UltratermHubParams): string {
@@ -400,6 +432,7 @@ export function toRunView(run: RunRecord): RunView {
     goal: run.goal,
     state: run.state,
     model: run.model,
+    ...(run.harness === undefined ? {} : { harness: run.harness }),
     ...(run.selection ? { selection: { ...run.selection } } : {}),
     thinkingLevel: run.thinkingLevel,
     background: run.background,
@@ -481,6 +514,7 @@ function dispatchDetails(run: RunRecord, persistence: Persistence): DispatchDeta
     persistence,
     summary: {
       model: run.model,
+      harness: harnessOf(run.harness),
       profile: run.selection?.profile ?? null,
       thinking: run.thinkingLevel,
       background: run.background,
@@ -505,14 +539,35 @@ interface PiWorkerModule {
   createPiWorkerRunner: (options: PiWorkerRunnerOptions) => WorkerRunner;
 }
 
-/** Lazy so fake-runner registration and tests never initialize child resources. */
+interface ClaudeWorkerModule {
+  createClaudeWorkerRunner: (options: ClaudeWorkerRunnerOptions) => WorkerRunner;
+}
+
+/** Lazy so fake-runner registration and tests never initialize child resources.
+ * One coordinator-facing runner; each run branches on its harness to the native
+ * Pi lifecycle or the headless claude-code CLI lifecycle. Neither branch is an
+ * alternate launcher: both settle through the same coordinator, checkpoint,
+ * relay-namespace and telemetry boundaries. */
 function defaultWorkerRunner(
   relay: RelayBroker,
   workerRuntimes: Map<string, PiWorkerRuntime>,
+  claudeSpawn?: ClaudeSpawn,
 ): WorkerRunner {
-  let runner: Promise<WorkerRunner> | undefined;
+  let piRunner: Promise<WorkerRunner> | undefined;
+  let claudeRunner: Promise<WorkerRunner> | undefined;
   return async (context) => {
-    runner ??= import(new URL("../src/subagents/pi-worker.ts", import.meta.url).href)
+    if (harnessOf(context.run.harness) === "claude-code") {
+      claudeRunner ??= import(new URL("../src/subagents/claude-worker.ts", import.meta.url).href)
+        .then((module) => {
+          const factory = (module as unknown as Partial<ClaudeWorkerModule>).createClaudeWorkerRunner;
+          if (typeof factory !== "function") {
+            throw new Error("claude-worker module does not export createClaudeWorkerRunner");
+          }
+          return factory(claudeSpawn ? { spawn: claudeSpawn } : {});
+        });
+      return (await claudeRunner)(context);
+    }
+    piRunner ??= import(new URL("../src/subagents/pi-worker.ts", import.meta.url).href)
       .then((module) => {
         const factory = (module as unknown as Partial<PiWorkerModule>).createPiWorkerRunner;
         if (typeof factory !== "function") {
@@ -527,7 +582,7 @@ function defaultWorkerRunner(
           },
         });
       });
-    return (await runner)(context);
+    return (await piRunner)(context);
   };
 }
 
@@ -793,7 +848,7 @@ export function createUltratermSubagentsExtension(
       const workerRuntimes = new Map<string, PiWorkerRuntime>();
       let created!: SessionRuntime;
       const runner = dependencies.createRunner?.(pi, relay)
-        ?? defaultWorkerRunner(relay, workerRuntimes);
+        ?? defaultWorkerRunner(relay, workerRuntimes, dependencies.claudeSpawn);
       const coordinator = new SubagentCoordinator(runner, {
         scheduler,
         now: dependencies.now,
@@ -1034,13 +1089,14 @@ export function createUltratermSubagentsExtension(
     pi.registerTool({
       name: "ultraterm_subagents",
       label: "UltraTerm Subagents",
-      description: "Dispatch 1-8 bounded child tasks as one parallel wave. Foreground default. ownedPaths = writable ownership (omit for read-only tasks). allowBash = unsandboxed shell.",
+      description: "Dispatch 1-8 bounded tasks through Pi or the official headless Claude Code CLI. All-reviewer waves default to Opus 5.5 xhigh (read-only). Explicit routes win. Foreground default; ownedPaths grants guarded writes only for Pi; allowBash is unsandboxed shell.",
       promptSnippet: "Dispatch bounded independent child tasks with explicit permissions and path ownership",
       promptGuidelines: [
         "Fan out by default: independent leaves (disjoint files, modules, screens, angles) dispatch in ONE parallel wave — width defaults to min(8, task count); automatic Go/GLM/MiMo chain lanes fill 8, explicit Luna lanes stay at 6 or fewer.",
         "Delegation must buy completion speed; modest token premiums for real throughput are correct. Trivial or tightly coupled edits and direct answers stay in the parent.",
         "Parent owns decomposition, integration, verification; workers own leaves end to end. With exact disjoint paths and acceptance contracts in hand, dispatch in the first tool turn without pre-reading child-owned files; do not duplicate child discovery in the parent.",
         "model or profile picks an explicit authenticated route (mutually exclusive, overrides roles). Every GPT choice requires paid openai-codex OAuth — never OpenRouter, API-key, or batch GPT. Astra workers default to medium reasoning; high/xhigh needs a concrete thinkingReason. requireImages=true for visual critics or render inspection.",
+        "Expert review defaults to the official Claude Code CLI Opus 5.5 xhigh. Select harness claude-code (read-only) or model claude-code/claude-opus-5-5 explicitly for planning/review. No fallback; images, relay, writes and native resume are unavailable in this initial CLI slice.",
         "Background only when the parent can integrate while children run, then one bounded ultraterm_hub wait. Never start a background run merely to wait immediately.",
         "For read-only tasks omit ownedPaths and state the read scope in task text; mayEdit requires ownedPaths. allowBash bypasses ownedPaths — grant only when operator-level shell access is necessary.",
       ],
@@ -1049,7 +1105,22 @@ export function createUltratermSubagentsExtension(
       renderCall: renderSubagentCall,
       renderResult: renderSubagentResult,
       async execute(_toolCallId, rawParams, signal, onUpdate, ctx) {
-        const params = rawParams as UltratermSubagentsParams;
+        const requested = rawParams as UltratermSubagentsParams;
+        // Do not let a mixed implicit wave silently bypass the Opus review
+        // standard or spend expert quota on routine implementation leaves.
+        const implicitRoute = requested.harness === undefined && requested.model === undefined && requested.profile === undefined;
+        const hasReviewer = requested.tasks.some((task) => task.role === "reviewer");
+        const allReviewers = requested.tasks.length > 0 && requested.tasks.every((task) => task.role === "reviewer");
+        if (implicitRoute && hasReviewer && !allReviewers) {
+          throw new Error("Mixed worker/reviewer waves need an explicit route; split routine workers from the Opus review wave. No fallback was selected.");
+        }
+        // Explicit Pi/model/profile selections win; only implicit all-reviewer
+        // waves select the official Opus Pass CLI route automatically.
+        const opusReviewDefault = implicitRoute && allReviewers;
+        const params: UltratermSubagentsParams = {
+          ...requested,
+          ...((opusReviewDefault || (requested.harness === undefined && requested.model === CLAUDE_CODE_ROUTE)) ? { harness: "claude-code" as const } : {}),
+        };
         if (!ctx.model) throw new Error("ultraterm_subagents requires a resolved current model");
         const current = ensureRuntime(ctx);
         // Never launch a run this session could not recover from its durable store.
@@ -1058,13 +1129,26 @@ export function createUltratermSubagentsExtension(
         const persistenceNote = current.store
           ? ""
           : `USAP checkpoints are unavailable in this session (${current.checkpointError ?? "no native session file"}): this run is memory-only and cannot be resumed.\n`;
-        const resolved = resolveWorkerSelection(ctx.model, ctx.thinkingLevel, params, ctx.modelRegistry, dependencies.profiles, undefined, automaticChainOptions(dependencies));
-        const frozenWorkerRuntime: PiWorkerRuntime = Object.freeze({
-          model: Object.freeze({ ...resolved.model }),
-          thinkingLevel: resolved.thinkingLevel,
-        });
-        const model = `${frozenWorkerRuntime.model.provider}/${frozenWorkerRuntime.model.id}`;
-        const thinking = String(frozenWorkerRuntime.thinkingLevel);
+        // Foreign-harness routing happens before native selection: the claude-code
+        // CLI route is explicit and fixed, and the native Pi registry is never
+        // consulted for it (it cannot resolve, and must not appear to).
+        const foreignHarness = params.harness === "claude-code";
+        if (foreignHarness && ((params.model !== undefined && params.model !== CLAUDE_CODE_ROUTE) || params.profile !== undefined)) {
+          throw new Error("USAP harness claude-code pins the explicit Opus Pass CLI route (claude-code/claude-opus-5-5, xhigh); model/profile selectors are refused.");
+        }
+        if (foreignHarness && params.thinking !== undefined && params.thinking !== "xhigh") {
+          throw new Error("USAP Opus Pass requires xhigh effort; a different explicit effort is not silently overridden.");
+        }
+        if (foreignHarness && params.requireImages === true) {
+          throw new Error("USAP harness claude-code does not advertise image inspection in this read-only slice; requireImages is refused. No fallback was selected.");
+        }
+        const piResolved = foreignHarness
+          ? undefined
+          : resolveWorkerSelection(ctx.model, ctx.thinkingLevel, params, ctx.modelRegistry, dependencies.profiles, undefined, automaticChainOptions(dependencies));
+        const resolvedSelection = piResolved ? piResolved.selection : resolveClaudeCodeSelection();
+        const resolvedThinking = piResolved ? String(piResolved.thinkingLevel) : "xhigh";
+        const model = foreignHarness ? CLAUDE_CODE_ROUTE : `${piResolved!.model.provider}/${piResolved!.model.id}`;
+        const thinking = resolvedThinking;
         const input: DispatchInput = {
           ...params,
           tasks: params.tasks,
@@ -1098,13 +1182,24 @@ export function createUltratermSubagentsExtension(
           };
         }
 
-        run.selection = { ...resolved.selection };
+        run.selection = { ...resolvedSelection };
         run.ownerSessionId = current.ownerSessionId;
         run.ownerSessionFile = current.ownerSessionFile;
         // Never launch a supposedly durable run whose initial checkpoint failed.
         current.store?.save(run, true);
-        current.workerRuntimes.set(run.id, frozenWorkerRuntime);
-        current.relay.createRun(run.id, [PARENT_RELAY_ID, ...run.tasks.map((task) => task.id)]);
+        // Foreign-harness runs have no frozen Pi runtime: their runner branches on
+        // run.harness and never consults the Pi registry or the relay workers.
+        if (!foreignHarness) {
+          current.workerRuntimes.set(run.id, Object.freeze({
+            model: Object.freeze({ ...(piResolved!.model) }),
+            thinkingLevel: piResolved!.thinkingLevel,
+          }) as PiWorkerRuntime);
+        }
+        // Foreign children cannot bind relay peers: create only the parent peer so
+        // hub send/inbox can honestly refuse instead of silently buffering.
+        current.relay.createRun(run.id, foreignHarness
+          ? [PARENT_RELAY_ID]
+          : [PARENT_RELAY_ID, ...run.tasks.map((task) => task.id)]);
         const parent = current.relay.bindSender(run.id, PARENT_RELAY_ID);
         let started: RunRecord;
         try {
@@ -1133,7 +1228,7 @@ export function createUltratermSubagentsExtension(
           return {
             content: [{
               type: "text" as const,
-              text: `${persistenceNote}Started USAP run ${run.id} · ${model} · ${resolved.selection.source}${resolved.selection.profile ? ` · ${resolved.selection.profile}` : ""}: ${run.tasks.map((task) => task.id).join(", ")}\nDispatch summary: ${JSON.stringify(dispatchDetails(snapshot, persistence).summary)}`,
+              text: `${persistenceNote}Started USAP run ${run.id} · ${model} · ${resolvedSelection.source}${resolvedSelection.profile ? ` · ${resolvedSelection.profile}` : ""}: ${run.tasks.map((task) => task.id).join(", ")}\nDispatch summary: ${JSON.stringify(dispatchDetails(snapshot, persistence).summary)}`,
             }],
             details: dispatchDetails(snapshot, persistence),
           };
@@ -1247,21 +1342,30 @@ export function createUltratermSubagentsExtension(
           const unfinished = snapshot.tasks.filter((task) => task.state !== "done");
           if (!unfinished.length) throw new Error("No unfinished tasks to resume");
           for (const task of unfinished) {
-            if (task.startedAt !== undefined && !task.sessionFile) throw new Error(`No native checkpoint for ${task.label}; inspect partial work before a new dispatch`);
+            if (task.startedAt !== undefined && !task.sessionFile) throw new Error(`No native checkpoint for ${task.label}${snapshot.harness === "claude-code" ? " (Claude CLI tasks do not persist history)" : ""}; inspect partial work before a new dispatch`);
             if (task.sessionFile) current.store.validateSession(task.sessionFile);
           }
           if (!ctx.model) throw new Error("A resolved model is required to resume");
           const input: DispatchInput = {
             goal: snapshot.goal, constraints: snapshot.constraints, contract: snapshot.contract,
             model: snapshot.model, thinking: snapshot.thinkingLevel as DispatchInput["thinking"],
+            ...(snapshot.harness === "claude-code" ? { harness: "claude-code" as const } : {}),
             requireImages: snapshot.selection?.images === true,
             thinkingReason: "Continue the explicitly budgeted checkpoint on its original model and reasoning level.",
             concurrency: snapshot.concurrency, timeoutMs: snapshot.timeoutMs, maxTurns: snapshot.maxTurns,
             background: true, tasks: unfinished.map((task) => ({ label: task.label, task: task.task, role: task.role, mayEdit: task.mayEdit, ...(task.mayEdit ? { ownedPaths: task.ownedPaths } : {}), allowBash: task.allowBash })),
           };
-          const resolved = resolveWorkerSelection(ctx.model, ctx.thinkingLevel, input, ctx.modelRegistry, dependencies.profiles, undefined, automaticChainOptions(dependencies));
-          const run = normalizeDispatch(input, snapshot.cwd, snapshot.model, String(resolved.thinkingLevel), dependencies.now?.() ?? Date.now(), dependencies.idFactory);
-          run.selection = { ...resolved.selection,
+          // Resume preserves the original harness: claude-code checkpoints ride
+          // the same explicit CLI route. Started foreign tasks never have native
+          // history (--no-session-persistence), so the sessionFile check above
+          // already fails closed for them; never-started tasks may start fresh.
+          const claudeResume = snapshot.harness === "claude-code";
+          const resolved = claudeResume
+            ? undefined
+            : resolveWorkerSelection(ctx.model, ctx.thinkingLevel, input, ctx.modelRegistry, dependencies.profiles, undefined, automaticChainOptions(dependencies));
+          const resumeSelection = resolved ? resolved.selection : resolveClaudeCodeSelection();
+          const run = normalizeDispatch(input, snapshot.cwd, snapshot.model, resolved ? String(resolved.thinkingLevel) : "xhigh", dependencies.now?.() ?? Date.now(), dependencies.idFactory);
+          run.selection = { ...resumeSelection,
             ...(snapshot.selection?.source === "chain" ? {
               source: "chain" as const,
               chainRoutes: snapshot.selection.chainRoutes ? [...snapshot.selection.chainRoutes] : undefined,
@@ -1275,8 +1379,10 @@ export function createUltratermSubagentsExtension(
             task.lastStep = unfinished[index].lastStep;
           });
           current.store.prepareResume(runId, run);
-          current.workerRuntimes.set(run.id, Object.freeze({ model: Object.freeze({ ...resolved.model }), thinkingLevel: resolved.thinkingLevel }));
-          current.relay.createRun(run.id, [PARENT_RELAY_ID, ...run.tasks.map((task) => task.id)]);
+          if (!claudeResume) {
+            current.workerRuntimes.set(run.id, Object.freeze({ model: Object.freeze({ ...resolved!.model }), thinkingLevel: resolved!.thinkingLevel }));
+          }
+          current.relay.createRun(run.id, claudeResume ? [PARENT_RELAY_ID] : [PARENT_RELAY_ID, ...run.tasks.map((task) => task.id)]);
           const parent = current.relay.bindSender(run.id, PARENT_RELAY_ID);
           try {
             const started = current.coordinator.start(run);
@@ -1345,6 +1451,7 @@ export function createUltratermSubagentsExtension(
         }
 
         if (params.action === "send") {
+          if (harnessOf(snapshot.harness) === "claude-code") return relayUnsupportedHarness("send", snapshot);
           const to = requireString(params.to, "to").trim();
           const body = requireString(params.body, "body");
           const relay = binding.parent.send({
@@ -1360,6 +1467,7 @@ export function createUltratermSubagentsExtension(
         }
 
         if (params.action === "inbox") {
+          if (harnessOf(snapshot.harness) === "claude-code") return relayUnsupportedHarness("inbox", snapshot);
           const relay = binding.parent.inbox(params.afterSeq ?? 0, params.limit ?? RELAY_MAILBOX_LIMIT);
           return {
             content: [{

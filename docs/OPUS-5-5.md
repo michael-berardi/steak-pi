@@ -3,7 +3,9 @@
 Official model reference: https://platform.claude.com/docs/en/models/opus-5-5/overview
 (parent-verified). Model ID `claude-opus-5-5`: text/images, 1M context,
 128K output, $4 input / $20 output per million tokens. Adaptive thinking is
-always on; effort controls its depth. This profile explicitly selects `high`.
+always on; effort controls its depth. This legacy Pi fragment verifies `high`.
+The UltraTerm 2.3.1 expert default is instead the official Claude Code CLI at
+`xhigh`, through USAP 1.3. This fragment is retained unchanged and inactive.
 
 ## Opt-in configuration (Pi 0.87.0)
 
@@ -11,8 +13,10 @@ always on; effort controls its depth. This profile explicitly selects `high`.
 models.json. Merge only its model entry by ID into `providers.anthropic.models`,
 retaining every existing provider, model, override, and credential configuration.
 The model has its own first-party `https://api.anthropic.com` endpoint; no provider
-endpoint, authentication mechanism, OAuth registration, or existing model is
-replaced. Inspect existing Anthropic proxy/header/auth overrides before enabling:
+endpoint, authentication mechanism, OAuth registration or other model is
+replaced. Do not apply this legacy fragment over a newer built-in definition:
+Pi 0.87.1 already includes Opus 5.5, with additional native effort metadata.
+An explicit merge by ID would replace that target's fields. Inspect existing Anthropic proxy/header/auth overrides before enabling:
 they remain user-owned and must be compatible with direct Anthropic requests.
 Do not install a provider extension that replaces Anthropic's model list.
 
@@ -27,16 +31,11 @@ writes cost $8 and require separate accounting if enabled. Source:
 https://platform.claude.com/docs/en/about-claude/pricing (checked 2026-09-22).
 No cache-warming metadata is enabled.
 
-The app catalog appends `steak-pi/claude-opus-5-5` without changing the active
-profile or existing defaults. Launch arguments are only:
-
-```
---model anthropic/claude-opus-5-5 --thinking high
-```
-
-Default workers retain MiMo V2.6 Pro and its existing ZAI fallback, like every
-other profile. Opus requires explicit selection. No new automatic Opus fallback
-or paid-route approval is added.
+The old `steak-pi/claude-opus-5-5` launch profile is retired in UltraTerm 2.3.1.
+Use the Claude Code harness for Opus instead. Keeping this file does not activate
+an Anthropic API route, alter credentials or grant paid-route approval.
+Routine workers retain MiMo V2.6 Pro and the ZAI subscription fallback; expert
+review waves use the separate CLI route described in [PROFILES.md](./PROFILES.md).
 
 ## Compatibility proof and limits
 
@@ -51,7 +50,7 @@ controls from model naming; `supportsMidConvoEffort` is deliberately omitted.
 
 Focused tests load the merge fragment through the real model runtime using
 in-memory auth/catalog stores, then intercept the real Anthropic adapter payload
-before transport. They verify additive catalog behavior, preserved auth methods,
+before transport. They verify unchanged non-target catalog entries, preserved auth methods,
 no configured credential, adaptive/high payload and no fixed budget. A negative
 control without the compatibility flag demonstrates why the metadata is required.
 No SDK files are modified and no live server acceptance, billing, credential

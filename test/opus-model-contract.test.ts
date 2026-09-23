@@ -18,7 +18,7 @@ const model = { ...definition, provider: 'anthropic' };
 
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
-it('adds the first-party model without replacing built-ins, auth methods or credentials', async () => {
+it('explicit opt-in preserves other built-ins and auth methods without configuring credentials', async () => {
   vi.stubEnv('ANTHROPIC_API_KEY', '');
   vi.stubEnv('ANTHROPIC_OAUTH_TOKEN', '');
   vi.stubEnv('PI_OFFLINE', '1');
@@ -30,6 +30,10 @@ it('adds the first-party model without replacing built-ins, auth methods or cred
   const runtime = await ModelRuntime.create({ ...options, modelsPath: fragmentPath.pathname });
   expect(runtime.getError()).toBeUndefined();
   for (const previous of baseline.getModels()) {
+    // Pi 0.87.1 already includes this ID. Explicitly loading a legacy fragment
+    // overrides its target, but must leave every other built-in untouched.
+    // The production expert route uses the CLI; this fragment stays inactive.
+    if (previous.provider === 'anthropic' && previous.id === model.id) continue;
     expect(runtime.getModel(previous.provider, previous.id)).toEqual(previous);
   }
   expect(runtime.getModel('anthropic', model.id)).toMatchObject(model);
