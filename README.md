@@ -114,6 +114,18 @@ making every task attend the meeting:
 The result is still recognisably Pi: quick to start, pleasant to drive, and not
 trying to become an operating system because you asked it to rename a method.
 
+## UltraTerm Plan — the todo, unpackaged
+
+The phased todo you get with Steak Pi is also a standalone, MIT-licensed
+package: [`packages/ultraterm-plan`](./packages/ultraterm-plan) ships the same
+state machine, the same pinned panel, and a `ut-todo` CLI that any agent with a
+shell can drive — Claude Code via a plugin, Codex/Gemini CLI/OpenCode/Cursor
+via an `AGENTS.md` snippet, everything else by typing. One store, one rule set,
+no forks: Steak Pi's wrapper imports the package's sources directly. See the
+[package README](./packages/ultraterm-plan/README.md); when the standalone
+repository is cut, [`scripts/split-ultraterm-plan.sh`](./scripts/split-ultraterm-plan.sh)
+does the subtree split locally (it never pushes).
+
 ## Proof, not garnish
 
 ### Historical live GLM-5.3-Flash comparison — September 9, 2026

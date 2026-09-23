@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "types": ["node", "vitest/globals"]
   },
-  "include": ["extensions/**/*.ts", "src/**/*.ts", "test/**/*.ts", "packages/ultraterm-plan/src/**/*.ts", "packages/ultraterm-plan/pi/**/*.ts", "packages/ultraterm-plan/test/**/*.ts", "vitest.config.ts"]
+  "include": ["src/**/*.ts", "pi/**/*.ts", "test/**/*.ts"]
 }

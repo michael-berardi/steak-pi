@@ -1,0 +1,65 @@
+{
+  "name": "ultraterm-plan",
+  "version": "0.1.0",
+  "description": "UltraTerm Plan (ut-todo) — durable phased task progress for any agent with a shell: one store, one rule set, shared with Steak Pi's native todo tool.",
+  "license": "MIT",
+  "author": "Implose Cybernetics",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/michael-berardi/steak-pi.git",
+    "directory": "packages/ultraterm-plan"
+  },
+  "type": "module",
+  "bin": {
+    "ut-todo": "bin/ut-todo"
+  },
+  "exports": {
+    ".": "./src/core.ts",
+    "./core": "./src/core.ts",
+    "./render": "./src/render.ts",
+    "./pi-extension": "./pi/extension.ts",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin",
+    "integrations",
+    "pi",
+    "src",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "keywords": [
+    "ai-agents",
+    "coding-agent",
+    "agentic-workflow",
+    "planning",
+    "todo",
+    "task-list",
+    "claude-code",
+    "codex",
+    "pi-coding-agent",
+    "gemini-cli",
+    "opencode",
+    "llm",
+    "cli",
+    "terminal",
+    "developer-tools",
+    "ultraterm"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": ">=1.3.25 <2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "@earendil-works/pi-tui": { "optional": true },
+    "typebox": { "optional": true }
+  }
+}

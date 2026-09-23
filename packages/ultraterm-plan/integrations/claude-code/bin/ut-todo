@@ -1,0 +1,6 @@
+#!/bin/sh
+# Bin link for the Claude Code plugin: forwards to the package CLI regardless
+# of where the plugin folder is symlinked from, so `ut-todo` works from PATH.
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)"
+exec node "$ROOT/bin/ut-todo" "$@"

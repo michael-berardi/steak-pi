@@ -26,6 +26,7 @@
     "src",
     "themes",
     "skills",
+    "packages/ultraterm-plan",
     "docs/AGENT-LIFECYCLE.md",
     "docs/COMPANION-UI.md",
     "docs/MODEL-ROUTING.md",
@@ -50,6 +51,7 @@
   },
   "scripts": {
     "test": "vitest run",
+    "test:plan": "vitest run --config packages/ultraterm-plan/vitest.config.ts",
     "test:tui": "./scripts/test-pi-tui-smoke.sh",
     "typecheck": "tsc --noEmit",
     "ui:simulate": "node --experimental-strip-types src/tui/simulator.ts",

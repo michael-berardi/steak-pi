@@ -1,0 +1,350 @@
+#!/usr/bin/env node
+/**
+ * ut-todo — durable phased task progress for any agent with a shell.
+ *
+ * Same store, format and transition rules as Steak Pi's native `todo` tool:
+ * the state lives at <cwd>/.steak-pi/todo/<sha256([sessionFile, sessionId])>/
+ * (todo.json + TODO.md) and every operation runs the package's own core
+ * (src/core.ts, the exact module the Pi extension runs). The namespace is:
+ *
+ *   1. explicit `--session NAME` / `UT_TODO_SESSION` — keyed to this cwd,
+ *   2. Claude Code's session, when detectable (env CLAUDE_CODE_SESSION_ID plus
+ *      the transcript on disk — the same owner UltraTerm's adapter uses),
+ *   3. otherwise a stable per-cwd default.
+ *
+ *   ut-todo init 'Inspect:read code,map callers' 'Build:edit,test'
+ *   ut-todo start|done|drop|block|unblock|rm TASK [--reason TEXT]
+ *   ut-todo append PHASE TASK [TASK ...]
+ *   ut-todo view
+ *   ut-todo json '{"op":"done","items":["a","b"]}'   # any native op, verbatim
+ */
+import { createHash, randomUUID } from "node:crypto";
+import { promises as fs, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const STATE_DIR = ".steak-pi";
+const STALE_LOCK_MS = 30000;
+
+const { applyOp, render, TodoError } = await loadCore();
+const core = { TodoError };
+
+function fail(message, code = 2) {
+  console.error(`ut-todo: ${message}`);
+  process.exit(code);
+}
+
+const USAGE = `ut-todo — durable phased task progress for any agent with a shell.
+
+  ut-todo init 'Phase:item one,item two' 'Phase:task'
+  ut-todo start|done|drop|block|unblock|rm TASK [TASK ...] [--reason TEXT]
+  ut-todo append PHASE TASK [TASK ...]
+  ut-todo view
+  ut-todo json '{"op":"view"}'          # any native tool op, verbatim
+  ut-todo --session NAME ...            # separate list for a named session
+
+One store per project directory, shared with Steak Pi's native todo tool:
+<cwd>/.steak-pi/todo/<hash>/{todo.json,TODO.md}. Local files only; no network.`;
+
+function parse(argv) {
+  if (!argv.length || argv[0] === "-h" || argv[0] === "--help") {
+    console.log(USAGE);
+    process.exit(0);
+  }
+  const rest = [];
+  let session;
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index];
+    if (arg === "--session") {
+      const value = argv[++index];
+      if (!value) fail("--session requires a name");
+      if (session !== undefined) fail("--session given more than once");
+      session = value;
+      continue;
+    }
+    if (arg.startsWith("--session=")) {
+      const value = arg.slice("--session=".length);
+      if (!value) fail("--session requires a name");
+      if (session !== undefined) fail("--session given more than once");
+      session = value;
+      continue;
+    }
+    rest.push(arg);
+  }
+  const op = parseOp(rest);
+  return { op, session };
+}
+
+function parseOp(argv) {
+  const [op, ...rest] = argv;
+  let reason;
+  if (rest.includes("--reason")) {
+    const index = rest.indexOf("--reason");
+    if (index + 1 >= rest.length) fail("--reason requires text");
+    reason = rest[index + 1];
+    rest.splice(index, 2);
+  }
+  if (op === "json") {
+    if (rest.length !== 1) fail("json takes exactly one JSON object");
+    let value;
+    try {
+      value = JSON.parse(rest[0]);
+    } catch (error) {
+      fail(`invalid JSON: ${error.message}`);
+    }
+    if (typeof value !== "object" || value === null || typeof value.op !== "string") {
+      fail("json must be an object with an op");
+    }
+    return value;
+  }
+  if (op === "view") return { op: "view" };
+  if (op === "init") {
+    const phases = [];
+    for (const spec of rest) {
+      const separator = spec.indexOf(":");
+      const name = separator < 0 ? "" : spec.slice(0, separator);
+      const items = separator < 0 ? "" : spec.slice(separator + 1);
+      if (separator < 0 || !name.trim()) fail("init phases are 'Phase:item one,item two'");
+      phases.push({
+        phase: name.trim(),
+        items: items.split(",").map((item) => item.trim()).filter(Boolean),
+      });
+    }
+    if (!phases.length) fail("init needs at least one phase");
+    return { op: "init", list: phases };
+  }
+  if (op === "append") {
+    if (rest.length < 2) fail("append needs PHASE and at least one TASK");
+    return { op: "append", phase: rest[0], items: rest.slice(1) };
+  }
+  if (["start", "done", "drop", "block", "unblock", "rm"].includes(op)) {
+    if (!rest.length) fail(`${op} needs at least one task`);
+    const value = { op, items: rest };
+    if (reason !== undefined) value.reason = reason;
+    return value;
+  }
+  fail(`unknown op ${JSON.stringify(op)}; see ut-todo --help`);
+}
+
+/**
+ * Claude Code session owner, exactly as UltraTerm's adapter resolves it:
+ * CLAUDE_CODE_SESSION_ID plus the unique transcript on disk. Returns undefined
+ * when the session id is absent (no Claude Code here), and fails closed with
+ * exit code 3 when the id is present but its transcript cannot be pinned down
+ * — guessing would fork the plan into a second, wrong list.
+ */
+function claudeSession() {
+  const sessionId = (process.env.CLAUDE_CODE_SESSION_ID ?? "").trim();
+  if (!sessionId) return undefined;
+  if (!UUID.test(sessionId)) fail(`CLAUDE_CODE_SESSION_ID is not a session id: ${sessionId}`, 3);
+  const configured = (process.env.CLAUDE_CONFIG_DIR ?? "").trim();
+  const projects = path.join(configured ? configured : path.join(realpathSync(os.homedir()), ".claude"), "projects");
+  let directories = [];
+  try {
+    directories = readdirSync(projects).slice(0, 4096);
+  } catch {
+    fail("Claude Code session detected but its projects directory is not readable; run ut-todo inside the Claude session", 3);
+  }
+  const matches = [];
+  for (const directory of directories) {
+    const candidate = path.join(projects, directory, `${sessionId}.jsonl`);
+    try {
+      if (statSync(candidate).isFile()) matches.push(candidate);
+    } catch {}
+  }
+  if (matches.length !== 1) {
+    fail("the transcript for this Claude session is not uniquely on disk yet; retry after the first reply", 3);
+  }
+  return {
+    sessionFile: realpathSync(matches[0]),
+    sessionId,
+    cwd: claudeSessionCwd(matches[0]) ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd(),
+  };
+}
+
+/** Working directory recorded by the session itself, bounded read. */
+function claudeSessionCwd(transcript, limit = 256 * 1024) {
+  try {
+    const prefix = readFileSync(transcript).subarray(0, limit).toString("utf8");
+    for (const line of prefix.split("\n")) {
+      try {
+        const value = JSON.parse(line);
+        if (value && typeof value.cwd === "string" && value.cwd.startsWith("/")) return value.cwd;
+      } catch {}
+    }
+  } catch {}
+  return undefined;
+}
+
+/**
+ * Node's built-in type stripping is needed to run src/core.ts in place. Node
+ * >=23.6 has it on by default; on 22.19–23.5 re-exec once with the flag, the
+ * same way the UltraTerm adapter invokes its bridge.
+ */
+async function loadCore() {
+  if (!process.features.typescript) {
+    if (process.env.UT_TODO_INNER === "1") {
+      fail("ut-todo needs Node.js >= 22.19 (built-in TypeScript type stripping)", 3);
+    }
+    const child = spawn(
+      process.execPath,
+      ["--experimental-strip-types", "--no-warnings", fileURLToPath(import.meta.url), ...process.argv.slice(2)],
+      { stdio: "inherit", env: { ...process.env, UT_TODO_INNER: "1" } },
+    );
+    child.on("exit", (code, signal) => process.exit(signal ? 1 : (code ?? 1)));
+    child.on("error", (error) => fail(`cannot re-exec node with type stripping: ${error.message}`, 3));
+    await new Promise(() => {}); // Exit is driven by the child.
+  }
+  return import(new URL("../src/core.ts", import.meta.url).href);
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** One writer at a time for this list; stale locks (crashed writer) break free. */
+async function withLock(lockPath, fn) {
+  await fs.mkdir(path.dirname(lockPath), { recursive: true });
+  for (let attempt = 0; ; attempt++) {
+    let handle;
+    try {
+      handle = await fs.open(lockPath, "wx", 0o600);
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      try {
+        const stat = await fs.stat(lockPath);
+        if (Date.now() - stat.mtimeMs > STALE_LOCK_MS) {
+          await fs.rm(lockPath, { force: true });
+          continue;
+        }
+      } catch {}
+      if (attempt >= 100) {
+        throw new core.TodoError(`timed out waiting for the ut-todo lock (${lockPath})`);
+      }
+      await sleep(50);
+      continue;
+    }
+    try {
+      return await fn();
+    } finally {
+      await handle.close();
+      await fs.rm(lockPath, { force: true });
+    }
+  }
+}
+
+const STATUSES = new Set(["pending", "in_progress", "done", "blocked"]);
+const MAX_KNOWN_LABELS = 12;
+
+function validate(value) {
+  const ok = typeof value === "object" && value !== null && Array.isArray(value.phases) &&
+    value.phases.every((phase) =>
+      phase && typeof phase.name === "string" && Array.isArray(phase.items) &&
+      phase.items.every((item) =>
+        item && typeof item.content === "string" && STATUSES.has(item.status) &&
+        (item.reason === undefined || typeof item.reason === "string")));
+  if (!ok) throw new core.TodoError("persisted todo state is malformed");
+  return value;
+}
+
+async function load(statePath) {
+  let raw;
+  try {
+    raw = await fs.readFile(statePath, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return { phases: [] };
+    throw new core.TodoError(`cannot read persisted todo state: ${error}`);
+  }
+  try {
+    return validate(JSON.parse(raw));
+  } catch (error) {
+    if (error instanceof core.TodoError) throw error;
+    throw new core.TodoError("persisted todo state is malformed: invalid JSON");
+  }
+}
+
+async function stage(target, content) {
+  const temporary = path.join(
+    path.dirname(target),
+    `.${path.basename(target)}.${process.pid}.${crypto.randomUUID()}.tmp`,
+  );
+  await fs.writeFile(temporary, content, { encoding: "utf8", flag: "wx" });
+  return temporary;
+}
+
+/** Same atomic order as the Pi extension: TODO.md lands first, state second. */
+async function persist(dir, state, output) {
+  const statePath = path.join(dir, "todo.json");
+  const markdownPath = path.join(dir, "TODO.md");
+  await fs.mkdir(dir, { recursive: true });
+  let stateTemp;
+  let markdownTemp;
+  try {
+    stateTemp = await stage(statePath, JSON.stringify(state, null, 2));
+    markdownTemp = await stage(markdownPath, `# TODO\n\n${output}\n`);
+    await fs.rename(markdownTemp, markdownPath);
+    markdownTemp = undefined;
+    await fs.rename(stateTemp, statePath);
+    stateTemp = undefined;
+  } finally {
+    await Promise.all([
+      stateTemp ? fs.rm(stateTemp, { force: true }) : Promise.resolve(),
+      markdownTemp ? fs.rm(markdownTemp, { force: true }) : Promise.resolve(),
+    ]);
+  }
+}
+
+function labels(values) {
+  const shown = values.slice(0, MAX_KNOWN_LABELS).join(", ");
+  return values.length > MAX_KNOWN_LABELS ? `${shown}, … (${values.length} total)` : shown;
+}
+
+/** Same actionable lookup-miss message as the native tool; still a failure. */
+function enrich(error, state) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!/^(unknown task|unknown phase|ambiguous task prefix):/.test(message)) return error;
+  const phases = state.phases.map((phase) => phase.name);
+  const tasks = [...new Set(state.phases.flatMap((phase) => phase.items.map((item) => item.content)))];
+  const known = message.startsWith("unknown phase:")
+    ? phases.length ? `known phases: ${labels(phases)}` : undefined
+    : tasks.length ? `known tasks: ${labels(tasks)}` : undefined;
+  return known ? new core.TodoError(`${message} — ${known}`) : error;
+}
+
+function main() {
+  const { op, session } = parse(process.argv.slice(2));
+  const cwd = path.resolve(process.cwd());
+  let owner;
+  if (session !== undefined || process.env.UT_TODO_SESSION) {
+    const name = session ?? process.env.UT_TODO_SESSION;
+    owner = { sessionFile: cwd, sessionId: `session:${name}` };
+  } else {
+    const claude = claudeSession();
+    owner = claude ?? { sessionFile: cwd, sessionId: "ut-todo" };
+  }
+  const namespace = createHash("sha256").update(JSON.stringify([owner.sessionFile, owner.sessionId])).digest("hex");
+  const dir = path.join(owner.cwd ?? cwd, STATE_DIR, "todo", namespace);
+  return { op, dir };
+}
+
+const { op, dir } = main();
+try {
+  await withLock(path.join(dir, ".lock"), async () => {
+    const state = await load(path.join(dir, "todo.json"));
+    if (op.op === "view") {
+      process.stdout.write(`${render(state)}\n`);
+      return;
+    }
+    let next;
+    try {
+      next = applyOp(state, op);
+    } catch (error) {
+      throw enrich(error, state);
+    }
+    await persist(dir, next.state, next.output);
+    process.stdout.write(`${next.output}\n`);
+  });
+} catch (error) {
+  process.stderr.write(`ut-todo: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.exit(error instanceof TodoError || error instanceof SyntaxError ? 2 : 1);
+}
