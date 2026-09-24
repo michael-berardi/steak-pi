@@ -347,9 +347,9 @@ turn.
 ## 8. Model guidance
 
 Routine bounded scouting and implementation use the configured parent profile
-defaults: built-in routine workers resolve MiMo V2.6 Pro → ZAI coding GLM 5.3
-Flash, and explicitly native-Pi reviewer chains resolve that same subscription
-chain — the legacy "expert review chain" name is a native-Pi routing label, not
+defaults: built-in routine workers resolve MiMo V2.6 Flash → ZAI coding GLM 5.3
+Flash, and explicitly native-Pi reviewer chains resolve MiMo V2.6 Pro → ZAI coding
+GLM 5.3 Flash — the legacy "expert review chain" name is a native-Pi routing label, not
 expert sign-off. All-reviewer waves with no explicit route use the official Claude Code
 Opus 5.5/xhigh pass. Existing explicitly selected Pi profiles keep their native
 route semantics. No failed Opus review silently falls back to Astra or another

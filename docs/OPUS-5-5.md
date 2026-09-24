@@ -34,7 +34,7 @@ No cache-warming metadata is enabled.
 The old `steak-pi/claude-opus-5-5` launch profile is retired in UltraTerm 2.3.5.
 Use the Claude Code harness for Opus instead. Keeping this file does not activate
 an Anthropic API route, alter credentials or grant paid-route approval.
-Routine workers retain MiMo V2.6 Pro and the ZAI subscription fallback; expert
+Routine workers use MiMo V2.6 Flash (reviewers MiMo V2.6 Pro) with the ZAI subscription fallback; expert
 review waves use the separate CLI route described in [PROFILES.md](./PROFILES.md).
 
 ## Compatibility proof and limits

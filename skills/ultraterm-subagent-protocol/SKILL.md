@@ -112,7 +112,8 @@ Prose saying a model name does not select it.
 
 Without a selector, all-reviewer waves use the Opus Pass above. Other waves use
 the matching parent profile's worker defaults; routine automatic workers follow
-the MiMo V2.6 Pro → ZAI GLM 5.3 Flash subscription chain. Explicit native Pi
+the MiMo V2.6 Flash → ZAI GLM 5.3 Flash subscription chain (automatic reviewers:
+MiMo V2.6 Pro → ZAI GLM 5.3 Flash). Explicit native Pi
 model/profile selections remain exact.
 Every GPT request must use paid-route openai-codex OAuth, non-batch, never
 OpenRouter or API-key GPT. Unavailable auth/models fail closed without fallback.

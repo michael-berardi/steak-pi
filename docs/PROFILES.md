@@ -30,7 +30,7 @@ conflicting selectors and unavailable routes fail before launch.
 
 ## Per-parent defaults
 
-Routine workers on every built-in parent profile default to **MiMo V2.6 Pro** on the Xiaomi Token Plan, with **GLM 5.3 Flash on the ZAI coding subscription** as the only automatic fallback. The main app also defaults to MiMo V2.6 Pro. Explicitly native-Pi reviewer runs (`harness: "pi"` or an explicit native model/profile) resolve the same automatic MiMo→ZAI chain: no expert model is ever selected automatically in the native review chain, and the shipped "expert review chain" label is a legacy native-Pi routing flag, not expert sign-off.
+Routine workers on every built-in parent profile default to **MiMo V2.6 Flash** on the Xiaomi Token Plan, with **GLM 5.3 Flash on the ZAI coding subscription** as the only automatic fallback. The main app's launch model is unchanged (MiMo V2.6 Pro). Explicitly native-Pi reviewer runs (`harness: "pi"` or an explicit native model/profile) resolve the automatic MiMo V2.6 Pro → ZAI chain: no expert model is ever selected automatically in the native review chain, and the shipped "expert review chain" label is a legacy native-Pi routing flag, not expert sign-off.
 
 All-reviewer waves with no explicit harness/model/profile use the **Opus Pass**:
 `claude-code/claude-opus-5-5`, official Claude Code CLI, `xhigh` effort and

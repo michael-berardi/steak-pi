@@ -20,6 +20,7 @@ import {
   DEFAULT_MULTIMODAL_WORKER_CHAIN,
   DEFAULT_TEXT_WORKER_CHAIN,
   guardModelRuntime,
+  recordedWorkerChain,
   type ChainFallbackInput,
   type WorkerRouteStep,
 } from "../model-route-policy.ts";
@@ -734,11 +735,13 @@ function relaySteeringText(envelope: Parameters<NonNullable<Parameters<RelayBrok
  * its chain gets no hop at all — including a reviewer frozen on the scarce expert
  * (openai-codex/gpt-6-astra) by the default reviewer chain: a failed expert
  * review is reported honestly, never silently downgraded to a weaker model. */
-export function workerChainFallback(selection: Pick<ModelSelection, "source" | "images"> | undefined,
+export function workerChainFallback(selection: Pick<ModelSelection, "source" | "images" | "chainRoutes"> | undefined,
   model: PiModel, onFallback?: ChainFallbackInput["onFallback"]): ChainFallbackInput | undefined {
   if (selection?.source !== "chain") return undefined;
   const images = selection.images === true;
-  const chain = images ? DEFAULT_MULTIMODAL_WORKER_CHAIN : DEFAULT_TEXT_WORKER_CHAIN;
+  // The run's own recorded chain (a Pro-headed reviewer chain hops Pro -> ZAI), when
+  // it is exactly one this policy produces; otherwise the default chain.
+  const chain = recordedWorkerChain(selection.chainRoutes, images);
   if (!chain.some((step) => step.provider === model.provider && step.id === model.id)) return undefined;
   return {
     chain,

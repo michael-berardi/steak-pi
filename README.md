@@ -261,8 +261,9 @@ default, `"claude-code"` for the official headless Claude CLI), an exact
 `model`, or a native `profile` for the whole run; explicit selections always
 win. An Astra manager can still explicitly select
 `profile: "steak-pi/glm-5-3-flash"`, including reviewer runs. Omitted native-Pi
-selectors use per-parent profile defaults, and automatic reviewer runs ride the
-same routine MiMo V2.6 Pro → ZAI GLM 5.3 Flash subscription chain as workers —
+selectors use per-parent profile defaults: routine workers ride MiMo V2.6 Flash →
+ZAI GLM 5.3 Flash and automatic reviewer runs ride MiMo V2.6 Pro → ZAI GLM 5.3
+Flash, both prepaid subscriptions —
 no expert model is ever selected automatically on the native chain. An
 all-reviewer wave with no explicit route defaults to the **Opus Pass**
 (`claude-code/claude-opus-5-5`, `xhigh` effort); mixed worker/reviewer waves
@@ -273,8 +274,8 @@ CLI slice refuses image admission. See [profiles and examples](./docs/PROFILES.m
 
 **GPT routing:** GPT-family requests use the paid Codex subscription route only,
 never OpenRouter, API-key billing, or batch variants. Built-in routine workers
-and the default reviewer role both resolve the same ordered subscription chain:
-MiMo V2.6 Pro with ZAI coding GLM 5.3 Flash as the only automatic fallback. The
+resolve MiMo V2.6 Flash and the default reviewer role MiMo V2.6 Pro, each with
+ZAI coding GLM 5.3 Flash as the only automatic fallback. The
 automatic Astra-first reviewer default is removed: Astra
 (`openai-codex/gpt-6-astra`) and `gpt-6-sol`/`gpt-6-luna` are explicit-selection
 profiles only, scarce experts for hard planning/debugging and review/validation,

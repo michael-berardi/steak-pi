@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { assertSubscriptionRequest, selectChainedWorkerModel, selectWorkerModel, selectWorkerThinking,
-  DEFAULT_MULTIMODAL_WORKER_CHAIN, DEFAULT_TEXT_WORKER_CHAIN, type ChainOptions } from "../model-route-policy.ts";
+  DEFAULT_MULTIMODAL_WORKER_CHAIN, DEFAULT_TEXT_WORKER_CHAIN, workerChainFor, type ChainOptions } from "../model-route-policy.ts";
 import type { DispatchInput, ModelSelection } from "./types.ts";
 
 type Model = NonNullable<ExtensionContext["model"]>;
@@ -27,10 +27,10 @@ export interface WorkerProfile {
 }
 export const BUILTIN_WORKER_PROFILES: readonly WorkerProfile[] = [
   { id: "steak-pi/glm-5-3-flash", model: "zai/glm-5.3-flash", thinking: "high",
-    workerDefault: { profile: "steak-pi/mimo-v2-6-pro" },
+    workerDefault: { profile: "steak-pi/mimo-v2-6-flash" },
     reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: "steak-pi/gpt-6-astra", model: "openai-codex/gpt-6-astra", thinking: "medium", autoReviewChain: true,
-    workerDefault: { profile: "steak-pi/mimo-v2-6-pro" },
+    workerDefault: { profile: "steak-pi/mimo-v2-6-flash" },
     // Reviewers keep the same automatic MiMo→ZAI subscription chain as every
     // other profile. Astra stays scarce — it is never an automatic route in any
     // role, and an explicit selector stays exact.
@@ -41,12 +41,19 @@ export const BUILTIN_WORKER_PROFILES: readonly WorkerProfile[] = [
   // reviewer runs resolve the same routine subscription chain. High
   // reasoning applies to explicit runs of these profiles.
   { id: "steak-pi/gpt-6-sol", model: "openai-codex/gpt-6-sol", thinking: "high",
-    workerDefault: { profile: "steak-pi/mimo-v2-6-pro" },
+    workerDefault: { profile: "steak-pi/mimo-v2-6-flash" },
     reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: "steak-pi/gpt-6-luna", model: "openai-codex/gpt-6-luna", thinking: "high",
-    workerDefault: { profile: "steak-pi/mimo-v2-6-pro" },
+    workerDefault: { profile: "steak-pi/mimo-v2-6-flash" },
     reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
-  // Operator default (2026-09-23) for every routine worker: MiMo V2.6 Pro on the
+  // Operator default for every routine worker: MiMo V2.6 Flash on the reviewed
+  // Singapore Token Plan endpoint, resolved through the ordered automatic chain
+  // (MiMo V2.6 Flash, then the ZAI coding subscription route) instead of this
+  // profile's head model. Reviewer selectors keep their existing exact defaults.
+  { id: "steak-pi/mimo-v2-6-flash", model: "xiaomi/mimo-v2.6-flash", thinking: "high",
+    workerDefault: { profile: "steak-pi/mimo-v2-6-flash" },
+    reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" }, autoChain: true },
+  // Legacy operator default (2026-09-23) for every routine worker: MiMo V2.6 Pro on the
   // reviewed Singapore Token Plan endpoint, resolved through the ordered automatic
   // chain (MiMo V2.6 Pro, then the ZAI coding subscription route) instead of this
   // profile's head model. Reviewer runs resolve the same automatic routine
@@ -57,13 +64,13 @@ export const BUILTIN_WORKER_PROFILES: readonly WorkerProfile[] = [
   // extension sends an implicit all-reviewer wave to the official Claude Code
   // Opus route first, so reviewerDefault governs explicitly native reviewer waves.
   { id: "steak-pi/mimo-v2-6-pro", model: "xiaomi/mimo-v2.6-pro", thinking: "high",
-    workerDefault: { profile: "steak-pi/mimo-v2-6-pro" },
+    workerDefault: { profile: "steak-pi/mimo-v2-6-flash" },
     reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" }, autoChain: true },
   // Legacy Go profile, kept for exact explicit selection and for owner manifests that
   // still declare `workerDefault: steak-pi/opencode-go`: it carries the same automatic
   // chain, so an unmigrated owner default never falls back to a Go automatic route.
   { id: "steak-pi/opencode-go", model: "opencode-go/deepseek-v4.1-flash", thinking: "high",
-    workerDefault: { profile: "steak-pi/mimo-v2-6-pro" },
+    workerDefault: { profile: "steak-pi/mimo-v2-6-flash" },
     reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" }, autoChain: true },
 ];
 const PI_FAMILY_HARNESSES = new Set(["pi", "steak-pi"]);
@@ -209,7 +216,18 @@ export function resolveWorkerSelection(
   // as routine workers. No automatic expert step remains in the native review
   // chain: an expert review is a deliberate explicit choice (the Opus Pass CLI
   // route or an exact model/profile override), never a silent substitution.
-  const chain = input.requireImages === true ? DEFAULT_MULTIMODAL_WORKER_CHAIN : DEFAULT_TEXT_WORKER_CHAIN;
+  // An automatic profile that names a Token Plan model keeps it as the chain head.
+  // Automatic reviewer runs stay on [MiMo V2.6 Pro, ZAI] unless their profile names
+  // Flash; routine workers resolve the Flash-led default worker chain.
+  const headRoute = (key: string | undefined) => {
+    const slash = key?.indexOf("/") ?? -1;
+    return key && slash > 0 ? { provider: key.slice(0, slash), id: key.slice(slash + 1) } : undefined;
+  };
+  const chainImages = input.requireImages === true;
+  const profileChain = workerChainFor(headRoute(profile?.model), chainImages);
+  const chain = review && profileChain[0].id === "mimo-v2.6-flash" && headRoute(profile?.model)?.id !== "mimo-v2.6-flash"
+    ? workerChainFor({ provider: "xiaomi", id: "mimo-v2.6-pro" }, chainImages)
+    : profileChain;
   const key = automatic ? undefined : profile?.model ?? chosen?.model;
   const model = automatic
     ? selectChainedWorkerModel(registry, chain, { ...options, requireImages: input.requireImages === true })

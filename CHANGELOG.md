@@ -10,6 +10,12 @@
   the guard also applies the curated picker scope and the pre-output fallback's
   metering check, and Pi resolves file-backed credentials after the first
   install, so the filter left providers unguarded. Every provider stays guarded.
+- Routine workers default to MiMo V2.6 Flash (`steak-pi/mimo-v2-6-flash`, chain
+  MiMo V2.6 Flash → ZAI GLM 5.3 Flash) on every built-in parent profile.
+  Automatic reviewers keep MiMo V2.6 Pro → ZAI; each automatic profile naming a
+  Token Plan model keeps it as its chain head, and the pre-output fallback uses the
+  run's recorded chain. Explicit selections, paid-route guards and the main launch
+  model are unchanged.
 - Pi stays on the 0.87 toolchain bundled with UltraTerm.
 - No release, publication or installed-runtime verification is claimed by this
   entry.
