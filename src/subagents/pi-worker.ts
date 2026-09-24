@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
-import { lstatSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { findPackageJSON } from "node:module";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
   AgentSessionEvent,
@@ -86,6 +86,61 @@ function piModuleUrl(path: string): string {
   return pathToFileURL(join(piDistPath(), path)).href;
 }
 
+const HOST_BUNDLE_EXPORTS = [
+  "createAgentSession", "createExtensionRuntime", "SessionManager", "SettingsManager", "ModelRuntime",
+  "createBashToolDefinition", "createEditToolDefinition", "createFindToolDefinition",
+  "createGrepToolDefinition", "createLsToolDefinition", "createReadToolDefinition", "createWriteToolDefinition",
+] as const;
+
+/** Pi hosts whose bundled SDK workers may reuse: the 0.87 toolchain this line pins
+ * (devDependencies) and the 0.87.1 runtime UltraTerm bundles. Others use the
+ * package-resolved path. */
+export const SUPPORTED_HOST_PI_VERSIONS = ["0.87.0", "0.87.1"] as const;
+
+/**
+ * The bundle directory of the Pi CLI running this process, when `entry` (the
+ * host's argv[1]) is `<pi-coding-agent>/dist/bundle/cli.js` of a supported Pi
+ * version with a bundled SDK entry. Undefined for embedded hosts and others.
+ */
+export function hostPiBundle(entry: string | undefined, versions: readonly string[] = SUPPORTED_HOST_PI_VERSIONS): string | undefined {
+  if (!entry) return undefined;
+  try {
+    const cli = realpathSync(entry);
+    const bundleDir = dirname(cli);
+    if (!cli.endsWith(`${sep}dist${sep}bundle${sep}cli.js`)) return undefined;
+    const pkg = JSON.parse(readFileSync(join(bundleDir, "..", "..", "package.json"), "utf8")) as { name?: string; version?: string };
+    if (pkg.name !== "@earendil-works/pi-coding-agent" || !versions.includes(pkg.version ?? "")) return undefined;
+    return existsSync(join(bundleDir, "index.js")) ? bundleDir : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+let hostBundlePromise: Promise<PiSdk | undefined> | undefined;
+
+/**
+ * Workers reuse the SDK surface of the bundle the host CLI already loaded.
+ * Importing Pi through this package's own dependency tree instantiated a
+ * second copy of Pi and its dependencies (pi-ai, agent-core, provider SDKs,
+ * typebox, undici) on the first dispatch, ~40-70 MB per parent process. Git
+ * installs carry their own Pi peer copy, so the host is identified from the
+ * running CLI, not from this package's resolution. Workers stay separate
+ * sessions on the parent's Pi version; only module code is shared. Embedded
+ * hosts, unsupported Pi versions, bundles missing an export, and
+ * STEAK_PI_WORKER_SDK=unbundled keep the package-resolved path.
+ */
+function loadHostBundleSdk(): Promise<PiSdk | undefined> {
+  hostBundlePromise ??= (async () => {
+    if (/^unbundled$/i.test(process.env.STEAK_PI_WORKER_SDK ?? "")) return undefined;
+    const bundleDir = hostPiBundle(process.argv[1]);
+    if (!bundleDir) return undefined;
+    const bundle = await import(/* @vite-ignore */ pathToFileURL(join(bundleDir, "index.js")).href) as Record<string, unknown>;
+    if (!HOST_BUNDLE_EXPORTS.every((name) => bundle[name] !== undefined)) return undefined;
+    return Object.fromEntries(HOST_BUNDLE_EXPORTS.map((name) => [name, bundle[name]])) as unknown as PiSdk;
+  })().catch(() => undefined);
+  return hostBundlePromise;
+}
+
 async function loadBundledPiSdk(): Promise<PiSdk> {
   const entryPath = join(piDistPath(), "bundle", "rpc-entry.js");
   const source = await readFile(entryPath, "utf8");
@@ -96,13 +151,16 @@ async function loadBundledPiSdk(): Promise<PiSdk> {
 
 async function loadPiStateManagers(): Promise<PiStateManagers> {
   if (!piStateManagersPromise) {
-    piStateManagersPromise = Promise.all([
+    piStateManagersPromise = loadHostBundleSdk().then((bundle) => bundle ? {
+      SessionManager: bundle.SessionManager,
+      SettingsManager: bundle.SettingsManager,
+    } : Promise.all([
       import(/* @vite-ignore */ piModuleUrl("core/session-manager.js")),
       import(/* @vite-ignore */ piModuleUrl("core/settings-manager.js")),
     ]).then(([sessions, settings]) => ({
       SessionManager: sessions.SessionManager,
       SettingsManager: settings.SettingsManager,
-    } as PiStateManagers));
+    } as PiStateManagers)));
   }
   return piStateManagersPromise;
 }
@@ -110,31 +168,35 @@ async function loadPiStateManagers(): Promise<PiStateManagers> {
 /** Load Pi's in-process SDK lazily, after policy checks and only when needed. */
 async function loadPiSdk(): Promise<PiSdk> {
   if (!piSdkPromise) {
-    piSdkPromise = Promise.all([
-      import(/* @vite-ignore */ piModuleUrl("core/sdk.js")),
-      import(/* @vite-ignore */ piModuleUrl("core/extensions/loader.js")),
-      loadPiStateManagers(),
-      import(/* @vite-ignore */ piModuleUrl("core/model-runtime.js")),
-      import(/* @vite-ignore */ piModuleUrl("core/tools/index.js")),
-    ]).then(([sdk, extensions, managers, models, tools]) => ({
-      ...sdk,
-      ...tools,
-      ...managers,
-      ModelRuntime: models.ModelRuntime,
-      createExtensionRuntime: extensions.createExtensionRuntime,
-    } as PiSdk)).catch(async (error: unknown) => {
-      // The 0.85 unbundled root references optional pi-server code. The shipped
-      // Pi bundle contains the same SDK exports without requiring that package.
-      if (!errorText(error).includes("@earendil-works/pi-server")) throw error;
-      // The bundle's exported SDK surface differs from core/sdk.js. Resolve
-      // native ToolDefinition factories explicitly on both paths (0.85.0/1).
-      return {
-        ...await loadBundledPiSdk(),
-        ...await import(/* @vite-ignore */ piModuleUrl("core/tools/index.js")),
-      } as PiSdk;
-    });
+    piSdkPromise = loadHostBundleSdk().then((bundle) => bundle ?? loadUnbundledPiSdk());
   }
   return piSdkPromise;
+}
+
+function loadUnbundledPiSdk(): Promise<PiSdk> {
+  return Promise.all([
+    import(/* @vite-ignore */ piModuleUrl("core/sdk.js")),
+    import(/* @vite-ignore */ piModuleUrl("core/extensions/loader.js")),
+    loadPiStateManagers(),
+    import(/* @vite-ignore */ piModuleUrl("core/model-runtime.js")),
+    import(/* @vite-ignore */ piModuleUrl("core/tools/index.js")),
+  ]).then(([sdk, extensions, managers, models, tools]) => ({
+    ...sdk,
+    ...tools,
+    ...managers,
+    ModelRuntime: models.ModelRuntime,
+    createExtensionRuntime: extensions.createExtensionRuntime,
+  } as PiSdk)).catch(async (error: unknown) => {
+    // The 0.85 unbundled root references optional pi-server code. The shipped
+    // Pi bundle contains the same SDK exports without requiring that package.
+    if (!errorText(error).includes("@earendil-works/pi-server")) throw error;
+    // The bundle's exported SDK surface differs from core/sdk.js. Resolve
+    // native ToolDefinition factories explicitly on both paths (0.85.0/1).
+    return {
+      ...await loadBundledPiSdk(),
+      ...await import(/* @vite-ignore */ piModuleUrl("core/tools/index.js")),
+    } as PiSdk;
+  });
 }
 
 type PiModel = NonNullable<CreateAgentSessionOptions["model"]>;
@@ -819,7 +881,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       const modelRuntime = sdk ? await initialize(sdk.ModelRuntime.create({ signal })) : undefined;
       if (modelRuntime) {
         assertSubscriptionRequest(runtime.model, modelRuntime.isUsingOAuth(runtime.model.provider));
-        guardModelRuntime(modelRuntime, chain);
+        guardModelRuntime(modelRuntime, chain, runtime.model);
       }
       signal.throwIfAborted();
       const created = await initialize(sessionFactory({
@@ -839,7 +901,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       session = created.session;
       // Session creation may refresh model configuration. Guard the resulting
       // catalog again, and each subsequent controlled turn, before dispatch.
-      if (modelRuntime) guardModelRuntime(modelRuntime, chain);
+      if (modelRuntime) guardModelRuntime(modelRuntime, chain, runtime.model);
       // Surface the checkpoint path so the parent can persist continuation state.
       const checkpoint = sessionManager.getSessionFile();
       if (typeof checkpoint === "string" && checkpoint.length > 0) {
@@ -891,7 +953,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
           return;
         }
         if (event.type === "turn_start") {
-          if (modelRuntime) guardModelRuntime(modelRuntime, chain);
+          if (modelRuntime) guardModelRuntime(modelRuntime, chain, runtime.model);
           if (turnLimitReached) return;
           if (turns >= maxTurns) {
             turnLimitReached = true;

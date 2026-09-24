@@ -21,9 +21,14 @@ export default function modelRoutePolicy(pi: ExtensionAPI): void {
     selected = ctx.model;
     launch = createExplicitPaidApproval(pi.getFlag(PAID_ROUTE_FLAG), ctx.model);
     install = createRegistryGuard(approval);
-    install(ctx.modelRegistry);
+    install(ctx.modelRegistry, ctx.model);
   });
-  pi.on("model_select", (_event, ctx) => { selected = ctx.model; install(ctx.modelRegistry); });
-  pi.on("before_agent_start", (_event, ctx) => install(ctx.modelRegistry));
-  pi.on("session_before_compact", (_event, ctx) => install(ctx.modelRegistry));
+  // Only dispatch-capable providers are guarded; the active model's provider
+  // always is. Selecting a model is not a new paid launch authorization.
+  pi.on("model_select", (event, ctx) => {
+    selected = event.model ?? ctx.model;
+    install(ctx.modelRegistry, selected);
+  });
+  pi.on("before_agent_start", (_event, ctx) => install(ctx.modelRegistry, ctx.model));
+  pi.on("session_before_compact", (_event, ctx) => install(ctx.modelRegistry, ctx.model));
 }

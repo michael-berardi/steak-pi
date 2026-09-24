@@ -7,10 +7,19 @@
 **Native subagents. Deterministic compaction. Automatic verification.
 A useful TUI. No orchestration theatre.**
 
+**All of it in less memory than stock Pi.**
+
 *The sharp, low-drama package for people who like stock Pi—and would rather not
 build the rest themselves.*
 
-[Install](#install) · [Why Steak Pi](#why-steak-pi) · [Benchmarks](#proof-not-garnish) · [USAP](#usap-native-subagents) · [Security](./SECURITY.md)
+| | Stock Pi | **Steak Pi 0.7** |
+| --- | ---: | ---: |
+| Idle session (PSS) | 116 MB | **113 MB** |
+| Ten sessions side by side (PSS) | 618 MB | **559 MB** |
+| Eight parallel subagents, peak | not available | **125 MB** |
+| Subagents · compaction · verification · todo · companion UI | none | **all included** |
+
+[Install](#install) · [Why Steak Pi](#why-steak-pi) · [Lean by design](#lean-by-design) · [Benchmarks](#proof-not-garnish) · [USAP](#usap-native-subagents) · [Security](./SECURITY.md)
 
 </div>
 
@@ -21,8 +30,8 @@ Steak Pi is the performance-focused package for the
 transcript, tools, history, selectors, scrolling, and keybindings, then adds the
 machinery that turns it into a complete daily driver.
 
-This checkout documents the **unreleased Steak Pi 0.8.0 candidate** (USAP 1.3),
-the runtime bundled with the UltraTerm 2.3.5 candidate. The Pi peer range is
+This checkout documents the **unreleased Steak Pi 0.8.1 candidate** (USAP 1.3):
+the 0.8 line plus the 0.7.0 efficiency release, bundled with UltraTerm 2.4.1. The Pi peer range is
 deliberately permissive (`"*"` in `package.json`); the development and
 verification toolchain is pinned to Pi 0.87.0 — npm's published latest at the
 time of this checkout is 0.87.1 — and the worker SDK preflight expects a Pi
@@ -33,17 +42,17 @@ results, not a remeasurement of this candidate or a multi-hour endurance claim.
 
 ## Install
 
-Release **0.8.0 — unreleased candidate**. It is **not published**: no `v0.8.0`
+Release **0.8.1 — unreleased candidate**. It is **not published**: no `v0.8.1`
 Git tag, GitHub release archive, or npm package exists. This candidate ships
-bundled with the UltraTerm 2.3.5 candidate; obtain it from that bundle or a
+bundled with UltraTerm 2.4.1; obtain it from that bundle or a
 checkout of this exact worktree. Published versions remain distributed from
 this Git repository's tags and GitHub release archives (the latest published
-tag at the time of this checkout is `v0.6.0`); Steak Pi is **not** published to
+tag at the time of this checkout is `v0.7.0`); Steak Pi is **not** published to
 the npm registry.
 
 ```sh
-# Published release only — no v0.8.0 tag exists yet:
-pi install git:github.com/michael-berardi/steak-pi@v0.6.0
+# Published release only — no v0.8.1 tag exists yet:
+pi install git:github.com/michael-berardi/steak-pi@v0.7.0
 ```
 
 GitHub release archives (`steak-pi-<version>.tgz` with its `.sha256` beside it)
@@ -81,7 +90,27 @@ For a focused launch, enable **Quiet startup** in `/settings`. Routine context,
 skill, extension, and theme inventories stay out of the workspace while Pi
 continues to surface actionable resource diagnostics.
 
+For the leanest sessions, launch through the bundled launcher. It passes every
+argument through to `pi`:
+
+```sh
+steak-pi run            # or point UltraTerm harness profiles at `steak-pi run`
+```
+
 That is the ceremony. Kettle optional.
+
+> **Measured on Steak Pi 0.7.0 — September 24, 2026**
+> (Pi 0.86.0; identical fixtures on a scripted local model; timings are medians
+> of 5, memory is proportional set size sampled across whole process trees):
+>
+> - **Less memory than the Pi it extends**: 113 MB idle vs 116 MB for stock
+>   Pi, and 559 MB vs 618 MB across ten side-by-side sessions, with every
+>   Steak Pi feature loaded.
+> - **Eight parallel subagents in 125 MB** of peak memory with `steak-pi run`,
+>   eight workers for about the footprint of one stock Pi session (117 MB).
+> - **2.7x faster fan-out than 0.6.0**: eight verified workers in 1.2 s instead
+>   of 3.2 s, at 31% lower peak memory (44% lower with `steak-pi run`).
+> - **36% less memory than 0.6.0** across ten sessions (879 MB to 559 MB).
 
 > **Historical comparison — GLM-5.3-Flash, September 9, 2026**
 > (earlier Steak Pi build; identical fixtures, balanced order, deterministic verification):
@@ -110,9 +139,54 @@ making every task attend the meeting:
 | **Phased todo** | Persistent session-private state, atomic bulk transitions, automatic promotion, and idempotent re-init that keeps recorded progress |
 | **Companion UI** | Responsive lifecycle, model, context, usage, cache, and cost telemetry using the active Pi theme |
 | **Memory conventions** | Durable project decisions through `AGENTS.md`; cross-session recall remains explicitly opt-in |
+| **Lean runtime** | Below stock Pi's idle memory with everything loaded; tools join the prompt only once they can act; subagents share the host's Pi code |
 
 The result is still recognisably Pi: quick to start, pleasant to drive, and not
 trying to become an operating system because you asked it to rename a method.
+
+## Lean by design
+
+Most harness add-ons cost you twice: once in RAM for every open terminal, and
+again in tokens on every request. Steak Pi 0.7 is built to cost neither.
+
+**It fits inside stock Pi's footprint.** A Steak Pi session idles at 113 MB of
+proportional memory against stock Pi's 116 MB, with subagents, compaction,
+verification, todo and the companion UI all loaded. Run ten sessions side by
+side, as a multi-window UltraTerm layout does, and Steak Pi holds 559 MB
+against stock Pi's 618 MB, 10% less. Steak Pi 0.6.0 needed 879 MB for the
+same ten.
+
+**Subagents are nearly free.** Workers run inside the parent process and reuse
+the Pi code it already loaded, so an eight-worker fan-out peaks at 125 MB with
+`steak-pi run`. The first worker adds about 20 MB, and each additional worker
+about 3 MB. A separate agent process per worker would pay the full
+100 MB-plus Node footprint each time.
+
+**Requests carry only what can help.** Tools that can do nothing yet stay out
+of the prompt: the run hub until you dispatch, recall until a compaction, the
+UltraCompress decoder until a result is large enough to archive. Each tool
+joins once and stays, so the prompt cache is disturbed at most once. The first
+request is 28% smaller than in 0.6.0 (12.5 KB instead of 17.4 KB).
+
+**Startup does no busywork.** The model-route guard wraps only providers that
+can actually dispatch instead of all ~41 in Pi's catalog, which removed 0.2 s
+and up to 30 MB from every launch.
+
+| Pi 0.86.0, scripted local model (timings: medians of 5) | Stock Pi | Steak Pi 0.6.0 | **Steak Pi 0.7** | **0.7 via `steak-pi run`** |
+| --- | ---: | ---: | ---: | ---: |
+| Idle session (PSS) | 116 MB | 150 MB | **113 MB** | **113 MB** |
+| Ten idle sessions (PSS) | 618 MB | 879 MB | **559 MB** | **548 MB** |
+| One-shot edit: peak RSS | 117 MB | 148 MB | **118 MB** | **100 MB** |
+| One-shot edit: wall | 0.64 s | 0.99 s | **0.77 s** | **0.72 s** |
+| Eight-worker fan-out: peak RSS | no subagents | 223 MB | **153 MB** | **125 MB** |
+| Eight-worker fan-out: wall | no subagents | 3.24 s | **1.22 s** | **1.13 s** |
+| First request | 6.1 KB | 17.4 KB | **12.5 KB** | **12.5 KB** |
+
+`steak-pi run` launches pi with a Node compile cache, two malloc arenas and a
+compact V8 young generation, each only when you haven't set it yourself.
+Method, fixtures and limits: [`benchmarks/overhead`](./benchmarks/overhead/README.md).
+A scripted model isolates harness overhead; it says nothing about model quality
+or provider latency.
 
 ## Proof, not garnish
 
@@ -230,6 +304,28 @@ keep their existing defaults. See the
 `allowBash` gives a child unsandboxed shell access and can bypass path ownership.
 See [`SECURITY.md`](./SECURITY.md) and the full
 [USAP protocol](./docs/ULTRATERM-SUBAGENT-PROTOCOL.md).
+
+## New in 0.8.1: 0.7.0's lean release on the 0.8 line
+
+Everything from 0.8.0 stays. The package stops paying for work that doesn't
+help the current session. Measured results are in
+[Lean by design](#lean-by-design).
+
+- **Route policy only guards providers that can dispatch.** Wrapping all ~41
+  catalog providers made Pi rebuild its model catalog once per provider.
+- **Tools appear when they can act.** The hub after your first dispatch,
+  UltraCompress recall after a compaction, `uc` before the first archived
+  result. Each appears once and stays. `STEAK_PI_DEFER_TOOLS=off` restores
+  always-on tools.
+- **Workers share the host's Pi code.** The first dispatch used to load a
+  second copy of Pi and its dependencies. Workers remain separate sessions.
+  `STEAK_PI_WORKER_SDK=unbundled` restores the old path.
+- **Session capacity matches the docs.** The session scheduler now honours
+  `usap-caps.json` (default 14 = 8 ZAI + 6 Codex) instead of the per-run 8.
+- **`steak-pi run`** launches pi with a Node compile cache, two malloc arenas
+  and a small V8 young generation, each only if you haven't set it. Point
+  UltraTerm harness profiles at `steak-pi run` to use it; `steak-pi env`
+  shows what it sets.
 
 ## New in 0.8.0 (USAP 1.3) — unreleased candidate
 
