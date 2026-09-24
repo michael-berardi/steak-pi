@@ -21,7 +21,8 @@ list the model is required to maintain — one active task, recorded starts and
 finishes, blocked items with reasons — stored as plain JSON and Markdown in
 your project. It was extracted, unchanged, from [Steak
 Pi](https://github.com/michael-berardi/steak-pi)'s todo feature, and Steak Pi
-still runs this exact code. Same store, same rules, whether the worker is a
+keeps running this exact code: the package lives in Steak Pi's monorepo and
+this repository is its published mirror. Same store, same rules, whether the worker is a
 Pi session or anything else that can run a shell command.
 
 Nothing is marked automatically. Tool activity never advances the list by
@@ -75,17 +76,15 @@ same plan is also pinned natively above the composer.
 
 ## Install
 
-**This package is not published yet.** Version 0.1.0 lives inside the Steak Pi
-monorepo; when the standalone repository is cut (one `git subtree split`, no
-history rewritten), npm installation will follow. From source today:
+From source (no dependencies, no build step):
 
 ```sh
-git clone https://github.com/michael-berardi/steak-pi
-alias ut-todo='node /path/to/steak-pi/packages/ultraterm-plan/bin/ut-todo'
+git clone https://github.com/michael-berardi/ultraterm-plan
+alias ut-todo='node /path/to/ultraterm-plan/bin/ut-todo'
 ut-todo --help
 ```
 
-Once published, the usual forms will work:
+The package is not on npm yet. Once it is, the usual forms will work:
 
 ```sh
 npm install -g ultraterm-plan      # then: ut-todo view
@@ -107,7 +106,8 @@ injected while work is unfinished. Nothing to configure; Steak Pi's wrapper
 imports this package's sources directly.
 
 **Claude Code — plugin.** Point Claude Code at
-`packages/ultraterm-plan/integrations/claude-code/`: a plugin with a `ut-todo`
+`integrations/claude-code/` (for example `claude --plugin-dir
+/path/to/ultraterm-plan/integrations/claude-code`): a plugin with a `ut-todo`
 skill (when to plan, how to record honestly), a plugin manifest, and a bin link
 to the CLI. Inside UltraTerm, sessions also get the live owner binding — the
 same per-session store the UltraTerm adapter uses.
@@ -187,5 +187,5 @@ would orphan every existing plan. Names are load-bearing.
 ## License
 
 [MIT](./LICENSE) — © 2026 Implose Cybernetics. Extracted from
-[Steak Pi](https://github.com/michael-berardi/steak-pi), which still uses this
-exact code; the two are maintained simultaneously, not forked.
+[Steak Pi](https://github.com/michael-berardi/steak-pi) and maintained in its
+monorepo; this repository mirrors that package, so the two never drift apart.
