@@ -21,7 +21,9 @@ Steak Pi is the performance-focused package for the
 transcript, tools, history, selectors, scrolling, and keybindings, then adds the
 machinery that turns it into a complete daily driver.
 
-This checkout documents release **Steak Pi 0.6.0** (USAP 1.2). It targets Pi 0.86.0
+This checkout is the **Steak Pi 0.7.0** performance candidate (USAP 1.2 wire
+format, not yet tagged; install instructions below still point at the 0.6.0
+release). It builds on release **Steak Pi 0.6.0** (USAP 1.2). It targets Pi 0.86.0
 and retains the Pi 0.85.1 peer range. Session-isolation, repaint, and packaged
 smoke checks ran on Pi 0.86.0; earlier 0.85.1 evidence predates those changes.
 The feature descriptions apply to this revision. Benchmarks below are explicitly dated historical results, not a remeasurement of 0.6.0 or a multi-hour endurance claim.
@@ -195,6 +197,38 @@ keep their existing defaults. See the
 `allowBash` gives a child unsandboxed shell access and can bypass path ownership.
 See [`SECURITY.md`](./SECURITY.md) and the full
 [USAP protocol](./docs/ULTRATERM-SUBAGENT-PROTOCOL.md).
+
+## New in 0.7.0 (candidate): lighter, faster, same features
+
+Everything from 0.6.0 stays. The package just stops paying for work that
+doesn't help the current session:
+
+| Scripted local model, Pi 0.86.0 | Steak Pi 0.6.0 | 0.7.0 | 0.7.0 via `steak-pi run` |
+| --- | ---: | ---: | ---: |
+| One-shot edit: wall / peak RSS | 0.99 s / 148 MB | 0.77 s / 118 MB | 0.72 s / 100 MB |
+| 8-worker USAP fan-out | 3.24 s / 223 MB | 1.22 s / 153 MB | 1.13 s / 125 MB |
+| First request size | 17.4 KB | 12.5 KB | 12.5 KB |
+| Idle TUI, 10 sessions (PSS) | 963 MB | 610 MB | — |
+
+Stock Pi on the same fixtures: 0.64 s / 117 MB, 6.1 KB first request, 639 MB
+for 10 idle sessions. Method, fixtures and limits:
+[`benchmarks/overhead`](./benchmarks/overhead/README.md).
+
+- **Route policy only guards providers that can dispatch.** Wrapping all ~41
+  catalog providers made Pi rebuild its model catalog once per provider.
+- **Tools appear when they can act.** The hub after your first dispatch,
+  UltraCompress recall after a compaction, `uc` before the first archived
+  result. Each appears once and stays. `STEAK_PI_DEFER_TOOLS=off` restores
+  always-on tools.
+- **Workers share the host's Pi code.** The first dispatch used to load a
+  second copy of Pi and its dependencies. Workers remain separate sessions.
+  `STEAK_PI_WORKER_SDK=unbundled` restores the old path.
+- **Session capacity matches the docs.** The session scheduler now honours
+  `usap-caps.json` (default 14 = 8 ZAI + 6 Codex) instead of the per-run 8.
+- **`steak-pi run`** launches pi with a Node compile cache, two malloc arenas
+  and a small V8 young generation, each only if you haven't set it. Point
+  UltraTerm harness profiles at `steak-pi run` to use it; `steak-pi env`
+  shows what it sets.
 
 ## New in 0.6.0 (USAP 1.2)
 
