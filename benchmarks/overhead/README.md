@@ -45,13 +45,13 @@ Idle TUI PSS:
 | Sessions | Stock Pi | Steak Pi 0.6.0 | 0.7.0 |
 | ---: | ---: | ---: | ---: |
 | 1 | 116 MB | 150 MB | 113 MB |
-| 10 | 639 MB | 963 MB | 610 MB |
+| 10 | 618 MB | 879 MB | 559 MB |
 
-For one idle session the `run` defaults change little (113 MB either way);
-their effect shows under load (fan-out peak 153 -> 125 MB).
+With `steak-pi run`: 113 MB for one session, 548 MB for ten. The defaults
+matter most under load (fan-out peak 153 -> 125 MB).
 
 Reference point: jcode v0.88 (Rust, one daemon hosting all sessions) measured
-115 MB for one session and 155 MB for ten under the same PSS method. Past one
+115 MB for one session and 159 MB for ten under the same PSS method. Past one
 session that gap is architectural: every Pi session is its own Node process.
 
 Limits: a scripted model measures harness overhead only, not model quality or
