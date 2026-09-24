@@ -1,7 +1,7 @@
 import { PersistentBashSession } from "../../vendor/pi-dsh-minimal/bash-session.ts";
 import { adaptWorkerTools, appendHarnessPrompt, isDeepSeekHarnessRoute } from "../deepseek-harness/index.ts";
 import { readFile } from "node:fs/promises";
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { findPackageJSON } from "node:module";
 import { dirname, join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -83,15 +83,25 @@ const HOST_BUNDLE_EXPORTS = [
   "createGrepToolDefinition", "createLsToolDefinition", "createReadToolDefinition", "createWriteToolDefinition",
 ] as const;
 
-/** True when `entry` (the host's argv[1]) runs from `bundleDir`, i.e. the host
- * is Pi's own bundled CLI whose chunks are already loaded in this process. */
-export function isHostBundleEntry(entry: string | undefined, bundleDir: string): boolean {
-  if (!entry) return false;
+/** Pi versions Steak Pi supports as a host (package.json peerDependencies). */
+export const SUPPORTED_HOST_PI_VERSIONS = ["0.85.1", "0.86.0"] as const;
+
+/**
+ * The bundle directory of the Pi CLI running this process, when `entry` (the
+ * host's argv[1]) is `<pi-coding-agent>/dist/bundle/cli.js` of a supported Pi
+ * version with a bundled SDK entry. Undefined for embedded hosts and others.
+ */
+export function hostPiBundle(entry: string | undefined, versions: readonly string[] = SUPPORTED_HOST_PI_VERSIONS): string | undefined {
+  if (!entry) return undefined;
   try {
-    const root = realpathSync(bundleDir);
-    return realpathSync(entry).startsWith(root + sep);
+    const cli = realpathSync(entry);
+    const bundleDir = dirname(cli);
+    if (!cli.endsWith(`${sep}dist${sep}bundle${sep}cli.js`)) return undefined;
+    const pkg = JSON.parse(readFileSync(join(bundleDir, "..", "..", "package.json"), "utf8")) as { name?: string; version?: string };
+    if (pkg.name !== "@earendil-works/pi-coding-agent" || !versions.includes(pkg.version ?? "")) return undefined;
+    return existsSync(join(bundleDir, "index.js")) ? bundleDir : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -99,19 +109,21 @@ let hostBundlePromise: Promise<PiSdk | undefined> | undefined;
 
 /**
  * Workers reuse the SDK surface of the bundle the host CLI already loaded.
- * Importing Pi's unbundled dist instead instantiated a second copy of Pi and
- * its dependencies (pi-ai, agent-core, provider SDKs, typebox, undici) on the
- * first dispatch: ~70 MB per parent process. Workers stay separate sessions;
- * only module code is shared. Embedded hosts, Pi builds without a complete
- * bundle entry, and STEAK_PI_WORKER_SDK=unbundled keep the unbundled path.
+ * Importing Pi through this package's own dependency tree instantiated a
+ * second copy of Pi and its dependencies (pi-ai, agent-core, provider SDKs,
+ * typebox, undici) on the first dispatch, ~40-70 MB per parent process. Git
+ * installs carry their own Pi peer copy, so the host is identified from the
+ * running CLI, not from this package's resolution. Workers stay separate
+ * sessions on the parent's Pi version; only module code is shared. Embedded
+ * hosts, unsupported Pi versions, bundles missing an export, and
+ * STEAK_PI_WORKER_SDK=unbundled keep the package-resolved path.
  */
 function loadHostBundleSdk(): Promise<PiSdk | undefined> {
   hostBundlePromise ??= (async () => {
     if (/^unbundled$/i.test(process.env.STEAK_PI_WORKER_SDK ?? "")) return undefined;
-    const bundleDir = join(piDistPath(), "bundle");
-    const indexPath = join(bundleDir, "index.js");
-    if (!existsSync(indexPath) || !isHostBundleEntry(process.argv[1], bundleDir)) return undefined;
-    const bundle = await import(/* @vite-ignore */ pathToFileURL(indexPath).href) as Record<string, unknown>;
+    const bundleDir = hostPiBundle(process.argv[1]);
+    if (!bundleDir) return undefined;
+    const bundle = await import(/* @vite-ignore */ pathToFileURL(join(bundleDir, "index.js")).href) as Record<string, unknown>;
     if (!HOST_BUNDLE_EXPORTS.every((name) => bundle[name] !== undefined)) return undefined;
     return Object.fromEntries(HOST_BUNDLE_EXPORTS.map((name) => [name, bundle[name]])) as unknown as PiSdk;
   })().catch(() => undefined);
