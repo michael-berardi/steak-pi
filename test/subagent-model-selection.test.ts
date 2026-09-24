@@ -13,8 +13,9 @@ const glm = { ...astra, id: "glm-5.3-flash", name: "GLM-5.3 Flash", provider: "z
 const go = { ...glm, id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", provider: "opencode-go", api: "openai-completions", baseUrl: "https://opencode.ai/zen/go/v1", input: ["text"] } as Model;
 const goFallback = { ...go, id: "glm-5.3-flash", name: "GLM 5.3 Flash" } as Model;
 const mimoPro = { ...go, id: "mimo-v2.6-pro", name: "MiMo V2.6 Pro", provider: "xiaomi", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1", input: ["text", "image"] } as Model;
+const mimoFlash = { ...mimoPro, id: "mimo-v2.6-flash", name: "MiMo V2.6 Flash" } as Model;
 const other = { ...glm, id: "custom-vision", name: "Custom vision", provider: "custom" };
-function registry(models = [astra, luna, glm, go, mimoPro, other]) {
+function registry(models = [astra, luna, glm, go, mimoPro, mimoFlash, other]) {
   return {
     find: (provider: string, id: string) => models.find(m => m.provider === provider && m.id === id),
     getAvailable: vi.fn(() => models),
@@ -65,8 +66,9 @@ describe("USAP 1.1 explicit model/profile contract", () => {
     // Routine workers and reviewer-role runs share one automatic subscription
     // chain; the reviewer role alone never prefers another expert silently.
     const worker = choose(other, { tasks: [{ label: "leaf", task: "test", role: "worker" }] });
-    expect(worker.model).toBe(mimoPro);
-    expect(worker.selection).toMatchObject({ source: "chain", chainRoutes: ["xiaomi/mimo-v2.6-pro", "zai/glm-5.3-flash"] });
+    expect(worker.model).toBe(mimoFlash);
+    expect(worker.selection).toMatchObject({ source: "chain", chainRoutes: ["xiaomi/mimo-v2.6-flash", "zai/glm-5.3-flash"] });
+    // Reviewers keep their MiMo V2.6 Pro head; only routine workers moved to Flash.
     const reviewer = choose(other, { tasks: [{ label: "leaf", task: "test", role: "reviewer" }] });
     expect(reviewer.model).toBe(mimoPro);
     expect(reviewer.selection).toMatchObject({ source: "chain",
@@ -80,30 +82,30 @@ describe("USAP 1.1 explicit model/profile contract", () => {
     expect(choose(astra, { profile: "steak-pi/glm-5-3-flash", tasks: [{ label: "review", task: "review", role: "reviewer" }] }).model).toBe(glm);
   });
   it("preserves omitted default routes and configured per-profile overrides", () => {
-    expect(choose(astra).model).toBe(mimoPro);
+    expect(choose(astra).model).toBe(mimoFlash);
     expect(choose(astra).selection.source).toBe("chain");
     expect(choose(astra, { tasks: [{ label: "r", task: "review", role: "reviewer" }] }).model).toBe(mimoPro);
-    expect(choose(glm).model).toBe(mimoPro);
+    expect(choose(glm).model).toBe(mimoFlash);
     const profiles = [{ id: "steak-pi/gpt-6-astra", model: "openai-codex/gpt-6-astra", workerDefault: { profile: "steak-pi/glm-5-3-flash" } }, BUILTIN_WORKER_PROFILES[0]];
     expect(choose(astra, {}, registry(), profiles).model).toBe(glm);
   });
   it("routes automatic defaults through the final MiMo→ZAI chain with chain provenance", () => {
     // No Luna, ever: the automatic default never resolves a GPT-family worker.
     const result = choose(astra);
-    expect(result.model).toBe(mimoPro);
-    expect(result.selection).toMatchObject({ provider: "xiaomi", modelId: "mimo-v2.6-pro", source: "chain",
-      chainRoutes: ["xiaomi/mimo-v2.6-pro", "zai/glm-5.3-flash"] });
+    expect(result.model).toBe(mimoFlash);
+    expect(result.selection).toMatchObject({ provider: "xiaomi", modelId: "mimo-v2.6-flash", source: "chain",
+      chainRoutes: ["xiaomi/mimo-v2.6-flash", "zai/glm-5.3-flash"] });
     // MiMo unavailable: the ZAI coding subscription route is the only automatic fallback.
     expect(choose(astra, {}, registry([glm])).model).toBe(glm);
     // Subscription-first regression: the reviewed Token Plan step is selected with
     // no paid allowlist grant at all (revoked or absent), never spend-gated.
-    const tokenPlan = registry([astra, glm, mimoPro]);
-    expect(choose(astra, {}, tokenPlan, BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => false }).model).toBe(mimoPro);
+    const tokenPlan = registry([astra, glm, mimoFlash]);
+    expect(choose(astra, {}, tokenPlan, BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => false }).model).toBe(mimoFlash);
     // A non-plan Xiaomi endpoint (general PAYG) is a different billing target: the
     // chain skips it rather than approving it in, and falls through to ZAI.
-    expect(choose(astra, {}, registry([{ ...mimoPro, baseUrl: "https://api.xiaomimimo.com/v1" } as Model, glm])).model).toBe(glm);
+    expect(choose(astra, {}, registry([{ ...mimoFlash, baseUrl: "https://api.xiaomimimo.com/v1" } as Model, glm])).model).toBe(glm);
     // Unmapped parents use the same chain through the legacy default path.
-    expect(choose(astra, {}, tokenPlan, [], { approvePaidRoute: () => false }).model).toBe(mimoPro);
+    expect(choose(astra, {}, tokenPlan, [], { approvePaidRoute: () => false }).model).toBe(mimoFlash);
     // Go routes are no automatic chain step: with neither subscription step present, fail closed.
     expect(() => choose(astra, {}, registry([go]), BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => true })).toThrow(/no fallback was selected/);
   });
@@ -118,6 +120,8 @@ describe("USAP 1.1 explicit model/profile contract", () => {
     // Astra absent or metered makes no difference: the routine chain is the
     // whole automatic reviewer chain, with no expert step before it.
     expect(choose(astra, { tasks: [{ label: "r", task: "review", role: "reviewer" }] }, registry([glm, mimoPro])).model).toBe(mimoPro);
+    // Pro unavailable: the reviewer chain's only fallback is ZAI, never the Flash worker head.
+    expect(choose(astra, { tasks: [{ label: "r", task: "review", role: "reviewer" }] }, registry([glm, mimoFlash])).model).toBe(glm);
     const metered = registry([{ ...astra, baseUrl: "https://api.openai.com/v1" } as Model, glm, mimoPro]);
     expect(choose(astra, { tasks: [{ label: "r", task: "review", role: "reviewer" }] }, metered).model).toBe(mimoPro);
     // requireImages keeps the same automatic chain capability-matching end to end.
@@ -144,11 +148,11 @@ describe("USAP 1.1 explicit model/profile contract", () => {
   });
   it("skips text-only chain heads for image requests rather than rejecting a capable fallback", () => {
     const textOnlyAstra = { ...astra, input: ["text"] } as Model;
-    const textOnlyMimo = { ...mimoPro, input: ["text"] } as Model;
+    const textOnlyFlash = { ...mimoFlash, input: ["text"] } as Model;
     const reviewer = choose(glm, { requireImages: true, tasks: [{ label: "r", task: "inspect image", role: "reviewer" }] },
       registry([textOnlyAstra, mimoPro, glm]));
     expect(reviewer.model).toBe(mimoPro);
-    const worker = choose(glm, { requireImages: true }, registry([textOnlyMimo, glm]));
+    const worker = choose(glm, { requireImages: true }, registry([textOnlyFlash, glm]));
     expect(worker.model).toBe(glm);
   });
   it("keeps an explicit chain-step model exact: no cross-provider chain provenance", () => {
@@ -163,41 +167,41 @@ describe("USAP 1.1 explicit model/profile contract", () => {
     expect(added.map((profile) => profile.id)).toEqual(["steak-pi/gpt-6-sol", "steak-pi/gpt-6-luna"]);
     for (const profile of added) {
       // Never an automatic worker default: routine workers stay on the chain.
-      expect(profile.workerDefault).toEqual({ profile: "steak-pi/mimo-v2-6-pro" });
+      expect(profile.workerDefault).toEqual({ profile: "steak-pi/mimo-v2-6-flash" });
       expect(DEFAULT_TEXT_WORKER_CHAIN.some((step) => step.id === profile.model.split("/")[1])).toBe(false);
     }
     // Explicit selection is exact, with the profile's high thinking preference.
-    const explicit = choose(astra, { profile: "steak-pi/gpt-6-sol" }, registry([astra, sol, glm, mimoPro]));
+    const explicit = choose(astra, { profile: "steak-pi/gpt-6-sol" }, registry([astra, sol, glm, mimoFlash]));
     expect(explicit.model).toBe(sol);
     expect(explicit.selection).toMatchObject({ source: "override", provider: "openai-codex", modelId: "gpt-6-sol", profile: "steak-pi/gpt-6-sol" });
     expect(explicit.thinkingLevel).toBe("high");
     // A Sol parent keeps workers and reviewers on the routine chain — Sol and
     // Astra are never automatic defaults in any role.
-    const solParent = choose(sol, {}, registry([astra, sol, glm, mimoPro]));
-    expect(solParent.model).toBe(mimoPro);
+    const solParent = choose(sol, {}, registry([astra, sol, glm, mimoFlash]));
+    expect(solParent.model).toBe(mimoFlash);
     expect(solParent.selection).toMatchObject({ source: "chain", parentProfile: "steak-pi/gpt-6-sol" });
-    const solReview = choose(sol, { tasks: [{ label: "r", task: "review", role: "reviewer" }] }, registry([astra, sol, glm, mimoPro]));
+    const solReview = choose(sol, { tasks: [{ label: "r", task: "review", role: "reviewer" }] }, registry([astra, sol, glm, mimoPro, mimoFlash]));
     expect(solReview.model).toBe(mimoPro);
   });
   it("requires the authenticated available catalog before operator selection includes a route", () => {
     const approved = { approvePaidRoute: () => true };
     // Approved Token Plan route, absent from the authenticated available catalog.
-    const hidden = registry([astra, mimoPro]);
+    const hidden = registry([astra, mimoFlash]);
     hidden.getAvailable.mockReturnValue([astra]);
     expect(() => choose(astra, {}, hidden, BUILTIN_WORKER_PROFILES, approved)).toThrow(/no fallback was selected/);
-    const unauthenticated = registry([astra, mimoPro]);
+    const unauthenticated = registry([astra, mimoFlash]);
     unauthenticated.hasConfiguredAuth.mockImplementation((model: Model) => model.provider !== "xiaomi");
     expect(() => choose(astra, {}, unauthenticated, BUILTIN_WORKER_PROFILES, approved)).toThrow(/no fallback was selected/);
     // Authenticated and available subscription route: selected with NO paid grant.
-    expect(choose(astra, {}, registry([astra, mimoPro]), BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => false }).selection)
-      .toMatchObject({ source: "chain", provider: "xiaomi", modelId: "mimo-v2.6-pro" });
+    expect(choose(astra, {}, registry([astra, mimoFlash]), BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => false }).selection)
+      .toMatchObject({ source: "chain", provider: "xiaomi", modelId: "mimo-v2.6-flash" });
     // A present/absent grant is equally irrelevant: the Token Plan step is prepaid.
-    expect(choose(astra, {}, registry([astra, mimoPro]), BUILTIN_WORKER_PROFILES, approved).selection)
-      .toMatchObject({ source: "chain", provider: "xiaomi", modelId: "mimo-v2.6-pro" });
+    expect(choose(astra, {}, registry([astra, mimoFlash]), BUILTIN_WORKER_PROFILES, approved).selection)
+      .toMatchObject({ source: "chain", provider: "xiaomi", modelId: "mimo-v2.6-flash" });
   });
-  it("routes automatic multimodal defaults through MiMo Pro, then ZAI coding GLM", () => {
-    const tokenPlan = registry([astra, glm, mimoPro]);
-    expect(choose(astra, { requireImages: true }, tokenPlan, BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => true }).model).toBe(mimoPro);
+  it("routes automatic multimodal defaults through MiMo Flash, then ZAI coding GLM", () => {
+    const tokenPlan = registry([astra, glm, mimoFlash]);
+    expect(choose(astra, { requireImages: true }, tokenPlan, BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => true }).model).toBe(mimoFlash);
     expect(choose(astra, { requireImages: true }, registry([astra, glm]), BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => false }).model).toBe(glm);
     expect(() => choose(astra, { requireImages: true }, registry([astra, go]), BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => true }))
       .toThrow(/no fallback was selected/);
@@ -218,7 +222,7 @@ describe("USAP 1.1 explicit model/profile contract", () => {
   it("does not inherit a stale launch profile after /model changes", () => {
     const r = registry();
     const result = resolveWorkerSelection(glm, "high", input(), r as never, BUILTIN_WORKER_PROFILES, "gpt-6-astra");
-    expect(result.model).toBe(mimoPro);
+    expect(result.model).toBe(mimoFlash);
   });
   it.each([
     { model: "zai/glm-5.3-flash", profile: "steak-pi/glm-5-3-flash" },

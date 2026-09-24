@@ -51,16 +51,17 @@ same-plan retry. No CLI is launched to resolve a profile.
 
 Omitting both selectors uses the matching parent profile's `workerDefault`, or
 `reviewerDefault` for runs containing reviewers. Profiles that resolve the
-built-in `steak-pi/mimo-v2-6-pro` default resolve one **automatic chain** and
-record it as provenance:
+built-in `steak-pi/mimo-v2-6-flash` worker default or `steak-pi/mimo-v2-6-pro`
+reviewer default resolve an **automatic chain** headed by that Token Plan model
+and record it as provenance:
 
-- Routine workers, text and images: `xiaomi/mimo-v2.6-pro` → `zai/glm-5.3-flash`.
-- Default reviewer role: the same `xiaomi/mimo-v2.6-pro` → `zai/glm-5.3-flash`
-  routine chain. No expert model is ever selected automatically on the native
+- Routine workers, text and images: `xiaomi/mimo-v2.6-flash` → `zai/glm-5.3-flash`.
+- Default reviewer role: `xiaomi/mimo-v2.6-pro` → `zai/glm-5.3-flash`.
+  No expert model is ever selected automatically on the native
   chain; expert review is the Opus Pass CLI route (explicit, or the implicit
   all-reviewer-wave default) described below.
 
-The main app also defaults to MiMo V2.6 Pro. Explicitly chosen profiles remain exact; selecting OpenCode Go does not select this cross-provider chain.
+The main app's own launch model is unchanged (MiMo V2.6 Pro). Explicitly chosen profiles remain exact; selecting OpenCode Go does not select this cross-provider chain.
 
 ## Scarce expert reviewer (Astra)
 

@@ -277,25 +277,51 @@ export function selectWorkerThinking(
 
 export interface WorkerRouteStep { provider: string; id: string }
 
-/** FINAL automatic worker routing (operator scope, 2026-09-23). One unified text and
+/** FINAL automatic worker routing (operator scope, 2026-09-24). One unified text and
  * image chain, ordered selection priority plus one pre-output runtime hop inside the
  * same order: the first authenticated route serves the run, and a before-output
  * transient failure may hop to the next eligible route. The hop stops permanently at
  * the first content/tool event and each event keeps its real provider/model. The
- * default route is MiMo V2.6 Pro on the reviewed Singapore Token Plan endpoint, so it
- * is a prepaid subscription rather than a metered API route; the only automatic fallback is the
- * ZAI coding subscription route. No Go, Inco, OpenRouter or metered PAYG step is
- * reachable automatically, and GPT-5.6 Luna is deliberately absent. */
+ * default worker route is MiMo V2.6 Flash on the reviewed Singapore Token Plan
+ * endpoint, a prepaid subscription rather than a metered API route; the only automatic
+ * fallback is the ZAI coding subscription route. No Go, Inco, OpenRouter or metered
+ * PAYG step is reachable automatically, and GPT-5.6 Luna is deliberately absent. */
 export const DEFAULT_TEXT_WORKER_CHAIN: readonly WorkerRouteStep[] = [
-  { provider: "xiaomi", id: "mimo-v2.6-pro" },
+  { provider: "xiaomi", id: "mimo-v2.6-flash" },
   { provider: "zai", id: "glm-5.3-flash" },
 ];
-/** The image chain is the same two routes: MiMo V2.6 Pro is multimodal and the ZAI
- * coding route advertises image input, so text and image runs share one order. */
+/** The image chain is the same two routes: MiMo V2.6 Flash is multimodal on the Token
+ * Plan and the ZAI coding route advertises image input, so text and image runs share
+ * one order. */
 export const DEFAULT_MULTIMODAL_WORKER_CHAIN: readonly WorkerRouteStep[] = [
-  { provider: "xiaomi", id: "mimo-v2.6-pro" },
+  { provider: "xiaomi", id: "mimo-v2.6-flash" },
   { provider: "zai", id: "glm-5.3-flash" },
 ];
+/** Token Plan routes an automatic profile may keep as its own chain head. A profile
+ * naming MiMo V2.6 Pro (the reviewer default) resolves [Pro, ZAI], never the Flash
+ * worker head; every other automatic profile resolves the default chain. */
+const TOKEN_PLAN_CHAIN_HEADS: readonly WorkerRouteStep[] = [
+  { provider: "xiaomi", id: "mimo-v2.6-pro" },
+  { provider: "xiaomi", id: "mimo-v2.6-flash" },
+];
+const sameStep = (a: WorkerRouteStep, b: WorkerRouteStep) => a.provider === b.provider && a.id === b.id;
+export function workerChainFor(head: WorkerRouteStep | undefined, requireImages: boolean): readonly WorkerRouteStep[] {
+  const base = requireImages ? DEFAULT_MULTIMODAL_WORKER_CHAIN : DEFAULT_TEXT_WORKER_CHAIN;
+  if (!head || !TOKEN_PLAN_CHAIN_HEADS.some((step) => sameStep(step, head)) || sameStep(base[0], head)) return base;
+  return [head, ...base.filter((step) => step.provider !== head.provider)];
+}
+/** Rebuild a run's recorded chain (`selection.chainRoutes`) only when it is exactly a
+ * chain this policy can produce; anything else falls back to the default chain. */
+export function recordedWorkerChain(routes: readonly string[] | undefined, requireImages: boolean): readonly WorkerRouteStep[] {
+  const base = requireImages ? DEFAULT_MULTIMODAL_WORKER_CHAIN : DEFAULT_TEXT_WORKER_CHAIN;
+  if (!routes?.length) return base;
+  const head = routes[0].split("/");
+  if (head.length !== 2) return base;
+  const candidate = workerChainFor({ provider: head[0], id: head[1] }, requireImages);
+  const matches = candidate.length === routes.length
+    && candidate.every((step, index) => `${step.provider}/${step.id}` === routes[index]);
+  return matches ? candidate : base;
+}
 export const noChainRouteError = (multimodal: boolean) =>
   `No authenticated route in the default ${multimodal ? "multimodal" : "text"} worker chain; no fallback was selected.`;
 

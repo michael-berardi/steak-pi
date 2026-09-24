@@ -750,10 +750,10 @@ const chainStep = (provider: string, id: string) => ({ provider, id } as never);
 
 describe("worker automatic-chain selection gate", () => {
   it("installs the pre-output hop only for an automatic chain selection", () => {
-    const hop = workerChainFallback({ source: "chain", images: false }, chainStep("xiaomi", "mimo-v2.6-pro"));
+    const hop = workerChainFallback({ source: "chain", images: false }, chainStep("xiaomi", "mimo-v2.6-flash"));
     expect(hop).toMatchObject({ chain: DEFAULT_TEXT_WORKER_CHAIN, requireImages: false });
     expect(hop!.approvePaidRoute).toBe(AUTOMATIC_CHAIN_APPROVAL);
-    expect(workerChainFallback({ source: "chain", images: true }, chainStep("xiaomi", "mimo-v2.6-pro")))
+    expect(workerChainFallback({ source: "chain", images: true }, chainStep("xiaomi", "mimo-v2.6-flash")))
       .toMatchObject({ chain: DEFAULT_MULTIMODAL_WORKER_CHAIN, requireImages: true });
   });
 
@@ -761,8 +761,8 @@ describe("worker automatic-chain selection gate", () => {
     // The crucial regression: an explicit model/profile that names a chain step is
     // still an exact operator choice and must not acquire spending fallback.
     for (const source of ["override", "profile-default", "legacy-default"] as const) {
-      expect(workerChainFallback({ source, images: false }, chainStep("xiaomi", "mimo-v2.6-pro"))).toBeUndefined();
-      expect(workerChainFallback({ source, images: true }, chainStep("xiaomi", "mimo-v2.6-pro"))).toBeUndefined();
+      expect(workerChainFallback({ source, images: false }, chainStep("xiaomi", "mimo-v2.6-flash"))).toBeUndefined();
+      expect(workerChainFallback({ source, images: true }, chainStep("xiaomi", "mimo-v2.6-flash"))).toBeUndefined();
     }
     // A chain selection whose frozen route is not a step of its chain never hops.
     expect(workerChainFallback({ source: "chain", images: false }, chainStep("openai-codex", "gpt-6-astra"))).toBeUndefined();
@@ -773,15 +773,15 @@ describe("worker automatic-chain selection gate", () => {
     const recordTask = task();
     const progress: WorkerProgress[] = [];
     const report = createChainFallbackReporter(recordTask, (update) => progress.push(update));
-    report(chainStep("opencode-go", "deepseek-v4.1-flash"), chainStep("xiaomi", "mimo-v2.6-pro"));
-    report(chainStep("xiaomi", "mimo-v2.6-pro"), chainStep("zai", "glm-5.3-flash"));
+    report(chainStep("opencode-go", "deepseek-v4.1-flash"), chainStep("xiaomi", "mimo-v2.6-flash"));
+    report(chainStep("xiaomi", "mimo-v2.6-flash"), chainStep("zai", "glm-5.3-flash"));
     expect(recordTask.routeFallbacks).toEqual([
-      "opencode-go/deepseek-v4.1-flash->xiaomi/mimo-v2.6-pro",
-      "xiaomi/mimo-v2.6-pro->zai/glm-5.3-flash",
+      "opencode-go/deepseek-v4.1-flash->xiaomi/mimo-v2.6-flash",
+      "xiaomi/mimo-v2.6-flash->zai/glm-5.3-flash",
     ]);
-    expect(recordTask.lastStep).toBe("model-fallback:xiaomi/mimo-v2.6-pro->zai/glm-5.3-flash");
+    expect(recordTask.lastStep).toBe("model-fallback:xiaomi/mimo-v2.6-flash->zai/glm-5.3-flash");
     expect(progress.map((update) => update.currentTool))
-      .toEqual(["model-fallback:xiaomi/mimo-v2.6-pro", "model-fallback:zai/glm-5.3-flash"]);
+      .toEqual(["model-fallback:xiaomi/mimo-v2.6-flash", "model-fallback:zai/glm-5.3-flash"]);
     expect(progress.every((update) => update.state === "running")).toBe(true);
   });
 });
