@@ -1,4 +1,5 @@
 import { statSync } from "node:fs";
+import { deferredToolsEnabled, setToolActive } from "../src/deferred-tools.ts";
 import { setPinnedPanel } from "../src/tui/pinned-panels.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
@@ -595,7 +596,9 @@ export function createUltratermSubagentsExtension(
     let runtime: SessionRuntime | undefined;
     let clearedStatusUi: ExtensionContext["ui"] | undefined;
     // Replacements share leases with any late-disposing prior initialization.
-    const scheduler = dependencies.createScheduler?.() ?? new SessionScheduler(MAX_CONCURRENCY);
+    // Session-wide ceiling comes from usap-caps.json (default 14 = 8 ZAI + 6
+    // Codex); each run stays capped at MAX_CONCURRENCY by dispatch validation.
+    const scheduler = dependencies.createScheduler?.() ?? new SessionScheduler();
     /** Teardowns whose workers had not settled at the bounded deadline. Their
      * checkpoint lease and live state stay retained (never force-released, never
      * stolen) until the real `coordinator.shutdown()` promise settles. */
@@ -1064,6 +1067,16 @@ export function createUltratermSubagentsExtension(
       const current = ensureRuntime(ctx);
       setStatus(current, ctx);
       flushCompletions(current);
+      // The hub only acts on existing runs: expose it when this session has
+      // checkpointed or live runs, otherwise after the first dispatch.
+      if (deferredToolsEnabled()) {
+        const hasRuns = current.coordinator.list().length > 0 || (current.store?.list().length ?? 0) > 0;
+        setToolActive(pi, "ultraterm_hub", hasRuns);
+      }
+    });
+
+    pi.on("tool_result", (event) => {
+      if (event.toolName === "ultraterm_subagents") setToolActive(pi, "ultraterm_hub", true);
     });
 
     pi.on("agent_start", async (_event, ctx) => {

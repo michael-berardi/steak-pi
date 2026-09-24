@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.1 — unreleased candidate (USAP 1.3)
+
+- Merge the Steak Pi 0.7.0 efficiency release (tag `v0.7.0`, `c450e84`) into the
+  0.8 line without dropping 0.8 features: deferred tools; no UltraCompress spawns without its binary; workers reuse the host Pi
+  bundle; the session scheduler honours `usap-caps.json` `session.global`;
+  `steak-pi run` / `steak-pi env`.
+- Not merged: 0.7.0's "guard only dispatch-capable providers". On the 0.8 line
+  the guard also applies the curated picker scope and the pre-output fallback's
+  metering check, and Pi resolves file-backed credentials after the first
+  install, so the filter left providers unguarded. Every provider stays guarded.
+- Pi stays on the 0.87 toolchain bundled with UltraTerm.
+- No release, publication or installed-runtime verification is claimed by this
+  entry.
+
 ## 0.8.0 — unreleased candidate (USAP 1.3)
 
 - Add a headless official Claude Code runner to the existing USAP coordinator. Read-only expert planning/review uses exact Opus 5.5/xhigh with existing first-party subscription login; no API-key route, metered fallback or inherited hook/plugin execution.
@@ -175,6 +189,42 @@ owns the commit).
   with the existing paid-route admission unchanged.
 - No release, publication, or installed-runtime verification is claimed by this
   entry; the package is still not published to the npm registry.
+
+## 0.7.0 — 2026-09-24 (USAP 1.2 wire format; released from `main`, merged into 0.8.1)
+
+Performance release. No feature removed; the USAP dispatch schema, relay
+envelope and checkpoint format are unchanged, so 0.6.0 checkpoints still
+resume. Measured on Pi 0.86.0 against a scripted local model
+([`benchmarks/overhead`](./benchmarks/overhead/README.md)); figures are
+medians of 5 runs, September 24, 2026.
+
+- Route policy guards only providers that can dispatch (configured auth or the
+  active model), re-checked on every prompt, model switch, compaction and
+  worker turn. Re-registering all ~41 catalog providers made Pi rebuild its
+  model catalog per provider: -0.2 s and -20 to -30 MB per session.
+- Deferred tools: `ultraterm_hub` appears after the first dispatch (or at start
+  when the session has runs), `ultracompress_recall` after a compaction, and
+  `ultracompress_uc` after the first tool result large enough to be archived.
+  Each tool list change happens at most once per tool. First request with the
+  full package: 17.4 KB -> 12.5 KB. `STEAK_PI_DEFER_TOOLS=off` restores
+  always-on exposure.
+- Without an `ultracompress` binary, live transforms no longer spawn a failing
+  process per request and neither UltraCompress tool is exposed.
+- USAP workers reuse the host CLI's bundled Pi SDK (supported Pi versions only)
+  instead of importing a second copy of Pi and its dependencies on the first
+  dispatch. `STEAK_PI_WORKER_SDK=unbundled` restores the old path.
+- USAP session scheduler now honours `usap-caps.json` `session.global`
+  (default 14 = 8 ZAI + 6 Codex); it was built with the per-run cap of 8.
+- `steak-pi run [pi args]` launches pi with Node defaults (compile cache,
+  `MALLOC_ARENA_MAX=2`, `--max-semi-space-size=2`), each only when unset;
+  `steak-pi env` prints them.
+- Results versus 0.6.0 (full package loaded, same Pi, same fixtures):
+  - one-shot edit: 0.99 s / 148 MB -> 0.77 s / 118 MB (`run`: 0.70 s / 100 MB);
+    stock Pi 0.64 s / 117 MB
+  - 8-worker USAP fan-out: 3.24 s / 223 MB -> 1.22 s / 153 MB
+    (`run`: 1.13 s / 125 MB)
+  - idle TUI PSS: 1 session 150 -> 113 MB; 10 sessions 879 -> 559 MB
+    (548 MB via `run`; stock Pi 116 / 618 MB)
 
 ## 0.6.0 — 2026-09-20 (USAP 1.2)
 

@@ -183,17 +183,25 @@ export function guardProvider(provider: Provider, usingOAuth: () => boolean,
 }
 
 /** Re-check registration provenance after reload/model changes without stacking wrappers. */
-export function createRegistryGuard(approval?: PaidApproval, chain?: ChainFallbackOptions): (registry: GuardRegistry) => void {
+export function createRegistryGuard(approval?: PaidApproval, chain?: ChainFallbackOptions): (registry: GuardRegistry, active?: Pick<Model, "provider">) => void {
   const installed = new WeakSet<Provider>();
-  return (registry) => {
+  return (registry, active) => {
     // One catalog pass rather than filtering every model once per provider on
     // every worker turn. Preserve the API coverage gate on configuration reload.
     const apisByProvider = new Map<string, Set<Model["api"]>>();
     for (const model of registry.getAll()) {
       let apis = apisByProvider.get(model.provider);
-      if (!apis) apisByProvider.set(model.provider, apis = new Set());
+      if (!apis) {
+        apisByProvider.set(model.provider, apis = new Set());
+      }
       apis.add(model.api);
     }
+    // Every catalog provider is guarded, as in 0.8.0. The 0.7.0 "dispatch-capable
+    // providers only" filter is not merged: Pi resolves file-backed credentials
+    // after this first install, so it left providers unwrapped, which skipped the
+    // curated picker filter (filterModels below) and would leave pre-output chain
+    // targets without the metering check. `active` is accepted for 0.7.0 callers.
+    void active;
     for (const [id, apis] of apisByProvider) {
       const native = registry.getRegisteredNativeProvider(id);
       const mark = native && guardMark(native);
@@ -223,8 +231,10 @@ export function createRegistryGuard(approval?: PaidApproval, chain?: ChainFallba
 }
 
 /** Reapply after configuration refresh and at each controlled worker turn. The
- * optional chain installs the same pre-output hop inside an isolated child runtime. */
-export function guardModelRuntime(runtime: ModelRuntime, fallback?: ChainFallbackInput): void {
+ * optional chain installs the same pre-output hop inside an isolated child runtime;
+ * `active` names the run's own provider so it is guarded even before its
+ * credentials resolve (only dispatch-capable providers are guarded). */
+export function guardModelRuntime(runtime: ModelRuntime, fallback?: ChainFallbackInput, active?: Pick<Model, "provider">): void {
   const approval = fallback?.approvePaidRoute;
   const chain: ChainFallbackOptions | undefined = fallback && {
     ...fallback,
@@ -245,7 +255,7 @@ export function guardModelRuntime(runtime: ModelRuntime, fallback?: ChainFallbac
     isUsingOAuth: (model) => runtime.isUsingOAuth(model.provider),
     hasConfiguredAuth: (model) => runtime.hasConfiguredAuth(model.provider),
     getProviderAuth: (id) => runtime.getAuth(id),
-  });
+  }, active);
 }
 
 /** Astra defaults to medium independently of the parent's current effort.

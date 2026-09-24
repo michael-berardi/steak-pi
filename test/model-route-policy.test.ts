@@ -80,7 +80,7 @@ function fakeRegistry() {
     getRegisteredNativeProvider: (id: string) => native.get(id),
     registerProvider: vi.fn((provider: Provider) => native.set(provider.id, provider)),
     isUsingOAuth: vi.fn(() => true),
-    hasConfiguredAuth: vi.fn(() => true),
+    hasConfiguredAuth: vi.fn((_model: Model) => true),
     getAvailable: vi.fn(() => [astra, glm]),
     find: vi.fn(() => luna),
   };
@@ -196,6 +196,21 @@ describe("GPT coding-plan route policy", () => {
     native.delete("openai-codex");
     install(registry);
     expect(methods.registerProvider).toHaveBeenCalledTimes(3);
+  });
+  it("guards every catalog provider even before its credentials resolve", () => {
+    // 0.8.1 keeps guard-all: the guard also carries the curated picker filter and
+    // the pre-output fallback metering check, and Pi resolves file-backed auth
+    // after the first install, so a credentials-only filter would skip both.
+    const { registry, native, methods } = fakeRegistry();
+    const openrouterGpt = { ...astra, provider: "openrouter" } as Model;
+    registry.getAll = () => [astra, glm, openrouterGpt];
+    methods.hasConfiguredAuth.mockImplementation((model: Model) => model.provider === "zai");
+    createRegistryGuard()(registry);
+    expect([...native.keys()].sort()).toEqual(["openai-codex", "openrouter", "zai"]);
+    expect(() => native.get("openrouter")!.streamSimple(openrouterGpt, emptyContext())).toThrow(GPT_ROUTE_ERROR);
+    // The 0.7.0 `active` argument is accepted and changes nothing.
+    createRegistryGuard()(registry, openrouterGpt);
+    expect([...native.keys()].sort()).toEqual(["openai-codex", "openrouter", "zai"]);
   });
   it("re-guards a new configured API without stacking unchanged wrappers", () => {
     const { registry, native, methods } = fakeRegistry();
