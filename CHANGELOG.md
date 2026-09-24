@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.0 — unreleased candidate (USAP 1.2 wire format)
+## 0.7.0 — 2026-09-24 (USAP 1.2 wire format)
 
 Performance release. No feature removed; the USAP dispatch schema, relay
 envelope and checkpoint format are unchanged, so 0.6.0 checkpoints still
@@ -33,8 +33,8 @@ medians of 5 runs, September 24, 2026.
     stock Pi 0.64 s / 117 MB
   - 8-worker USAP fan-out: 3.24 s / 223 MB -> 1.22 s / 153 MB
     (`run`: 1.13 s / 125 MB)
-  - idle TUI PSS: 1 session 150 -> 113 MB; 10 sessions 963 -> 610 MB
-    (stock Pi 116 / 639 MB)
+  - idle TUI PSS: 1 session 150 -> 113 MB; 10 sessions 879 -> 559 MB
+    (548 MB via `run`; stock Pi 116 / 618 MB)
 
 ## 0.6.0 — 2026-09-20 (USAP 1.2)
 

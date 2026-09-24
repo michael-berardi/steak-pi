@@ -15,7 +15,7 @@ build the rest themselves.*
 | | Stock Pi | **Steak Pi 0.7** |
 | --- | ---: | ---: |
 | Idle session (PSS) | 116 MB | **113 MB** |
-| Ten sessions side by side (PSS) | 639 MB | **610 MB** |
+| Ten sessions side by side (PSS) | 618 MB | **559 MB** |
 | Eight parallel subagents, peak | not available | **125 MB** |
 | Subagents · compaction · verification · todo · companion UI | none | **all included** |
 
@@ -30,33 +30,32 @@ Steak Pi is the performance-focused package for the
 transcript, tools, history, selectors, scrolling, and keybindings, then adds the
 machinery that turns it into a complete daily driver.
 
-This checkout is the **Steak Pi 0.7.0** performance candidate (USAP 1.2 wire
-format, not yet tagged; install instructions below still point at the 0.6.0
-release). It builds on release **Steak Pi 0.6.0** (USAP 1.2). It targets Pi 0.86.0
+This checkout documents release **Steak Pi 0.7.0** (USAP 1.2 wire format), the
+lean release: every 0.6.0 feature, in less memory than stock Pi. It targets Pi 0.86.0
 and retains the Pi 0.85.1 peer range. Session-isolation, repaint, and packaged
 smoke checks ran on Pi 0.86.0; earlier 0.85.1 evidence predates those changes.
 The feature descriptions apply to this revision. Every benchmark below is dated.
-Memory and overhead figures were measured on this 0.7.0 candidate; the live GLM
+Memory and overhead figures were measured on this 0.7.0 release; the live GLM
 comparison is a historical 0.5.x result, not a multi-hour endurance claim.
 
 ## Install
 
-Release **0.6.0**. Requires Pi 0.85.1 or 0.86.0 (release-tested with 0.86.0) and
+Release **0.7.0**. Requires Pi 0.85.1 or 0.86.0 (release-tested with 0.86.0) and
 Node.js 22.19.0 or newer. Pi 0.85.0 lacks the lifecycle/context API used by the
 companion UI. Steak Pi is distributed from this Git repository and its GitHub
 release archives; it is **not** published to the npm registry.
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.6.0
+pi install git:github.com/michael-berardi/steak-pi@v0.7.0
 ```
 
-GitHub release archives (`steak-pi-0.6.0.tgz` with its `.sha256` beside it) work
+GitHub release archives (`steak-pi-0.7.0.tgz` with its `.sha256` beside it) work
 without Git access: verify the checksum, extract, and point Pi at the extracted
 package.
 
 ```sh
-shasum -a 256 -c steak-pi-0.6.0.tgz.sha256
-tar -xzf steak-pi-0.6.0.tgz
+shasum -a 256 -c steak-pi-0.7.0.tgz.sha256
+tar -xzf steak-pi-0.7.0.tgz
 pi install "$PWD/package"
 ```
 
@@ -80,19 +79,27 @@ For a focused launch, enable **Quiet startup** in `/settings`. Routine context,
 skill, extension, and theme inventories stay out of the workspace while Pi
 continues to surface actionable resource diagnostics.
 
+For the leanest sessions, launch through the bundled launcher. It passes every
+argument through to `pi`:
+
+```sh
+steak-pi run            # or point UltraTerm harness profiles at `steak-pi run`
+```
+
 That is the ceremony. Kettle optional.
 
-> **Measured on this 0.7.0 candidate — September 24, 2026**
-> (Pi 0.86.0; identical fixtures on a scripted local model; medians of 5):
+> **Measured on Steak Pi 0.7.0 — September 24, 2026**
+> (Pi 0.86.0; identical fixtures on a scripted local model; timings are medians
+> of 5, memory is proportional set size sampled across whole process trees):
 >
 > - **Less memory than the Pi it extends**: 113 MB idle vs 116 MB for stock
->   Pi, and 610 MB vs 639 MB across ten side-by-side sessions, with every
+>   Pi, and 559 MB vs 618 MB across ten side-by-side sessions, with every
 >   Steak Pi feature loaded.
 > - **Eight parallel subagents in 125 MB** of peak memory with `steak-pi run`,
 >   eight workers for about the footprint of one stock Pi session (117 MB).
 > - **2.7x faster fan-out than 0.6.0**: eight verified workers in 1.2 s instead
 >   of 3.2 s, at 31% lower peak memory (44% lower with `steak-pi run`).
-> - **37% less memory than 0.6.0** across ten sessions (963 MB to 610 MB).
+> - **36% less memory than 0.6.0** across ten sessions (879 MB to 559 MB).
 
 > **Historical comparison — GLM-5.3-Flash, September 9, 2026**
 > (earlier Steak Pi build; identical fixtures, balanced order, deterministic verification):
@@ -134,8 +141,9 @@ again in tokens on every request. Steak Pi 0.7 is built to cost neither.
 **It fits inside stock Pi's footprint.** A Steak Pi session idles at 113 MB of
 proportional memory against stock Pi's 116 MB, with subagents, compaction,
 verification, todo and the companion UI all loaded. Run ten sessions side by
-side, as a multi-window UltraTerm layout does, and Steak Pi holds 610 MB
-against stock Pi's 639 MB. Steak Pi 0.6.0 needed 963 MB for the same ten.
+side, as a multi-window UltraTerm layout does, and Steak Pi holds 559 MB
+against stock Pi's 618 MB, 10% less. Steak Pi 0.6.0 needed 879 MB for the
+same ten.
 
 **Subagents are nearly free.** Workers run inside the parent process and reuse
 the Pi code it already loaded, so an eight-worker fan-out peaks at 125 MB with
@@ -153,10 +161,10 @@ request is 28% smaller than in 0.6.0 (12.5 KB instead of 17.4 KB).
 can actually dispatch instead of all ~41 in Pi's catalog, which removed 0.2 s
 and up to 30 MB from every launch.
 
-| Pi 0.86.0, scripted local model, medians of 5 | Stock Pi | Steak Pi 0.6.0 | **Steak Pi 0.7** | **0.7 via `steak-pi run`** |
+| Pi 0.86.0, scripted local model (timings: medians of 5) | Stock Pi | Steak Pi 0.6.0 | **Steak Pi 0.7** | **0.7 via `steak-pi run`** |
 | --- | ---: | ---: | ---: | ---: |
 | Idle session (PSS) | 116 MB | 150 MB | **113 MB** | **113 MB** |
-| Ten idle sessions (PSS) | 639 MB | 963 MB | **610 MB** | — |
+| Ten idle sessions (PSS) | 618 MB | 879 MB | **559 MB** | **548 MB** |
 | One-shot edit: peak RSS | 117 MB | 148 MB | **118 MB** | **100 MB** |
 | One-shot edit: wall | 0.64 s | 0.99 s | **0.77 s** | **0.72 s** |
 | Eight-worker fan-out: peak RSS | no subagents | 223 MB | **153 MB** | **125 MB** |
@@ -265,7 +273,7 @@ keep their existing defaults. See the
 See [`SECURITY.md`](./SECURITY.md) and the full
 [USAP protocol](./docs/ULTRATERM-SUBAGENT-PROTOCOL.md).
 
-## New in 0.7.0 (candidate): lighter, faster, same features
+## New in 0.7.0: lighter, faster, same features
 
 Everything from 0.6.0 stays. The package stops paying for work that doesn't
 help the current session. Measured results are in
