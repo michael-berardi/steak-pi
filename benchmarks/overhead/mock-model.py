@@ -125,7 +125,10 @@ class H(BaseHTTPRequestHandler):
                 files = dict(list(GATE.items())[:n])
             tasks = [{"label": f"t{i}", "task": f"Create {path} with exactly this content:\n{content}",
                       "mayEdit": True, "ownedPaths": [path]} for i, (path, content) in enumerate(files.items())]
-            args = {"goal": "Create the requested files, one per worker.", "tasks": tasks}
+            # Name the scripted route: on the 0.8 line an unconfigured parent resolves
+            # the subscription worker chain, which fails closed without credentials.
+            args = {"goal": "Create the requested files, one per worker.", "tasks": tasks,
+                    "model": "mock/mock-coder"}
             chunks = [dict(base, choices=[{"index": 0, "delta": {"role": "assistant", "tool_calls": [{"index": 0, "id": "call_fan", "type": "function",
                       "function": {"name": "ultraterm_subagents", "arguments": json.dumps(args)}}]}, "finish_reason": None}]),
                       dict(base, choices=[{"index": 0, "delta": {}, "finish_reason": "tool_calls"}], usage=usage)]

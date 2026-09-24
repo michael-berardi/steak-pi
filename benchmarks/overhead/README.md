@@ -56,3 +56,31 @@ session that gap is architectural: every Pi session is its own Node process.
 
 Limits: a scripted model measures harness overhead only, not model quality or
 provider latency. Timings include process start and exit.
+
+## Steak Pi 0.8.1 on Pi 0.87.1 (macOS)
+
+September 24, 2026, Apple silicon, macOS, Pi 0.87.1 as host. Medians of 5 per
+cell; every run passed. Peak memory here is `getrusage` peak RSS of the process
+tree (macOS reports bytes; the table is converted to MB), not Linux PSS, so it
+is not directly comparable with the tables above.
+
+| Case | Stock Pi | 0.8.1 | 0.8.1 via `steak-pi run` |
+| --- | ---: | ---: | ---: |
+| Direct edit: wall | 0.32 s | 0.52 s | 0.47 s |
+| Direct edit: peak RSS | 113 MB | 154 MB | 112 MB |
+| Four modules: wall | 0.35 s | 0.49 s | 0.52 s |
+| Eight-worker fan-out: wall | no subagents | 1.43 s | 1.69 s |
+| First request | 8.8 KB | 16.2 KB | 16.2 KB |
+
+0.8.1 keeps the registry guard on every provider (see the changelog), which
+accounts for part of the plain-launch memory difference from 0.7.0.
+
+Open item: on macOS the fan-out peak RSS is about 762 MB with or without
+host-bundle reuse (`STEAK_PI_WORKER_SDK=unbundled`), so it is dominated by
+something other than worker code. It is not reported as a result until the
+source is identified.
+
+Since 0.8.1 the mock model names its route (`mock/mock-coder`) for the fan-out
+dispatch: on the 0.8 line an unconfigured parent resolves the subscription
+worker chain, which correctly fails closed without credentials.
+

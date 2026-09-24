@@ -17,6 +17,9 @@
   run's recorded chain. Explicit selections, paid-route guards and the main launch
   model are unchanged.
 - Pi stays on the 0.87 toolchain bundled with UltraTerm.
+- README rewritten around what the package does today; version history lives
+  here. The overhead benchmark names its mock route for fan-out and records
+  0.8.1 results on Pi 0.87.1.
 - No release, publication or installed-runtime verification is claimed by this
   entry.
 
