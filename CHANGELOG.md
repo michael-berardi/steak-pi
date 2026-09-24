@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.7.0 — unreleased candidate (USAP 1.2 wire format)
+
+Performance release. No feature removed; the USAP dispatch schema, relay
+envelope and checkpoint format are unchanged, so 0.6.0 checkpoints still
+resume. Measured on Pi 0.86.0 against a scripted local model
+([`benchmarks/overhead`](./benchmarks/overhead/README.md)); figures are
+medians of 5 runs, September 24, 2026.
+
+- Route policy guards only providers that can dispatch (configured auth or the
+  active model), re-checked on every prompt, model switch, compaction and
+  worker turn. Re-registering all ~41 catalog providers made Pi rebuild its
+  model catalog per provider: -0.2 s and -20 to -30 MB per session.
+- Deferred tools: `ultraterm_hub` appears after the first dispatch (or at start
+  when the session has runs), `ultracompress_recall` after a compaction, and
+  `ultracompress_uc` after the first tool result large enough to be archived.
+  Each tool list change happens at most once per tool. First request with the
+  full package: 17.4 KB -> 12.5 KB. `STEAK_PI_DEFER_TOOLS=off` restores
+  always-on exposure.
+- Without an `ultracompress` binary, live transforms no longer spawn a failing
+  process per request and neither UltraCompress tool is exposed.
+- USAP workers reuse the host CLI's bundled Pi SDK (supported Pi versions only)
+  instead of importing a second copy of Pi and its dependencies on the first
+  dispatch. `STEAK_PI_WORKER_SDK=unbundled` restores the old path.
+- USAP session scheduler now honours `usap-caps.json` `session.global`
+  (default 14 = 8 ZAI + 6 Codex); it was built with the per-run cap of 8.
+- `steak-pi run [pi args]` launches pi with Node defaults (compile cache,
+  `MALLOC_ARENA_MAX=2`, `--max-semi-space-size=2`), each only when unset;
+  `steak-pi env` prints them.
+- Results versus 0.6.0 (full package loaded, same Pi, same fixtures):
+  - one-shot edit: 0.99 s / 148 MB -> 0.77 s / 118 MB (`run`: 0.70 s / 100 MB);
+    stock Pi 0.64 s / 117 MB
+  - 8-worker USAP fan-out: 3.24 s / 223 MB -> 1.22 s / 153 MB
+    (`run`: 1.13 s / 125 MB)
+  - idle TUI PSS: 1 session 150 -> 113 MB; 10 sessions 963 -> 610 MB
+    (stock Pi 116 / 639 MB)
+
 ## 0.6.0 — 2026-09-20 (USAP 1.2)
 
 - Release date: 2026-09-20. Targets Pi 0.86.0 and retains the 0.85.1 peer range;

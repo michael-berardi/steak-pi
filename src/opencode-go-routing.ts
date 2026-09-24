@@ -25,7 +25,7 @@ export function withOpenCodeGoRouting(provider: Provider): Provider {
     if (!options?.sessionId) throw new Error("OpenCode Go requires a stable conversation sessionId.");
     const withHeaders = {
       ...options,
-      headers: { ...options.headers, "User-Agent": "UltraTerm-SteakPi/0.6.0", "x-opencode-session": options.sessionId },
+      headers: { ...options.headers, "User-Agent": "UltraTerm-SteakPi/0.7.0", "x-opencode-session": options.sessionId },
     };
     const observe = (target: Model, outcome: "success" | "error", message = "") =>
       observeGoQuota(options.apiKey, outcome,
