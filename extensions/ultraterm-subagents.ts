@@ -473,7 +473,9 @@ export function createUltratermSubagentsExtension(
     let runtime: SessionRuntime | undefined;
     let clearedStatusUi: ExtensionContext["ui"] | undefined;
     // Replacements share leases with any late-disposing prior initialization.
-    const scheduler = dependencies.createScheduler?.() ?? new SessionScheduler(MAX_CONCURRENCY);
+    // Session-wide ceiling comes from usap-caps.json (default 14 = 8 ZAI + 6
+    // Codex); each run stays capped at MAX_CONCURRENCY by dispatch validation.
+    const scheduler = dependencies.createScheduler?.() ?? new SessionScheduler();
 
     const setStatus = (current: SessionRuntime, ctx?: ExtensionContext): void => {
       const target = ctx ?? current.statusContext;

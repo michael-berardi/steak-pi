@@ -29,6 +29,14 @@ describe("capacity config", () => {
     expect(config.machine.global).toBe(24);
   });
 
+  it("sizes a default session scheduler from the configured session global (14), not the per-run cap (8)", () => {
+    process.env.STEAK_PI_USAP_CAPS = "off";
+    const scheduler = new SessionScheduler();
+    expect(scheduler.maxConcurrency).toBe(14);
+    expect(scheduler.capFor("zai")).toBe(8);
+    expect(scheduler.capFor("openai-codex")).toBe(6);
+  });
+
   it("loads overrides and falls back on malformed files", () => {
     const { writeFileSync: write } = { writeFileSync };
     const path = join(slotDir(), "caps.json");
