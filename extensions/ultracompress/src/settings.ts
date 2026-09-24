@@ -149,3 +149,19 @@ export function resolveUltraCompressBin(settings: UltraCompressSettings, extensi
   }
   return "ultracompress"; // final fallback: PATH
 }
+
+/** Whether `bin` resolves to an executable, directly or through PATH. */
+export function isUltraCompressBinAvailable(bin: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  const executable = (candidate: string) => {
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return fs.statSync(candidate).isFile();
+    } catch {
+      return false;
+    }
+  };
+  if (bin.includes(path.sep)) return executable(bin);
+  const exts = process.platform === "win32" ? (env.PATHEXT ?? ".EXE;.CMD;.BAT").split(";") : [""];
+  return (env.PATH ?? "").split(path.delimiter).filter(Boolean)
+    .some((dir) => exts.some((ext) => executable(path.join(dir, bin + ext))));
+}
