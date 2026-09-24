@@ -41,7 +41,7 @@ function fakeRegistry() {
     getRegisteredNativeProvider: (id: string) => native.get(id),
     registerProvider: vi.fn((provider: Provider) => native.set(provider.id, provider)),
     isUsingOAuth: vi.fn(() => true),
-    hasConfiguredAuth: vi.fn(() => true),
+    hasConfiguredAuth: vi.fn((_model: Model) => true),
     find: vi.fn(() => luna),
   };
   return { registry: registry as unknown as Registry, native, methods: registry };
@@ -156,6 +156,22 @@ describe("GPT coding-plan route policy", () => {
     native.delete("openai-codex");
     install(registry);
     expect(methods.registerProvider).toHaveBeenCalledTimes(3);
+  });
+  it("guards only providers that can dispatch: configured auth or the active model", () => {
+    const { registry, native, methods } = fakeRegistry();
+    const openrouterGpt = { ...astra, provider: "openrouter" } as Model;
+    registry.getAll = () => [astra, glm, openrouterGpt];
+    methods.hasConfiguredAuth.mockImplementation((model: Model) => model.provider === "zai");
+    createRegistryGuard()(registry);
+    expect([...native.keys()].sort()).toEqual(["zai"]);
+    // The active model's provider is guarded even without stored credentials.
+    createRegistryGuard()(registry, openrouterGpt);
+    expect([...native.keys()].sort()).toEqual(["openrouter", "zai"]);
+    expect(() => native.get("openrouter")!.streamSimple(openrouterGpt, emptyContext())).toThrow(GPT_ROUTE_ERROR);
+    // A later login makes the provider eligible on the next install.
+    methods.hasConfiguredAuth.mockImplementation(() => true);
+    createRegistryGuard()(registry);
+    expect(native.has("openai-codex")).toBe(true);
   });
   it("re-guards a new configured API without stacking unchanged wrappers", () => {
     const { registry, native, methods } = fakeRegistry();

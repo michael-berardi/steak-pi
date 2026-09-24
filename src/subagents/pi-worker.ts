@@ -789,7 +789,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       const modelRuntime = sdk ? await initialize(sdk.ModelRuntime.create({ signal })) : undefined;
       if (modelRuntime) {
         assertSubscriptionRequest(runtime.model, modelRuntime.isUsingOAuth(runtime.model.provider));
-        guardModelRuntime(modelRuntime);
+        guardModelRuntime(modelRuntime, runtime.model);
       }
       signal.throwIfAborted();
       const created = await initialize(sessionFactory({
@@ -809,7 +809,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       session = created.session;
       // Session creation may refresh model configuration. Guard the resulting
       // catalog again, and each subsequent controlled turn, before dispatch.
-      if (modelRuntime) guardModelRuntime(modelRuntime);
+      if (modelRuntime) guardModelRuntime(modelRuntime, runtime.model);
       // Surface the checkpoint path so the parent can persist continuation state.
       const checkpoint = sessionManager.getSessionFile();
       if (typeof checkpoint === "string" && checkpoint.length > 0) {
@@ -861,7 +861,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
           return;
         }
         if (event.type === "turn_start") {
-          if (modelRuntime) guardModelRuntime(modelRuntime);
+          if (modelRuntime) guardModelRuntime(modelRuntime, runtime.model);
           if (turnLimitReached) return;
           if (turns >= maxTurns) {
             turnLimitReached = true;

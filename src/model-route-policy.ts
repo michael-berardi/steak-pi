@@ -119,18 +119,33 @@ export function guardProvider(provider: Provider, usingOAuth: () => boolean,
 }
 
 /** Re-check registration provenance after reload/model changes without stacking wrappers. */
-export function createRegistryGuard(approval?: PaidApproval): (registry: GuardRegistry) => void {
+export function createRegistryGuard(approval?: PaidApproval): (registry: GuardRegistry, active?: Pick<Model, "provider">) => void {
   const installed = new WeakSet<Provider>();
-  return (registry) => {
+  return (registry, active) => {
     // One catalog pass rather than filtering every model once per provider on
     // every worker turn. Preserve the API coverage gate on configuration reload.
     const apisByProvider = new Map<string, Set<Model["api"]>>();
+    const sample = new Map<string, Model>();
     for (const model of registry.getAll()) {
       let apis = apisByProvider.get(model.provider);
-      if (!apis) apisByProvider.set(model.provider, apis = new Set());
+      if (!apis) {
+        apisByProvider.set(model.provider, apis = new Set());
+        sample.set(model.provider, model);
+      }
       apis.add(model.api);
     }
+    // Only providers that can dispatch need a guard: those with configured
+    // credentials, plus the active model's provider. Re-registering all ~40
+    // catalog providers made Pi rebuild its model catalog once per provider,
+    // costing ~0.2 s and 20-30 MB per session. Credentials added later are
+    // picked up because this runs again on every prompt and model switch.
+    const canDispatch = (id: string) => {
+      if (id === active?.provider || !registry.hasConfiguredAuth) return true;
+      // An auth lookup that cannot answer fails closed: guard the provider.
+      try { return registry.hasConfiguredAuth(sample.get(id)!); } catch { return true; }
+    };
     for (const [id, apis] of apisByProvider) {
+      if (!canDispatch(id)) continue;
       const native = registry.getRegisteredNativeProvider(id);
       const mark = native && guardMark(native);
       if (native && (installed.has(native) || mark)) {
@@ -159,7 +174,7 @@ export function createRegistryGuard(approval?: PaidApproval): (registry: GuardRe
 }
 
 /** Reapply after configuration refresh and at each controlled worker turn. */
-export function guardModelRuntime(runtime: ModelRuntime): void {
+export function guardModelRuntime(runtime: ModelRuntime, active?: Pick<Model, "provider">): void {
   createRegistryGuard()({
     getAll: () => [...runtime.getModels()],
     getProvider: (id) => runtime.getProvider(id),
@@ -168,7 +183,7 @@ export function guardModelRuntime(runtime: ModelRuntime): void {
     isUsingOAuth: (model) => runtime.isUsingOAuth(model.provider),
     hasConfiguredAuth: (model) => runtime.hasConfiguredAuth(model.provider),
     getProviderAuth: (id) => runtime.getAuth(id),
-  });
+  }, active);
 }
 
 /** Astra defaults to medium independently of the parent's current effort.
