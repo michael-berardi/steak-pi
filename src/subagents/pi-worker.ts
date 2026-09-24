@@ -1,9 +1,9 @@
 import { PersistentBashSession } from "../../vendor/pi-dsh-minimal/bash-session.ts";
 import { adaptWorkerTools, appendHarnessPrompt, isDeepSeekHarnessRoute } from "../deepseek-harness/index.ts";
 import { readFile } from "node:fs/promises";
-import { lstatSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { findPackageJSON } from "node:module";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
   AgentSessionEvent,
@@ -77,6 +77,47 @@ function piModuleUrl(path: string): string {
   return pathToFileURL(join(piDistPath(), path)).href;
 }
 
+const HOST_BUNDLE_EXPORTS = [
+  "createAgentSession", "createExtensionRuntime", "SessionManager", "SettingsManager", "ModelRuntime",
+  "createBashToolDefinition", "createEditToolDefinition", "createFindToolDefinition",
+  "createGrepToolDefinition", "createLsToolDefinition", "createReadToolDefinition", "createWriteToolDefinition",
+] as const;
+
+/** True when `entry` (the host's argv[1]) runs from `bundleDir`, i.e. the host
+ * is Pi's own bundled CLI whose chunks are already loaded in this process. */
+export function isHostBundleEntry(entry: string | undefined, bundleDir: string): boolean {
+  if (!entry) return false;
+  try {
+    const root = realpathSync(bundleDir);
+    return realpathSync(entry).startsWith(root + sep);
+  } catch {
+    return false;
+  }
+}
+
+let hostBundlePromise: Promise<PiSdk | undefined> | undefined;
+
+/**
+ * Workers reuse the SDK surface of the bundle the host CLI already loaded.
+ * Importing Pi's unbundled dist instead instantiated a second copy of Pi and
+ * its dependencies (pi-ai, agent-core, provider SDKs, typebox, undici) on the
+ * first dispatch: ~70 MB per parent process. Workers stay separate sessions;
+ * only module code is shared. Embedded hosts, Pi builds without a complete
+ * bundle entry, and STEAK_PI_WORKER_SDK=unbundled keep the unbundled path.
+ */
+function loadHostBundleSdk(): Promise<PiSdk | undefined> {
+  hostBundlePromise ??= (async () => {
+    if (/^unbundled$/i.test(process.env.STEAK_PI_WORKER_SDK ?? "")) return undefined;
+    const bundleDir = join(piDistPath(), "bundle");
+    const indexPath = join(bundleDir, "index.js");
+    if (!existsSync(indexPath) || !isHostBundleEntry(process.argv[1], bundleDir)) return undefined;
+    const bundle = await import(/* @vite-ignore */ pathToFileURL(indexPath).href) as Record<string, unknown>;
+    if (!HOST_BUNDLE_EXPORTS.every((name) => bundle[name] !== undefined)) return undefined;
+    return Object.fromEntries(HOST_BUNDLE_EXPORTS.map((name) => [name, bundle[name]])) as unknown as PiSdk;
+  })().catch(() => undefined);
+  return hostBundlePromise;
+}
+
 async function loadBundledPiSdk(): Promise<PiSdk> {
   const entryPath = join(piDistPath(), "bundle", "rpc-entry.js");
   const source = await readFile(entryPath, "utf8");
@@ -87,13 +128,16 @@ async function loadBundledPiSdk(): Promise<PiSdk> {
 
 async function loadPiStateManagers(): Promise<PiStateManagers> {
   if (!piStateManagersPromise) {
-    piStateManagersPromise = Promise.all([
+    piStateManagersPromise = loadHostBundleSdk().then((bundle) => bundle ? {
+      SessionManager: bundle.SessionManager,
+      SettingsManager: bundle.SettingsManager,
+    } : Promise.all([
       import(/* @vite-ignore */ piModuleUrl("core/session-manager.js")),
       import(/* @vite-ignore */ piModuleUrl("core/settings-manager.js")),
     ]).then(([sessions, settings]) => ({
       SessionManager: sessions.SessionManager,
       SettingsManager: settings.SettingsManager,
-    } as PiStateManagers));
+    } as PiStateManagers)));
   }
   return piStateManagersPromise;
 }
@@ -101,31 +145,35 @@ async function loadPiStateManagers(): Promise<PiStateManagers> {
 /** Load Pi's in-process SDK lazily, after policy checks and only when needed. */
 async function loadPiSdk(): Promise<PiSdk> {
   if (!piSdkPromise) {
-    piSdkPromise = Promise.all([
-      import(/* @vite-ignore */ piModuleUrl("core/sdk.js")),
-      import(/* @vite-ignore */ piModuleUrl("core/extensions/loader.js")),
-      loadPiStateManagers(),
-      import(/* @vite-ignore */ piModuleUrl("core/model-runtime.js")),
-      import(/* @vite-ignore */ piModuleUrl("core/tools/index.js")),
-    ]).then(([sdk, extensions, managers, models, tools]) => ({
-      ...sdk,
-      ...tools,
-      ...managers,
-      ModelRuntime: models.ModelRuntime,
-      createExtensionRuntime: extensions.createExtensionRuntime,
-    } as PiSdk)).catch(async (error: unknown) => {
-      // The 0.85 unbundled root references optional pi-server code. The shipped
-      // Pi bundle contains the same SDK exports without requiring that package.
-      if (!errorText(error).includes("@earendil-works/pi-server")) throw error;
-      // The bundle's exported SDK surface differs from core/sdk.js. Resolve
-      // native ToolDefinition factories explicitly on both paths (0.85.0/1).
-      return {
-        ...await loadBundledPiSdk(),
-        ...await import(/* @vite-ignore */ piModuleUrl("core/tools/index.js")),
-      } as PiSdk;
-    });
+    piSdkPromise = loadHostBundleSdk().then((bundle) => bundle ?? loadUnbundledPiSdk());
   }
   return piSdkPromise;
+}
+
+function loadUnbundledPiSdk(): Promise<PiSdk> {
+  return Promise.all([
+    import(/* @vite-ignore */ piModuleUrl("core/sdk.js")),
+    import(/* @vite-ignore */ piModuleUrl("core/extensions/loader.js")),
+    loadPiStateManagers(),
+    import(/* @vite-ignore */ piModuleUrl("core/model-runtime.js")),
+    import(/* @vite-ignore */ piModuleUrl("core/tools/index.js")),
+  ]).then(([sdk, extensions, managers, models, tools]) => ({
+    ...sdk,
+    ...tools,
+    ...managers,
+    ModelRuntime: models.ModelRuntime,
+    createExtensionRuntime: extensions.createExtensionRuntime,
+  } as PiSdk)).catch(async (error: unknown) => {
+    // The 0.85 unbundled root references optional pi-server code. The shipped
+    // Pi bundle contains the same SDK exports without requiring that package.
+    if (!errorText(error).includes("@earendil-works/pi-server")) throw error;
+    // The bundle's exported SDK surface differs from core/sdk.js. Resolve
+    // native ToolDefinition factories explicitly on both paths (0.85.0/1).
+    return {
+      ...await loadBundledPiSdk(),
+      ...await import(/* @vite-ignore */ piModuleUrl("core/tools/index.js")),
+    } as PiSdk;
+  });
 }
 
 type PiModel = NonNullable<CreateAgentSessionOptions["model"]>;
