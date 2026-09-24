@@ -7,10 +7,19 @@
 **Native subagents. Deterministic compaction. Automatic verification.
 A useful TUI. No orchestration theatre.**
 
+**All of it in less memory than stock Pi.**
+
 *The sharp, low-drama package for people who like stock Pi—and would rather not
 build the rest themselves.*
 
-[Install](#install) · [Why Steak Pi](#why-steak-pi) · [Benchmarks](#proof-not-garnish) · [USAP](#usap-native-subagents) · [Security](./SECURITY.md)
+| | Stock Pi | **Steak Pi 0.7** |
+| --- | ---: | ---: |
+| Idle session (PSS) | 116 MB | **113 MB** |
+| Ten sessions side by side (PSS) | 639 MB | **610 MB** |
+| Eight parallel subagents, peak | not available | **125 MB** |
+| Subagents · compaction · verification · todo · companion UI | none | **all included** |
+
+[Install](#install) · [Why Steak Pi](#why-steak-pi) · [Lean by design](#lean-by-design) · [Benchmarks](#proof-not-garnish) · [USAP](#usap-native-subagents) · [Security](./SECURITY.md)
 
 </div>
 
@@ -26,7 +35,9 @@ format, not yet tagged; install instructions below still point at the 0.6.0
 release). It builds on release **Steak Pi 0.6.0** (USAP 1.2). It targets Pi 0.86.0
 and retains the Pi 0.85.1 peer range. Session-isolation, repaint, and packaged
 smoke checks ran on Pi 0.86.0; earlier 0.85.1 evidence predates those changes.
-The feature descriptions apply to this revision. Benchmarks below are explicitly dated historical results, not a remeasurement of 0.6.0 or a multi-hour endurance claim.
+The feature descriptions apply to this revision. Every benchmark below is dated.
+Memory and overhead figures were measured on this 0.7.0 candidate; the live GLM
+comparison is a historical 0.5.x result, not a multi-hour endurance claim.
 
 ## Install
 
@@ -71,6 +82,18 @@ continues to surface actionable resource diagnostics.
 
 That is the ceremony. Kettle optional.
 
+> **Measured on this 0.7.0 candidate — September 24, 2026**
+> (Pi 0.86.0; identical fixtures on a scripted local model; medians of 5):
+>
+> - **Less memory than the Pi it extends**: 113 MB idle vs 116 MB for stock
+>   Pi, and 610 MB vs 639 MB across ten side-by-side sessions, with every
+>   Steak Pi feature loaded.
+> - **Eight parallel subagents in 125 MB** of peak memory with `steak-pi run`,
+>   eight workers for about the footprint of one stock Pi session (117 MB).
+> - **2.7x faster fan-out than 0.6.0**: eight verified workers in 1.2 s instead
+>   of 3.2 s, at 31% lower peak memory (44% lower with `steak-pi run`).
+> - **37% less memory than 0.6.0** across ten sessions (963 MB to 610 MB).
+
 > **Historical comparison — GLM-5.3-Flash, September 9, 2026**
 > (earlier Steak Pi build; identical fixtures, balanced order, deterministic verification):
 >
@@ -98,9 +121,53 @@ making every task attend the meeting:
 | **Phased todo** | Persistent state, atomic bulk transitions, and automatic promotion |
 | **Companion UI** | Responsive lifecycle, model, context, usage, cache, and cost telemetry using the active Pi theme |
 | **Memory conventions** | Durable project decisions through `AGENTS.md`; cross-session recall remains explicitly opt-in |
+| **Lean runtime** | Below stock Pi's idle memory with everything loaded; tools join the prompt only once they can act; subagents share the host's Pi code |
 
 The result is still recognisably Pi: quick to start, pleasant to drive, and not
 trying to become an operating system because you asked it to rename a method.
+
+## Lean by design
+
+Most harness add-ons cost you twice: once in RAM for every open terminal, and
+again in tokens on every request. Steak Pi 0.7 is built to cost neither.
+
+**It fits inside stock Pi's footprint.** A Steak Pi session idles at 113 MB of
+proportional memory against stock Pi's 116 MB, with subagents, compaction,
+verification, todo and the companion UI all loaded. Run ten sessions side by
+side, as a multi-window UltraTerm layout does, and Steak Pi holds 610 MB
+against stock Pi's 639 MB. Steak Pi 0.6.0 needed 963 MB for the same ten.
+
+**Subagents are nearly free.** Workers run inside the parent process and reuse
+the Pi code it already loaded, so an eight-worker fan-out peaks at 125 MB with
+`steak-pi run`. The first worker adds about 20 MB, and each additional worker
+about 3 MB. A separate agent process per worker would pay the full
+100 MB-plus Node footprint each time.
+
+**Requests carry only what can help.** Tools that can do nothing yet stay out
+of the prompt: the run hub until you dispatch, recall until a compaction, the
+UltraCompress decoder until a result is large enough to archive. Each tool
+joins once and stays, so the prompt cache is disturbed at most once. The first
+request is 28% smaller than in 0.6.0 (12.5 KB instead of 17.4 KB).
+
+**Startup does no busywork.** The model-route guard wraps only providers that
+can actually dispatch instead of all ~41 in Pi's catalog, which removed 0.2 s
+and up to 30 MB from every launch.
+
+| Pi 0.86.0, scripted local model, medians of 5 | Stock Pi | Steak Pi 0.6.0 | **Steak Pi 0.7** | **0.7 via `steak-pi run`** |
+| --- | ---: | ---: | ---: | ---: |
+| Idle session (PSS) | 116 MB | 150 MB | **113 MB** | **113 MB** |
+| Ten idle sessions (PSS) | 639 MB | 963 MB | **610 MB** | — |
+| One-shot edit: peak RSS | 117 MB | 148 MB | **118 MB** | **100 MB** |
+| One-shot edit: wall | 0.64 s | 0.99 s | **0.77 s** | **0.72 s** |
+| Eight-worker fan-out: peak RSS | no subagents | 223 MB | **153 MB** | **125 MB** |
+| Eight-worker fan-out: wall | no subagents | 3.24 s | **1.22 s** | **1.13 s** |
+| First request | 6.1 KB | 17.4 KB | **12.5 KB** | **12.5 KB** |
+
+`steak-pi run` launches pi with a Node compile cache, two malloc arenas and a
+compact V8 young generation, each only when you haven't set it yourself.
+Method, fixtures and limits: [`benchmarks/overhead`](./benchmarks/overhead/README.md).
+A scripted model isolates harness overhead; it says nothing about model quality
+or provider latency.
 
 ## Proof, not garnish
 
@@ -200,19 +267,9 @@ See [`SECURITY.md`](./SECURITY.md) and the full
 
 ## New in 0.7.0 (candidate): lighter, faster, same features
 
-Everything from 0.6.0 stays. The package just stops paying for work that
-doesn't help the current session:
-
-| Scripted local model, Pi 0.86.0 | Steak Pi 0.6.0 | 0.7.0 | 0.7.0 via `steak-pi run` |
-| --- | ---: | ---: | ---: |
-| One-shot edit: wall / peak RSS | 0.99 s / 148 MB | 0.77 s / 118 MB | 0.72 s / 100 MB |
-| 8-worker USAP fan-out | 3.24 s / 223 MB | 1.22 s / 153 MB | 1.13 s / 125 MB |
-| First request size | 17.4 KB | 12.5 KB | 12.5 KB |
-| Idle TUI, 10 sessions (PSS) | 963 MB | 610 MB | — |
-
-Stock Pi on the same fixtures: 0.64 s / 117 MB, 6.1 KB first request, 639 MB
-for 10 idle sessions. Method, fixtures and limits:
-[`benchmarks/overhead`](./benchmarks/overhead/README.md).
+Everything from 0.6.0 stays. The package stops paying for work that doesn't
+help the current session. Measured results are in
+[Lean by design](#lean-by-design).
 
 - **Route policy only guards providers that can dispatch.** Wrapping all ~41
   catalog providers made Pi rebuild its model catalog once per provider.
