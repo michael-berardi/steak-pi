@@ -4,7 +4,8 @@ import { runUltraCompress } from "./src/bridge";
 import { TextKeyCache } from "./src/text-key-cache";
 import { UcReferences, parseUcReference } from "./src/references";
 import { recallArgs, recallProperties, recallText, parseRecallCommand } from "./src/recall";
-import { loadSettings, resolveUltraCompressBin, type UltraCompressSettings } from "./src/settings";
+import { isUltraCompressBinAvailable, loadSettings, resolveUltraCompressBin, type UltraCompressSettings } from "./src/settings";
+import { deferredToolsEnabled, setToolActive } from "../../src/deferred-tools.ts";
 import { listSnaps, writeSnapEntries } from "./src/snapshot";
 import {
   applyTransforms,
@@ -47,13 +48,36 @@ const AUTO_CONTINUE_CUSTOM_TYPE = "ultracompress-auto-continue";
 export default function ultraCompressExtension(pi: ExtensionAPI): void {
   const settings: UltraCompressSettings = loadSettings();
   const ultracompressBin = resolveUltraCompressBin(settings);
+  // Resolved once: without the binary, live transforms would spawn a failing
+  // process on every request that carries a large tool result.
+  const binAvailable = isUltraCompressBinAvailable(ultracompressBin);
+  const deferTools = deferredToolsEnabled();
   const transformCache = new Map<string, { op: UltraCompressOp; blocks: Array<Record<string, unknown>> }>();
   const references = new UcReferences();
   const textKeys = new TextKeyCache();
-  pi.on("session_start", () => {
+  pi.on("session_start", (_event, ctx) => {
     references.clear();
     transformCache.clear();
     textKeys.clear();
+    if (!deferTools) return;
+    // Recall searches history that compaction removed from context; uc
+    // expands archive markers that live transforms create. Neither can do
+    // anything before its trigger, so neither rides along every request.
+    let compacted = false;
+    try { compacted = ctx.sessionManager.getEntries().some((entry: { type?: string }) => entry.type === "compaction"); } catch { /* keep hidden */ }
+    setToolActive(pi, "ultracompress_recall", binAvailable && compacted);
+    setToolActive(pi, "ultracompress_uc", false);
+  });
+  pi.on("session_compact", () => {
+    if (binAvailable) setToolActive(pi, "ultracompress_recall", true);
+  });
+  pi.on("tool_result", (event) => {
+    // A result this large becomes a live-transform candidate on a later
+    // request; expose uc before its first archive marker can appear.
+    if (!binAvailable || !settings.uc.enabled) return;
+    const size = (event.content ?? []).reduce((sum: number, block: { type?: string; text?: string }) =>
+      sum + (block.type === "text" && typeof block.text === "string" ? block.text.length : 0), 0);
+    if (size >= settings.uc.minChars) setToolActive(pi, "ultracompress_uc", true);
   });
   let lastCalibratedCpt: number | undefined;
   let visionKnown: boolean | null = null;
@@ -79,7 +103,7 @@ export default function ultraCompressExtension(pi: ExtensionAPI): void {
 
   // ── Live transforms ────────────────────────────────────────────────────
   pi.on("context", async (event, ctx) => {
-    if (!settings.snap.enabled && !settings.uc.enabled) return undefined;
+    if (!binAvailable || (!settings.snap.enabled && !settings.uc.enabled)) return undefined;
     if (visionKnown === null) {
       try {
         const model = ctx?.model as { input?: string[]; provider?: string } | undefined;
@@ -343,7 +367,7 @@ export default function ultraCompressExtension(pi: ExtensionAPI): void {
       "Supply sessionFile explicitly for another session. Narrow by role, tool, entry range and bounded excerpts. " +
       "Results identify the searched session, scope and message count; no automatic widening.",
     promptSnippet:
-      "ultracompress_recall: current session/current lineage by default; all = sibling branches only; another session requires explicit sessionFile. Use narrow filters and small pages.",
+      "Current session/current lineage by default; all = sibling branches only; another session requires explicit sessionFile. Use narrow filters and small pages.",
     parameters: {
       type: "object",
       properties: recallProperties,
@@ -370,7 +394,7 @@ export default function ultraCompressExtension(pi: ExtensionAPI): void {
       "Pass that reference as packet; never reconstruct or abbreviate an encoded payload. " +
       "Legacy complete @UC1 packets are also accepted and decode to JSON. " +
       "Only legacy packets explicitly marked as envelopes wrap original text in the JSON key t.",
-    promptSnippet: "ultracompress_uc: retrieve original tool output by its uc:<hash> reference; legacy complete @UC1 packets also supported.",
+    promptSnippet: "Retrieve original tool output by its uc:<hash> reference; legacy complete @UC1 packets also supported.",
     parameters: {
       type: "object",
       properties: {
