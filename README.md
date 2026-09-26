@@ -7,6 +7,8 @@
 **Native subagents, local compaction, automatic verification and a better
 terminal UI for the [Pi coding agent](https://pi.dev).**
 
+[![Latest release](https://img.shields.io/github/v/release/michael-berardi/steak-pi?label=release)](https://github.com/michael-berardi/steak-pi/releases/latest) [![MIT License](https://img.shields.io/github/license/michael-berardi/steak-pi)](LICENSE) ![Pi 0.87+](https://img.shields.io/badge/Pi-0.87%2B-8A2BE2) ![Node.js 22.19+](https://img.shields.io/badge/node-22.19%2B-339933)
+
 [Install](#install) · [What you get](#what-you-get) · [Subagents](#subagents-usap) · [Performance](#performance) · [Configuration](#configuration) · [Changelog](./CHANGELOG.md)
 
 </div>
@@ -19,8 +21,8 @@ serious sessions need: parallel subagents with hard limits, compaction that
 costs no model calls, checks that run after every edit, and a status line that
 tells you what the agent is doing.
 
-Current release: **0.8.1**, for Pi 0.87 or newer. It is also the Steak Pi
-bundled with [UltraTerm](https://implosecybernetics.com) 2.4.1.
+Current release: **0.8.1**, for Pi 0.87 or newer. Steak Pi also ships inside
+[UltraTerm](https://implosecybernetics.com/software/).
 
 ## Install
 
