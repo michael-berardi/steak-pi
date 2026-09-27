@@ -4,8 +4,7 @@ import ultraCompressExtension from "../extensions/ultracompress/index.ts";
 import { DEFAULT_SETTINGS, loadSettings, type UltraCompressSettings } from "../extensions/ultracompress/src/settings.ts";
 import { runUltraCompress } from "../extensions/ultracompress/src/bridge.ts";
 import * as transforms from "../extensions/ultracompress/src/transforms.ts";
-import { UcReferences } from "../extensions/ultracompress/src/references.ts";
-import type { AgentLikeMessage, SnapOp, UcOp } from "../extensions/ultracompress/src/transforms.ts";
+import type { AgentLikeMessage, SnapOp } from "../extensions/ultracompress/src/transforms.ts";
 
 vi.mock("../extensions/ultracompress/src/bridge.ts", () => ({ runUltraCompress: vi.fn() }));
 vi.mock("../extensions/ultracompress/src/transforms.ts", async (importOriginal) => {
@@ -16,11 +15,6 @@ vi.mock("../extensions/ultracompress/src/transforms.ts", async (importOriginal) 
 const a = "A".repeat(8192);
 const b = "B".repeat(8192);
 const image = { type: "image", data: "original-base64", mimeType: "image/png" };
-const uc: UcOp = {
-  op: "uc", message_index: 0, block_index: 0,
-  stub: "[UC packet: archive-handle]", packet: "@UC1\nexact-packet-bytes",
-  tokens_before: 100, tokens_after: 10,
-};
 const snap: SnapOp = {
   op: "snap", message_index: 1, block_index: 0, head: "head\n", tail: "\ntail",
   frames: [
@@ -59,7 +53,6 @@ beforeEach(() => {
 
 describe("bounded cross-request live transform keys", () => {
   it("does not hash or archive below 8192 characters", async () => {
-    expect(DEFAULT_SETTINGS.uc.minChars).toBe(8192);
     expect(DEFAULT_SETTINGS.snap.minChars).toBe(8192);
     const hooks = register(structuredClone(DEFAULT_SETTINGS));
     const input = [{ role: "toolResult", content: [text("A".repeat(8191))] }];
@@ -72,12 +65,12 @@ describe("bounded cross-request live transform keys", () => {
     const settings = structuredClone(DEFAULT_SETTINGS);
     settings.snap.placement = placement;
     const hooks = register(settings);
-    vi.mocked(runUltraCompress).mockResolvedValue({ ok: true, data: { ops: [uc, snap] } });
+    vi.mocked(runUltraCompress).mockResolvedValue({ ok: true, data: { ops: [{ ...snap, message_index: 0 }, snap] } });
     const original = messages();
     const expected = structuredClone(original);
     // Unoptimized application oracle: original text lookup and unchanged transforms.
     transforms.applyTransforms(expected, new Map([
-      [a, { op: { ...uc, reference: new UcReferences().put(a) }, blocks: [] }], [b, { op: snap, blocks: [] }],
+      [a, { op: { ...snap, message_index: 0 }, blocks: [] }], [b, { op: snap, blocks: [] }],
     ]), (m, bi) => typeof m.content === "string" ? m.content : m.content[bi]?.text as string, placement);
 
     const result = await hooks.context(structuredClone(original));
@@ -88,8 +81,6 @@ describe("bounded cross-request live transform keys", () => {
     const payload = vi.mocked(runUltraCompress).mock.calls[0][2] as any;
     expect(payload.messages.map((m: any) => m.message.content[0].text)).toEqual([a, b, a, a, a]);
     expect(payload.messages.map((m: any) => m.id)).toEqual(["rc1", "rc1", "rc1", "rc2", "rc3"]);
-    expect(JSON.stringify(result.messages)).toContain("uc:");
-    expect(JSON.stringify(result.messages)).not.toContain("@UC1\\nexact-packet-bytes");
     expect(JSON.stringify(result.messages)).toContain("archive/frame-1, archive/frame-2");
     expect(result.messages[3].content).toBe(a);
 
@@ -99,16 +90,28 @@ describe("bounded cross-request live transform keys", () => {
     expect(runUltraCompress).toHaveBeenCalledTimes(1);
   });
 
-  it("performs one rather than two hashes for a single eligible block", async () => {
+  it("keeps original text if there is no user message to receive snap frames", async () => {
     const hooks = register(structuredClone(DEFAULT_SETTINGS));
-    vi.mocked(runUltraCompress).mockResolvedValue({ ok: true, data: { ops: [uc] } });
+    vi.mocked(runUltraCompress).mockResolvedValue({ ok: true, data: { ops: [{ ...snap, message_index: 0 }] } });
+    const input = [{ role: "toolResult", content: [text(a)] }];
+    expect(await hooks.context(input)).toBeUndefined();
+    expect(input[0].content).toEqual([text(a)]);
+  });
+
+  it("performs one rather than two hashes for a single eligible block", async () => {
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.snap.placement = "inline";
+    const hooks = register(settings);
+    vi.mocked(runUltraCompress).mockResolvedValue({ ok: true, data: { ops: [{ ...snap, message_index: 0 }] } });
     const result = await hooks.context([{ role: "toolResult", content: [text(a)] }]);
     expect(transforms.cacheKey).toHaveBeenCalledTimes(1);
-    expect(result.messages[0].content).toEqual(transforms.ucReplacement({ ...uc, reference: new UcReferences().put(a) }));
+    expect(result.messages[0].content).toEqual([...transforms.snapTextReplacement({ ...snap, message_index: 0 }), ...transforms.snapFrameBlocks(snap)]);
   });
 
   it("preserves duplicate response precedence and fallback on bridge failure", async () => {
-    const hooks = register(structuredClone(DEFAULT_SETTINGS));
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.snap.placement = "inline";
+    const hooks = register(settings);
     const input = () => [{ role: "toolResult", content: [text(a), text(a)] }];
     vi.mocked(runUltraCompress).mockResolvedValueOnce({ ok: false, error: "cancelled or unavailable" });
     const untouched = input();
@@ -116,12 +119,14 @@ describe("bounded cross-request live transform keys", () => {
     expect(untouched).toEqual(input());
     expect(transforms.cacheKey).toHaveBeenCalledTimes(1);
     vi.mocked(runUltraCompress).mockResolvedValueOnce({ ok: true, data: {
-      ops: [uc, { ...uc, message_index: 1, packet: "@UC1 last occurrence" }],
+      ops: [{ ...snap, message_index: 0 }, { ...snap, message_index: 1, head: "last occurrence" }],
     } });
     const result = await hooks.context(input());
     expect(result.messages[0].content).toEqual([
-      ...transforms.ucReplacement({ ...uc, reference: new UcReferences().put(a) }),
-      ...transforms.ucReplacement({ ...uc, reference: new UcReferences().put(a) }),
+      ...transforms.snapTextReplacement({ ...snap, message_index: 1, head: "last occurrence" }),
+      ...transforms.snapFrameBlocks(snap),
+      ...transforms.snapTextReplacement({ ...snap, message_index: 1, head: "last occurrence" }),
+      ...transforms.snapFrameBlocks(snap),
     ]);
   });
 
@@ -130,26 +135,25 @@ describe("bounded cross-request live transform keys", () => {
     settings.snapshot.enabled = false;
     const hooks = register(settings);
     const input = () => [{ role: "toolResult", content: [text(a)] }];
-    vi.mocked(runUltraCompress).mockResolvedValue({ ok: true, data: { ops: [uc] } });
+    vi.mocked(runUltraCompress).mockResolvedValue({ ok: true, data: { ops: [{ ...snap, message_index: 0 }] } });
     await hooks.context(input());
-    expect(transforms.cacheKey).toHaveBeenLastCalledWith({ p: "auto", v: true, s: 8192, u: 8192, cpt: undefined }, a);
+    expect(transforms.cacheKey).toHaveBeenLastCalledWith({ p: "auto", v: true, s: 8192, cpt: undefined }, a);
     const first = vi.mocked(transforms.cacheKey).mock.results[0].value;
-    settings.policy = "uc";
-    settings.uc.minChars = 1000;
+    settings.policy = "snap";
     settings.snap.minChars = 5000;
     await hooks.context(input());
-    expect(transforms.cacheKey).toHaveBeenLastCalledWith({ p: "uc", v: true, s: 5000, u: 1000, cpt: undefined }, a);
+    expect(transforms.cacheKey).toHaveBeenLastCalledWith({ p: "snap", v: true, s: 5000, cpt: undefined }, a);
     expect(vi.mocked(transforms.cacheKey).mock.results[1].value).not.toBe(first);
     vi.mocked(runUltraCompress).mockResolvedValueOnce({ ok: true, data: { stats: { calibrated: true, chars_per_token: 3.5 } } });
     await hooks.compact();
     await hooks.context(input());
-    expect(transforms.cacheKey).toHaveBeenLastCalledWith({ p: "uc", v: true, s: 5000, u: 1000, cpt: 3.5 }, a);
+    expect(transforms.cacheKey).toHaveBeenLastCalledWith({ p: "snap", v: true, s: 5000, cpt: 3.5 }, a);
     expect(transforms.cacheKey).toHaveBeenCalledTimes(3);
     expect(runUltraCompress).toHaveBeenCalledTimes(4);
   });
 
   it("preserves existing model vision gating and latch across requests", async () => {
-    vi.mocked(runUltraCompress).mockResolvedValue({ ok: true, data: { ops: [uc] } });
+    vi.mocked(runUltraCompress).mockResolvedValue({ ok: true, data: { ops: [{ ...snap, message_index: 0 }] } });
     const model = { provider: "anthropic", input: ["text", "image"] };
     const settings = structuredClone(DEFAULT_SETTINGS);
     const hooks = register(settings, model);
@@ -161,7 +165,7 @@ describe("bounded cross-request live transform keys", () => {
     expect(transforms.cacheKey).toHaveBeenCalledTimes(1); // Existing visionKnown latch.
     const other = register(settings, model);
     await other.context(input());
-    expect(transforms.cacheKey).toHaveBeenLastCalledWith({ p: "auto", v: false, s: 8192, u: 8192, cpt: undefined }, a);
+    expect(transforms.cacheKey).toHaveBeenLastCalledWith({ p: "auto", v: false, s: 8192, cpt: undefined }, a);
     expect(vi.mocked(transforms.cacheKey).mock.results[1].value).not.toBe(first);
     expect(runUltraCompress).toHaveBeenCalledTimes(2);
   });

@@ -1,7 +1,7 @@
 import "./ultracompress-settings-mock.ts";
 import { describe, expect, it, vi } from "vitest";
 import { recallArgs, parseRecallCommand, recallText } from "../extensions/ultracompress/src/recall.ts";
-import { applyTransforms, collectCandidates, ucReplacement, type UcOp } from "../extensions/ultracompress/src/transforms.ts";
+import { applyTransforms, collectCandidates, snapTextReplacement, type SnapOp } from "../extensions/ultracompress/src/transforms.ts";
 import ultraCompressExtension from "../extensions/ultracompress/index.ts";
 import { runUltraCompress } from "../extensions/ultracompress/src/bridge.ts";
 vi.mock("../extensions/ultracompress/src/bridge.ts", () => ({ runUltraCompress: vi.fn() }));
@@ -67,17 +67,14 @@ describe("session-local recall contract", () => {
 describe("fresh read and bash break-even policy", () => {
   it.each(["read", "bash"])("exempts fresh %s even on a cached transform, but archives older output", (toolName) => {
     const text = "explicitly requested text ".repeat(400);
-    const op: UcOp = { op: "uc", message_index: 0, block_index: 0, packet: "packet", stub: "stub", reference: "uc:" + "a".repeat(64), tokens_before: 1500, tokens_after: 100 };
-    const cache = new Map([["k", { op, blocks: ucReplacement(op) }]]);
+    const op: SnapOp = { op: "snap", message_index: 0, block_index: 0, head: "head", tail: "tail", frames: [], tokens_before: 1500, tokens_after: 100 };
+    const cache = new Map([["k", { op, blocks: snapTextReplacement(op) }]]);
     const messages = [{ role: "assistant", content: [] }, { role: "toolResult", toolName, content: [{ type: "text", text }] }];
     expect(collectCandidates(messages, 8192, () => "k")).toEqual([]);
     const result = applyTransforms(structuredClone(messages), cache, () => "k", "nextUser");
-    expect(result.ucApplied).toBe(0); expect(result.messages[1].content).toEqual([{ type: "text", text }]);
+    expect(result.snapApplied).toBe(0); expect(result.messages[1].content).toEqual([{ type: "text", text }]);
     const older = [...messages, { role: "assistant", content: [] }];
     expect(collectCandidates(older, 8192, () => "k")).toHaveLength(1);
-    expect(applyTransforms(structuredClone(older), cache, () => "k", "nextUser").ucApplied).toBe(1);
-    // Immediate retrieval necessarily includes the full original PLUS marker
-    // and another request. Passing through avoids this overhead exactly.
-    expect(Buffer.byteLength(text + ucReplacement(op)[0].text)).toBeGreaterThan(Buffer.byteLength(text));
+    expect(applyTransforms(structuredClone(older), cache, () => "k", "nextUser").snapApplied).toBe(1);
   });
 });

@@ -116,9 +116,7 @@ bypass path ownership. See [SECURITY.md](./SECURITY.md) and the
 [UltraCompress](https://github.com/michael-berardi/ultracompress) compacts
 sessions locally in about 10–300 ms, with no model call and no cost. It keeps
 the raw session, so anything summarized away can be recalled later
-(`ultracompress_recall`, 94.4% hit@5 in its published benchmark). Large tool
-output is archived behind short `uc:<hash>` references the agent can open when
-it needs them.
+(`ultracompress_recall`, 94.4% hit@5 in its published benchmark).
 
 ```sh
 git clone --branch v0.3.0 https://github.com/michael-berardi/ultracompress
