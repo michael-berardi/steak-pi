@@ -2,6 +2,13 @@
 
 ## 0.8.1 — unreleased candidate (USAP 1.3)
 
+- USAP harness `claude-code` now serves workers, not only reviewers. Leaves may
+  set `mayEdit` + `ownedPaths` and `allowBash` as on Pi. Ownership is enforced by
+  the Claude CLI itself: each owned path becomes an `Edit(//path)` /
+  `Edit(//path/**)` allow rule under `--permission-mode dontAsk`, so writes
+  elsewhere are denied; `allowBash` adds the Bash tool (operator-level shell, as
+  on Pi). Owned paths containing permission-rule metacharacters are refused.
+  Relay, images and native worker resume stay unavailable on this harness.
 - Merge the Steak Pi 0.7.0 efficiency release (tag `v0.7.0`, `c450e84`) into the
   0.8 line without dropping 0.8 features: deferred tools; no UltraCompress spawns without its binary; workers reuse the host Pi
   bundle; the session scheduler honours `usap-caps.json` `session.global`;

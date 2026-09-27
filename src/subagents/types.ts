@@ -1,7 +1,7 @@
 export const USAP_VERSION = "1.3" as const;
 /** Execution harness that serves a run's leaves. `"pi"` is the native default;
- * `"claude-code"` is the official headless Claude CLI runner (read-only first
- * slice). The field is omitted on records that never left the Pi default. */
+ * `"claude-code"` is the official headless Claude CLI runner (read,
+ * write and shell leaves; writes are scoped by CLI permission rules). The field is omitted on records that never left the Pi default. */
 export const HARNESS_IDS = ["pi", "claude-code"] as const;
 export type HarnessId = (typeof HARNESS_IDS)[number];
 /** Never infer durability or capability from an absent field: absent means Pi. */

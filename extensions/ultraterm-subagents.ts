@@ -86,7 +86,7 @@ export const ultratermSubagentsSchema = Type.Object({
   goal: Type.String({ minLength: 1, maxLength: 8_000 }),
   model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Exact authenticated provider/model for all tasks; mutually exclusive with profile." })),
   profile: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Native harness/profile route (e.g. steak-pi/glm-5-3-flash); mutually exclusive with model." })),
-  harness: Type.Optional(Type.Unsafe<"pi" | "claude-code">({ type: "string", enum: ["pi", "claude-code"], description: "Execution harness. pi (default) is the native runner; claude-code is the official headless Claude CLI on its explicit Opus 5.5 xhigh route, read-only leaves only." })),
+  harness: Type.Optional(Type.Unsafe<"pi" | "claude-code">({ type: "string", enum: ["pi", "claude-code"], description: "Execution harness. pi (default) is the native runner; claude-code is the official headless Claude CLI on its explicit Opus 5.5 xhigh route; workers, scouts and reviewers alike, with CLI-enforced ownedPaths and optional bash." })),
   requireImages: Type.Optional(Type.Boolean({ description: "Require advertised image input; no silent fallback." })),
   constraints: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4_000 }), { maxItems: 64 })),
   contract: Type.Optional(Type.String({ minLength: 1, maxLength: 8_000 })),
@@ -1102,14 +1102,14 @@ export function createUltratermSubagentsExtension(
     pi.registerTool({
       name: "ultraterm_subagents",
       label: "UltraTerm Subagents",
-      description: "Dispatch 1-8 bounded tasks through Pi or the official headless Claude Code CLI. All-reviewer waves default to Opus 5.5 xhigh (read-only). Explicit routes win. Foreground default; ownedPaths grants guarded writes only for Pi; allowBash is unsandboxed shell.",
+      description: "Dispatch 1-8 bounded tasks through Pi or the official headless Claude Code CLI. All-reviewer waves default to Opus 5.5 xhigh. Explicit routes win. Foreground default; ownedPaths grants guarded writes on either harness; allowBash is unsandboxed shell.",
       promptSnippet: "Dispatch bounded independent child tasks with explicit permissions and path ownership",
       promptGuidelines: [
         "Fan out by default: independent leaves (disjoint files, modules, screens, angles) dispatch in ONE parallel wave — width defaults to min(8, task count); automatic Go/GLM/MiMo chain lanes fill 8, explicit Luna lanes stay at 6 or fewer.",
         "Delegation must buy completion speed; modest token premiums for real throughput are correct. Trivial or tightly coupled edits and direct answers stay in the parent.",
         "Parent owns decomposition, integration, verification; workers own leaves end to end. With exact disjoint paths and acceptance contracts in hand, dispatch in the first tool turn without pre-reading child-owned files; do not duplicate child discovery in the parent.",
         "model or profile picks an explicit authenticated route (mutually exclusive, overrides roles). Every GPT choice requires paid openai-codex OAuth — never OpenRouter, API-key, or batch GPT. Astra workers default to medium reasoning; high/xhigh needs a concrete thinkingReason. requireImages=true for visual critics or render inspection.",
-        "Expert review defaults to the official Claude Code CLI Opus 5.5 xhigh. Select harness claude-code (read-only) or model claude-code/claude-opus-5-5 explicitly for planning/review. No fallback; images, relay, writes and native resume are unavailable in this initial CLI slice.",
+        "Expert review defaults to the official Claude Code CLI Opus 5.5 xhigh. Select harness claude-code or model claude-code/claude-opus-5-5 explicitly for Opus planning, review or implementation; mayEdit+ownedPaths and allowBash work as on Pi. No fallback; images, relay and native resume are unavailable on this harness.",
         "Background only when the parent can integrate while children run, then one bounded ultraterm_hub wait. Never start a background run merely to wait immediately.",
         "For read-only tasks omit ownedPaths and state the read scope in task text; mayEdit requires ownedPaths. allowBash bypasses ownedPaths — grant only when operator-level shell access is necessary.",
       ],
@@ -1153,7 +1153,7 @@ export function createUltratermSubagentsExtension(
           throw new Error("USAP Opus Pass requires xhigh effort; a different explicit effort is not silently overridden.");
         }
         if (foreignHarness && params.requireImages === true) {
-          throw new Error("USAP harness claude-code does not advertise image inspection in this read-only slice; requireImages is refused. No fallback was selected.");
+          throw new Error("USAP harness claude-code does not advertise image inspection; requireImages is refused. No fallback was selected.");
         }
         const piResolved = foreignHarness
           ? undefined

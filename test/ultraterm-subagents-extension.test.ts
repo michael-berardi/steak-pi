@@ -121,15 +121,21 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     await h.handlers.get("session_shutdown")!({}, h.ctx);
   });
 
-  it("fails closed for Claude writes, alternate models and effort", async () => {
+  it("fails closed for alternate Claude models and effort, and admits owned Claude writes", async () => {
     const runner = vi.fn(async (_context: Parameters<WorkerRunner>[0]) => ({ state: "done" as const, output: "unexpected", turns: 1, usage: emptyUsage() }));
     const h = harness(() => runner);
     const base = { goal: "review", harness: "claude-code", tasks: [{ label: "Review", task: "read" }] };
     await expect(h.tools.get("ultraterm_subagents").execute("bad", { ...base, thinking: "medium" }, undefined, undefined, h.ctx)).rejects.toThrow(/xhigh/);
     await expect(h.tools.get("ultraterm_subagents").execute("bad", { ...base, model: "anthropic/claude-opus-5-5" }, undefined, undefined, h.ctx)).rejects.toThrow(/pins/);
-    const invalid = await h.tools.get("ultraterm_subagents").execute("bad", { ...base, tasks: [{ label: "write", task: "write", mayEdit: true, ownedPaths: [h.ctx.cwd] }] }, undefined, undefined, h.ctx);
-    expect(invalid.isError).toBe(true);
     expect(runner).not.toHaveBeenCalled();
+    const writer = await h.tools.get("ultraterm_subagents").execute("ok", { ...base, tasks: [{ label: "write", task: "write", role: "worker", mayEdit: true, allowBash: true, ownedPaths: [h.ctx.cwd] }] }, undefined, undefined, h.ctx);
+    expect(writer.isError).not.toBe(true);
+    expect(runner).toHaveBeenCalledTimes(1);
+    const leaf = runner.mock.calls[0][0].task;
+    expect(leaf.mayEdit).toBe(true);
+    expect(leaf.allowBash).toBe(true);
+    expect(leaf.ownedPaths).toHaveLength(1);
+    expect(runner.mock.calls[0][0].run.harness).toBe("claude-code");
     await h.handlers.get("session_shutdown")!({}, h.ctx);
   });
   it("refuses every foreign-session hub action and dispatch before exposing a run", async () => {

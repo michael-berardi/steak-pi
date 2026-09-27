@@ -97,9 +97,13 @@ select `harness: "claude-code"` or `model: "claude-code/claude-opus-5-5"`.
 All-reviewer waves with no explicit route use this default. Existing first-party
 Claude subscription login is required; quota exhaustion is a failed review,
 never permission for credits or silent fallback. This replaces the Astra pass.
-The initial CLI slice is read-only (Read/Grep/Glob restricted to cwd), with no
-writes, shell, relay, image admission or native worker resume. These capabilities
-are refused explicitly. Interactive Claude `/resume` is separate.
+The same harness serves workers and scouts too: select it explicitly and grant
+`mayEdit` + `ownedPaths` and/or `allowBash` exactly as on Pi. Reads stay confined
+to cwd; each owned path becomes a CLI `Edit(...)` allow rule under `dontAsk`, so
+the CLI itself denies writes outside owned paths. `allowBash` adds the Bash tool
+and, as on Pi, is operator-level shell that can bypass ownership. Relay, image
+admission and native worker resume are unavailable on this harness and refused
+explicitly. Interactive Claude `/resume` is separate.
 Scheduling, bounded waits/cancel, usage and reports use the same USAP coordinator.
 
 ### Native Pi routes
