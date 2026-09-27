@@ -35,8 +35,10 @@ Routine workers on every built-in parent profile default to **MiMo V2.6 Flash** 
 All-reviewer waves with no explicit harness/model/profile use the **Opus Pass**:
 `claude-code/claude-opus-5-5`, official Claude Code CLI, `xhigh` effort and
 existing subscription authentication. No silent fallback is allowed. Expert
-planning may select that same harness explicitly. This first CLI slice is
-read-only and refuses image admission, shell, editing, relay and worker resume.
+planning and implementation may select that same harness explicitly: Opus
+workers get `mayEdit` + `ownedPaths` (enforced by CLI `Edit(...)` allow rules
+under `dontAsk`) and `allowBash` exactly as Pi workers do. The harness refuses
+image admission, relay and worker resume.
 A failed or quota-blocked review is not expert approval.
 
 Before commit/push/deploy, weaker implementers request one bounded Opus Pass

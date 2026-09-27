@@ -258,15 +258,9 @@ export function normalizeDispatch(
     const role = normalizeRole(source.role, `${field}.role`);
     const mayEdit = booleanOrDefault(source.mayEdit, false, `${field}.mayEdit`);
     const allowBash = booleanOrDefault(source.allowBash, false, `${field}.allowBash`);
-    // Foreign-harness first slice: the headless Claude CLI can genuinely enforce
-    // a read-only tool allowlist, but this leaf has no CLI-enforced write
-    // ownership or shell boundary. Refuse rather than trust the prompt.
-    if (harness === "claude-code" && (mayEdit || (Array.isArray(source.ownedPaths) && source.ownedPaths.length > 0))) {
-      fail(`${field} on harness claude-code is read-only in this USAP slice: mayEdit/ownedPaths are refused because no CLI-enforced write ownership exists`);
-    }
-    if (harness === "claude-code" && allowBash) {
-      fail(`${field} on harness claude-code cannot use bash: shell is outside the read-only first slice and has no CLI-enforced boundary`);
-    }
+    // harness claude-code enforces ownedPaths through CLI permission rules
+    // (claude-worker.ts) and allowBash through its tool allowlist, so write and
+    // shell leaves follow the same policy as Pi leaves.
     if (source.ownedPaths !== undefined && !Array.isArray(source.ownedPaths)) {
       fail(`${field}.ownedPaths must be an array`);
     }

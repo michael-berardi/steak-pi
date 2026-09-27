@@ -372,16 +372,37 @@ describe("claude-code worker stream handling", () => {
     expect(result.output.length).toBeLessThanOrEqual(OUTPUT_LIMIT);
   });
 
-  it("refuses write-capable or bash tasks without spawning anything", async () => {
+  it("grants write and shell tools only with CLI-enforced ownership rules", async () => {
     const { spawn, calls } = fakeSpawn((child) => child.exit(0));
     const runner: WorkerRunner = createClaudeWorkerRunner(runnerOptions(spawn));
-    for (const hostile of [task({ mayEdit: true, ownedPaths: ["/repo/a"] }), task({ allowBash: true })]) {
+    await runner({ run: run(), task: task({ mayEdit: true, ownedPaths: ["/repo/a"] }), signal: new AbortController().signal, onProgress: () => {} });
+    await runner({ run: run(), task: task({ allowBash: true }), signal: new AbortController().signal, onProgress: () => {} });
+    expect(calls).toHaveLength(2);
+    const [edit, bash] = calls.map((call) => call.args);
+    expect(edit.slice(edit.indexOf("--tools") + 1, edit.indexOf("--tools") + 2)).toEqual(["Read,Grep,Glob,Edit,Write,NotebookEdit"]);
+    expect(edit).toContain("Edit(//repo/a)");
+    expect(edit).toContain("Edit(//repo/a/**)");
+    expect(edit).not.toContain("Bash");
+    expect(edit).toContain("dontAsk");
+    expect(bash.slice(bash.indexOf("--tools") + 1, bash.indexOf("--tools") + 2)).toEqual(["Read,Grep,Glob,Bash"]);
+    expect(bash.slice(bash.indexOf("--allowedTools") + 1)).toEqual(["Bash"]);
+    expect(calls[0].child.stdinChunks.join("")).toContain("May edit: yes");
+    expect(calls[0].child.stdinChunks.join("")).toContain("- /repo/a");
+  });
+
+  it("refuses ownership it cannot express exactly, without spawning anything", async () => {
+    const { spawn, calls } = fakeSpawn((child) => child.exit(0));
+    const runner: WorkerRunner = createClaudeWorkerRunner(runnerOptions(spawn));
+    for (const hostile of [task({ mayEdit: true, ownedPaths: ["/repo/a*"] }), task({ mayEdit: true, ownedPaths: ["relative"] }),
+      task({ mayEdit: true, ownedPaths: [] }), task({ ownedPaths: ["/repo/a"] }), task({ sessionFile: "/x.jsonl" })]) {
       const result = await runner({ run: run(), task: hostile, signal: new AbortController().signal, onProgress: () => {} });
       expect(result.state).toBe("failed");
-      expect(result.error).toMatch(/read-only leaves only/);
     }
+    expect(calls).toHaveLength(0);
+    const { spawn: spawn2, calls: calls2 } = fakeSpawn((child) => child.exit(0));
+    const runner2: WorkerRunner = createClaudeWorkerRunner(runnerOptions(spawn2));
     for (const foreign of [run({ harness: undefined }), run({ harness: "pi" })]) {
-      await expect(runner({ run: foreign, task: task(), signal: new AbortController().signal, onProgress: () => {} }))
+      await expect(runner2({ run: foreign, task: task(), signal: new AbortController().signal, onProgress: () => {} }))
         .rejects.toThrow(/harness 'claude-code'/);
     }
     expect(calls).toHaveLength(0);
