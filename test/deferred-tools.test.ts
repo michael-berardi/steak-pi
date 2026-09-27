@@ -44,22 +44,19 @@ describe("deferred tool exposure", () => {
     expect(deferredToolsEnabled({ STEAK_PI_DEFER_TOOLS: "1" })).toBe(true);
   });
 
-  it("exposes ultracompress recall after compaction and uc before the first large result is archived", async () => {
-    const tools = ["read", "ultracompress_recall", "ultracompress_uc"];
-    const { pi, emit, active } = fakePi(tools);
+  it("exposes ultracompress recall only after compaction", async () => {
+    const { pi, emit, active } = fakePi(["read", "ultracompress_recall"]);
     ultraCompressExtension(pi as never);
     await emit("session_start", {}, { sessionManager: { getEntries: () => [{ type: "message" }] } });
     expect(active()).toEqual(["read"]);
-    await emit("tool_result", { toolName: "bash", content: [{ type: "text", text: "short" }] });
-    expect(active()).toEqual(["read"]);
     await emit("tool_result", { toolName: "bash", content: [{ type: "text", text: "x".repeat(8192) }] });
-    expect(active()).toEqual(["read", "ultracompress_uc"]);
+    expect(active()).toEqual(["read"]);
     await emit("session_compact", {});
-    expect(active()).toEqual(["read", "ultracompress_uc", "ultracompress_recall"]);
+    expect(active()).toEqual(["read", "ultracompress_recall"]);
   });
 
   it("keeps recall visible when resuming an already compacted session", async () => {
-    const { pi, emit, active } = fakePi(["read", "ultracompress_recall", "ultracompress_uc"]);
+    const { pi, emit, active } = fakePi(["read", "ultracompress_recall"]);
     ultraCompressExtension(pi as never);
     await emit("session_start", {}, { sessionManager: { getEntries: () => [{ type: "compaction" }] } });
     expect(active()).toEqual(["read", "ultracompress_recall"]);
@@ -71,7 +68,7 @@ describe("ultracompress binary availability", () => {
     // The shared settings mock stubs availability; exercise the real check.
     const { isUltraCompressBinAvailable } = await vi.importActual<typeof import("../extensions/ultracompress/src/settings.ts")>(
       "../extensions/ultracompress/src/settings.ts");
-    const dir = mkdtempSync(join(tmpdir(), "uc-bin-"));
+    const dir = mkdtempSync(join(tmpdir(), "ultracompress-bin-"));
     const bin = join(dir, "ultracompress");
     writeFileSync(bin, "#!/bin/sh\n");
     chmodSync(bin, 0o755);

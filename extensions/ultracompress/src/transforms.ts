@@ -1,22 +1,10 @@
 import { createHash } from "node:crypto";
 
 /**
- * Live-context transforms: oversized tool results become UC packets (JSON)
- * or snap frames (bulky text) before the LLM sees them. The raw session
+ * Live-context transforms: oversized tool results become snap frames before the LLM sees them. The raw session
  * stays untouched — transforms are a per-request lens, recomputed from the
  * deep-copied context each call, memoized by content hash.
  */
-
-export interface UcOp {
-  op: "uc";
-  message_index: number;
-  block_index: number;
-  stub: string;
-  packet: string;
-  reference?: string;
-  tokens_before: number;
-  tokens_after: number;
-}
 
 export interface FrameOut {
   id: string;
@@ -36,20 +24,17 @@ export interface SnapOp {
   tokens_after: number;
 }
 
-export type UltraCompressOp = UcOp | SnapOp;
+export type UltraCompressOp = SnapOp;
 
 export interface TransformResponse {
   ops: UltraCompressOp[];
   stats: {
     blocks_scanned: number;
-    uc_ops: number;
     snap_ops: number;
     tokens_before: number;
     tokens_after: number;
     savings_pct: number;
-    uc_available: boolean;
   };
-  ucStatus?: { available: boolean; version?: string };
 }
 
 /** Any content shape: string or block array. */
@@ -87,7 +72,7 @@ export interface Candidate {
 /** Retrieval must stay readable, including failures; never archive it again. */
 export function isRetrievalResult(m: AgentLikeMessage): boolean {
   return m.role === "toolResult" &&
-    (m.toolName === "ultracompress_uc" || m.toolName === "ultracompress_recall");
+    m.toolName === "ultracompress_recall";
 }
 
 function lastAssistantIndex(messages: AgentLikeMessage[]): number {
@@ -98,11 +83,11 @@ function lastAssistantIndex(messages: AgentLikeMessage[]): number {
 /** Find transform candidates. Fresh explicit reads stay readable for their
  * first model request; forcing immediate reference retrieval adds cost rather
  * than saving it. Older reads remain eligible on subsequent requests. */
-export function collectCandidates(messages: AgentLikeMessage[], minChars: number, keyFn: (text: string) => string, exemptFreshBash = true): Candidate[] {
+export function collectCandidates(messages: AgentLikeMessage[], minChars: number, keyFn: (text: string) => string): Candidate[] {
   const out: Candidate[] = [];
   const lastAssistant = lastAssistantIndex(messages);
   messages.forEach((m, messageIndex) => {
-    if (m.role !== "toolResult" || isRetrievalResult(m) || ((m.toolName === "read" || (exemptFreshBash && m.toolName === "bash")) && messageIndex > lastAssistant)) return;
+    if (m.role !== "toolResult" || isRetrievalResult(m) || ((m.toolName === "read" || m.toolName === "bash") && messageIndex > lastAssistant)) return;
     for (const { index: blockIndex, text } of textBlocks(m)) {
       if (text.length >= minChars) {
         out.push({ messageIndex, blockIndex, text, key: keyFn(text) });
@@ -110,18 +95,6 @@ export function collectCandidates(messages: AgentLikeMessage[], minChars: number
     }
   });
   return out;
-}
-
-/** Blocks that replace a tool-result text block for a UC op. */
-export function ucReplacement(op: UcOp): Array<Record<string, unknown>> {
-  return [
-    {
-      type: "text",
-      text: op.reference
-        ? `[UC ${op.reference}]`
-        : `${op.stub}\n\n${op.packet}`,
-    },
-  ];
 }
 
 /** Text edge blocks kept in the tool result for a snap op (frames travel separately). */
@@ -156,7 +129,6 @@ export function snapFrameBlocks(op: SnapOp): Array<Record<string, unknown>> {
 
 export interface ApplyResult {
   messages: AgentLikeMessage[];
-  ucApplied: number;
   snapApplied: number;
 }
 
@@ -170,41 +142,34 @@ export function applyTransforms(
   replacements: Map<string, { op: UltraCompressOp; blocks: Array<Record<string, unknown>> }>,
   keys: (m: AgentLikeMessage, bi: number) => string | undefined,
   placement: "nextUser" | "inline",
-  exemptFreshBash = true,
 ): ApplyResult {
-  let ucApplied = 0;
   let snapApplied = 0;
   const pendingFrames: Array<{ userIndex: number; blocks: Array<Record<string, unknown>> }> = [];
 
   const lastAssistant = lastAssistantIndex(messages);
   messages.forEach((m, mi) => {
-    if (m.role !== "toolResult" || isRetrievalResult(m) || ((m.toolName === "read" || (exemptFreshBash && m.toolName === "bash")) && mi > lastAssistant) || typeof m.content === "string") return;
+    if (m.role !== "toolResult" || isRetrievalResult(m) || ((m.toolName === "read" || m.toolName === "bash") && mi > lastAssistant) || typeof m.content === "string") return;
     const content = m.content as Array<Record<string, unknown>>;
     for (let bi = 0; bi < content.length; bi++) {
       const key = keys(m, bi);
       if (!key) continue;
       const entry = replacements.get(key);
       if (!entry) continue;
-      if (entry.op.op === "uc") {
-        const replacement = ucReplacement(entry.op as UcOp);
+      const op = entry.op;
+      const userIndex = placement === "nextUser" ? nextUserIndex(messages, mi) : -1;
+      // With no user message to receive the frames, keep the full original.
+      if (placement === "nextUser" && userIndex < 0 && op.frames.length > 0) continue;
+      if (placement === "inline") {
+        const replacement = [...snapTextReplacement(op), ...snapFrameBlocks(op)];
         content.splice(bi, 1, ...replacement);
         bi += replacement.length - 1; // don't rescan inserted blocks
-        ucApplied++;
       } else {
-        const op = entry.op as SnapOp;
-        if (placement === "inline") {
-          const replacement = [...snapTextReplacement(op), ...snapFrameBlocks(op)];
-          content.splice(bi, 1, ...replacement);
-          bi += replacement.length - 1; // don't rescan inserted blocks
-        } else {
-          const replacement = snapTextReplacement(op);
-          content.splice(bi, 1, ...replacement);
-          bi += replacement.length - 1;
-          const userIndex = nextUserIndex(messages, mi);
-          pendingFrames.push({ userIndex, blocks: snapFrameBlocks(op) });
-        }
-        snapApplied++;
+        const replacement = snapTextReplacement(op);
+        content.splice(bi, 1, ...replacement);
+        bi += replacement.length - 1;
+        pendingFrames.push({ userIndex, blocks: snapFrameBlocks(op) });
       }
+      snapApplied++;
     }
   });
 
@@ -227,7 +192,7 @@ export function applyTransforms(
     }
   }
 
-  return { messages, ucApplied, snapApplied };
+  return { messages, snapApplied };
 }
 
 export function nextUserIndex(messages: AgentLikeMessage[], from: number): number {

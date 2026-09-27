@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.0 (candidate)
+
+- Removed the optional UltraCompact integration: no `uc` transforms, UC
+  settings, `ultracompress_uc` tool or UC telemetry. VCC briefs, snap frames and
+  raw-history recall are unchanged.
+
 ## 0.8.2 (USAP 1.3)
 
 - USAP harness `claude-code` now serves workers, not only reviewers. Leaves may
