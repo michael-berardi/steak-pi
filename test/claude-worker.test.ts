@@ -1,3 +1,4 @@
+import { workerJournal } from "../src/subagents/coordinator.ts";
 import { describe, expect, it, vi } from "vitest";
 import {
   assertClaudeSubscriptionStatus,
@@ -390,6 +391,28 @@ describe("claude-code worker stream handling", () => {
     expect(calls[0].child.stdinChunks.join("")).toContain("- /repo/a");
   });
 
+  it("journals successful edits as changed paths and skips denied ones", async () => {
+    const { spawn } = fakeSpawn((child) => {
+      child.stdout(line({ type: "assistant", message: { content: [
+        { type: "tool_use", id: "t-ok", name: "Write", input: { file_path: "/repo/a/out.txt", content: "x" } },
+        { type: "tool_use", id: "t-denied", name: "Write", input: { file_path: "/repo/other.txt", content: "y" } },
+        { type: "tool_use", id: "t-read", name: "Read", input: { file_path: "/repo/seed.txt" } },
+      ] } }));
+      child.stdout(line({ type: "user", message: { content: [
+        { type: "tool_result", tool_use_id: "t-ok", is_error: false },
+        { type: "tool_result", tool_use_id: "t-denied", is_error: true },
+        { type: "tool_result", tool_use_id: "t-read", is_error: false },
+      ] } }));
+      child.stdout(successResult("report", {}));
+      child.exit(0);
+    });
+    const leaf = task({ mayEdit: true, ownedPaths: ["/repo/a"] });
+    const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run(), task: leaf, signal: new AbortController().signal, onProgress: () => {} });
+    expect(result.state).toBe("done");
+    expect([...workerJournal(leaf).changedPaths]).toEqual(["/repo/a/out.txt"]);
+    expect(result.toolErrors).toBe(1);
+  });
+
   it("refuses ownership it cannot express exactly, without spawning anything", async () => {
     const { spawn, calls } = fakeSpawn((child) => child.exit(0));
     const runner: WorkerRunner = createClaudeWorkerRunner(runnerOptions(spawn));
@@ -430,7 +453,7 @@ describe("claude-code stream-json parsing", () => {
     const assistant = parseClaudeStreamLine(line({ type: "assistant", message: { content: [{ type: "text", text: "a" }, { type: "tool_use", name: "Grep" }], usage: { input_tokens: 1 } } }));
     expect(assistant).toMatchObject({ kind: "assistant", text: "a", toolUses: ["Grep"] });
     const toolResult = parseClaudeStreamLine(line({ type: "user", message: { content: [{ type: "tool_result", is_error: true }] } }));
-    expect(toolResult).toEqual({ kind: "tool_result", isError: true });
+    expect(toolResult).toEqual({ kind: "tool_result", isError: true, results: [] });
     const result = parseClaudeStreamLine(line({ type: "result", subtype: "success", is_error: false, result: "r", total_cost_usd: 1, num_turns: 2 }));
     expect(result).toMatchObject({ kind: "result", subtype: "success", isError: false, result: "r", totalCostUsd: 1, numTurns: 2 });
     expect(parseClaudeStreamLine(line({ type: "stream_event" }))).toEqual({ kind: "other" });
