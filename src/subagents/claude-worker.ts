@@ -33,6 +33,7 @@ import { OUTPUT_LIMIT, addUsage, emptyUsage, harnessOf, sanitizeUsage, type RunR
   type UsageTotals, type WorkerProgress, type WorkerResult, type WorkerRunner } from "./types.ts";
 import { CLAUDE_CODE_EFFORT, CLAUDE_CODE_MODEL, CLAUDE_CODE_ROUTE } from "./model-selection.ts";
 import { truncatePiWorkerOutput } from "./pi-worker.ts";
+import { workerJournal } from "./coordinator.ts";
 
 /** Audit route recorded on the run and asserted by focused tests. */
 export { CLAUDE_CODE_ROUTE, CLAUDE_CODE_MODEL };
@@ -212,24 +213,35 @@ export function buildClaudeWorkerPrompt(run: RunRecord, task: TaskRecord): strin
 }
 
 export type ClaudeStreamEvent =
-  | { kind: "assistant"; text: string; toolUses: string[]; usage?: unknown; messageId?: string; model?: string }
+  | { kind: "assistant"; text: string; toolUses: string[]; toolCalls: ClaudeToolCall[]; usage?: unknown; messageId?: string; model?: string }
   | { kind: "identity"; model: string }
-  | { kind: "tool_result"; isError: boolean }
+  | { kind: "tool_result"; isError: boolean; results: Array<{ id: string; isError: boolean }> }
   | { kind: "result"; subtype?: string; isError: boolean; result?: string; usage?: unknown; totalCostUsd?: number; numTurns?: number; models?: string[] }
   | { kind: "other" }
   | { kind: "malformed" };
 
-function textBlocks(content: unknown): { text: string; toolUses: string[] } {
-  if (!Array.isArray(content)) return { text: "", toolUses: [] };
+/** One tool call; `path` is the target of a file-editing tool, if any. */
+export interface ClaudeToolCall { id: string; name: string; path?: string }
+
+function textBlocks(content: unknown): { text: string; toolUses: string[]; toolCalls: ClaudeToolCall[] } {
+  if (!Array.isArray(content)) return { text: "", toolUses: [], toolCalls: [] };
   const parts: string[] = [];
   const toolUses: string[] = [];
+  const toolCalls: ClaudeToolCall[] = [];
   for (const block of content) {
     if (!block || typeof block !== "object") continue;
-    const record = block as { type?: unknown; text?: unknown; name?: unknown };
+    const record = block as { type?: unknown; text?: unknown; name?: unknown; id?: unknown; input?: unknown };
     if (record.type === "text" && typeof record.text === "string") parts.push(record.text);
-    if (record.type === "tool_use" && typeof record.name === "string") toolUses.push(record.name);
+    if (record.type === "tool_use" && typeof record.name === "string") {
+      toolUses.push(record.name);
+      if (typeof record.id === "string") {
+        const input = record.input && typeof record.input === "object" ? record.input as { file_path?: unknown; notebook_path?: unknown } : {};
+        const target = typeof input.file_path === "string" ? input.file_path : typeof input.notebook_path === "string" ? input.notebook_path : undefined;
+        toolCalls.push({ id: record.id, name: record.name, ...(target !== undefined && CLAUDE_CODE_EDIT_TOOLS.split(",").includes(record.name) ? { path: target } : {}) });
+      }
+    }
   }
-  return { text: parts.join(""), toolUses };
+  return { text: parts.join(""), toolUses, toolCalls };
 }
 
 /** Parse one stream-json line. Any syntax/shape failure is `malformed` so the
@@ -242,10 +254,10 @@ export function parseClaudeStreamLine(line: string): ClaudeStreamEvent {
     usage?: unknown; total_cost_usd?: unknown; num_turns?: unknown; message?: unknown; model?: unknown; modelUsage?: unknown };
   if (event.type === "system" && event.subtype === "init" && typeof event.model === "string") return { kind: "identity", model: event.model };
   if (event.type === "assistant") {
-    const { text, toolUses } = textBlocks((event.message as { content?: unknown } | undefined)?.content);
+    const { text, toolUses, toolCalls } = textBlocks((event.message as { content?: unknown } | undefined)?.content);
     const usage = (event.message as { usage?: unknown } | undefined)?.usage;
     const message = event.message as { id?: unknown; model?: unknown } | undefined;
-    return { kind: "assistant", text, toolUses, ...(usage === undefined ? {} : { usage }),
+    return { kind: "assistant", text, toolUses, toolCalls, ...(usage === undefined ? {} : { usage }),
       ...(typeof message?.id === "string" ? { messageId: message.id } : {}),
       ...(typeof message?.model === "string" ? { model: message.model } : {}) };
   }
@@ -253,15 +265,19 @@ export function parseClaudeStreamLine(line: string): ClaudeStreamEvent {
     const content = (event.message as { content?: unknown } | undefined)?.content;
     let isError = false;
     let found = false;
+    const results: Array<{ id: string; isError: boolean }> = [];
     if (Array.isArray(content)) {
       for (const block of content) {
         if (block && typeof block === "object" && (block as { type?: unknown }).type === "tool_result") {
           found = true;
-          if ((block as { is_error?: unknown }).is_error === true) isError = true;
+          const failed = (block as { is_error?: unknown }).is_error === true;
+          if (failed) isError = true;
+          const id = (block as { tool_use_id?: unknown }).tool_use_id;
+          if (typeof id === "string") results.push({ id, isError: failed });
         }
       }
     }
-    return found ? { kind: "tool_result", isError } : { kind: "other" };
+    return found ? { kind: "tool_result", isError, results } : { kind: "other" };
   }
   if (event.type === "result") {
     if (typeof event.subtype !== "string" || typeof event.is_error !== "boolean"
@@ -469,6 +485,10 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
       turns: 0, turnLimitReached: false, usage: emptyUsage(), sawResult: false,
     };
     const messages = new Map<string, UsageTotals>();
+    // Pending tool calls by ID, so a successful edit/write lands in the same
+    // changed-path journal the Pi runner keeps.
+    const pendingCalls = new Map<string, ClaudeToolCall>();
+    const journal = workerJournal(task);
     let spawnError: Error | undefined;
     let exitCode: number | null = null;
     let exitSignal: string | null = null;
@@ -576,6 +596,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
             state.usage = [...messages.values()].reduce((total, usage) => addUsage(total, usage), emptyUsage());
             onProgress({ state: "running", usage: sanitizeUsage(state.usage) });
           }
+          for (const call of event.toolCalls) pendingCalls.set(call.id, call);
           const tool = event.toolUses[event.toolUses.length - 1];
           if (tool !== undefined) onProgress({ state: "running", currentTool: tool.slice(0, 80) });
           if (state.turns > maxTurns) {
@@ -588,6 +609,15 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
         if (event.kind === "tool_result") {
           if (event.isError) state.toolErrors += 1;
           else state.toolSuccesses += 1;
+          for (const result of event.results) {
+            const call = pendingCalls.get(result.id);
+            if (!call) continue;
+            pendingCalls.delete(result.id);
+            journal.lastStep = call.name.toLowerCase();
+            if (!result.isError && call.path !== undefined) {
+              journal.changedPaths.add(call.path.startsWith("/") ? call.path : `${run.cwd.replace(/\/+$/, "")}/${call.path}`);
+            }
+          }
           onProgress({
             state: "running", currentTool: undefined,
             toolErrors: state.toolErrors, toolSuccesses: state.toolSuccesses,
