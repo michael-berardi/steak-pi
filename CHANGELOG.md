@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.0 (candidate)
+## 0.9.0 (2026-09-27)
 
 - Removed the optional UltraCompact integration: no `uc` transforms, UC
   settings, `ultracompress_uc` tool or UC telemetry. VCC briefs, snap frames and
