@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.1 (2026-09-27)
+
+- USAP Pi workers no longer hang forever when the provider stream goes silent.
+  After a provider error ("Codex SSE response headers timed out", "WebSocket
+  closed 1006") the retry could wait on a half-closed connection that never
+  errors, so the task stayed "running", kept its capacity slot and blocked every
+  queued task behind it. A worker whose session emits nothing (no model output,
+  tool, retry or compaction event) for 10 minutes while no tool is running is
+  now stopped and fails with "No model or tool activity for 10 min: the provider
+  stream stopped responding …". Running tools keep their own timeouts.
+
 ## 0.9.0 (2026-09-27)
 
 - Removed the optional UltraCompact integration: no `uc` transforms, UC
