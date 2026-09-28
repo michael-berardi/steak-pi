@@ -487,6 +487,55 @@ describe("native in-process Pi worker runner", () => {
     expect(fake.disposed).toBe(true);
   });
 
+  it("fails a worker whose provider stream went silent, freeing its slot", async () => {
+    // Live 2026-09-27: after "Codex SSE response headers timed out" the retry
+    // hung on a half-closed socket; the task stayed "running" for good.
+    const cwd = await mkdtemp(join(tmpdir(), "steak-pi-stall-"));
+    const recordTask = task();
+    const fake = new FakeSession();
+    fake.onPrompt = () => new Promise<void>(() => {});
+    const runner = createPiWorkerRunner({
+      relay: setupBroker(),
+      resolveRuntime: () => ({ model: fakeModel, thinkingLevel: "off" }),
+      sessionFactory: async () => ({ session: fake }),
+      abortGraceMs: 5,
+      stallMs: 40,
+    });
+    const result = await runner({ run: run(cwd, recordTask), task: recordTask, signal: new AbortController().signal, onProgress: vi.fn() });
+    expect(result.state).toBe("failed");
+    expect(result.error).toMatch(/No model or tool activity for 1 min: the provider stream stopped responding/);
+    expect(fake.abortCalls).toBe(1);
+    expect(fake.disposed).toBe(true);
+  });
+
+  it("never counts a long-running tool or a streaming model as a stall", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "steak-pi-no-stall-"));
+    const recordTask = task();
+    const fake = new FakeSession();
+    fake.onPrompt = async (session) => {
+      // A tool that runs silently for well past the stall window.
+      session.emit({ type: "tool_execution_start", toolCallId: "t", toolName: "bash", args: {} } as never);
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      session.emit({ type: "tool_execution_end", toolCallId: "t", toolName: "bash", result: {}, isError: false } as never);
+      // Then a model reply that keeps streaming updates under the window.
+      for (let index = 0; index < 4; index += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        session.emit({ type: "message_update", message: assistant("partial"), assistantMessageEvent: { type: "text_delta" } } as never);
+      }
+      session.emit({ type: "message_end", message: assistant("report") } as never);
+    };
+    const runner = createPiWorkerRunner({
+      relay: setupBroker(),
+      resolveRuntime: () => ({ model: fakeModel, thinkingLevel: "off" }),
+      sessionFactory: async () => ({ session: fake }),
+      abortGraceMs: 5,
+      stallMs: 40,
+    });
+    const result = await runner({ run: run(cwd, recordTask), task: recordTask, signal: new AbortController().signal, onProgress: vi.fn() });
+    expect(result.state).toBe("done");
+    expect(fake.abortCalls).toBe(0);
+  });
+
   it("enforces the run turn budget and steers at the report threshold", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "steak-pi-turns-"));
     const recordTask = task();

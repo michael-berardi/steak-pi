@@ -52,6 +52,14 @@ export const PI_WORKER_TURN_REPORT_RESERVE = 3;
 export const PI_WORKER_TURN_WARNING_AT = MAX_PI_WORKER_TURNS - PI_WORKER_TURN_REPORT_RESERVE;
 export const PI_WORKER_ABORT_GRACE_MS = 2_000;
 export const PI_WORKER_MAX_RETRIES = 1;
+/**
+ * A worker whose session emits nothing (no model output, tool, retry or
+ * compaction event) for this long while no tool is running has lost its
+ * provider stream: a half-closed connection never errors, so Pi waits on it
+ * forever and the task keeps its slot as "running". Longer than Pi's own
+ * 5-minute response-header timeout plus its retry.
+ */
+export const PI_WORKER_STALL_MS = 10 * 60_000;
 /** Native compaction for long-horizon worker sessions; bounded by Pi's own settings. */
 export const PI_WORKER_COMPACTION = { enabled: true } as const;
 const OUTPUT_TRUNCATION_NOTICE = "\n\n[Output truncated at the USAP 20,000-character limit.]";
@@ -228,6 +236,8 @@ export interface PiWorkerRunnerOptions {
   sessionFactory?: PiWorkerSessionFactory;
   /** Test seam for bounded abort/disposal terminalization. */
   abortGraceMs?: number;
+  /** Test seam for the stalled-stream watchdog. */
+  stallMs?: number;
 }
 
 type AnyToolDefinition = ToolDefinition<any, any, any>;
@@ -674,6 +684,8 @@ export function classifyPiWorkerState(input: {
   turnLimitReached: boolean;
   /** Turn budget that was exhausted; falls back to the legacy default. */
   maxTurns?: number;
+  /** Set when the stalled-stream watchdog aborted the session. */
+  stalledAfterMs?: number;
   finalAssistant?: AssistantSnapshot;
   error?: unknown;
 }): Pick<WorkerResult, "state" | "error"> {
@@ -682,6 +694,13 @@ export function classifyPiWorkerState(input: {
   }
   if (input.signal.aborted) {
     return { state: "aborted", error: errorText(input.signal.reason ?? "Task aborted") };
+  }
+  if (input.stalledAfterMs !== undefined) {
+    const minutes = Math.max(1, Math.round(input.stalledAfterMs / 60_000));
+    return {
+      state: "failed",
+      error: `No model or tool activity for ${minutes} min: the provider stream stopped responding, so the worker was stopped to free its slot. Any partial report above is evidence, not acceptance`,
+    };
   }
   if (input.turnLimitReached) {
     const limit = typeof input.maxTurns === "number" ? input.maxTurns : MAX_PI_WORKER_TURNS;
@@ -776,6 +795,10 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
   if (!Number.isSafeInteger(abortGraceMs) || abortGraceMs < 0) {
     throw new RangeError("abortGraceMs must be a nonnegative safe integer");
   }
+  const stallMs = options.stallMs ?? PI_WORKER_STALL_MS;
+  if (!Number.isSafeInteger(stallMs) || stallMs <= 0) {
+    throw new RangeError("stallMs must be a positive safe integer");
+  }
   return async ({ run, task, signal, onProgress, sessionDir }): Promise<WorkerResult> => {
     let session: PiWorkerSession | undefined;
     let unsubscribe: (() => void) | undefined;
@@ -787,6 +810,10 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
     let toolSuccesses = 0;
     let compactions = 0;
     let turnLimitReached = false;
+    let stalled = false;
+    let lastEventAt = Date.now();
+    let toolsRunning = 0;
+    let stallTimer: ReturnType<typeof setInterval> | undefined;
     const maxTurns = workerTurnBudget(run);
     const resuming = typeof task.sessionFile === "string" && task.sessionFile.trim().length > 0;
     let finalAssistant: AssistantSnapshot | undefined;
@@ -912,6 +939,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       }
 
       unsubscribe = session.subscribe((event) => {
+        lastEventAt = Date.now();
         // Compaction/retry phases reuse the existing progress step field, so the
         // parent's progress rendering needs no protocol change.
         const phase = compactionOrRetryPhase((event as { type?: unknown }).type);
@@ -929,12 +957,14 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
           }
         }
         if (event.type === "tool_execution_start") {
+          toolsRunning += 1;
           workerJournal(task).lastStep = event.toolName;
           task.lastStep = event.toolName;
           onProgress({ state: "running", currentTool: event.toolName });
           return;
         }
         if (event.type === "tool_execution_end") {
+          toolsRunning = Math.max(0, toolsRunning - 1);
           if (event.isError) toolErrors += 1;
           else toolSuccesses += 1;
           onProgress({ state: "running", currentTool: undefined, toolErrors, toolSuccesses });
@@ -987,6 +1017,13 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
           releasePromptWait = resolve;
         });
         if (signal.aborted) releasePromptWait();
+        // A running tool owns its own timeout; only a silent model wait stalls.
+        stallTimer = setInterval(() => {
+          if (stalled || toolsRunning > 0 || Date.now() - lastEventAt < stallMs) return;
+          stalled = true;
+          releasePromptWait();
+          void abortSession();
+        }, Math.max(10, Math.min(30_000, Math.floor(stallMs / 4))));
         await Promise.race([
           session.prompt(
             resuming
@@ -1000,8 +1037,9 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
     } catch (error) {
       promptError = error;
     } finally {
+      if (stallTimer !== undefined) clearInterval(stallTimer);
       signal.removeEventListener("abort", onAbort);
-      if (session && (signal.aborted || turnLimitReached || session.isStreaming)) {
+      if (session && (signal.aborted || turnLimitReached || stalled || session.isStreaming)) {
         await settleWithin(abortSession(), abortGraceMs);
       }
       // Keep subscriptions live during the bounded abort grace so final usage
@@ -1023,6 +1061,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       signal,
       turnLimitReached,
       maxTurns,
+      ...(stalled ? { stalledAfterMs: stallMs } : {}),
       finalAssistant,
       ...(promptError === undefined ? {} : { error: promptError }),
     });
