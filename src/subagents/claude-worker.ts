@@ -9,7 +9,7 @@
  *
  * The CLI flag surface below is the exact operator-confirmed set for the
  * installed CLI:
- *   --print --output-format stream-json --verbose --model claude-opus-5-5
+ *   --print --output-format stream-json --verbose --model <claude-sonnet-5-5|claude-opus-5-5>
  *   --effort xhigh --no-session-persistence --permission-mode dontAsk
  *   --safe-mode --restricted --setting-sources "" --strict-mcp-config
  *   --max-turns <run budget> --tools <allowlist> [--allowedTools <rules>]
@@ -31,7 +31,7 @@ import { realpathSync } from "node:fs";
 import type { ChildProcess } from "node:child_process";
 import { OUTPUT_LIMIT, addUsage, emptyUsage, harnessOf, sanitizeUsage, type RunRecord, type TaskRecord,
   type UsageTotals, type WorkerProgress, type WorkerResult, type WorkerRunner } from "./types.ts";
-import { CLAUDE_CODE_EFFORT, CLAUDE_CODE_MODEL, CLAUDE_CODE_ROUTE } from "./model-selection.ts";
+import { CLAUDE_CODE_EFFORT, CLAUDE_CODE_MODEL, CLAUDE_CODE_ROUTE, claudeCodeModelName, claudeCodeModelOf, type ClaudeCodeModel } from "./model-selection.ts";
 import { truncatePiWorkerOutput } from "./pi-worker.ts";
 import { workerJournal } from "./coordinator.ts";
 
@@ -111,7 +111,7 @@ export function assertClaudeSubscriptionStatus(value: unknown): void {
   const status = value && typeof value === "object" ? value as Record<string, unknown> : {};
   if (status.loggedIn !== true || status.authMethod !== "claude.ai" || status.apiProvider !== "firstParty"
     || !["pro", "max", "team", "enterprise"].includes(String(status.subscriptionType))) {
-    throw new Error("Claude Code Opus Pass requires an existing first-party Claude subscription login; no API-key or alternate billing route was selected");
+    throw new Error("Claude Code workers require an existing first-party Claude subscription login; no API-key or alternate billing route was selected");
   }
 }
 
@@ -130,7 +130,7 @@ async function verifyClaudeSubscription(executable: string, env: NodeJS.ProcessE
  * as a positional argument, so task text can never be parsed as CLI flags.
  * Permissions default to read-only; write/shell tools and their allow rules
  * appear only when the task grants them. */
-export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPermissions = {}, resolve?: (value: string) => string | undefined): string[] {
+export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPermissions = {}, resolve?: (value: string) => string | undefined, model: ClaudeCodeModel = CLAUDE_CODE_MODEL): string[] {
   const ownedPaths = permissions.ownedPaths ?? [];
   if (permissions.mayEdit && ownedPaths.length === 0) throw new Error("claude-code mayEdit leaves require at least one owned path");
   if (!permissions.mayEdit && ownedPaths.length > 0) throw new Error("claude-code read-only leaves cannot own writable paths");
@@ -145,7 +145,7 @@ export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPer
     "--print",
     "--output-format", "stream-json",
     "--verbose",
-    "--model", CLAUDE_CODE_MODEL,
+    "--model", model,
     "--effort", CLAUDE_CODE_EFFORT,
     "--no-session-persistence",
     "--permission-mode", "dontAsk",
@@ -439,7 +439,7 @@ export function classifyClaudeWorkerState(input: {
     if (result.isError || (result.subtype !== undefined && result.subtype !== "success")) {
       return { state: "failed", error: `claude-code CLI reported ${result.subtype ?? "an error"} result` };
     }
-    if (!state.modelVerified) return { state: "failed", error: "Claude CLI did not attest the pinned Opus 5.5 model" };
+    if (!state.modelVerified) return { state: "failed", error: "Claude CLI did not attest the pinned route model" };
     return { state: "done" };
   }
   if (exitCode !== null && exitCode !== 0) {
@@ -467,13 +467,14 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     if (task.sessionFile) {
       return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "harness claude-code cannot resume a native Pi worker session" };
     }
+    const pinnedModel = claudeCodeModelOf(run.model);
+    if (pinnedModel === undefined || run.thinkingLevel !== CLAUDE_CODE_EFFORT) {
+      return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "Claude Code requires the exact Sonnet 5.5 or Opus 5.5 xhigh route" };
+    }
     let args: string[];
-    try { args = claudeWorkerArgs(Math.max(1, Math.min(run.maxTurns, 2048)), task); }
+    try { args = claudeWorkerArgs(Math.max(1, Math.min(run.maxTurns, 2048)), task, undefined, pinnedModel); }
     catch (error) { return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
     if (signal.aborted) return { state: isTimeoutSignal(signal) ? "timed_out" : "aborted", output: "", turns: 0, usage: emptyUsage(), error: "Cancelled before CLI launch" };
-    if (run.model !== CLAUDE_CODE_ROUTE || run.thinkingLevel !== CLAUDE_CODE_EFFORT) {
-      return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "Claude Code requires the exact Opus 5.5 xhigh route" };
-    }
     if (!options.spawn) {
       try { await verifyClaudeSubscription(executable, claudeWorkerEnv(), run.cwd, signal, run.timeoutMs); }
       catch (error) { return { state: isTimeoutSignal(signal) ? "timed_out" : signal.aborted ? "aborted" : "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
@@ -565,8 +566,8 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
         const reportedModels = event.kind === "identity" ? [event.model]
           : event.kind === "assistant" ? (event.model === undefined ? [] : [event.model])
           : event.kind === "result" ? event.models ?? [] : [];
-        if (reportedModels.some((model) => model !== CLAUDE_CODE_MODEL)) {
-          state.failure = "Claude CLI reported a model other than the pinned Opus 5.5 route";
+        if (reportedModels.some((model) => model !== pinnedModel)) {
+          state.failure = `Claude CLI reported a model other than the pinned ${claudeCodeModelName(pinnedModel)} route`;
           killOnce(true);
           return;
         }

@@ -145,9 +145,13 @@ surface for both Pi workers and the official headless Claude Code CLI. An absent
 wave defaults to the **Opus Pass**, Claude Code Opus 5.5 at `xhigh` effort.
 Explicit Pi/model/profile selections still win.
 
-Select `harness: "claude-code"` or `model: "claude-code/claude-opus-5-5"` for
-expert planning or review. This exact route runs `claude --print` with
-`--model claude-opus-5-5 --effort xhigh`. Authentication preflight must report an
+`harness: "claude-code"` runs **Sonnet 5.5** (`claude-code/claude-sonnet-5-5`)
+for worker and scout waves and **Opus 5.5** (`claude-code/claude-opus-5-5`) for
+all-reviewer waves. An explicit `model` of either route wins. Sonnet 5.5 is the
+default Claude worker because it is nearly Opus-level at far less quota; select
+the Opus route for expert planning, review, or frontier work. Each route runs
+`claude --print` with `--model <model> --effort xhigh`, and the served model is
+checked against the route. Authentication preflight must report an
 existing first-party Claude subscription login. API-key/provider override
 environment variables are not inherited, and there is no fallback to another
 model, route, or billing arrangement. Quota exhaustion is a failed review,

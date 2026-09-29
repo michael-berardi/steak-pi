@@ -92,9 +92,14 @@ is best effort and does not roll back side effects.
 
 ## Harness and model selection (USAP 1.3 candidate)
 
-Expert planning/review uses the official Claude Code CLI Opus 5.5 at xhigh:
-select `harness: "claude-code"` or `model: "claude-code/claude-opus-5-5"`.
-All-reviewer waves with no explicit route use this default. Existing first-party
+Claude work runs through the official Claude Code CLI at xhigh. **Sonnet 5.5 is
+the default Claude model**: `harness: "claude-code"` (or
+`model: "claude-code/claude-sonnet-5-5"`) runs Sonnet 5.5, nearly Opus-level at
+far less quota. **Escalate to Opus 5.5 only when the frontier is needed**:
+expert planning, review and sign-off, hard architecture or security reasoning,
+or a leaf Sonnet already failed. Select `model: "claude-code/claude-opus-5-5"`
+for that; all-reviewer waves with no explicit route (or `harness: "claude-code"`
+with only reviewer tasks) default to Opus 5.5. Existing first-party
 Claude subscription login is required; quota exhaustion is a failed review,
 never permission for credits or silent fallback. This replaces the Astra pass.
 The same harness serves workers and scouts too: select it explicitly and grant

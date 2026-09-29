@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.2 (2026-09-28)
+
+- Claude Sonnet 5.5 (`claude-code/claude-sonnet-5-5`) is now a USAP Claude Code
+  route and the default Claude worker: `harness: "claude-code"` runs Sonnet 5.5
+  at xhigh for worker and scout waves. All-reviewer waves still take the Opus
+  Pass (Opus 5.5 xhigh), and `model: "claude-code/claude-opus-5-5"` escalates any
+  wave to Opus. Each worker's served model is checked against its route, with no
+  fallback between the two.
+
 ## 0.9.1 (2026-09-27)
 
 - USAP Pi workers no longer hang forever when the provider stream goes silent.

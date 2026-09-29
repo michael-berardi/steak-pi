@@ -134,22 +134,51 @@ export function loadWorkerProfiles(directory = join(homedir(), ".config", "ultra
 }
 
 /** Exact spellings pinned by the candidate manifest (docs/opus-5-5.models.json):
- * model id `claude-opus-5-5`. The `claude-code` provider namespace is
- * deliberately NOT `anthropic/…`: that Pi registry route would imply API-key
- * billing, which this harness never touches (CLI OAuth existing auth only, with
- * API-key/billing override env stripped at spawn). */
-export const CLAUDE_CODE_MODEL = "claude-opus-5-5" as const;
+ * model ids `claude-sonnet-5-5` and `claude-opus-5-5`. The `claude-code`
+ * provider namespace is deliberately NOT `anthropic/…`: that Pi registry route
+ * would imply API-key billing, which this harness never touches (CLI OAuth
+ * existing auth only, with API-key/billing override env stripped at spawn). */
+export const CLAUDE_CODE_OPUS_MODEL = "claude-opus-5-5" as const;
+export const CLAUDE_CODE_SONNET_MODEL = "claude-sonnet-5-5" as const;
+/** The Opus Pass model, kept under its historical name for callers. */
+export const CLAUDE_CODE_MODEL = CLAUDE_CODE_OPUS_MODEL;
 export const CLAUDE_CODE_EFFORT = "xhigh" as const;
-export const CLAUDE_CODE_ROUTE = `claude-code/${CLAUDE_CODE_MODEL}` as const;
+export const CLAUDE_CODE_OPUS_ROUTE = `claude-code/${CLAUDE_CODE_OPUS_MODEL}` as const;
+export const CLAUDE_CODE_SONNET_ROUTE = `claude-code/${CLAUDE_CODE_SONNET_MODEL}` as const;
+/** The Opus Pass route (expert review and explicit Opus escalation). */
+export const CLAUDE_CODE_ROUTE = CLAUDE_CODE_OPUS_ROUTE;
+export type ClaudeCodeModel = typeof CLAUDE_CODE_OPUS_MODEL | typeof CLAUDE_CODE_SONNET_MODEL;
+export const CLAUDE_CODE_ROUTES: readonly string[] = [CLAUDE_CODE_SONNET_ROUTE, CLAUDE_CODE_OPUS_ROUTE];
 
-/** The one explicit foreign-harness route in this USAP slice: the official
- * headless Claude Code CLI on Opus 5.5 at xhigh effort (the operator's "Opus
- * Pass" route). It is override-provenance, never an automatic chain step, and
- * it never falls back to Astra or any other model. */
-export function resolveClaudeCodeSelection(): ModelSelection {
+/** The pinned Claude model behind a `claude-code/…` route, or undefined for
+ * anything else (never a prefix or fuzzy match). */
+export function claudeCodeModelOf(route: string | undefined): ClaudeCodeModel | undefined {
+  if (route === CLAUDE_CODE_OPUS_ROUTE) return CLAUDE_CODE_OPUS_MODEL;
+  if (route === CLAUDE_CODE_SONNET_ROUTE) return CLAUDE_CODE_SONNET_MODEL;
+  return undefined;
+}
+
+/** Product name for messages: "Opus 5.5" / "Sonnet 5.5". */
+export function claudeCodeModelName(model: ClaudeCodeModel): string {
+  return model === CLAUDE_CODE_OPUS_MODEL ? "Opus 5.5" : "Sonnet 5.5";
+}
+
+/** Which Claude model a claude-code wave runs when the caller named none:
+ * all-reviewer waves are expert review and take the Opus Pass; every other
+ * wave is routine work and takes Sonnet 5.5, which preserves Opus quota. */
+export function defaultClaudeCodeRoute(tasks: readonly { role?: string }[]): string {
+  return tasks.length > 0 && tasks.every((task) => task.role === "reviewer") ? CLAUDE_CODE_OPUS_ROUTE : CLAUDE_CODE_SONNET_ROUTE;
+}
+
+/** The explicit foreign-harness routes in this USAP slice: the official
+ * headless Claude Code CLI at xhigh effort on Sonnet 5.5 (the default Claude
+ * worker) or Opus 5.5 (the operator's "Opus Pass" route for expert review and
+ * frontier work). Both are override-provenance, never an automatic chain step,
+ * and neither falls back to the other or to any other model. */
+export function resolveClaudeCodeSelection(model: ClaudeCodeModel = CLAUDE_CODE_OPUS_MODEL): ModelSelection {
   return {
     provider: "claude-code",
-    modelId: CLAUDE_CODE_MODEL,
+    modelId: model,
     source: "override",
     harness: "claude-code",
     // No advertised image inspection in this slice: requireImages is refused.
