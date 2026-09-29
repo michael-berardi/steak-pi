@@ -126,7 +126,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     const h = harness(() => runner);
     const base = { goal: "review", harness: "claude-code", tasks: [{ label: "Review", task: "read" }] };
     await expect(h.tools.get("ultraterm_subagents").execute("bad", { ...base, thinking: "medium" }, undefined, undefined, h.ctx)).rejects.toThrow(/xhigh/);
-    await expect(h.tools.get("ultraterm_subagents").execute("bad", { ...base, model: "anthropic/claude-opus-5-5" }, undefined, undefined, h.ctx)).rejects.toThrow(/pins/);
+    await expect(h.tools.get("ultraterm_subagents").execute("bad", { ...base, model: "anthropic/claude-opus-5-5" }, undefined, undefined, h.ctx)).rejects.toThrow(/runs only claude-code\/claude-sonnet-5-5 or claude-code\/claude-opus-5-5/);
     expect(runner).not.toHaveBeenCalled();
     const writer = await h.tools.get("ultraterm_subagents").execute("ok", { ...base, tasks: [{ label: "write", task: "write", role: "worker", mayEdit: true, allowBash: true, ownedPaths: [h.ctx.cwd] }] }, undefined, undefined, h.ctx);
     expect(writer.isError).not.toBe(true);
@@ -136,6 +136,33 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     expect(leaf.allowBash).toBe(true);
     expect(leaf.ownedPaths).toHaveLength(1);
     expect(runner.mock.calls[0][0].run.harness).toBe("claude-code");
+    // Routine Claude work defaults to Sonnet 5.5 xhigh, which preserves Opus quota.
+    expect(writer.details.run.model).toBe("claude-code/claude-sonnet-5-5");
+    expect(writer.details.run.selection.modelId).toBe("claude-sonnet-5-5");
+    expect(runner.mock.calls[0][0].run.thinkingLevel).toBe("xhigh");
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+
+  it("runs Sonnet 5.5 for claude-code workers and escalates to Opus 5.5 only for reviews or an explicit Opus route", async () => {
+    const runner = vi.fn(async (_context: Parameters<WorkerRunner>[0]) => ({ state: "done" as const, output: "ok", turns: 1, usage: emptyUsage() }));
+    const h = harness(() => runner);
+    const work = [{ label: "Work", task: "Inspect", role: "worker" }];
+    const review = [{ label: "Review", task: "Review", role: "reviewer" }];
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ harness: "claude-code", tasks: work }, "claude-code/claude-sonnet-5-5"],
+      [{ model: "claude-code/claude-sonnet-5-5", tasks: work }, "claude-code/claude-sonnet-5-5"],
+      [{ harness: "claude-code", tasks: review }, "claude-code/claude-opus-5-5"],
+      [{ tasks: review }, "claude-code/claude-opus-5-5"],
+      [{ model: "claude-code/claude-opus-5-5", tasks: work }, "claude-code/claude-opus-5-5"],
+      [{ harness: "claude-code", model: "claude-code/claude-sonnet-5-5", tasks: review }, "claude-code/claude-sonnet-5-5"],
+    ];
+    for (const [route, expected] of cases) {
+      const result = await h.tools.get("ultraterm_subagents").execute("route", { goal: "route", ...route }, undefined, undefined, h.ctx);
+      expect(result.details.run.harness).toBe("claude-code");
+      expect(result.details.run.model).toBe(expected);
+      expect(runner.mock.calls.at(-1)?.[0].run.model).toBe(expected);
+      expect(runner.mock.calls.at(-1)?.[0].run.thinkingLevel).toBe("xhigh");
+    }
     await h.handlers.get("session_shutdown")!({}, h.ctx);
   });
   it("refuses every foreign-session hub action and dispatch before exposing a run", async () => {

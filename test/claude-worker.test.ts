@@ -241,6 +241,25 @@ describe("claude-code worker stream handling", () => {
     expect(result.error).toMatch(/other than the pinned/);
   });
 
+  it("spawns Sonnet 5.5 for a Sonnet route and refuses an Opus-attested stream on it", async () => {
+    expect(claudeWorkerArgs(undefined, {}, undefined, "claude-sonnet-5-5")).toContain("claude-sonnet-5-5");
+    const sonnet = run({ model: "claude-code/claude-sonnet-5-5" });
+    const served = fakeSpawn((child) => {
+      child.stdout(line({ ...JSON.parse(successResult("sonnet report", {})), modelUsage: { "claude-sonnet-5-5": {} } }));
+      child.exit(0);
+    });
+    const ok = await createClaudeWorkerRunner(runnerOptions(served.spawn))({ run: sonnet, task: task(), signal: new AbortController().signal, onProgress() {} });
+    expect(ok.state).toBe("done");
+    expect(served.calls[0].args.join(" ")).toContain("--model claude-sonnet-5-5 --effort xhigh");
+    const swapped = fakeSpawn((child) => {
+      child.stdout(line({ ...JSON.parse(successResult("opus report", {})), modelUsage: { "claude-opus-5-5": {} } }));
+      child.exit(0);
+    });
+    const refused = await createClaudeWorkerRunner(runnerOptions(swapped.spawn))({ run: sonnet, task: task(), signal: new AbortController().signal, onProgress() {} });
+    expect(refused.state).toBe("failed");
+    expect(refused.error).toMatch(/other than the pinned Sonnet 5.5 route/);
+  });
+
   it("refuses success with no served-model evidence", async () => {
     const { spawn } = fakeSpawn((child) => {
       const final = JSON.parse(successResult("unattested", {}));

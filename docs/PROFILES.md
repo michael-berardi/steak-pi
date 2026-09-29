@@ -34,8 +34,11 @@ Routine workers on every built-in parent profile default to **MiMo V2.6 Flash** 
 
 All-reviewer waves with no explicit harness/model/profile use the **Opus Pass**:
 `claude-code/claude-opus-5-5`, official Claude Code CLI, `xhigh` effort and
-existing subscription authentication. No silent fallback is allowed. Expert
-planning and implementation may select that same harness explicitly: Opus
+existing subscription authentication. No silent fallback is allowed. Any
+other Claude Code wave (`harness: "claude-code"` with worker or scout tasks, or
+`model: "claude-code/claude-sonnet-5-5"`) runs **Sonnet 5.5** at `xhigh`: the
+default Claude worker, nearly Opus-level at far less quota. Select
+`claude-code/claude-opus-5-5` explicitly only for frontier work. Claude
 workers get `mayEdit` + `ownedPaths` (enforced by CLI `Edit(...)` allow rules
 under `dontAsk`) and `allowBash` exactly as Pi workers do. The harness refuses
 image admission, relay and worker resume.
