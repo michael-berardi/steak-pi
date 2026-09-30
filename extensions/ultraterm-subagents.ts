@@ -237,6 +237,24 @@ export interface UltratermSubagentsDependencies {
 /** Automatic chains may spend only through the operator's exact allowlist grant, so
  * a dispatched run resolves the same approval the paid-route flag governs. The seam
  * lets a caller pin the decision instead of reading paid-routes.json. */
+/**
+ * The registry is loaded once per session, so a model added to models.json
+ * later (e.g. gpt-6.1-sol) reads as "unavailable" until a restart. On that
+ * exact miss, reload models.json once and resolve again; other errors and a
+ * second miss still fail closed with the original message.
+ */
+async function resolvePiSelection(
+  resolve: () => ReturnType<typeof resolveWorkerSelection>,
+  registry: ExtensionContext["modelRegistry"],
+): Promise<ReturnType<typeof resolveWorkerSelection>> {
+  try { return resolve(); }
+  catch (error) {
+    if (!/^USAP (model|profile) \S+ is unavailable/.test((error as Error)?.message ?? "") || typeof registry?.refresh !== "function") throw error;
+    await registry.refresh();
+    return resolve();
+  }
+}
+
 function automaticChainOptions(dependencies: UltratermSubagentsDependencies): ChainOptions {
   return { approvePaidRoute: dependencies.approvePaidRoute ?? AUTOMATIC_CHAIN_APPROVAL };
 }
@@ -1160,7 +1178,7 @@ export function createUltratermSubagentsExtension(
         }
         const piResolved = foreignHarness
           ? undefined
-          : resolveWorkerSelection(ctx.model, ctx.thinkingLevel, params, ctx.modelRegistry, dependencies.profiles, undefined, automaticChainOptions(dependencies));
+          : await resolvePiSelection(() => resolveWorkerSelection(ctx.model!, ctx.thinkingLevel, params, ctx.modelRegistry, dependencies.profiles, undefined, automaticChainOptions(dependencies)), ctx.modelRegistry);
         const resolvedSelection = piResolved ? piResolved.selection : resolveClaudeCodeSelection(claudeModel);
         const resolvedThinking = piResolved ? String(piResolved.thinkingLevel) : "xhigh";
         const model = foreignHarness ? claudeRoute! : `${piResolved!.model.provider}/${piResolved!.model.id}`;
@@ -1378,7 +1396,7 @@ export function createUltratermSubagentsExtension(
           const claudeResume = snapshot.harness === "claude-code";
           const resolved = claudeResume
             ? undefined
-            : resolveWorkerSelection(ctx.model, ctx.thinkingLevel, input, ctx.modelRegistry, dependencies.profiles, undefined, automaticChainOptions(dependencies));
+            : await resolvePiSelection(() => resolveWorkerSelection(ctx.model!, ctx.thinkingLevel, input, ctx.modelRegistry, dependencies.profiles, undefined, automaticChainOptions(dependencies)), ctx.modelRegistry);
           const resumeSelection = resolved ? resolved.selection : resolveClaudeCodeSelection(claudeCodeModelOf(snapshot.model));
           const run = normalizeDispatch(input, snapshot.cwd, snapshot.model, resolved ? String(resolved.thinkingLevel) : "xhigh", dependencies.now?.() ?? Date.now(), dependencies.idFactory);
           run.selection = { ...resumeSelection,

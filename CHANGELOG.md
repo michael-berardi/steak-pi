@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.3 (2026-09-29)
+
+- USAP picks up models added to Pi's models.json while a session is running. The
+  model registry is loaded once per session, so a new route such as
+  `openai-codex/gpt-6.1-sol` read as "unavailable" until the parent restarted
+  (every Claude Code USAP bridge started earlier refused it). On that exact miss,
+  dispatch and resume now reload models.json once and resolve again; any other
+  error, or a model that is still missing, fails closed with the original message.
+
 ## 0.9.2 (2026-09-28)
 
 - Claude Sonnet 5.5 (`claude-code/claude-sonnet-5-5`) is now a USAP Claude Code
