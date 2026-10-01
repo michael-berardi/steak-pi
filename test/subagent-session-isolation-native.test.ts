@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createAgentSessionRuntime, createAgentSessionServices, createAgentSessionFromServices,
   ModelRuntime, SessionManager, SettingsManager,
-  type AgentSessionRuntime, type CreateAgentSessionRuntimeFactory, type ExtensionContext,
+  type AgentSessionRuntime, type CreateAgentSessionRuntimeFactory, type ExtensionContext, type ExtensionToolContext,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { createUltratermSubagentsExtension, type RunView } from "../extensions/ultraterm-subagents.ts";
@@ -26,7 +26,7 @@ const model = {
 type Capture = { ctx: ExtensionContext; hub: ToolDefinition; dispatch: ToolDefinition; reason: string };
 const actions = ["status", "wait", "cancel", "send", "inbox", "resume", "diagnose"] as const;
 const invoke = (capture: Capture, tool: "hub" | "dispatch", params: object, ctx = capture.ctx) =>
-  capture[tool].execute("offline-captured-call", params, AbortSignal.timeout(5000), undefined, ctx);
+  capture[tool].execute("offline-captured-call", params, AbortSignal.timeout(5000), undefined, ctx as ExtensionToolContext);
 const list = async (capture: Capture) => (await invoke(capture, "hub", { action: "list" })).details as { runs: RunView[] };
 
 /** Native SDK runtime/resource loading/contexts/checkpoints; only worker execution is emulated.
