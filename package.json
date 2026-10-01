@@ -1,6 +1,6 @@
 {
   "name": "steak-pi",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "bin": {
     "steak-pi": "bin/steak-pi"
   },
@@ -75,8 +75,8 @@
     "typebox": ">=1.3.25 <2.0.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.87.0",
-    "@earendil-works/pi-tui": "0.87.0",
+    "@earendil-works/pi-coding-agent": "1.0.0",
+    "@earendil-works/pi-tui": "1.0.0",
     "@types/node": "^26.4.1",
     "typebox": "^1.3.25",
     "typescript": "^7.0.2",

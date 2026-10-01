@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.4 (2026-10-01)
+
+- Verified on Pi 1.0.0. Typecheck is clean and the full suite passes (694 passed,
+  1 skipped), the same result as Pi 0.87.1 and 0.99.2. Pi 1.0 makes `steer()`
+  return a queue disposition and requires tool contexts to carry `tools` and
+  `executeTool`; the worker session type now accepts any `steer()` result and the
+  isolation test passes a tool context. No runtime behaviour changes.
+- Workers reuse the host's bundled SDK on Pi 0.99.2 and 1.0.0 as well (the allow-list stopped at 0.87.1, so UltraTerm's 0.99.2 runtime silently loaded a second Pi copy per parent).
+- Development and verification pin Pi 1.0.0; the peer range stays open.
+
 ## 0.9.3 (2026-09-29)
 
 - USAP picks up models added to Pi's models.json while a session is running. The
