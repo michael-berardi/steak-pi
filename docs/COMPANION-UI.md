@@ -23,7 +23,7 @@ preserves upstream behavior while giving Steak Pi a purpose-built entry surface.
 
 [Pi's native transcript and tool rendering]
 
-◆ > glm5.3-flash · high > responding ▶━━━━────────◀ ◫ 18%/131k · $0.018
+◆ > mimo-v2.6-flash · high > responding ▶━━━━────────◀ ◫ 18%/131k · $0.018
 ╰─ Ask anything, edit files, run tools
 [extension status appears here only when present]
 ```
@@ -114,7 +114,7 @@ acceptance still runs against the installed Pi TUI inside UltraTerm.
 
 - Every rendered line is within 20, 24, 32, 40, 80, 120, and 192 columns.
 - ANSI styling never changes measured layout width.
-- Astra, Luna, and GLM model labels omit provider names and routing prefixes.
+- Astra, Luna, and MiMo model labels omit provider names and routing prefixes.
 - Truncation never splits an emoji/grapheme.
 - Session resume never clears transcript state.
 - Editor submit/history/escape and resize remain deterministic in simulation.

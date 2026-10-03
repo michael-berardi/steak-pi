@@ -85,7 +85,7 @@ const TaskSchema = Type.Object({
 export const ultratermSubagentsSchema = Type.Object({
   goal: Type.String({ minLength: 1, maxLength: 8_000 }),
   model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Exact authenticated provider/model for all tasks; mutually exclusive with profile." })),
-  profile: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Native harness/profile route (e.g. steak-pi/glm-5-3-flash); mutually exclusive with model." })),
+  profile: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Native harness/profile route (e.g. steak-pi/gpt-6-1-sol); mutually exclusive with model." })),
   harness: Type.Optional(Type.Unsafe<"pi" | "claude-code">({ type: "string", enum: ["pi", "claude-code"], description: "Execution harness. pi (default) is the native runner; claude-code is the official headless Claude CLI at xhigh: Sonnet 5.5 by default, Opus 5.5 for all-reviewer waves or model claude-code/claude-opus-5-5; workers, scouts and reviewers alike, with CLI-enforced ownedPaths and optional bash." })),
   requireImages: Type.Optional(Type.Boolean({ description: "Require advertised image input; no silent fallback." })),
   constraints: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4_000 }), { maxItems: 64 })),
@@ -614,7 +614,7 @@ export function createUltratermSubagentsExtension(
     let runtime: SessionRuntime | undefined;
     let clearedStatusUi: ExtensionContext["ui"] | undefined;
     // Replacements share leases with any late-disposing prior initialization.
-    // Session-wide ceiling comes from usap-caps.json (default 14 = 8 ZAI + 6
+    // Session-wide ceiling comes from usap-caps.json (default 14 = 8 + 6 Codex
     // Codex); each run stays capped at MAX_CONCURRENCY by dispatch validation.
     const scheduler = dependencies.createScheduler?.() ?? new SessionScheduler();
     /** Teardowns whose workers had not settled at the bounded deadline. Their
@@ -1123,7 +1123,7 @@ export function createUltratermSubagentsExtension(
       description: "Dispatch 1-8 bounded tasks through Pi or the official headless Claude Code CLI. All-reviewer waves default to Opus 5.5 xhigh; other claude-code waves run Sonnet 5.5 xhigh. Explicit routes win. Foreground default; ownedPaths grants guarded writes on either harness; allowBash is unsandboxed shell.",
       promptSnippet: "Dispatch bounded independent child tasks with explicit permissions and path ownership",
       promptGuidelines: [
-        "Fan out by default: independent leaves (disjoint files, modules, screens, angles) dispatch in ONE parallel wave — width defaults to min(8, task count); automatic Go/GLM/MiMo chain lanes fill 8, explicit Luna lanes stay at 6 or fewer.",
+        "Fan out by default: independent leaves (disjoint files, modules, screens, angles) dispatch in ONE parallel wave — width defaults to min(8, task count); automatic MiMo/Sol chain lanes fill 8, explicit Luna lanes stay at 6 or fewer.",
         "Delegation must buy completion speed; modest token premiums for real throughput are correct. Trivial or tightly coupled edits and direct answers stay in the parent.",
         "Parent owns decomposition, integration, verification; workers own leaves end to end. With exact disjoint paths and acceptance contracts in hand, dispatch in the first tool turn without pre-reading child-owned files; do not duplicate child discovery in the parent.",
         "model or profile picks an explicit authenticated route (mutually exclusive, overrides roles). Every GPT choice requires paid openai-codex OAuth — never OpenRouter, API-key, or batch GPT. Astra workers default to medium reasoning; high/xhigh needs a concrete thinkingReason. requireImages=true for visual critics or render inspection.",

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.5 (2026-10-03)
+
+- GLM 5.3, GLM 5.3 Flash and the Z.ai coding plan are retired. The automatic text
+  worker chain is now MiMo V2.6 Flash → GPT-6.1 Sol on Codex OAuth (reviewers:
+  MiMo V2.6 Pro → GPT-6.1 Sol); image runs use MiMo V2.6 Flash alone with no
+  fallback. The built-in `steak-pi/glm-5-3-flash` profile is gone, and any `zai/`,
+  `z-ai/` or `glm-` model or profile selector is refused with a message naming
+  the replacement.
+- Z.ai hosts are no longer treated as subscription routes, Inco GLM Fast is no
+  longer a reviewed paid route, the Z.ai capacity bucket is removed, and the
+  OpenCode Go provider no longer retries a failed request on Go GLM: the error is
+  reported as itself.
+- Full suite: 716 passed, 1 skipped.
+
 ## 0.9.4 (2026-10-01)
 
 - Verified on Pi 1.0.0. Typecheck is clean and the full suite passes (694 passed,

@@ -26,17 +26,14 @@ export interface WorkerProfile {
   autoReviewChain?: boolean;
 }
 export const BUILTIN_WORKER_PROFILES: readonly WorkerProfile[] = [
-  { id: "steak-pi/glm-5-3-flash", model: "zai/glm-5.3-flash", thinking: "high",
-    workerDefault: { profile: "steak-pi/mimo-v2-6-flash" },
-    reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: "steak-pi/gpt-6-astra", model: "openai-codex/gpt-6-astra", thinking: "medium", autoReviewChain: true,
     workerDefault: { profile: "steak-pi/mimo-v2-6-flash" },
-    // Reviewers keep the same automatic MiMo→ZAI subscription chain as every
+    // Reviewers keep the same automatic MiMo→Sol subscription chain as every
     // other profile. Astra stays scarce — it is never an automatic route in any
     // role, and an explicit selector stays exact.
     reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   // Parent-added GPT-6 routes (2026-09-23): exact explicit-selection profiles only.
-  // Their workerDefault keeps routine workers on the MiMo→ZAI automatic chain, so
+  // Their workerDefault keeps routine workers on the MiMo→Sol automatic chain, so
   // launching or selecting them never makes Sol or Luna an automatic worker, and
   // reviewer runs resolve the same routine subscription chain. High
   // reasoning applies to explicit runs of these profiles.
@@ -48,16 +45,16 @@ export const BUILTIN_WORKER_PROFILES: readonly WorkerProfile[] = [
     reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   // Operator default for every routine worker: MiMo V2.6 Flash on the reviewed
   // Singapore Token Plan endpoint, resolved through the ordered automatic chain
-  // (MiMo V2.6 Flash, then the ZAI coding subscription route) instead of this
+  // (MiMo V2.6 Flash, then GPT-6.1 Sol on Codex OAuth) instead of this
   // profile's head model. Reviewer selectors keep their existing exact defaults.
   { id: "steak-pi/mimo-v2-6-flash", model: "xiaomi/mimo-v2.6-flash", thinking: "high",
     workerDefault: { profile: "steak-pi/mimo-v2-6-flash" },
     reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" }, autoChain: true },
   // Legacy operator default (2026-09-23) for every routine worker: MiMo V2.6 Pro on the
   // reviewed Singapore Token Plan endpoint, resolved through the ordered automatic
-  // chain (MiMo V2.6 Pro, then the ZAI coding subscription route) instead of this
+  // chain (MiMo V2.6 Pro, then GPT-6.1 Sol on Codex OAuth) instead of this
   // profile's head model. Reviewer runs resolve the same automatic routine
-  // chain (xiaomi/mimo-v2.6-pro first, then the ZAI coding route). Profiles whose
+  // chain (xiaomi/mimo-v2.6-pro first, then GPT-6.1 Sol). Profiles whose
   // reviewerDefault names an exact model — or a profile without an automatic
   // chain flag — stay exact and never gain a chain they did not declare.
   // Note: reviewerDefault applies only once a wave is routed to native Pi. The
@@ -76,8 +73,16 @@ export const BUILTIN_WORKER_PROFILES: readonly WorkerProfile[] = [
 const PI_FAMILY_HARNESSES = new Set(["pi", "steak-pi"]);
 const thinkingLevels = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
 
+/** GLM 5.3, GLM 5.3 Flash and the Z.ai plan were retired by the operator on 2026-10-03. */
+export const RETIRED_ROUTE = /(?:^|[/:])(?:zai|z-ai)\/|(?:^|\/)glm[-.]/i;
+export const retiredRouteError = (route: string) =>
+  `${route} is retired: GLM 5.3 and the Z.ai plan were removed on 2026-10-03. Use steak-pi/gpt-6-1-sol (openai-codex/gpt-6.1-sol) or the automatic default.`;
+
 function selector(value: WorkerSelector, label: string): WorkerSelector {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be a model/profile selector.`);
+  for (const route of [value.model, value.profile]) {
+    if (typeof route === "string" && RETIRED_ROUTE.test(route)) throw new Error(`${label}: ${retiredRouteError(route)}`);
+  }
   if (value.model !== undefined && value.profile !== undefined) throw new Error(`${label}: model and profile conflict; specify exactly one.`);
   for (const [key, field] of Object.entries(value)) {
     if (!["model", "profile"].includes(key) || typeof field !== "string" || !field.trim() || field !== field.trim() || field.length > 256) {
@@ -241,12 +246,12 @@ export function resolveWorkerSelection(
   const profile = chosen?.profile ? profileById(chosen.profile) : undefined;
   // Automatic defaults resolve the final chain; an explicit selector stays exact.
   const automatic = !explicit && (chosen === undefined || (chosen.model === undefined && (profile?.autoChain === true || (review && profile?.autoReviewChain === true))));
-  // The default reviewer role rides the same prepaid MiMo→ZAI subscription chain
+  // The default reviewer role rides the same prepaid MiMo→Sol subscription chain
   // as routine workers. No automatic expert step remains in the native review
   // chain: an expert review is a deliberate explicit choice (the Opus Pass CLI
   // route or an exact model/profile override), never a silent substitution.
   // An automatic profile that names a Token Plan model keeps it as the chain head.
-  // Automatic reviewer runs stay on [MiMo V2.6 Pro, ZAI] unless their profile names
+  // Automatic reviewer runs stay on [MiMo V2.6 Pro, GPT-6.1 Sol] unless their profile names
   // Flash; routine workers resolve the Flash-led default worker chain.
   const headRoute = (key: string | undefined) => {
     const slash = key?.indexOf("/") ?? -1;

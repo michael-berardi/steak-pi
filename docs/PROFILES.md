@@ -7,22 +7,21 @@ harness uses the official headless CLI instead; see the [capability matrix](./UL
 
 ## Explicit cross-model dispatch
 
-An Astra manager can select the existing GLM profile:
+An Astra manager can select the GPT-6.1 Sol profile:
 
 ```json
 {
-  "goal": "Inspect a rendered asset",
-  "profile": "steak-pi/glm-5-3-flash",
-  "requireImages": true,
+  "goal": "Review the parser change",
+  "profile": "steak-pi/gpt-6-1-sol",
   "tasks": [{
-    "label": "visual-review",
+    "label": "parser-review",
     "role": "reviewer",
-    "task": "Read the render image in the project and report observable issues. Do not edit files."
+    "task": "Review src/parser.ts for correctness and report issues. Do not edit files."
   }]
 }
 ```
 
-The reviewer role does not replace that explicit GLM selection. To choose a
+The reviewer role does not replace that explicit selection. To choose a
 model directly, supply `"model": "openai-codex/gpt-6-astra"` **instead of**
 `profile`. Any supported, authenticated native provider/model may be selected;
 GPT models always require the paid Codex OAuth route. Bare model names,
@@ -30,7 +29,7 @@ conflicting selectors and unavailable routes fail before launch.
 
 ## Per-parent defaults
 
-Routine workers on every built-in parent profile default to **MiMo V2.6 Flash** on the Xiaomi Token Plan, with **GLM 5.3 Flash on the ZAI coding subscription** as the only automatic fallback. The main app's launch model is unchanged (MiMo V2.6 Pro). Explicitly native-Pi reviewer runs (`harness: "pi"` or an explicit native model/profile) resolve the automatic MiMo V2.6 Pro → ZAI chain: no expert model is ever selected automatically in the native review chain, and the shipped "expert review chain" label is a legacy native-Pi routing flag, not expert sign-off.
+Routine workers on every built-in parent profile default to **MiMo V2.6 Flash** on the Xiaomi Token Plan, with **GPT-6.1 Sol on Codex OAuth** as the only automatic text fallback (image runs have no fallback). GLM 5.3, GLM 5.3 Flash and the Z.ai plan were retired on 2026-10-03; GLM or `zai/` selectors are refused. The main app's launch model is unchanged (MiMo V2.6 Pro). Explicitly native-Pi reviewer runs (`harness: "pi"` or an explicit native model/profile) resolve the automatic MiMo V2.6 Pro → GPT-6.1 Sol chain: no expert model is ever selected automatically in the native review chain, and the shipped "expert review chain" label is a legacy native-Pi routing flag, not expert sign-off.
 
 All-reviewer waves with no explicit harness/model/profile use the **Opus Pass**:
 `claude-code/claude-opus-5-5`, official Claude Code CLI, `xhigh` effort and
@@ -66,7 +65,7 @@ change. When no manifest is readable the pickers keep the previous native
 availability instead of hiding every model, and dispatch and fallback eligibility
 are never narrowed by the manifest — see [`MODEL-ROUTING.md`](./MODEL-ROUTING.md).
 
-An owner may add these fields to a profile entry to configure GLM for both
+An owner may add these fields to a profile entry to configure Sol for both
 routine and explicitly selected native Pi reviewer work from that parent
 (`harness: "pi"`). These native defaults do not replace the new automatic
 all-reviewer Opus Pass:
@@ -75,10 +74,10 @@ all-reviewer Opus Pass:
 {
   "id": "gpt-6-astra",
   "name": "GPT-6 Astra",
-  "description": "Paid Codex manager with GLM workers",
+  "description": "Codex manager with Sol workers",
   "args": ["--model", "openai-codex/gpt-6-astra", "--thinking", "medium"],
-  "workerDefault": {"profile": "steak-pi/glm-5-3-flash"},
-  "reviewerDefault": {"profile": "steak-pi/glm-5-3-flash"}
+  "workerDefault": {"profile": "steak-pi/gpt-6-1-sol"},
+  "reviewerDefault": {"profile": "steak-pi/gpt-6-1-sol"}
 }
 ```
 
