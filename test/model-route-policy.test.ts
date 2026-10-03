@@ -45,11 +45,11 @@ const astra = {
   input: ["text", "image"],
 } as Model;
 const luna = { ...astra, id: "gpt-5.6-luna", name: "GPT-5.6 Luna" };
-const glm = { ...astra, id: "glm-5.3-flash", name: "GLM-5.3 Flash", provider: "zai", api: "openai-completions", baseUrl: "https://api.z.ai/api/coding/paas/v4" } as Model;
+const mimo = { ...astra, id: "mimo-v2.6-flash", name: "MiMo V2.6 Flash", provider: "xiaomi", api: "openai-completions", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1" } as Model;
 // FINAL automatic worker chain fixtures: real verified endpoints only.
 const chainModels = {
   goPrimary: { ...astra, id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", provider: "opencode-go", api: "openai-completions", baseUrl: "https://opencode.ai/zen/go/v1", input: ["text"] } as Model,
-  goFallback: { ...astra, id: "glm-5.3-flash", name: "GLM 5.3 Flash", provider: "opencode-go", api: "openai-completions", baseUrl: "https://opencode.ai/zen/go/v1", input: ["text"] } as Model,
+  sol: { ...astra, id: "gpt-6.1-sol", name: "GPT-6.1 Sol", input: ["text"] } as Model,
   mimoFlash: { ...astra, id: "mimo-v2.6-flash", name: "MiMo V2.6 Flash", provider: "xiaomi", api: "openai-completions", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1", input: ["text", "image"] } as Model,
   mimoPro: { ...astra, id: "mimo-v2.6-pro", name: "MiMo V2.6 Pro", provider: "xiaomi", api: "openai-completions", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1", input: ["text", "image"] } as Model,
   zaiGlm: { ...astra, id: "glm-5.3-flash", name: "GLM-5.3 Flash", provider: "zai", api: "openai-completions", baseUrl: "https://api.z.ai/api/coding/paas/v4", input: ["text", "image"] } as Model,
@@ -68,7 +68,7 @@ function chainRegistry(models: readonly Model[] = Object.values(chainModels) as 
 
 function fakeProvider(id = "openai-codex") {
   return {
-    id, name: id, auth: {}, getModels: () => id === "zai" ? [glm] : [astra],
+    id, name: id, auth: {}, getModels: () => id === "xiaomi" ? [mimo] : [astra],
     stream: vi.fn(() => "stream"), streamSimple: vi.fn(() => "simple"),
     fetchDeferred: vi.fn(() => "deferred"), cancelDeferred: vi.fn(async () => {}),
   } as unknown as Provider;
@@ -77,13 +77,13 @@ function fakeProvider(id = "openai-codex") {
 function fakeRegistry() {
   const native = new Map<string, Provider>();
   const registry = {
-    getAll: () => [astra, glm],
+    getAll: () => [astra, mimo],
     getProvider: (id: string) => native.get(id) ?? fakeProvider(id),
     getRegisteredNativeProvider: (id: string) => native.get(id),
     registerProvider: vi.fn((provider: Provider) => native.set(provider.id, provider)),
     isUsingOAuth: vi.fn(() => true),
     hasConfiguredAuth: vi.fn((_model: Model) => true),
-    getAvailable: vi.fn(() => [astra, glm]),
+    getAvailable: vi.fn(() => [astra, mimo]),
     find: vi.fn(() => luna),
   };
   return { registry: registry as unknown as Registry, native, methods: registry };
@@ -102,8 +102,8 @@ describe("GPT coding-plan route policy", () => {
     }
   });
   it("allows non-GPT routes unchanged", () => {
-    expect(() => assertSubscriptionRequest(glm, false)).not.toThrow();
-    expect(() => assertModelRoute({ ...glm, provider: "openrouter" })).not.toThrow();
+    expect(() => assertSubscriptionRequest(mimo, false)).not.toThrow();
+    expect(() => assertModelRoute({ ...mimo, provider: "openrouter" })).not.toThrow();
   });
   it("requires actual OAuth, Codex API, and official coding-plan endpoint", () => {
     expect(() => assertSubscriptionRequest(astra, true)).not.toThrow();
@@ -125,23 +125,23 @@ describe("GPT coding-plan route policy", () => {
       expect(provider[key]).not.toHaveBeenCalled();
     }
   });
-  it("preserves dispatch API coverage while hiding forbidden availability without removing GLM images", () => {
+  it("preserves dispatch API coverage while hiding forbidden availability without removing MiMo images", () => {
     const blocked = { ...astra, provider: "openrouter" };
     const batch = { ...astra, id: "gpt-6-astra:batch" };
-    const imageGlm = { ...glm, input: ["text", "image"] } as Model;
-    const models = [astra, blocked, batch, imageGlm];
+    const imageMimo = { ...mimo, input: ["text", "image"] } as Model;
+    const models = [astra, blocked, batch, imageMimo];
     const filterModels = vi.fn((items: Model[]) => items);
     const guarded = guardProvider({ ...fakeProvider(), getModels: () => models, filterModels }, () => true);
     expect(guarded.getModels()).toEqual(models);
-    expect(guarded.filterModels!(models, undefined)).toEqual([astra, imageGlm]);
+    expect(guarded.filterModels!(models, undefined)).toEqual([astra, imageMimo]);
     expect(filterModels).toHaveBeenCalledWith(models, undefined);
     expect(models).toHaveLength(4);
-    expect(imageGlm.input).toContain("image");
+    expect(imageMimo.input).toContain("image");
   });
 
   it("keeps nonthrowing catalog decisions equivalent to dispatch route assertions", () => {
     const cases = [
-      [astra, true], [glm, true], [{ ...glm, provider: "openrouter" }, true],
+      [astra, true], [mimo, true], [{ ...mimo, provider: "openrouter" }, true],
       [{ ...astra, id: "openai-codex/gpt-6-astra" }, true],
       [{ ...astra, provider: "openrouter" }, false],
       [{ ...astra, provider: "OPENAI-CODEX" }, false],
@@ -158,7 +158,7 @@ describe("GPT coding-plan route policy", () => {
 
   it("allocates no rejection exceptions while filtering a mixed catalog", () => {
     const models = Array.from({ length: 1024 }, (_, index) =>
-      index % 2 ? { ...astra, provider: "openrouter" } : glm);
+      index % 2 ? { ...astra, provider: "openrouter" } : mimo);
     const guarded = guardProvider({ ...fakeProvider(), getModels: () => models }, () => true);
     const { visible, filtered, errorCount } = (() => {
       const errors = vi.spyOn(globalThis, "Error");
@@ -173,7 +173,7 @@ describe("GPT coding-plan route policy", () => {
     expect(errorCount).toBe(0);
     expect(visible).toHaveLength(1024);
     expect(filtered).toHaveLength(512);
-    expect(filtered.every((model) => model === glm)).toBe(true);
+    expect(filtered.every((model) => model === mimo)).toBe(true);
   });
 
   it("checks OAuth at execution time and passes allowed requests through unchanged", async () => {
@@ -205,14 +205,14 @@ describe("GPT coding-plan route policy", () => {
     // after the first install, so a credentials-only filter would skip both.
     const { registry, native, methods } = fakeRegistry();
     const openrouterGpt = { ...astra, provider: "openrouter" } as Model;
-    registry.getAll = () => [astra, glm, openrouterGpt];
-    methods.hasConfiguredAuth.mockImplementation((model: Model) => model.provider === "zai");
+    registry.getAll = () => [astra, mimo, openrouterGpt];
+    methods.hasConfiguredAuth.mockImplementation((model: Model) => model.provider === "xiaomi");
     createRegistryGuard()(registry);
-    expect([...native.keys()].sort()).toEqual(["openai-codex", "openrouter", "zai"]);
+    expect([...native.keys()].sort()).toEqual(["openai-codex", "openrouter", "xiaomi"]);
     expect(() => native.get("openrouter")!.streamSimple(openrouterGpt, emptyContext())).toThrow(GPT_ROUTE_ERROR);
     // The 0.7.0 `active` argument is accepted and changes nothing.
     createRegistryGuard()(registry, openrouterGpt);
-    expect([...native.keys()].sort()).toEqual(["openai-codex", "openrouter", "zai"]);
+    expect([...native.keys()].sort()).toEqual(["openai-codex", "openrouter", "xiaomi"]);
   });
   it("re-guards a new configured API without stacking unchanged wrappers", () => {
     const { registry, native, methods } = fakeRegistry();
@@ -220,7 +220,7 @@ describe("GPT coding-plan route policy", () => {
     install(registry);
     const overlay = { ...astra, api: "openai-completions" } as Model;
     const base = native.get("openai-codex")!;
-    registry.getAll = () => [overlay, glm];
+    registry.getAll = () => [overlay, mimo];
     registry.getProvider = (id) => id === "openai-codex"
       ? { ...base, getModels: () => [overlay] } : native.get(id);
     install(registry);
@@ -243,7 +243,7 @@ describe("GPT coding-plan route policy", () => {
     expect(methods.registerProvider).toHaveBeenCalledTimes(2);
     const overlay = { ...astra, api: "openai-completions" } as Model;
     const base = native.get("openai-codex")!;
-    registry.getAll = () => [overlay, glm];
+    registry.getAll = () => [overlay, mimo];
     registry.getProvider = (id) => id === "openai-codex"
       ? { ...base, getModels: () => [overlay] } : native.get(id);
     guardModelRuntime(runtime);
@@ -254,7 +254,7 @@ describe("GPT coding-plan route policy", () => {
   it("defaults Astra worker effort to medium without changing other models", () => {
     expect(selectWorkerThinking(astra, "high")).toBe("medium");
     expect(selectWorkerThinking({ id: "openai-codex/gpt-6-astra" }, "xhigh")).toBe("medium");
-    expect(selectWorkerThinking(glm, "high")).toBe("high");
+    expect(selectWorkerThinking(mimo, "high")).toBe("high");
     expect(selectWorkerThinking(luna, "low")).toBe("low");
   });
   it.each(["high", "xhigh"] as const)("requires a concrete benefit before escalating Astra to %s", (level) => {
@@ -271,15 +271,16 @@ describe("GPT coding-plan route policy", () => {
     expect(selectWorkerModel(astra, ["worker", "reviewer"], chain)).toBe(astra);
     // Unmapped non-GPT parents keep their own model; automatic routing never
     // substitutes a paid route for a parent the operator already selected.
-    expect(selectWorkerModel(glm, ["worker"], chain)).toBe(glm);
+    expect(selectWorkerModel(mimo, ["worker"], chain)).toBe(mimo);
   });
   it("prefers the scarce Astra expert for the default reviewer role, never a metered substitute", () => {
     // The expert review chains are pinned exactly: Astra first, then the routine
     // subscription order. Astra is deliberately absent from the routine chains.
     expect([...EXPERT_TEXT_REVIEW_CHAIN]).toEqual([
       { provider: "openai-codex", id: "gpt-6-astra" },
-      { provider: "xiaomi", id: "mimo-v2.6-flash" }, { provider: "zai", id: "glm-5.3-flash" }]);
-    expect(EXPERT_MULTIMODAL_REVIEW_CHAIN).toEqual(EXPERT_TEXT_REVIEW_CHAIN);
+      { provider: "xiaomi", id: "mimo-v2.6-flash" }, { provider: "openai-codex", id: "gpt-6.1-sol" }]);
+    expect(EXPERT_MULTIMODAL_REVIEW_CHAIN).toEqual([
+      { provider: "openai-codex", id: "gpt-6-astra" }, { provider: "xiaomi", id: "mimo-v2.6-flash" }]);
     expect(isExpertReviewModel(astra)).toBe(true);
     expect(isExpertReviewModel({ ...astra, id: "gpt-5.6-luna" })).toBe(false);
     expect(DEFAULT_TEXT_WORKER_CHAIN.some(isExpertReviewModel)).toBe(false);
@@ -309,27 +310,41 @@ describe("GPT coding-plan route policy", () => {
   it("never auto-selects GPT-5.6 Luna and fails closed without an authenticated chain route", () => {
     const { registry } = fakeRegistry();
     expect(() => selectWorkerModel(astra, ["worker"], registry)).toThrow(/no fallback was selected/);
-    for (const chain of [DEFAULT_TEXT_WORKER_CHAIN, DEFAULT_MULTIMODAL_WORKER_CHAIN]) {
+    for (const chain of [DEFAULT_TEXT_WORKER_CHAIN, DEFAULT_MULTIMODAL_WORKER_CHAIN,
+      EXPERT_TEXT_REVIEW_CHAIN, EXPERT_MULTIMODAL_REVIEW_CHAIN,
+      workerChainFor({ provider: "xiaomi", id: "mimo-v2.6-pro" }, false),
+      workerChainFor({ provider: "xiaomi", id: "mimo-v2.6-pro" }, true)]) {
       expect(chain.some((step) => step.id === ROUTINE_GPT_MODEL ||
-        ["openai-codex", "opencode-go", "inco", "openrouter"].includes(step.provider))).toBe(false);
+        ["zai", "z-ai", "opencode-go", "inco", "openrouter"].includes(step.provider))).toBe(false);
     }
   });
 
-  it("resolves the final ordered text chain: MiMo Token Plan Pro, then ZAI coding GLM", () => {
-    // The operator-final chain, pinned exactly: one unified text/image order.
+  it("resolves the ordered text chain: MiMo Flash, then Codex OAuth Sol", () => {
+    // Text has a Sol fallback; the multimodal chain has no fallback.
     expect([...DEFAULT_TEXT_WORKER_CHAIN]).toEqual([
-      { provider: "xiaomi", id: "mimo-v2.6-flash" }, { provider: "zai", id: "glm-5.3-flash" }]);
-    expect(DEFAULT_MULTIMODAL_WORKER_CHAIN).toEqual(DEFAULT_TEXT_WORKER_CHAIN);
+      { provider: "xiaomi", id: "mimo-v2.6-flash" }, { provider: "openai-codex", id: "gpt-6.1-sol" }]);
+    expect(DEFAULT_MULTIMODAL_WORKER_CHAIN).toEqual([{ provider: "xiaomi", id: "mimo-v2.6-flash" }]);
     // Both steps are actual subscription routes: selected with NO paid allowlist grant.
     expect(selectChainedWorkerModel(chainRegistry(), DEFAULT_TEXT_WORKER_CHAIN)).toBe(chainModels.mimoFlash);
     expect(selectChainedWorkerModel(chainRegistry(), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => false }))
       .toBe(chainModels.mimoFlash);
-    // MiMo unavailable: the ZAI coding subscription route serves the run.
-    expect(selectChainedWorkerModel(chainRegistry([chainModels.zaiGlm]), DEFAULT_TEXT_WORKER_CHAIN))
-      .toBe(chainModels.zaiGlm);
+    // MiMo unavailable: Codex OAuth Sol serves the text run, never retired Z.ai.
+    expect(selectChainedWorkerModel(chainRegistry([chainModels.sol, chainModels.zaiGlm]), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => false }))
+      .toBe(chainModels.sol);
+    expect(() => selectChainedWorkerModel(chainRegistry([chainModels.zaiGlm]), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => true }))
+      .toThrow(/no fallback was selected/);
     // Go routes are no automatic chain step and never satisfy one, whatever the grant.
-    expect(() => selectChainedWorkerModel(chainRegistry([chainModels.goPrimary, chainModels.goFallback]),
+    expect(() => selectChainedWorkerModel(chainRegistry([chainModels.goPrimary]),
       DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => true })).toThrow(/no fallback was selected/);
+  });
+  it("refuses API-key or off-plan Sol fallbacks even with a paid grant", () => {
+    const noOAuth = { ...chainRegistry([chainModels.sol]), isUsingOAuth: () => false } as unknown as Registry;
+    expect(() => selectChainedWorkerModel(noOAuth, DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => true }))
+      .toThrow(/no fallback was selected/);
+    for (const baseUrl of ["https://api.openai.com/v1", "https://chatgpt.com.evil.test/backend-api"]) {
+      expect(() => selectChainedWorkerModel(chainRegistry([{ ...chainModels.sol, baseUrl } as Model]),
+        DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => true })).toThrow(/no fallback was selected/);
+    }
   });
   it("requires the operator's authenticated available catalog to carry the route", () => {
     const catalog = (models: readonly Model[], available: readonly Model[] = models, authenticated: readonly Model[] = models) => ({
@@ -345,10 +360,13 @@ describe("GPT coding-plan route policy", () => {
     expect(selectChainedWorkerModel(catalog([chainModels.mimoFlash]), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => false }))
       .toBe(chainModels.mimoFlash);
     // Reviewed routes outside the subscription set still need the operator's exact grant.
-    const inco = { id: "glm-5.3-flash:fast", name: "GLM 5.3 Flash (Inco)", provider: "inco", api: "openai-completions", baseUrl: "https://api.inco.ai/v1", input: ["text"] } as Model;
-    const incoChain = [{ provider: "inco", id: "glm-5.3-flash:fast" }];
+    const inco = { id: "deepseek-v4.1-flash:fast", name: "DeepSeek V4.1 Flash (Inco)", provider: "inco", api: "openai-completions", baseUrl: "https://api.inco.ai/v1", input: ["text"] } as Model;
+    const incoChain = [{ provider: "inco", id: "deepseek-v4.1-flash:fast" }];
     expect(selectChainedWorkerModel(catalog([chainModels.mimoFlash, inco]), incoChain, { approvePaidRoute: approve })).toBe(inco);
     expect(() => selectChainedWorkerModel(catalog([chainModels.mimoFlash, inco]), incoChain, { approvePaidRoute: () => false }))
+      .toThrow(/no fallback was selected/);
+    const retiredInco = { ...inco, id: "glm-5.3-flash:fast", name: "GLM 5.3 Flash (Inco)" } as Model;
+    expect(() => selectChainedWorkerModel(catalog([retiredInco]), [{ provider: "inco", id: retiredInco.id }], { approvePaidRoute: approve }))
       .toThrow(/no fallback was selected/);
     // Absent from the operator's available catalog, or unauthenticated, both fail
     // closed regardless of grants; none of them may spend.
@@ -385,8 +403,8 @@ describe("GPT coding-plan route policy", () => {
     expect(selectChainedWorkerModel(chainRegistry(), DEFAULT_MULTIMODAL_WORKER_CHAIN, { requireImages: true, approvePaidRoute: approve }))
       .toBe(chainModels.mimoFlash);
     const withoutMimo = chainRegistry([chainModels.zaiGlm]);
-    expect(selectChainedWorkerModel(withoutMimo, DEFAULT_MULTIMODAL_WORKER_CHAIN, { requireImages: true, approvePaidRoute: approve }))
-      .toBe(chainModels.zaiGlm);
+    expect(() => selectChainedWorkerModel(withoutMimo, DEFAULT_MULTIMODAL_WORKER_CHAIN, { requireImages: true, approvePaidRoute: approve }))
+      .toThrow(/no fallback was selected/);
     // Same-named provider pointed at a different host is a different billing
     // target and never enters the default chain.
     const offPlan = { ...chainModels.mimoFlash, baseUrl: "https://api.xiaomimimo.com/v1" } as Model;
@@ -475,44 +493,36 @@ async function drain(stream: AsyncIterable<unknown>) {
 
 describe("pre-output custom-chain fallback (real provider streams)", () => {
   // Exercise the generic chain engine with a three-step test chain. This is
-  // deliberately not the shipped MiMo -> ZAI default, tested separately below.
-  const DEFAULT_TEXT_WORKER_CHAIN = [chainModels.goPrimary, chainModels.goFallback, chainModels.mimoFlash]
+  // deliberately not the shipped MiMo -> Sol default, tested separately below.
+  const DEFAULT_TEXT_WORKER_CHAIN = [chainModels.goPrimary, chainModels.sol, chainModels.mimoFlash]
     .map(({ provider, id }) => ({ provider, id }));
   const context = () => emptyContext();
   const session = (signal?: AbortSignal) => ({ sessionId: "chain-session", ...(signal ? { signal } : {}) });
   const goPrimary = chainModels.goPrimary;
-  const goFallback = chainModels.goFallback;
-  const mimoPro = chainModels.mimoFlash; // default chain head (Flash since 0.8.1)
-  const offPlanMimo = { ...mimoPro, baseUrl: "https://api.xiaomimimo.com/v1" } as Model;
+  const sol = chainModels.sol;
+  const mimoFlash = chainModels.mimoFlash;
+  const offPlanMimo = { ...mimoFlash, baseUrl: "https://api.xiaomimimo.com/v1" } as Model;
   const meteredGlm = { ...chainModels.zaiGlm, baseUrl: "https://metered.example/v1" } as Model;
 
-  it("keeps a transient Go failure on Go's own same-plan retry and never spends elsewhere", async () => {
+  it("passes a transient Go failure through without retrying retired GLM", async () => {
+    const retiredGo = { ...goPrimary, id: "glm-5.3-flash", name: "GLM 5.3 Flash" } as Model;
+    const failure = routeFail(goPrimary, "429 rate limit exceeded");
     const runtime = chainRuntime({
-      models: [goPrimary, goFallback, mimoPro],
-      scripts: {
-        "opencode-go": (model) => model.id === goPrimary.id
-          ? [routeStart(model), routeFail(model, "429 rate limit exceeded")]
-          : [routeStart(model), ...routeText(model, "glm answered"), routeDone(model)],
-      },
-      chain: DEFAULT_TEXT_WORKER_CHAIN,
+      models: [goPrimary, retiredGo],
+      scripts: { "opencode-go": model => [routeStart(model), failure] },
+      chain: [{ provider: goPrimary.provider, id: goPrimary.id }],
       approve: () => true,
     });
     const events = await drain(runtime.registry.getProvider("opencode-go")!.streamSimple(goPrimary, context(), session() as never));
-    expect(runtime.calls.get("opencode-go")!.mock.calls.map((call) => call[0].id)).toEqual([goPrimary.id, goFallback.id]);
-    expect(events.some((event) => event.type === "error")).toBe(false);
-    const done = events.find((event) => event.type === "done");
-    expect(done?.message).toMatchObject({ provider: "opencode-go", model: goFallback.id });
-    expect(events.find((event) => event.type === "text_delta")?.partial)
-      .toMatchObject({ provider: "opencode-go", model: goFallback.id });
-    // The same-plan retry answered inside the Go wrapper: no cross-provider chain
-    // hop was taken and no Token Plan spend was triggered.
+    expect(runtime.calls.get("opencode-go")!.mock.calls.map(call => call[0].id)).toEqual([goPrimary.id]);
+    expect(events.at(-1)).toBe(failure);
+    expect(events.some(event => event.type === "done")).toBe(false);
     expect(runtime.fallbacks).toHaveLength(0);
-    expect(runtime.calls.get("xiaomi")!.mock.calls).toHaveLength(0);
   });
 
-  it("hops before output to the next route with real provenance when no same-plan route exists", async () => {
+  it("hops before output to the next available custom-chain route with real provenance", async () => {
     const runtime = chainRuntime({
-      models: [goPrimary, mimoPro],
+      models: [goPrimary, mimoFlash],
       scripts: {
         "opencode-go": (model) => [routeStart(model), routeFail(model, "503 service unavailable")],
         xiaomi: (model) => [routeStart(model), ...routeText(model, "token plan answered"), routeDone(model)],
@@ -523,18 +533,19 @@ describe("pre-output custom-chain fallback (real provider streams)", () => {
     const events = await drain(runtime.registry.getProvider("opencode-go")!.streamSimple(goPrimary, context(), session() as never));
     expect(events.some((event) => event.type === "error")).toBe(false);
     expect(events.find((event) => event.type === "done")?.message)
-      .toMatchObject({ provider: "xiaomi", model: mimoPro.id });
+      .toMatchObject({ provider: "xiaomi", model: mimoFlash.id });
     expect(events.find((event) => event.type === "text_delta")?.partial)
-      .toMatchObject({ provider: "xiaomi", model: mimoPro.id });
+      .toMatchObject({ provider: "xiaomi", model: mimoFlash.id });
     expect(runtime.fallbacks.map((hop) => `${hop.from.provider}/${hop.from.id}->${hop.to.provider}/${hop.to.id}`))
-      .toEqual([`opencode-go/${goPrimary.id}->xiaomi/${mimoPro.id}`]);
+      .toEqual([`opencode-go/${goPrimary.id}->xiaomi/${mimoFlash.id}`]);
   });
 
-  it("leaves an exhausted Go plan for the approved Singapore Token Plan route", async () => {
+  it("records both custom-chain hops when Go and Codex subscriptions are exhausted", async () => {
     const runtime = chainRuntime({
-      models: [goPrimary, goFallback, mimoPro],
+      models: [goPrimary, sol, mimoFlash],
       scripts: {
         "opencode-go": (model) => [routeStart(model), routeFail(model, "subscription_quota_exceeded")],
+        "openai-codex": model => [routeStart(model), routeFail(model, "subscription_quota_exceeded")],
         xiaomi: (model) => [routeStart(model), ...routeText(model, "token plan answered"), routeDone(model)],
       },
       chain: DEFAULT_TEXT_WORKER_CHAIN,
@@ -542,16 +553,17 @@ describe("pre-output custom-chain fallback (real provider streams)", () => {
     });
     const events = await drain(runtime.registry.getProvider("opencode-go")!.streamSimple(goPrimary, context(), session() as never));
     expect(events.find((event) => event.type === "done")?.message)
-      .toMatchObject({ provider: "xiaomi", model: mimoPro.id });
-    expect(runtime.calls.get("xiaomi")!.mock.calls.map((call) => call[0].id)).toEqual([mimoPro.id]);
-    expect(runtime.calls.get("opencode-go")!.mock.calls.map((call) => call[0].id)).toEqual([goPrimary.id, goFallback.id]);
+      .toMatchObject({ provider: "xiaomi", model: mimoFlash.id });
+    expect(runtime.calls.get("xiaomi")!.mock.calls.map((call) => call[0].id)).toEqual([mimoFlash.id]);
+    expect(runtime.calls.get("opencode-go")!.mock.calls.map((call) => call[0].id)).toEqual([goPrimary.id]);
+    expect(runtime.calls.get("openai-codex")!.mock.calls.map(call => call[0].id)).toEqual([sol.id]);
     expect(runtime.fallbacks.map((hop) => `${hop.from.id}->${hop.to.provider}/${hop.to.id}`))
-      .toEqual([`${goPrimary.id}->opencode-go/${goFallback.id}`, `${goFallback.id}->xiaomi/${mimoPro.id}`]);
+      .toEqual([`${goPrimary.id}->openai-codex/${sol.id}`, `${sol.id}->xiaomi/${mimoFlash.id}`]);
   });
 
-  it("reaches the Token Plan route directly when Go has no same-plan retry route left", async () => {
+  it("reaches the Token Plan route directly when Codex is unavailable", async () => {
     const runtime = chainRuntime({
-      models: [goPrimary, mimoPro],
+      models: [goPrimary, mimoFlash],
       scripts: {
         "opencode-go": (model) => [routeStart(model), routeFail(model, "quota exhausted for this subscription plan")],
         xiaomi: (model) => [routeStart(model), routeDone(model)],
@@ -560,14 +572,14 @@ describe("pre-output custom-chain fallback (real provider streams)", () => {
       approve: () => true,
     });
     const events = await drain(runtime.registry.getProvider("opencode-go")!.streamSimple(goPrimary, context(), session() as never));
-    expect(events.find((event) => event.type === "done")?.message).toMatchObject({ provider: "xiaomi", model: mimoPro.id });
+    expect(events.find((event) => event.type === "done")?.message).toMatchObject({ provider: "xiaomi", model: mimoFlash.id });
     expect(runtime.fallbacks.map((hop) => hop.to.provider)).toEqual(["xiaomi"]);
   });
 
   it.each(["401 unauthorized", "403 permission denied", "region unsupported", "context length exceeded", "403 temporarily unavailable region"])(
     "never hops for %s", async (message) => {
       const runtime = chainRuntime({
-        models: [goPrimary, goFallback, mimoPro],
+        models: [goPrimary, sol, mimoFlash],
         scripts: { "opencode-go": (model) => [routeStart(model), routeFail(model, message)] },
         chain: DEFAULT_TEXT_WORKER_CHAIN,
         approve: () => true,
@@ -583,7 +595,7 @@ describe("pre-output custom-chain fallback (real provider streams)", () => {
     ["tool", 1],
   ])("stops permanently once %s output starts", async (kind, index) => {
     const runtime = chainRuntime({
-      models: [goPrimary, goFallback, mimoPro],
+      models: [goPrimary, sol, mimoFlash],
       scripts: {
         "opencode-go": (model) => [routeStart(model), ...(index === 0 ? routeText(model) : [routeTool(model)]), routeFail(model, "503 service unavailable")],
       },
@@ -599,7 +611,7 @@ describe("pre-output custom-chain fallback (real provider streams)", () => {
 
   it("never spends on an unapproved or off-plan metered route", async () => {
     for (const [models, approve, label, goCalls] of [
-      [[goPrimary, goFallback, offPlanMimo], () => true, "off-plan Xiaomi endpoint", 2],
+      [[goPrimary, offPlanMimo], () => true, "off-plan Xiaomi endpoint", 1],
       [[goPrimary, meteredGlm], () => true, "generic metered PAYG", 1],
     ] as const) {
       const runtime = chainRuntime({
@@ -624,7 +636,7 @@ describe("pre-output custom-chain fallback (real provider streams)", () => {
   it("never hops an aborted request and never revisits a route", async () => {
     const controller = new AbortController();
     const runtime = chainRuntime({
-      models: [goPrimary, goFallback, mimoPro],
+      models: [goPrimary, sol, mimoFlash],
       scripts: { "opencode-go": (model) => [routeStart(model), routeFail(model, "429 rate limit")] },
       chain: DEFAULT_TEXT_WORKER_CHAIN,
       approve: () => true,
@@ -648,10 +660,25 @@ describe("pre-output custom-chain fallback (real provider streams)", () => {
   });
 });
 
-describe("shipped MiMo Token Plan -> ZAI subscription stream chain", () => {
+describe("shipped MiMo Token Plan -> Codex OAuth Sol subscription stream chain", () => {
+  it("passes multimodal MiMo failure through unchanged without trying Sol or Z.ai", async () => {
+    const failure = routeFail(chainModels.mimoFlash, "503 service unavailable");
+    const runtime = chainRuntime({
+      models: [chainModels.mimoFlash, { ...chainModels.sol, input: ["text", "image"] } as Model, chainModels.zaiGlm],
+      scripts: { xiaomi: model => [routeStart(model), failure] },
+      chain: DEFAULT_MULTIMODAL_WORKER_CHAIN, approve: () => true,
+    });
+    const events = await drain(runtime.registry.getProvider("xiaomi")!.streamSimple(chainModels.mimoFlash, emptyContext()));
+    expect(events.at(-1)).toBe(failure);
+    expect(runtime.calls.get("xiaomi")!.mock.calls).toHaveLength(1);
+    expect(runtime.calls.get("openai-codex")!.mock.calls).toHaveLength(0);
+    expect(runtime.calls.get("zai")!.mock.calls).toHaveLength(0);
+    expect(runtime.fallbacks).toHaveLength(0);
+  });
+
   it("streams the prepaid primary without a paid-route grant", async () => {
     const runtime = chainRuntime({
-      models: [chainModels.mimoFlash, chainModels.zaiGlm],
+      models: [chainModels.mimoFlash, chainModels.sol, chainModels.zaiGlm],
       scripts: { xiaomi: model => [routeStart(model), ...routeText(model, "primary"), routeDone(model)] },
       chain: DEFAULT_TEXT_WORKER_CHAIN, approve: () => false,
     });
@@ -661,19 +688,20 @@ describe("shipped MiMo Token Plan -> ZAI subscription stream chain", () => {
     expect(runtime.calls.get("zai")!.mock.calls).toHaveLength(0);
   });
 
-  it.each(["503 service unavailable", "subscription_quota_exceeded"])("falls back to ZAI before output on %s", async message => {
+  it.each(["503 service unavailable", "subscription_quota_exceeded"])("falls back to Codex OAuth Sol before output on %s", async message => {
     const runtime = chainRuntime({
-      models: [chainModels.mimoFlash, chainModels.zaiGlm, chainModels.goPrimary],
+      models: [chainModels.mimoFlash, chainModels.sol, chainModels.zaiGlm, chainModels.goPrimary],
       scripts: {
         xiaomi: model => [routeStart(model), routeFail(model, message)],
-        zai: model => [routeStart(model), ...routeText(model, "subscription fallback"), routeDone(model)],
+        "openai-codex": model => [routeStart(model), ...routeText(model, "subscription fallback"), routeDone(model)],
       },
       chain: DEFAULT_TEXT_WORKER_CHAIN, approve: () => false,
     });
     const events = await drain(runtime.registry.getProvider("xiaomi")!.streamSimple(chainModels.mimoFlash, emptyContext(), { sessionId: "fallback" } as never));
-    expect(events.at(-1)?.message).toMatchObject({ provider: "zai", model: "glm-5.3-flash" });
-    expect(events.find(e => e.type === "text_delta")?.partial).toMatchObject({ provider: "zai", model: "glm-5.3-flash" });
-    expect(runtime.fallbacks.map(h => `${h.from.provider}->${h.to.provider}`)).toEqual(["xiaomi->zai"]);
+    expect(events.at(-1)?.message).toMatchObject({ provider: "openai-codex", model: "gpt-6.1-sol" });
+    expect(events.find(e => e.type === "text_delta")?.partial).toMatchObject({ provider: "openai-codex", model: "gpt-6.1-sol" });
+    expect(runtime.fallbacks.map(h => `${h.from.provider}->${h.to.provider}`)).toEqual(["xiaomi->openai-codex"]);
+    expect(runtime.calls.get("zai")!.mock.calls).toHaveLength(0);
     expect(runtime.calls.get("opencode-go")!.mock.calls).toHaveLength(0);
   });
 });
@@ -681,30 +709,33 @@ describe("shipped MiMo Token Plan -> ZAI subscription stream chain", () => {
 describe("per-profile Token Plan chain heads (0.8.1)", () => {
   const flash = { provider: "xiaomi", id: "mimo-v2.6-flash" };
   const pro = { provider: "xiaomi", id: "mimo-v2.6-pro" };
-  const zai = { provider: "zai", id: "glm-5.3-flash" };
+  const sol = { provider: "openai-codex", id: "gpt-6.1-sol" };
   it("leads routine workers with Flash and keeps a Pro head for Pro profiles", () => {
-    expect(DEFAULT_TEXT_WORKER_CHAIN).toEqual([flash, zai]);
-    expect(DEFAULT_MULTIMODAL_WORKER_CHAIN).toEqual([flash, zai]);
+    expect(DEFAULT_TEXT_WORKER_CHAIN).toEqual([flash, sol]);
+    expect(DEFAULT_MULTIMODAL_WORKER_CHAIN).toEqual([flash]);
+    expect(workerChainFor(pro, true)).toEqual([pro]);
     expect(workerChainFor(undefined, false)).toBe(DEFAULT_TEXT_WORKER_CHAIN);
     expect(workerChainFor(flash, true)).toBe(DEFAULT_MULTIMODAL_WORKER_CHAIN);
-    expect(workerChainFor(pro, false)).toEqual([pro, zai]);
+    expect(workerChainFor(pro, false)).toEqual([pro, sol]);
     // Non-Token-Plan heads never become chain steps (no Go, Astra or PAYG route).
     expect(workerChainFor({ provider: "opencode-go", id: "deepseek-v4.1-flash" }, false)).toBe(DEFAULT_TEXT_WORKER_CHAIN);
     expect(workerChainFor({ provider: "openai-codex", id: "gpt-6-astra" }, false)).toBe(DEFAULT_TEXT_WORKER_CHAIN);
   });
   it("rebuilds only chains this policy produces from a run's recorded routes", () => {
-    expect(recordedWorkerChain(["xiaomi/mimo-v2.6-pro", "zai/glm-5.3-flash"], false)).toEqual([pro, zai]);
+    expect(recordedWorkerChain(["xiaomi/mimo-v2.6-pro", "openai-codex/gpt-6.1-sol"], false)).toEqual([pro, sol]);
     expect(recordedWorkerChain(undefined, false)).toBe(DEFAULT_TEXT_WORKER_CHAIN);
+    expect(recordedWorkerChain(["xiaomi/mimo-v2.6-pro", "zai/glm-5.3-flash"], false)).toBe(DEFAULT_TEXT_WORKER_CHAIN);
+    expect(recordedWorkerChain(["xiaomi/mimo-v2.6-flash", "zai/glm-5.3-flash"], true)).toBe(DEFAULT_MULTIMODAL_WORKER_CHAIN);
     // Tampered or foreign recordings fall back to the default chain, never widen it.
     expect(recordedWorkerChain(["xiaomi/mimo-v2.6-pro", "opencode-go/deepseek-v4.1-flash"], false)).toBe(DEFAULT_TEXT_WORKER_CHAIN);
     expect(recordedWorkerChain(["openrouter/gpt-6-astra", "zai/glm-5.3-flash"], false)).toBe(DEFAULT_TEXT_WORKER_CHAIN);
   });
-  it("lets a Pro-headed reviewer run hop Pro -> ZAI before output, and nothing else", () => {
+  it("lets a Pro-headed reviewer run hop Pro -> Sol before output, and nothing else", () => {
     const proModel = { provider: "xiaomi", id: "mimo-v2.6-pro" } as never;
-    const reviewer = workerChainFallback({ source: "chain", images: false, chainRoutes: ["xiaomi/mimo-v2.6-pro", "zai/glm-5.3-flash"] }, proModel);
-    expect(reviewer?.chain).toEqual([pro, zai]);
+    const reviewer = workerChainFallback({ source: "chain", images: false, chainRoutes: ["xiaomi/mimo-v2.6-pro", "openai-codex/gpt-6.1-sol"] }, proModel);
+    expect(reviewer?.chain).toEqual([pro, sol]);
     // A Pro-served run recorded on the Flash chain is not a step of it: no hop.
-    expect(workerChainFallback({ source: "chain", images: false, chainRoutes: ["xiaomi/mimo-v2.6-flash", "zai/glm-5.3-flash"] }, proModel)).toBeUndefined();
+    expect(workerChainFallback({ source: "chain", images: false, chainRoutes: ["xiaomi/mimo-v2.6-flash", "openai-codex/gpt-6.1-sol"] }, proModel)).toBeUndefined();
     expect(workerChainFallback({ source: "override", images: false }, proModel)).toBeUndefined();
   });
 });

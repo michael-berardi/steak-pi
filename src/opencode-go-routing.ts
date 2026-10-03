@@ -4,9 +4,10 @@ import { authHeadersMatch, beginGoAttempt, observeGoQuota } from "./subscription
 type Registry = ExtensionContext["modelRegistry"];
 type Provider = NonNullable<ReturnType<Registry["getProvider"]>>;
 type Model = NonNullable<ExtensionContext["model"]>;
-/** Same-provider Go hop of the default text chain: primary then one pre-output retry. */
+/** Go primary model. The same-provider Go GLM retry was retired with GLM 5.3 on
+ * 2026-10-03: a Go failure is now reported as itself, with no hop. */
 export const GO_PRIMARY_MODEL = "deepseek-v4.1-flash";
-export const GO_FALLBACK_MODEL = "glm-5.3-flash";
+export const GO_FALLBACK_MODEL: string | undefined = undefined;
 const PRIMARY = GO_PRIMARY_MODEL;
 const FALLBACK = GO_FALLBACK_MODEL;
 /** Symbol.for keeps the guard idempotent across module reloads. */
@@ -53,9 +54,9 @@ export function withOpenCodeGoRouting(provider: Provider): Provider {
           if (event.type === "error" && model.id === PRIMARY && !emittedContent &&
               !options.signal?.aborted && event.error.stopReason !== "aborted" &&
               eligibleGoFallback(event.error.errorMessage ?? "")) {
-            const fallback = provider.getModels().find((m) => m.id === FALLBACK && m.provider === "opencode-go");
+            const fallback = FALLBACK ? provider.getModels().find((m) => m.id === FALLBACK && m.provider === "opencode-go") : undefined;
             if (fallback) {
-              // Do not rewrite the model to the requested primary: transcripts/usage must name GLM.
+              // Do not rewrite the model to the requested primary: transcripts/usage must name the fallback.
               for await (const next of invoke(fallback)) {
                 if (next.type === "done") observe(fallback, "success");
                 if (next.type === "error") observe(fallback, "error", next.error.errorMessage);

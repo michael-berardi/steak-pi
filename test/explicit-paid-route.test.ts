@@ -20,11 +20,11 @@ function emptyContext(): Parameters<Parameters<typeof guardProvider>[0]["streamS
   return normalize({ messages: [] });
 }
 type Model = Parameters<Parameters<typeof guardProvider>[0]["streamSimple"]>[0];
-const model = { provider: "inco", id: "glm-5.3-flash:fast", name: "GLM Fast", api: "openai-completions", baseUrl: "https://api.inco.ai/v1" } as Model;
+const model = { provider: "inco", id: "deepseek-v4.1-flash:fast", name: "DeepSeek Fast", api: "openai-completions", baseUrl: "https://api.inco.ai/v1" } as Model;
 const dirs: string[] = [];
 afterEach(() => { dirs.splice(0).forEach(dir => rmSync(dir, { recursive: true, force: true })); });
 function approval() {
-  return approvalFor("inco/glm-5.3-flash:fast", model);
+  return approvalFor("inco/deepseek-v4.1-flash:fast", model);
 }
 function approvalFor(flag: string, target: Model, allow: unknown[] = [{ provider: target.provider, model: target.id, baseUrl: target.baseUrl }]) {
   const dir = mkdtempSync(join(tmpdir(), "paid-route-test-")); dirs.push(dir);
@@ -50,7 +50,7 @@ describe("explicit paid route permission", () => {
     expect(approve(model)).toBe(true);
     for (const changed of [{ provider: "openrouter" }, { id: "glm-5.3-flash" }, { baseUrl: model.baseUrl + "/" }, { baseUrl: model.baseUrl + "?proxy=1" }]) expect(approve({ ...model, ...changed })).toBe(false);
     expect(createExplicitPaidApproval(undefined, model, path)(model)).toBe(false);
-    expect(createExplicitPaidApproval("inco/glm-5.3-flash:fast", { ...model, provider: "openrouter" }, path)(model)).toBe(false);
+    expect(createExplicitPaidApproval("inco/deepseek-v4.1-flash:fast", { ...model, provider: "openrouter" }, path)(model)).toBe(false);
     writeFileSync(path, "{}"); expect(approve(model)).toBe(false);
     writeFileSync(path, "invalid"); expect(approve(model)).toBe(false);
   });
@@ -101,10 +101,10 @@ describe("explicit paid route permission", () => {
 
   const deepseek = { provider: "inco", id: "deepseek-v4.1-flash:fast", name: "DeepSeek V4.1 Flash Fast", api: "openai-completions", baseUrl: PAID_INCO_BASE_URL } as Model;
   const deepseekFlag = "inco/deepseek-v4.1-flash:fast";
+  const xiaomi = { ...model, provider: "xiaomi", id: "mimo-v2.6-pro", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1" } as Model;
 
   it("requires the exact flag, model and verified https://api.inco.ai/v1 endpoint for Inco DeepSeek", () => {
     expect(PAID_ROUTES).toEqual([
-      { provider: "inco", id: "glm-5.3-flash:fast", baseUrl: PAID_INCO_BASE_URL },
       { provider: "inco", id: "deepseek-v4.1-flash:fast", baseUrl: PAID_INCO_BASE_URL },
       { provider: "xiaomi", id: "mimo-v2.6-pro", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1" },
       { provider: "xiaomi", id: "mimo-v2.6-flash", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1" },
@@ -123,14 +123,28 @@ describe("explicit paid route permission", () => {
     expect(createExplicitPaidApproval(deepseekFlag, undefined, path)(deepseek)).toBe(false);
     expect(createExplicitPaidApproval(deepseekFlag, { ...deepseek, baseUrl: "https://api.inco.ai/v1/" }, path)(deepseek)).toBe(false);
     expect(createExplicitPaidApproval("inco/glm-5.3-flash:fast", deepseek, path)(deepseek)).toBe(false);
-    expect(createExplicitPaidApproval(deepseekFlag, model, path)(deepseek)).toBe(false);
+    expect(createExplicitPaidApproval(deepseekFlag, xiaomi, path)(deepseek)).toBe(false);
     expect(createExplicitPaidApproval(deepseekFlag, { provider: "opencode-go", id: "deepseek-v4.1-flash", baseUrl: "https://opencode.ai/zen/go" }, path)(deepseek)).toBe(false);
     expect(createExplicitPaidApproval(`${deepseekFlag}\u00a0`, deepseek, path)(deepseek)).toBe(false);
-    // The user allowlist must carry this exact route; the sibling entry does not satisfy it.
+    // The user allowlist must carry this exact route; a retired entry does not satisfy it.
     expect(approvalFor(deepseekFlag, deepseek, [{ provider: "inco", model: "glm-5.3-flash:fast", baseUrl: PAID_INCO_BASE_URL }]).approve(deepseek)).toBe(false);
     expect(approvalFor(deepseekFlag, deepseek, [{ provider: "inco", model: "deepseek-v4.1-flash:fast", baseUrl: "https://api.inco.ai/v1/" }]).approve(deepseek)).toBe(false);
     // Revocation is immediate for this route too.
     writeFileSync(path, "{}"); expect(approve(deepseek)).toBe(false);
+  });
+
+  it("refuses retired Inco GLM even with an exact launch flag and persistent allowlist", async () => {
+    const glm = { ...model, id: "glm-5.3-flash:fast", name: "Retired GLM" };
+    const { path, approve } = approvalFor("inco/glm-5.3-flash:fast", glm);
+    expect(readApprovedPaidRoutes(path)).toEqual([]);
+    expect(isAllowlistedPaidRoute(glm, path)).toBe(false);
+    expect(createAllowlistApproval(path)(glm)).toBe(false);
+    expect(createSelectedRouteApproval(() => glm, path)(glm)).toBe(false);
+    expect(approve(glm)).toBe(false);
+    const base = providerFor(glm);
+    const guarded = guardProvider(base, () => false, async () => "synthetic-glm-key", undefined, undefined, approve);
+    expect((await drain(guarded.streamSimple(glm, emptyContext())))[0]).toMatchObject({ type: "error", error: { errorMessage: SUBSCRIPTION_FIRST_ERROR } });
+    expect(base.streamSimple).not.toHaveBeenCalled();
   });
 
   it("pins Xiaomi Token Plan approvals to Singapore and never grants PAYG or automatic routing", () => {
@@ -152,24 +166,24 @@ describe("explicit paid route permission", () => {
     expect((await drain(allowed.streamSimple(deepseek, emptyContext())))[0].type).toBe("done");
     expect(hasConfirmedGoExhaustion(key)).toBe(false);
     // No approval, and an approval for the sibling product, both stay blocked.
-    for (const approvalFn of [undefined, approval().approve]) {
+    for (const approvalFn of [undefined, approvalFor("xiaomi/mimo-v2.6-pro", xiaomi).approve]) {
       const guarded = guardProvider(base, () => false, async () => key, undefined, undefined, approvalFn);
       expect((await drain(guarded.streamSimple(deepseek, emptyContext())))[0]).toMatchObject({ type: "error", error: { errorMessage: SUBSCRIPTION_FIRST_ERROR } });
     }
     expect(base.streamSimple).toHaveBeenCalledTimes(1);
-    // The GLM launch approval is not broadened by the DeepSeek entry existing.
-    const glm = approval();
-    expect(glm.approve(model)).toBe(true);
-    expect(glm.approve(deepseek)).toBe(false);
+    // A Xiaomi grant and the Inco grant cannot authorize one another.
+    const mimo = approvalFor("xiaomi/mimo-v2.6-pro", xiaomi);
+    expect(mimo.approve(xiaomi)).toBe(true);
+    expect(mimo.approve(deepseek)).toBe(false);
     expect(approve(deepseek)).toBe(true);
-    expect(approve(model)).toBe(false);
+    expect(approve(xiaomi)).toBe(false);
   });
 });
 
 
 describe("operator /model paid authorization across all approved profiles", () => {
-  const go = { ...model, provider: "opencode-go", id: "glm-5.3" };
-  const launchFlag = "inco/glm-5.3-flash:fast";
+  const go = { ...model, provider: "opencode-go", id: "deepseek-v4.1-flash", baseUrl: "https://opencode.ai/zen/go" };
+  const launchFlag = "inco/deepseek-v4.1-flash:fast";
   const transitions = [
     ["model_select", "set"],
     ["model_select", "cycle"],
@@ -256,7 +270,7 @@ describe("operator /model paid authorization across all approved profiles", () =
 
   it("requires the exact reviewed endpoint, not a sibling entry or a near miss", async () => {
     const h = setup(undefined, model, [
-      { provider: "inco", model: "glm-5.3-flash:fast", baseUrl: `${PAID_INCO_BASE_URL}/` },
+      { provider: "inco", model: "deepseek-v4.1-flash:fast", baseUrl: `${PAID_INCO_BASE_URL}/` },
     ]);
     await h.emit("session_start");
     await h.dispatch("error");
@@ -290,7 +304,7 @@ describe("operator /model paid authorization across all approved profiles", () =
 });
 
 describe("reviewed-route allowlist reads", () => {
-  const deepseek = { ...model, id: "deepseek-v4.1-flash:fast" };
+  const xiaomi = { ...model, provider: "xiaomi", id: "mimo-v2.6-flash", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1" };
   function tempAllow(allow: unknown, version = 1) {
     const dir = mkdtempSync(join(tmpdir(), "paid-route-allow-")); dirs.push(dir);
     const path = join(dir, "paid-routes.json");
@@ -303,37 +317,37 @@ describe("reviewed-route allowlist reads", () => {
     expect(readApprovedPaidRoutes(missing)).toEqual([]);
     expect(isAllowlistedPaidRoute(model, missing)).toBe(false);
     expect(createAllowlistApproval(missing)(model)).toBe(false);
-    expect(readApprovedPaidRoutes(tempAllow([{ provider: "inco", model: "glm-5.3-flash:fast", baseUrl: PAID_INCO_BASE_URL }], 2))).toEqual([]);
+    expect(readApprovedPaidRoutes(tempAllow([{ provider: "inco", model: "deepseek-v4.1-flash:fast", baseUrl: PAID_INCO_BASE_URL }], 2))).toEqual([]);
     // Entries outside the reviewed table are never promoted into reviewed routes.
     expect(readApprovedPaidRoutes(tempAllow([
       { provider: "openai-codex", model: "gpt-6-astra", baseUrl: "https://chatgpt.com/backend-api" },
-      { provider: "inco", model: "glm-5.3-flash:fast", baseUrl: `${PAID_INCO_BASE_URL}/` },
+      { provider: "inco", model: "deepseek-v4.1-flash:fast", baseUrl: `${PAID_INCO_BASE_URL}/` },
     ]))).toEqual([]);
   });
 
   it("resolves only exact reviewed identities into the allowlist", () => {
     const path = tempAllow([
-      { provider: "inco", model: "glm-5.3-flash:fast", baseUrl: PAID_INCO_BASE_URL },
+      { provider: "inco", model: "deepseek-v4.1-flash:fast", baseUrl: PAID_INCO_BASE_URL },
       { provider: "xiaomi", model: "mimo-v2.6-pro", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1" },
-      { provider: "inco", model: "glm-5.3-flash:fast", baseUrl: "https://api.inco.ai/v2" },
+      { provider: "inco", model: "deepseek-v4.1-flash:fast", baseUrl: "https://api.inco.ai/v2" },
     ]);
     expect(readApprovedPaidRoutes(path)).toEqual([
-      { provider: "inco", id: "glm-5.3-flash:fast", baseUrl: PAID_INCO_BASE_URL },
+      { provider: "inco", id: "deepseek-v4.1-flash:fast", baseUrl: PAID_INCO_BASE_URL },
       { provider: "xiaomi", id: "mimo-v2.6-pro", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1" },
     ]);
     expect(isAllowlistedPaidRoute(model, path)).toBe(true);
     expect(createAllowlistApproval(path)(model)).toBe(true);
-    expect(isAllowlistedPaidRoute(deepseek, path)).toBe(false);
+    expect(isAllowlistedPaidRoute(xiaomi, path)).toBe(false);
   });
 
   it("scopes selection approval to the exact allowlisted route currently selected", () => {
-    const path = tempAllow([{ provider: "inco", model: "glm-5.3-flash:fast", baseUrl: PAID_INCO_BASE_URL }]);
+    const path = tempAllow([{ provider: "inco", model: "deepseek-v4.1-flash:fast", baseUrl: PAID_INCO_BASE_URL }]);
     let selected: typeof model | undefined = model;
     const approve = createSelectedRouteApproval(() => selected, path);
     expect(approve(model)).toBe(true);
-    expect(approve(deepseek)).toBe(false);
+    expect(approve(xiaomi)).toBe(false);
     expect(approve({ ...model, baseUrl: `${PAID_INCO_BASE_URL}/` })).toBe(false);
-    selected = deepseek;
+    selected = xiaomi;
     expect(approve(model)).toBe(false);
     selected = undefined;
     expect(approve(model)).toBe(false);

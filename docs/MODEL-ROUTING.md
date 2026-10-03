@@ -12,11 +12,11 @@ ordered automatic chain (below); every other selection is exact.
 The user-owned `~/.pi/agent/paid-routes.json` must contain:
 
 ```json
-{"version":1,"allow":[{"provider":"inco","model":"glm-5.3-flash:fast","baseUrl":"https://api.inco.ai/v1"}]}
+{"version":1,"allow":[{"provider":"inco","model":"deepseek-v4.1-flash:fast","baseUrl":"https://api.inco.ai/v1"}]}
 ```
 
 Launch that exact selected model with the extension flag
-`--steak-pi-paid-route=inco/glm-5.3-flash:fast`. Both the flag and allowlist are
+`--steak-pi-paid-route=inco/deepseek-v4.1-flash:fast`. Both the flag and allowlist are
 required; this narrow exception only supports that Inco product and exact URL
 (no trailing slash, query, alternate endpoint, or model alias). Permission is
 captured from the selected model at session start. Switching away does not
@@ -44,8 +44,8 @@ route. Explicit selection takes precedence over roles and defaults, including
 reviewers, and is **exact**: an explicitly chosen route never gains
 cross-provider spending, even when the chosen route happens to be a step of an
 automatic chain. For example, an Astra manager can dispatch
-`profile: "steak-pi/glm-5-3-flash"`; a GLM manager can explicitly choose an
-available paid Codex model; explicitly selecting
+`profile: "steak-pi/gpt-6-1-sol"`; a MiMo manager can explicitly choose an
+available Codex model; explicitly selecting
 `opencode-go/deepseek-v4.1-flash` keeps that route with only OpenCode Go's own
 same-plan retry. No CLI is launched to resolve a profile.
 
@@ -55,8 +55,13 @@ built-in `steak-pi/mimo-v2-6-flash` worker default or `steak-pi/mimo-v2-6-pro`
 reviewer default resolve an **automatic chain** headed by that Token Plan model
 and record it as provenance:
 
-- Routine workers, text and images: `xiaomi/mimo-v2.6-flash` → `zai/glm-5.3-flash`.
-- Default reviewer role: `xiaomi/mimo-v2.6-pro` → `zai/glm-5.3-flash`.
+- Routine text workers: `xiaomi/mimo-v2.6-flash` → `openai-codex/gpt-6.1-sol`.
+- Routine image workers: `xiaomi/mimo-v2.6-flash` only (Sol is the non-visual fallback).
+- Default reviewer role: `xiaomi/mimo-v2.6-pro` → `openai-codex/gpt-6.1-sol`.
+
+GLM 5.3, GLM 5.3 Flash and the Z.ai plan were retired on 2026-10-03. A `zai/`,
+`z-ai/` or `glm-` model or profile selector is refused with a message naming the
+replacement; no chain or Go retry reaches GLM.
   No expert model is ever selected automatically on the native
   chain; expert review is the Opus Pass CLI route (explicit, or the implicit
   all-reviewer-wave default) described below.
@@ -68,7 +73,7 @@ The main app's own launch model is unchanged (MiMo V2.6 Pro). Explicitly chosen 
 `openai-codex/gpt-6-astra` is the scarce expert for hard planning/debugging and
 review/validation — never routine implementation or orchestration. USAP 1.3
 removed the automatic Astra-first reviewer default: a run whose tasks include a
-reviewer role resolves the same routine MiMo → ZAI subscription chain as
+reviewer role resolves the same routine MiMo → Sol subscription chain as
 workers when no explicit selector is given. Expert review is instead the **Opus
 Pass** — the official Claude Code CLI on `claude-code/claude-opus-5-5` at
 `xhigh` effort with an existing first-party Claude subscription login — chosen
@@ -86,11 +91,11 @@ claim expert approval that did not happen. Astra keeps its medium
 reasoning default; reviewer role alone does not raise effort. Astra is never a
 routine worker default: parent-added `steak-pi/gpt-6-sol` and
 `steak-pi/gpt-6-luna` profiles are explicit-selection routes only, whose own
-`workerDefault` keeps workers on the MiMo → ZAI chain.
+`workerDefault` keeps workers on the MiMo → Sol chain.
 
 The first step that is authenticated, present in the operator's available
 catalog, capability-matching, has a native streaming adapter, and is spendable
-serves the run. MiMo must use the exact Singapore Token Plan host, with `/v1` or `/anthropic`; ZAI must use its coding subscription endpoint. Lookalike hosts and general paid API endpoints do not qualify. No INCO, OpenRouter, metered/PAYG or GPT-family route is part of this default chain.
+serves the run. MiMo must use the exact Singapore Token Plan host, with `/v1` or `/anthropic`; Sol must use Codex OAuth on `chatgpt.com/backend-api`. Lookalike hosts and general paid API endpoints do not qualify. No INCO, OpenRouter or metered/PAYG route is part of this default chain; GPT-6.1 Sol on Codex OAuth is its only GPT step.
 
 A run frozen as an automatic chain may hop to the next eligible chain route at
 runtime — this is real routing, not a selection shortcut. The hop happens only
@@ -111,9 +116,9 @@ event keeps the answering provider/model, and each hop is recorded as
 telemetry. A `model`/`profile` selection, a `profile-default` run, and a resumed
 run never install this hop.
 
-Go needs the user's own key and permits one transient-error retry on Go GLM 5.3
-Flash before visible output, never for auth, billing, or region errors. A
-`/model` change cannot inherit a stale launch profile's defaults. Parents without an explicit profile default use the same MiMo → ZAI automatic chain, including reviewer runs.
+Go needs the user's own key. Its former same-plan retry on Go GLM 5.3 Flash was
+retired with GLM; a Go failure is reported as itself. A
+`/model` change cannot inherit a stale launch profile's defaults. Parents without an explicit profile default use the same MiMo → Sol automatic chain, including reviewer runs.
 
 Selection resolves against Pi's configured authentication and available model
 catalog, so the catalog must list the route before selection can include it.
@@ -189,7 +194,7 @@ Flash route or a policy-refused GPT route — never becomes a choice.
 Dispatch stays unfiltered. Curation lives only in the picker snapshot; `Provider.getModels()`
 / `ModelRuntime.getModels()` keep every route, and ordered-chain membership plus USAP worker
 preflight check that published dispatch catalog (`registry.getAll()`) instead of the curated
-choices, so a fallback step such as `opencode-go/glm-5.3-flash` remains eligible even when
+choices, so a fallback step such as `openai-codex/gpt-6.1-sol` remains eligible even when
 the operator did not list it as a separate picker profile. A standalone Steak Pi run without
 the UltraTerm launcher metadata, and every route a manifest does not configure, keeps its
 normal authentication and dispatch behavior.
@@ -248,14 +253,14 @@ off-plan routes, and generic metered endpoints never hop or spend.
 `test/subagent-pi-worker.test.ts` proves the hop is installed only for
 `source: "chain"` runs (an explicit chain-step route gets none) and that each
 hop is recorded as `from->to` provenance. `test/opencode-go-routing.test.ts`
-proves the same-plan Go retry still refuses the exhaustion signal.
+proves a Go failure is never retried on another model.
 `test/subagent-model-selection.test.ts` and `test/model-selection-override.test.ts`
-prove chain/override provenance, reviewer defaults (the same routine MiMo→ZAI
+prove chain/override provenance, reviewer defaults (the same routine MiMo→Sol
 chain as workers, never an automatic expert step), and that an explicit
 selector is never upgraded into chain provenance.
 `test/model-route-native.test.ts` uses isolated homes and a loopback server to
 prove zero requests for forbidden extension, models.json, model-level API changes,
-and friendly-alias routes, plus allowed GLM-style dispatch with an intact image URL.
+and friendly-alias routes, plus allowed dispatch with an intact image URL.
 Each fixture asserts the SDK's actual selected API, not merely its JSON input.
 `test/model-visibility.test.ts` drives the real Pi 0.87 `ModelRuntime`/`ModelRegistry`
 without network, with `HOME`/`PI_CODING_AGENT_DIR` isolated and ambient provider credentials

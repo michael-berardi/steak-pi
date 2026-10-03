@@ -1,10 +1,10 @@
 {
   "name": "steak-pi",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "bin": {
     "steak-pi": "bin/steak-pi"
   },
-  "description": "Steak Pi \u2014 native subagents, deterministic compaction, verification, todo and a companion UI for Pi, in less memory than stock Pi.",
+  "description": "Steak Pi — native subagents, deterministic compaction, verification, todo and a companion UI for Pi, in less memory than stock Pi.",
   "license": "MIT",
   "author": "Implose Cybernetics",
   "repository": {

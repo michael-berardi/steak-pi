@@ -46,8 +46,8 @@ Use adaptive concurrency, never padding work:
   instead of executing serially in the parent.
 
 Launch width defaults to min(8, task count), subject to capacity. Defaults:
-per-session ZAI 8 / Codex 6 / other providers 8, global 14; machine-wide
-ZAI 6 / Codex 12 / other providers 12, global 24. These provider-bucketed
+per-session Codex 6 / other providers 8, global 14; machine-wide
+Codex 12 / other providers 12, global 24. These provider-bucketed
 capacity defaults are configurable; each run still accepts at most eight tasks. Stop delegating
 when briefing cost exceeds the remaining work, and dispatch more workers only
 when they buy completion speed.
@@ -114,15 +114,16 @@ Scheduling, bounded waits/cancel, usage and reports use the same USAP coordinato
 ### Native Pi routes
 
 Use one run-level `model: "provider/model"` **or**
-`profile: "steak-pi/glm-5-3-flash"`, never both. All tasks share that route.
+`profile: "steak-pi/gpt-6-1-sol"`, never both. All tasks share that route.
 Explicit selection overrides role defaults, including reviewers. An Astra
-manager can explicitly select GLM; GLM can explicitly select authorized GPT.
+manager can explicitly select Sol; a MiMo parent can explicitly select authorized GPT.
+GLM 5.3 and the Z.ai plan are retired (2026-10-03); GLM or `zai/` selectors are refused.
 Prose saying a model name does not select it.
 
 Without a selector, all-reviewer waves use the Opus Pass above. Other waves use
 the matching parent profile's worker defaults; routine automatic workers follow
-the MiMo V2.6 Flash → ZAI GLM 5.3 Flash subscription chain (automatic reviewers:
-MiMo V2.6 Pro → ZAI GLM 5.3 Flash). Explicit native Pi
+the MiMo V2.6 Flash → GPT-6.1 Sol subscription chain (automatic reviewers:
+MiMo V2.6 Pro → GPT-6.1 Sol; image runs: MiMo V2.6 Flash only). Explicit native Pi
 model/profile selections remain exact.
 Every GPT request must use paid-route openai-codex OAuth, non-batch, never
 OpenRouter or API-key GPT. Unavailable auth/models fail closed without fallback.
@@ -155,10 +156,8 @@ Canonical ceilings include 8 concurrent children per run, 16 active runs,
 run. Treat truncation, timeout, budget exhaustion, failure, and cancellation
 as evidence to inspect—not reasons to silently fan out or retry.
 
-Routine bounded scouting and implementation use the configured MiMo→ZAI
-subscription chain. An explicit Go selection can retry once on Go GLM 5.3 Flash
-after a transient failure before visible output, never after auth, billing or
-region errors. For visual
+Routine bounded scouting and implementation use the configured MiMo→Sol
+subscription chain. An explicit Go selection is not retried on another model. For visual
 work, explicitly select an authenticated image-capable route and require images.
 Escalate when ambiguity, blast radius, or failed attempts rise. The
 parent retains security, legal, architecture, and user-facing creative

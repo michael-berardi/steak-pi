@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { eligibleGoFallback, withOpenCodeGoRouting } from "../src/opencode-go-routing.ts";
+import { eligibleGoFallback, GO_FALLBACK_MODEL, withOpenCodeGoRouting } from "../src/opencode-go-routing.ts";
 const { createAssistantMessageEventStream } = await import(new URL("../node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
 type Provider = Parameters<typeof withOpenCodeGoRouting>[0];
 // Resolve the SDK's own pi-ai: 0.86 requires normalization before provider dispatch.
@@ -44,10 +44,23 @@ describe("authorized OpenCode Go routing", () => {
     const { wrapped, stream } = setup();
     expect(() => wrapped.streamSimple(primary, emptyContext())).toThrow("sessionId"); expect(stream).not.toHaveBeenCalled();
   });
-  it.each(["429 rate limit", "503 Service Unavailable", "temporarily overloaded"])("falls back once for %s", async (error) => {
-    const { wrapped, stream } = setup(error);
-    const result = await wrapped.streamSimple(primary, emptyContext(), { sessionId: "one" }).result();
-    expect(result.model).toBe(fallback.id); expect(stream).toHaveBeenCalledTimes(2);
+  it("has no Go fallback model after GLM retirement", () => {
+    expect(GO_FALLBACK_MODEL).toBeUndefined();
+  });
+  it.each(["429 rate limit", "503 Service Unavailable", "temporarily overloaded"])("passes through %s unchanged without retrying GLM", async (error) => {
+    for (const method of ["stream", "streamSimple"] as const) {
+      // Even a stale registry containing GLM must not make it a retry target.
+      const { wrapped, stream } = setup(error);
+      const events = [];
+      for await (const event of wrapped[method](primary, emptyContext(), { sessionId: "one" })) events.push(event);
+      const original = message(primary, error);
+      expect(events).toEqual([
+        { type: "start", partial: original },
+        { type: "error", reason: "error", error: original },
+      ]);
+      expect(stream).toHaveBeenCalledTimes(1);
+      expect(stream.mock.calls[0][0]).toBe(primary);
+    }
   });
   it.each(["401 auth failed", "403 RegionError", "400 invalid context", "404 model unavailable", "cancelled", "unknown failure"])("does not retry %s", async (error) => {
     const { wrapped, stream } = setup(error);
@@ -63,10 +76,11 @@ describe("authorized OpenCode Go routing", () => {
     await wrapped.streamSimple(primary, emptyContext(), { sessionId: "one", signal: controller.signal }).result();
     expect(stream).toHaveBeenCalledTimes(1);
   });
-  it("does not loop after fallback failure", async () => {
+  it("never dispatches GLM even when the stale fallback would fail too", async () => {
     const { wrapped, stream } = setup("503", false, "429");
     const result = await wrapped.streamSimple(primary, emptyContext(), { sessionId: "one" }).result();
-    expect(result.model).toBe(fallback.id); expect(result.stopReason).toBe("error"); expect(stream).toHaveBeenCalledTimes(2);
+    expect(result).toEqual(message(primary, "503"));
+    expect(stream).toHaveBeenCalledTimes(1);
   });
   it("never treats permission errors with transient wording as eligible", () => expect(eligibleGoFallback("403 temporarily unavailable region")).toBe(false));
   it("leaves an exhausted plan to the outer chain instead of retrying the same plan", async () => {

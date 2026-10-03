@@ -21,7 +21,7 @@ const guardMark = (provider: Provider) => (provider as unknown as Record<symbol,
 
 /** Registry surface an ordered chain needs; Pi's ModelRegistry and ModelRuntime both satisfy it.
  * `getAll()` is the published dispatch catalog and is deliberately *not* the curated
- * picker snapshot: a fallback route (for example the Go GLM step) must stay reachable
+ * picker snapshot: a fallback route (for example the Sol step) must stay reachable
  * even when the operator's harness manifest does not offer it as a separate choice. */
 export interface ChainRegistry {
   find(provider: string, id: string): Model | undefined;
@@ -277,28 +277,26 @@ export function selectWorkerThinking(
 
 export interface WorkerRouteStep { provider: string; id: string }
 
-/** FINAL automatic worker routing (operator scope, 2026-09-24). One unified text and
- * image chain, ordered selection priority plus one pre-output runtime hop inside the
- * same order: the first authenticated route serves the run, and a before-output
- * transient failure may hop to the next eligible route. The hop stops permanently at
- * the first content/tool event and each event keeps its real provider/model. The
- * default worker route is MiMo V2.6 Flash on the reviewed Singapore Token Plan
- * endpoint, a prepaid subscription rather than a metered API route; the only automatic
- * fallback is the ZAI coding subscription route. No Go, Inco, OpenRouter or metered
- * PAYG step is reachable automatically, and GPT-5.6 Luna is deliberately absent. */
+/** Automatic worker routing (operator scope, 2026-10-03). Ordered selection priority
+ * plus one pre-output runtime hop inside the same order: the first authenticated route
+ * serves the run, and a before-output transient failure may hop to the next eligible
+ * route. The hop stops permanently at the first content/tool event and each event
+ * keeps its real provider/model. The default worker route is MiMo V2.6 Flash on the
+ * reviewed Singapore Token Plan endpoint (prepaid subscription); the only automatic
+ * text fallback is GPT-6.1 Sol on Codex OAuth (subscription). GLM 5.3 and the Z.ai
+ * plan were retired on 2026-10-03. No Go, Inco, OpenRouter or metered PAYG step is
+ * reachable automatically. */
 export const DEFAULT_TEXT_WORKER_CHAIN: readonly WorkerRouteStep[] = [
   { provider: "xiaomi", id: "mimo-v2.6-flash" },
-  { provider: "zai", id: "glm-5.3-flash" },
+  { provider: "openai-codex", id: "gpt-6.1-sol" },
 ];
-/** The image chain is the same two routes: MiMo V2.6 Flash is multimodal on the Token
- * Plan and the ZAI coding route advertises image input, so text and image runs share
- * one order. */
+/** Image runs stay on MiMo V2.6 Flash alone: Sol is the non-visual fallback, so an
+ * image run with MiMo unavailable fails with its cause instead of hopping. */
 export const DEFAULT_MULTIMODAL_WORKER_CHAIN: readonly WorkerRouteStep[] = [
   { provider: "xiaomi", id: "mimo-v2.6-flash" },
-  { provider: "zai", id: "glm-5.3-flash" },
 ];
 /** Token Plan routes an automatic profile may keep as its own chain head. A profile
- * naming MiMo V2.6 Pro (the reviewer default) resolves [Pro, ZAI], never the Flash
+ * naming MiMo V2.6 Pro (the reviewer default) resolves [Pro, Sol], never the Flash
  * worker head; every other automatic profile resolves the default chain. */
 const TOKEN_PLAN_CHAIN_HEADS: readonly WorkerRouteStep[] = [
   { provider: "xiaomi", id: "mimo-v2.6-pro" },

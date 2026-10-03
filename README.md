@@ -86,7 +86,7 @@ parent
 ```
 
 - **Limits:** eight tasks and eight concurrent workers per run. Each session
-  runs at most eight ZAI and six Codex workers (fourteen combined), within
+  runs at most six Codex and eight other workers (fourteen combined), within
   machine-wide caps shared by every session on the computer.
 - **Ownership:** read-only workers have no edit tools. Writers may only touch
   their own paths, and overlapping ownership is refused before the run starts.
@@ -97,8 +97,9 @@ parent
   resume unfinished work after a restart.
 
 **Models.** Routine workers use MiMo V2.6 Flash on the Xiaomi Token Plan, and
-automatic reviewers use MiMo V2.6 Pro. Both fall back only to GLM 5.3 Flash on
-the ZAI coding subscription. An explicit `model`, `profile` or `harness`
+automatic reviewers use MiMo V2.6 Pro. Text runs fall back only to GPT-6.1 Sol
+on Codex OAuth; image runs have no fallback. GLM 5.3 and the Z.ai plan were
+retired on 2026-10-03, and selecting them is refused. An explicit `model`, `profile` or `harness`
 always wins. A wave of reviewers with no explicit route goes to the **Opus
 Pass**: the official Claude Code CLI on Opus 5.5 at `xhigh` effort, using your
 existing Claude login. GPT models run only through Codex OAuth, never an API
@@ -167,7 +168,7 @@ quality. Medians of 5; every run passed.
 Through `steak-pi run`, a full Steak Pi session peaks at the same memory as
 stock Pi. Workers share the host's Pi code instead of loading their own copy,
 which is what keeps eight parallel workers under a second and a half. Earlier
-measurements, including a live GLM 5.3 Flash comparison with stock Pi, are in
+measurements, including an earlier live comparison with stock Pi, are in
 [`benchmarks/`](./benchmarks/usap/README.md).
 
 ## Configuration

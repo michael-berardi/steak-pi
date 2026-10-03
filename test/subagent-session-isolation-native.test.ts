@@ -17,8 +17,8 @@ import { emptyUsage, type WorkerRunContext, type WorkerResult } from "../src/sub
 const sdkEntry = import.meta.resolve("@earendil-works/pi-coding-agent");
 const { InMemoryCredentialStore, InMemoryModelsStore } = await import(/* @vite-ignore */ new URL("../node_modules/@earendil-works/pi-ai/dist/index.js", sdkEntry).href);
 const model = {
-  id: "isolation-local", name: "Isolation local", provider: "isolation-offline",
-  api: "openai-completions" as const, baseUrl: "http://offline.invalid",
+  id: "mimo-v2.6-flash", name: "Offline MiMo fixture", provider: "xiaomi",
+  api: "openai-completions" as const, baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1",
   reasoning: false, input: ["text" as const], contextWindow: 128000, maxTokens: 4096,
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 };

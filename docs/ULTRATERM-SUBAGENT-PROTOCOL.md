@@ -106,8 +106,8 @@ unsized dispatch requests N-wide, subject to provider/session/machine capacity:
 | 6–8 | Long multi-aspect work with many disjoint leaves; fill the wave instead of executing serially in the parent |
 
 Eight is the hard per-run concurrency ceiling. Default per-session provider
-caps are ZAI 8, Codex 6, and other providers 8, with 14 combined. Default
-machine caps are ZAI 6, Codex 12, and other providers 12, with 24 combined.
+caps are Codex 6 and other providers 8, with 14 combined. Default
+machine caps are Codex 12 and other providers 12, with 24 combined.
 These configurable provider buckets are not model-specific quotas. A run may queue more
 bounded tasks than its width, but only the requested width executes at once.
 Do not invent padding work to fill slots, and do not execute a long list of
@@ -182,7 +182,7 @@ never both. Selection applies to every task in that run; per-task selectors are
 not supported. Explicit selection is never overridden by a reviewer role or a
 profile default. Omitted selectors on a Pi wave use the matching parent profile's
 configured worker/reviewer default, retaining legacy role defaults when none is
-configured; automatic native-Pi reviewer defaults ride the same MiMo→ZAI
+configured; automatic native-Pi reviewer defaults ride the same MiMo→Sol
 subscription chain as routine workers, with no automatic expert step. An
 all-reviewer wave without an explicit route uses the CLI default
 above instead.
@@ -316,8 +316,8 @@ The Steak Pi implementation profile uses these ceilings:
 | Resource | Bound |
 | --- | --- |
 | Concurrent children (per run) | 8 hard maximum; requested width defaults to min(8, task count), subject to capacity |
-| Concurrent children (per session) | Default provider caps: ZAI 8, Codex 6, others 8; global 14 |
-| Concurrent children (machine-wide) | Default provider caps: ZAI 6, Codex 12, others 12; global 24 across sessions |
+| Concurrent children (per session) | Default provider caps: Codex 6, others 8; global 14 |
+| Concurrent children (machine-wide) | Default provider caps: Codex 12, others 12; global 24 across sessions |
 | Simultaneously active runs | 16; further dispatch is rejected until a run settles |
 | Tasks accepted in one run | 8 hard maximum; excess tasks remain a parent planning problem |
 | Run wall clock | finite; default 10 minutes, accepted range 1 second–8 hours (`timeoutMs`) |
@@ -351,9 +351,9 @@ turn.
 ## 8. Model guidance
 
 Routine bounded scouting and implementation use the configured parent profile
-defaults: built-in routine workers resolve MiMo V2.6 Flash → ZAI coding GLM 5.3
-Flash, and explicitly native-Pi reviewer chains resolve MiMo V2.6 Pro → ZAI coding
-GLM 5.3 Flash — the legacy "expert review chain" name is a native-Pi routing label, not
+defaults: built-in routine workers resolve MiMo V2.6 Flash → GPT-6.1
+Sol (text; images MiMo only), and explicitly native-Pi reviewer chains resolve MiMo V2.6 Pro →
+GPT-6.1 Sol — the legacy "expert review chain" name is a native-Pi routing label, not
 expert sign-off. All-reviewer waves with no explicit route use the official Claude Code
 Opus 5.5/xhigh pass. Existing explicitly selected Pi profiles keep their native
 route semantics. No failed Opus review silently falls back to Astra or another

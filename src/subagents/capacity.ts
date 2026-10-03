@@ -8,12 +8,11 @@ import { MAX_CONCURRENCY } from "./types.ts";
  *
  * Two tiers apply to every launch:
  * - Session tier: per-provider ceiling inside one pi session
- *   (GLM flash lanes 8; paid Codex/Luna lanes 6 by doctrine; unknown 8).
+ *   (Codex lanes 6 by doctrine; every other provider 8).
  * - Machine tier: per-provider ceiling shared by every session on this
  *   computer, plus one global ceiling across all providers. These protect
  *   the provider's rate limits and the operator's machine when several
- *   sessions delegate at once. Defaults were dialed with live GLM runs:
- *   see benchmarks/usap/results/glm53-live-mirror-2026-09-09.md.
+ *   sessions delegate at once.
  */
 
 export interface CapacityConfig {
@@ -21,21 +20,16 @@ export interface CapacityConfig {
   machine: { providers: Record<string, number>; global: number };
 }
 
-/** Per-session provider ceilings. One session may run 8 GLM + 6 Luna at once. */
+/** Per-session provider ceilings; providers not listed get MAX_CONCURRENCY. */
 const DEFAULT_SESSION_PROVIDERS: Record<string, number> = {
-  zai: MAX_CONCURRENCY,
   "openai-codex": 6,
 };
 
 /**
- * Machine-wide defaults. zai 6 is the operator-set total GLM flash workers
- * across ALL sessions on this computer, sized below the provider's rate-limit
- * threshold so interactive terminal sessions keep headroom alongside workers
- * (observed rate limiting above ~6 concurrent GLM agents, 2026-09-09);
- * codex 12 covers two Luna-heavy sessions; global bounds all providers.
+ * Machine-wide defaults: codex 12 covers two Codex-heavy sessions; global bounds
+ * all providers.
  */
 const DEFAULT_MACHINE_PROVIDERS: Record<string, number> = {
-  zai: 6,
   "openai-codex": 12,
 };
 

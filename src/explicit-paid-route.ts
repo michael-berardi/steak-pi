@@ -12,7 +12,6 @@ export type Route = { provider: string; id: string; baseUrl: string };
 // grant, so it stays an exact, hand-maintained list: no wildcard, no provider
 // prefix match, and no route inherited by automatic worker routing or fallback.
 export const PAID_ROUTES: readonly Route[] = [
-  { provider: "inco", id: "glm-5.3-flash:fast", baseUrl: PAID_INCO_BASE_URL },
   { provider: "inco", id: "deepseek-v4.1-flash:fast", baseUrl: PAID_INCO_BASE_URL },
   { provider: "xiaomi", id: "mimo-v2.6-pro", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1" },
   { provider: "xiaomi", id: "mimo-v2.6-flash", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1" },

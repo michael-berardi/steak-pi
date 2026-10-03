@@ -16,9 +16,9 @@ function harness() {
   createUltratermSubagentsExtension({ createRunner: () => runner, profiles: [], idFactory: () => "ergonomics" })(pi);
   const cwd = mkdtempSync(join(tmpdir(), "steak-dispatch-ergonomics-"));
   dirs.push(cwd);
-  const model = { provider: "zai", id: "glm-5.3-flash", baseUrl: "https://api.z.ai/api/coding/paas/v4", input: ["text", "image"] };
+  const model = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text", "image"] };
   const ctx = { cwd, sessionManager: { getSessionId: () => cwd }, model, thinkingLevel: "medium", modelRegistry: {
-    isUsingOAuth: () => false, hasConfiguredAuth: () => true, getAvailable: () => [model],
+    isUsingOAuth: () => true, hasConfiguredAuth: () => true, getAvailable: () => [model],
     getProvider: () => ({ streamSimple() {} }), find: () => model,
   }, ui: { setStatus() {} } };
   return { runner, execute: (params: unknown) => tools.get("ultraterm_subagents").execute("call", params, undefined, undefined, ctx) };
@@ -40,15 +40,15 @@ describe("dispatch ergonomics regressions", () => {
 
   it.each([false, true])("reports effective permissions and route (background=%s)", async (background) => {
     const h = harness();
-    const result = await h.execute({ goal: "permissions", model: "zai/glm-5.3-flash", background, tasks: [
+    const result = await h.execute({ goal: "permissions", model: "openai-codex/gpt-6.1-sol", background, tasks: [
       { label: "edit", task: "change file", mayEdit: true, ownedPaths: ["one.ts"], allowBash: true },
       { label: "read", task: "mayEdit mentioned only in prose", role: "reviewer" },
     ] });
     expect(result.details.summary).toEqual({
-      harness: "pi", model: "zai/glm-5.3-flash", profile: null, thinking: "medium", background,
+      harness: "pi", model: "openai-codex/gpt-6.1-sol", profile: null, thinking: "medium", background,
       tasks: [
-        { label: "edit", role: "worker", mayEdit: true, allowBash: true, ownedPaths: 1, modelRoute: "zai/glm-5.3-flash", selectionSource: "override" },
-        { label: "read", role: "reviewer", mayEdit: false, allowBash: false, ownedPaths: 0, modelRoute: "zai/glm-5.3-flash", selectionSource: "override" },
+        { label: "edit", role: "worker", mayEdit: true, allowBash: true, ownedPaths: 1, modelRoute: "openai-codex/gpt-6.1-sol", selectionSource: "override" },
+        { label: "read", role: "reviewer", mayEdit: false, allowBash: false, ownedPaths: 0, modelRoute: "openai-codex/gpt-6.1-sol", selectionSource: "override" },
       ],
     });
     expect(result.content[0].text).toContain('"mayEdit":false');

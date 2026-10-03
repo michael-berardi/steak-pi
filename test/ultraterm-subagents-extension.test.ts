@@ -1,6 +1,7 @@
 import { mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { CheckpointStore } from "../src/subagents/checkpoints.ts";
 import { normalizeDispatch } from "../src/subagents/policy.ts";
+import { retiredRouteError } from "../src/subagents/model-selection.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -58,12 +59,12 @@ function harness(runnerFactory: (relay: RelayBroker) => WorkerRunner, durable?: 
   })(pi);
   const cwd = mkdtempSync(join(tmpdir(), "steak-usap-extension-"));
   dirs.push(cwd);
-  const model = { provider: "zai", id: "glm-5.3-flash", baseUrl: "https://api.z.ai/api/coding/paas/v4", input: ["text", "image"] };
+  const model = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text", "image"] };
   const ctx = {
     cwd,
     model,
     modelRegistry: {
-      isUsingOAuth: () => false,
+      isUsingOAuth: (candidate: { provider: string }) => candidate.provider === "openai-codex",
       hasConfiguredAuth: () => true,
       getAvailable: () => [model],
       getProvider: () => ({ streamSimple() {} }),
@@ -112,9 +113,9 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     await expect(h.tools.get("ultraterm_subagents").execute("mixed", { goal: "Mixed", tasks }, undefined, undefined, h.ctx))
       .rejects.toThrow(/split routine workers from the Opus review wave/);
     expect(runnerFactory).not.toHaveBeenCalled();
-    for (const route of [{ harness: "pi" }, { model: "zai/glm-5.3-flash" }]) {
+    for (const route of [{ harness: "pi" }, { model: "openai-codex/gpt-6.1-sol" }]) {
       const result = await h.tools.get("ultraterm_subagents").execute("explicit-mixed", { goal: "Explicit native review", ...route, tasks }, undefined, undefined, h.ctx);
-      expect(result.details.run.model).toBe("zai/glm-5.3-flash");
+      expect(result.details.run.model).toBe("openai-codex/gpt-6.1-sol");
       expect(result.details.run.harness).not.toBe("claude-code");
       expect(result.details.run.tasks.every((task: any) => task.state === "done")).toBe(true);
     }
@@ -371,26 +372,48 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
 
   it("keeps explicit cross-model provenance and tool evidence through dispatch, hub and telemetry", async () => {
     const h = harness(() => async () => ({ state: "done", output: "verified", turns: 1, usage: usage(1), toolErrors: 0, toolSuccesses: 4 }));
-    h.ctx.model = { provider: "openai-codex", id: "gpt-6-astra" };
+    const workerModel = { provider: "xiaomi", id: "mimo-v2.6-flash", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1", input: ["text", "image"] };
+    h.ctx.modelRegistry.find = (provider: string, id: string) => provider === workerModel.provider && id === workerModel.id ? workerModel : undefined;
+    h.ctx.modelRegistry.getAvailable = () => [h.ctx.model, workerModel];
     const receipt = await h.tools.get("ultraterm_subagents").execute("call", {
-      goal: "explicit GLM reviewer", model: "zai/glm-5.3-flash", requireImages: true,
+      goal: "explicit MiMo reviewer", model: "xiaomi/mimo-v2.6-flash", requireImages: true,
       tasks: [{ label: "review", task: "review", role: "reviewer" }], background: true,
     }, undefined, undefined, h.ctx);
     const runId = receipt.details.run.runId;
     const result = await h.tools.get("ultraterm_hub").execute("hub", { action: "wait", runId, mode: "all", timeoutMs: 100 }, undefined, undefined, h.ctx);
-    expect(result.details.run.model).toBe("zai/glm-5.3-flash");
-    expect(result.details.run.selection).toMatchObject({ provider: "zai", modelId: "glm-5.3-flash", source: "override", images: true, tools: true });
+    expect(result.details.run.model).toBe("xiaomi/mimo-v2.6-flash");
+    expect(result.details.run.selection).toMatchObject({ provider: "xiaomi", modelId: "mimo-v2.6-flash", source: "override", images: true, tools: true });
     expect(result.details.run.tasks[0]).toMatchObject({ toolErrors: 0, toolSuccesses: 4 });
     expect(h.entries.at(-1).data.selection.source).toBe("override");
     expect(h.entries.at(-1).data.tasks[0].toolSuccesses).toBe(4);
     expect(result.usage.totalTokens).toBe(10);
   });
 
+  it.each([
+    { model: "zai/glm-5.3-flash" },
+    { model: "z-ai/glm-5.3" },
+    { model: "glm-5.3-flash" },
+    { model: "opencode-go/glm-5.3" },
+    { profile: "steak-pi/glm-5-3-flash" },
+    { profile: "glm-5-3-flash" },
+  ])("rejects retired selector %j before invoking any worker", async (selector) => {
+    const runner = vi.fn(async () => ({ state: "done" as const, output: "unexpected", turns: 1, usage: emptyUsage() }));
+    const h = harness(() => runner);
+    const route = selector.model ?? selector.profile!;
+    await expect(h.tools.get("ultraterm_subagents").execute("retired", {
+      goal: "retired route", ...selector, tasks: [{ label: "one", task: "one" }],
+    }, undefined, undefined, h.ctx)).rejects.toThrow(retiredRouteError(route));
+    expect(runner).not.toHaveBeenCalled();
+    const listed = await h.tools.get("ultraterm_hub").execute("hub", { action: "list" }, undefined, undefined, h.ctx);
+    expect(listed.details.runs).toEqual([]);
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+
   it("rejects conflicting selectors before invoking any worker", async () => {
     const runner = vi.fn(async () => ({ state: "done" as const, output: "ok", turns: 1, usage: emptyUsage() }));
     const h = harness(() => runner);
     await expect(h.tools.get("ultraterm_subagents").execute("call", {
-      goal: "conflict", model: "zai/glm-5.3-flash", profile: "steak-pi/glm-5-3-flash", tasks: [{ label: "one", task: "one" }],
+      goal: "conflict", model: "openai-codex/gpt-6.1-sol", profile: "steak-pi/mimo-v2-6-flash", tasks: [{ label: "one", task: "one" }],
     }, undefined, undefined, h.ctx)).rejects.toThrow(/conflict/);
     expect(runner).not.toHaveBeenCalled();
     const listed = await h.tools.get("ultraterm_hub").execute("hub", { action: "list" }, undefined, undefined, h.ctx);
@@ -601,7 +624,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     const root = mkdtempSync(join(tmpdir(), "usap-resume-")); dirs.push(root);
     const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "resumed" };
     const store = new CheckpointStore(durable.parent, durable.root, durable.parent);
-    const run = normalizeDispatch({ goal: "continue", background: true, tasks: [{ label: "complete", task: "complete" }, { label: "unfinished", task: "continue" }] }, root, "zai/glm-5.3-flash", "medium", Date.now(), () => "interrupted");
+    const run = normalizeDispatch({ goal: "continue", background: true, tasks: [{ label: "complete", task: "complete" }, { label: "unfinished", task: "continue" }] }, root, "openai-codex/gpt-6.1-sol", "medium", Date.now(), () => "interrupted");
     run.tasks[0].state = "done";
     run.tasks[1].state = "running"; run.tasks[1].startedAt = Date.now();
     const sessionFile = join(store.sessionsDirectory, "native.jsonl"); writeFileSync(sessionFile, "checkpoint", { mode: 0o600 });
@@ -769,7 +792,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
 
   it("keeps compact public views deterministic", () => {
     const run = {
-      id: "run-a", goal: "g", state: "running", model: "zai/glm-5.3-flash",
+      id: "run-a", goal: "g", state: "running", model: "openai-codex/gpt-6.1-sol",
       thinkingLevel: "high", background: true, createdAt: 1, constraints: [], cwd: "/tmp",
       concurrency: 1, timeoutMs: 1000, version: "1.0", usage: emptyUsage(),
       tasks: [{ id: "t", label: "l", task: "x", role: "scout", mayEdit: false,
@@ -785,8 +808,8 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     expect(toRunView(run).observedAt).toBe(234567);
     clock.mockRestore();
     expect(toRunView(run).tasks[0].taskId).toBe("t");
-    expect(renderRunResult(run)).toContain("model zai/glm-5.3-flash · thinking high");
-    expect(renderRunResult(run)).toContain("zai/");
-    expect(toRunView(run).model).toBe("zai/glm-5.3-flash");
+    expect(renderRunResult(run)).toContain("model openai-codex/gpt-6.1-sol · thinking high");
+    expect(renderRunResult(run)).toContain("openai-codex/");
+    expect(toRunView(run).model).toBe("openai-codex/gpt-6.1-sol");
   });
 });

@@ -759,7 +759,7 @@ export function workerChainFallback(selection: Pick<ModelSelection, "source" | "
   model: PiModel, onFallback?: ChainFallbackInput["onFallback"]): ChainFallbackInput | undefined {
   if (selection?.source !== "chain") return undefined;
   const images = selection.images === true;
-  // The run's own recorded chain (a Pro-headed reviewer chain hops Pro -> ZAI), when
+  // The run's own recorded chain (a Pro-headed reviewer chain hops Pro -> Sol), when
   // it is exactly one this policy produces; otherwise the default chain.
   const chain = recordedWorkerChain(selection.chainRoutes, images);
   if (!chain.some((step) => step.provider === model.provider && step.id === model.id)) return undefined;
