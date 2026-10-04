@@ -10,6 +10,8 @@ describe("transient worker failures", () => {
     ["No model or tool activity for 5 min: the provider stream stopped responding, so the worker was stopped to free its slot.", "provider stream stalled"],
     ["claude-code ended with an incomplete stream-json frame", "Claude Code stream cut"],
     ["Request rate limited", "rate limited"],
+    ["claude-code CLI exited with code null (signal SIGKILL) without a result", "Claude Code process died"],
+    ["claude-code CLI produced no result event", "Claude Code stream cut"],
     ["529 overloaded_error", "provider overloaded"],
   ])("resumes %s", (error, reason) => {
     expect(transientFailure(error, 0)?.reason).toBe(reason);
@@ -24,6 +26,7 @@ describe("transient worker failures", () => {
     "401 Unauthorized: fetch failed",
     "quota exhausted (429)",
     "Task aborted",
+    "claude-code CLI exited with code 1 without a result",
     undefined,
   ])("never resumes %s", (error) => {
     expect(transientFailure(error, 0)).toBeUndefined();

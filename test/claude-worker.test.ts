@@ -165,6 +165,9 @@ describe("claude-code worker CLI surface", () => {
     const prompt = calls[0].child.stdinChunks.join("");
     expect(prompt).toContain("was resumed from its history");
     expect(prompt).not.toContain("Report the routing entrypoint");
+    // A shell-only leaf owns no paths; the resume must not tell it to stop writing (live test 2026-10-04).
+    expect(prompt).not.toMatch(/read-only/i);
+    expect(prompt).toContain("permissions are exactly those of the original assignment");
     expect(progress[0]).toEqual({ claudeSessionId: id });
     expect(() => claudeWorkerArgs(undefined, {}, undefined, "claude-sonnet-5-5", { id: "../../etc", resume: true })).toThrow(/lowercase UUID/);
   });
