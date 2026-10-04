@@ -668,6 +668,8 @@ describe("native in-process Pi worker runner", () => {
       expect(fake.prompts).toHaveLength(1);
       expect(fake.prompts[0].text).toBe(buildPiWorkerContinuationPrompt(recordTask));
       expect(fake.prompts[0].text).toContain("original prompt is not replayed");
+      expect(fake.prompts[0].text).not.toMatch(/read-only/i);
+      expect(fake.prompts[0].text).toContain("permissions are exactly those of the original assignment");
       expect(fake.prompts[0].text).not.toContain("Execute the exact assigned leaf and return the required concise report.");
       expect(fake.prompts[0].text).not.toContain(recordTask.task);
       expect(captured[0].sessionManager?.getSessionFile()).toBe(sessionFile);

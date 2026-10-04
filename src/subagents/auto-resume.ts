@@ -18,7 +18,8 @@ const TRANSIENT: ReadonlyArray<{ pattern: RegExp; reason: string; delaysMs: read
 	{ pattern: /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EPIPE|socket hang up|network (?:error|connection)/i, reason: "network drop", delaysMs: [10_000, 30_000] },
 	{ pattern: /^terminated$|response headers timed out|Request timed out|stream (?:ended|closed) (?:early|unexpectedly)/i, reason: "provider stream cut", delaysMs: [10_000, 30_000] },
 	{ pattern: /No model or tool activity for \d+ min/, reason: "provider stream stalled", delaysMs: [10_000, 30_000] },
-	{ pattern: /incomplete stream-json frame/, reason: "Claude Code stream cut", delaysMs: [10_000, 30_000] },
+	{ pattern: /incomplete stream-json frame|claude-code CLI produced no result event/, reason: "Claude Code stream cut", delaysMs: [10_000, 30_000] },
+	{ pattern: /claude-code CLI exited with code \S+ \(signal SIG(?:KILL|TERM|HUP|SEGV|ABRT|BUS)\)/, reason: "Claude Code process died", delaysMs: [10_000, 30_000] },
 	{ pattern: /overloaded|\b50[234]\b|internal server error|server_error|service unavailable/i, reason: "provider overloaded", delaysMs: [30_000, 90_000] },
 ];
 

@@ -182,7 +182,8 @@ export function buildClaudeWorkerContinuationPrompt(task: TaskRecord): string {
   return [
     `Continue the exact assigned leaf "${task.label}" (task ${task.id}). Your previous run was cut off by a transient fault; this session was resumed from its history.`,
     "Treat earlier tool results as historical evidence only and never assume an interrupted edit, write, or command completed: re-check the current state of anything you depend on.",
-    ...(task.ownedPaths.length > 0 ? ["Owned paths:", ...task.ownedPaths.map((value) => `- ${value}`)] : ["This leaf is read-only."]),
+    "Your permissions are exactly those of the original assignment above; resuming neither widens nor narrows them.",
+    ...(task.ownedPaths.length > 0 ? ["Owned paths:", ...task.ownedPaths.map((value) => `- ${value}`)] : []),
     "Finish the remaining work only, then return the required concise final report.",
   ].join("\n");
 }

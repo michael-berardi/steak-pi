@@ -671,10 +671,10 @@ export function buildPiWorkerContinuationPrompt(task: TaskRecord): string {
   return [
     `Continue the exact assigned leaf "${task.label}" (task ${task.id}).`,
     "This session was resumed from persisted history; the original prompt is not replayed.",
-    "Before acting, review the conversation history above and the current on-disk state of every owned path:",
+    "Your permissions are exactly those of the original assignment; resuming neither widens nor narrows them.",
     ...(task.ownedPaths.length > 0
-      ? task.ownedPaths.map((value) => `- ${value}`)
-      : ["- No writable paths; this leaf is read-only."]),
+      ? ["Before acting, review the conversation history above and the current on-disk state of every owned path:", ...task.ownedPaths.map((value) => `- ${value}`)]
+      : ["Before acting, review the conversation history above."]),
     "Treat prior tool results as historical evidence only, and never assume a previously attempted edit, write, or command completed.",
     "Re-read each file you depend on before editing it, then finish the remaining work and return the required concise report.",
   ].join("\n");
