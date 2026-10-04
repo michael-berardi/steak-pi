@@ -410,6 +410,7 @@ interface RunState {
   modelVerified?: boolean;
   result?: Extract<ClaudeStreamEvent, { kind: "result" }>;
   failure?: string;
+  incompleteFrame?: boolean;
   truncated?: boolean;
 }
 
@@ -458,6 +459,9 @@ export function classifyClaudeWorkerState(input: {
   if (state.turnLimitReached) {
     return { state: "failed", error: `Child exhausted the ${maxTurns}-turn limit${state.result?.subtype === "error_max_turns" ? " (error_max_turns)" : ""}; the partial report above is evidence, not acceptance` };
   }
+  // A cut stream is retryable only when no terminal policy/protocol failure
+  // or explicit turn exhaustion was recorded before the child closed.
+  if (state.incompleteFrame) return { state: "failed", error: "claude-code ended with an incomplete stream-json frame" };
   if (exitCode !== 0 || exitSignal !== null) {
     return { state: "failed", error: `claude-code CLI exited with code ${exitCode}${exitSignal ? ` (signal ${exitSignal})` : ""}` };
   }
@@ -558,7 +562,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     child.onExit((code, sig) => {
       if (!ownsProcess()) return;
       closed = true;
-      if (stdoutBuffer.trim()) state.failure = "claude-code ended with an incomplete stream-json frame";
+      if (stdoutBuffer.trim()) state.incompleteFrame = true;
       exitCode = code;
       exitSignal = sig;
       if (killTimer !== undefined) clearTimeout(killTimer);

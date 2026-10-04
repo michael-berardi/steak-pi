@@ -461,8 +461,14 @@ export class SubagentCoordinator {
           const prior = { usage: emptyUsage(), turns: 0, toolErrors: 0, toolSuccesses: 0 };
           let result: WorkerResult;
           for (let attempt = 0; ; attempt += 1) {
+            // Automatic continuation shares the original task budget. Supply
+            // an attempt-local run view so neither runner replenishes it and
+            // the shared record (including explicit resume's fresh budget) stays unchanged.
+            const attemptRun = attempt === 0 ? runtime.record : {
+              ...runtime.record, maxTurns: runtime.record.maxTurns - prior.turns,
+            };
             result = await this.runner({
-              run: runtime.record,
+              run: attemptRun,
               task,
               signal: taskRuntime.controller.signal,
               sessionDir: this.sessionDir?.(runtime.record, task),
@@ -482,6 +488,10 @@ export class SubagentCoordinator {
                 toolSuccesses: prior.toolSuccesses + safeTurns(result.toolSuccesses, 0) };
             }
             const transient = result.state === "failed" ? transientFailure(result.error, attempt) : undefined;
+            if (transient && safeTurns(result.turns, 0) >= runtime.record.maxTurns) {
+              result = { ...result, error: `Child exhausted the ${runtime.record.maxTurns}-turn limit; automatic resume refused after ${result.error}` };
+              break;
+            }
             if (!transient || isTerminal(task.state) || taskRuntime.stopState || taskRuntime.controller.signal.aborted
               || !(task.sessionFile || task.claudeSessionId)
               || this.remainingRunBudgetMs(runtime) < transient.delayMs + MIN_RESUME_BUDGET_MS) break;
