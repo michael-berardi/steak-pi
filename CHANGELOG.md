@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.9.6 (2026-10-04)
+
+- Workers recover from transient faults on their own. A worker that fails on a
+  network drop ("fetch failed"), a provider stream cut or stall, a Claude CLI
+  stream cut or process death, an overload or a rate limit resumes its own
+  session (at most twice, 10 s to 2 min backoff, only with run budget left)
+  instead of failing the task. Finished tool calls are not redone; usage and
+  turns carry across attempts and each resume is listed on the task. In a
+  measured kill test a fresh restart redid every finished step and spent about
+  69% more tokens. Deadlines, turn limits, content filters, route or policy
+  refusals and cancellations are never retried.
+- Claude Code workers are resumable. They run with a session id instead of
+  `--no-session-persistence`, continue with `--resume`, and their transcript is
+  deleted when they finish (or when a failed run's checkpoint is pruned).
+- Claude Code workers that used WebFetch no longer fail as "a model other than
+  the pinned route". Claude Code's Haiku helper summarises fetched pages and
+  appears in the run's model usage; it is accepted there and in subagent side
+  frames, while the worker's own turns must still be the pinned Sonnet or Opus.
+- A resumed worker keeps its original permissions. The continuation prompt
+  called a shell-only leaf "read-only", so a resumed worker could stop instead of
+  finishing.
+- Full suite: 742 passed, 1 skipped. Live check: a real Sonnet worker killed
+  mid-command resumed once by itself, ran each step exactly once and left no
+  transcript behind.
+
 ## 0.9.5 (2026-10-03)
 
 - GLM 5.3, GLM 5.3 Flash and the Z.ai coding plan are retired. The automatic text
