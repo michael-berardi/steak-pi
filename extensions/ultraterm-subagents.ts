@@ -1376,7 +1376,7 @@ export function createUltratermSubagentsExtension(
           const unfinished = snapshot.tasks.filter((task) => task.state !== "done");
           if (!unfinished.length) throw new Error("No unfinished tasks to resume");
           for (const task of unfinished) {
-            if (task.startedAt !== undefined && !task.sessionFile) throw new Error(`No native checkpoint for ${task.label}${snapshot.harness === "claude-code" ? " (Claude CLI tasks do not persist history)" : ""}; inspect partial work before a new dispatch`);
+            if (task.startedAt !== undefined && !task.sessionFile && !task.claudeSessionId) throw new Error(`No native checkpoint for ${task.label}${snapshot.harness === "claude-code" ? " (this Claude CLI task ran before resumable sessions)" : ""}; inspect partial work before a new dispatch`);
             if (task.sessionFile) current.store.validateSession(task.sessionFile);
           }
           if (!ctx.model) throw new Error("A resolved model is required to resume");
@@ -1390,9 +1390,10 @@ export function createUltratermSubagentsExtension(
             background: true, tasks: unfinished.map((task) => ({ label: task.label, task: task.task, role: task.role, mayEdit: task.mayEdit, ...(task.mayEdit ? { ownedPaths: task.ownedPaths } : {}), allowBash: task.allowBash })),
           };
           // Resume preserves the original harness: claude-code checkpoints ride
-          // the same explicit CLI route. Started foreign tasks never have native
-          // history (--no-session-persistence), so the sessionFile check above
-          // already fails closed for them; never-started tasks may start fresh.
+          // the same explicit CLI route and continue their session with
+          // `--resume`. Tasks started before resumable sessions have no
+          // history, so the check above fails closed; never-started tasks
+          // may start fresh.
           const claudeResume = snapshot.harness === "claude-code";
           const resolved = claudeResume
             ? undefined
@@ -1409,6 +1410,7 @@ export function createUltratermSubagentsExtension(
           run.ownerSessionFile = current.ownerSessionFile;
           run.tasks.forEach((task, index) => {
             task.sessionFile = unfinished[index].sessionFile;
+            task.claudeSessionId = unfinished[index].claudeSessionId;
             task.changedPaths = unfinished[index].changedPaths;
             task.lastStep = unfinished[index].lastStep;
           });

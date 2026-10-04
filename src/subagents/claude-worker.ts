@@ -28,6 +28,8 @@
  */
 import { spawn as nodeSpawn, execFile, execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { CLAUDE_SESSION_ID, removeClaudeWorkerSession } from "./claude-session.ts";
 import type { ChildProcess } from "node:child_process";
 import { OUTPUT_LIMIT, addUsage, emptyUsage, harnessOf, sanitizeUsage, type RunRecord, type TaskRecord,
   type UsageTotals, type WorkerProgress, type WorkerResult, type WorkerRunner } from "./types.ts";
@@ -130,7 +132,8 @@ async function verifyClaudeSubscription(executable: string, env: NodeJS.ProcessE
  * as a positional argument, so task text can never be parsed as CLI flags.
  * Permissions default to read-only; write/shell tools and their allow rules
  * appear only when the task grants them. */
-export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPermissions = {}, resolve?: (value: string) => string | undefined, model: ClaudeCodeModel = CLAUDE_CODE_MODEL): string[] {
+export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPermissions = {}, resolve?: (value: string) => string | undefined, model: ClaudeCodeModel = CLAUDE_CODE_MODEL, session?: ClaudeWorkerSession): string[] {
+  if (session !== undefined && !CLAUDE_SESSION_ID.test(session.id)) throw new Error("claude-code session id must be a lowercase UUID");
   const ownedPaths = permissions.ownedPaths ?? [];
   if (permissions.mayEdit && ownedPaths.length === 0) throw new Error("claude-code mayEdit leaves require at least one owned path");
   if (!permissions.mayEdit && ownedPaths.length > 0) throw new Error("claude-code read-only leaves cannot own writable paths");
@@ -147,7 +150,9 @@ export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPer
     "--verbose",
     "--model", model,
     "--effort", CLAUDE_CODE_EFFORT,
-    "--no-session-persistence",
+    // A persisted session lets a worker cut off by a transient fault resume
+    // with its history (`--resume`); the transcript is deleted once it is done.
+    ...(session === undefined ? ["--no-session-persistence"] : session.resume ? ["--resume", session.id] : ["--session-id", session.id]),
     "--permission-mode", "dontAsk",
     "--safe-mode",
     "--restricted",
@@ -167,6 +172,19 @@ function permissionLine(task: TaskRecord): string {
   if (task.mayEdit) parts.push("Edit, Write, NotebookEdit (owned paths only)");
   if (task.allowBash) parts.push("Bash");
   return `Your tool allowlist is ${parts.join("; ")}. Implement the leaf directly. Write only inside your owned paths${task.allowBash ? ", including from the shell" : ""}; never touch paths owned by siblings.`;
+}
+
+export interface ClaudeWorkerSession { id: string; resume: boolean }
+
+/** Continuation for a resumed Claude worker: the original leaf prompt is in
+ * the resumed history and is never replayed. */
+export function buildClaudeWorkerContinuationPrompt(task: TaskRecord): string {
+  return [
+    `Continue the exact assigned leaf "${task.label}" (task ${task.id}). Your previous run was cut off by a transient fault; this session was resumed from its history.`,
+    "Treat earlier tool results as historical evidence only and never assume an interrupted edit, write, or command completed: re-check the current state of anything you depend on.",
+    ...(task.ownedPaths.length > 0 ? ["Owned paths:", ...task.ownedPaths.map((value) => `- ${value}`)] : ["This leaf is read-only."]),
+    "Finish the remaining work only, then return the required concise final report.",
+  ].join("\n");
 }
 
 export function buildClaudeWorkerPrompt(run: RunRecord, task: TaskRecord): string {
@@ -479,8 +497,10 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     if (pinnedModel === undefined || run.thinkingLevel !== CLAUDE_CODE_EFFORT) {
       return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "Claude Code requires the exact Sonnet 5.5 or Opus 5.5 xhigh route" };
     }
+    const resuming = typeof task.claudeSessionId === "string" && CLAUDE_SESSION_ID.test(task.claudeSessionId);
+    const sessionId = resuming ? task.claudeSessionId! : randomUUID();
     let args: string[];
-    try { args = claudeWorkerArgs(Math.max(1, Math.min(run.maxTurns, 2048)), task, undefined, pinnedModel); }
+    try { args = claudeWorkerArgs(Math.max(1, Math.min(run.maxTurns, 2048)), task, undefined, pinnedModel, { id: sessionId, resume: resuming }); }
     catch (error) { return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
     if (signal.aborted) return { state: isTimeoutSignal(signal) ? "timed_out" : "aborted", output: "", turns: 0, usage: emptyUsage(), error: "Cancelled before CLI launch" };
     if (!options.spawn) {
@@ -510,6 +530,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     let killed = false;
     let closed = false;
     const child = spawn({ command: executable, args, env: claudeWorkerEnv(), cwd: run.cwd });
+    onProgress({ claudeSessionId: sessionId });
     // Captured process identity at launch; every kill/cleanup revalidates it so
     // a replaced or rebinding handle can never signal an unrelated process.
     const launchedPid = child.pid;
@@ -675,7 +696,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
       if (signal.aborted) onAbort();
       else signal.addEventListener("abort", onAbort, { once: true });
       if (!signal.aborted) {
-        child.writeStdin(buildClaudeWorkerPrompt(run, task));
+        child.writeStdin(resuming ? buildClaudeWorkerContinuationPrompt(task) : buildClaudeWorkerPrompt(run, task));
       }
       child.endStdin();
       await Promise.race([exitPromise, stopPromise]);
@@ -692,6 +713,10 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     if (!closed) state.failure ??= "claude-code process exit could not be verified; cleanup lease retained";
 
     const classification = classifyClaudeWorkerState({ signal, state, maxTurns, exitCode, exitSignal, ...(spawnError !== undefined ? { spawnError } : {}) });
+    // Keep the transcript only while it may still be resumed.
+    if (classification.state === "done" && !options.spawn) {
+      try { removeClaudeWorkerSession(sessionId); } catch { /* best effort; the report is unaffected */ }
+    }
     const bounded = truncatePiWorkerOutput(state.outputParts.join(""));
     return {
       ...classification,

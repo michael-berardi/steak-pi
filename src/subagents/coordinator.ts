@@ -7,6 +7,7 @@ import {
   MAX_WORKER_TURNS,
   MIN_TIMEOUT_MS,
   addUsage,
+  emptyUsage,
   sanitizeUsage,
   type RunRecord,
   type TaskRecord,
@@ -17,6 +18,7 @@ import {
   type WorkerRunner,
 } from "./types.ts";
 import { abortError, sessionScheduler, type SessionScheduler } from "./scheduler.ts";
+import { MIN_RESUME_BUDGET_MS, transientFailure } from "./auto-resume.ts";
 import { defaultMachineSlots, type MachineSlots, type NoopSlots } from "./machine-slots.ts";
 
 const TERMINAL_TASK_STATES = new Set<TaskState>([
@@ -99,6 +101,17 @@ function cloneUsage(usage: UsageTotals): UsageTotals {
   return sanitizeUsage(usage);
 }
 
+/** Resolves true after `ms`, false as soon as `signal` aborts. */
+function abortableDelay(ms: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const done = (ok: boolean) => { clearTimeout(timer); signal.removeEventListener("abort", onAbort); resolve(ok); };
+    const onAbort = () => done(false);
+    const timer = setTimeout(() => done(true), ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 function cloneTask(task: TaskRecord): TaskRecord {
   return {
     ...task,
@@ -106,6 +119,7 @@ function cloneTask(task: TaskRecord): TaskRecord {
     changedPaths: [...workerJournal(task).changedPaths],
     lastStep: workerJournal(task).lastStep,
     usage: cloneUsage(task.usage),
+    ...(task.autoResumes ? { autoResumes: [...task.autoResumes] } : {}),
   };
 }
 
@@ -440,13 +454,53 @@ export class SubagentCoordinator {
           this.observe(runtime);
           if (taskRuntime.controller.signal.aborted) throw abortError(taskRuntime.controller.signal);
 
-          const result = await this.runner({
-            run: runtime.record,
-            task,
-            signal: taskRuntime.controller.signal,
-            sessionDir: this.sessionDir?.(runtime.record, task),
-            onProgress: (progress) => this.applyProgress(runtime, task, progress),
-          });
+          // A transient failure (network drop, stream cut or stall, overload)
+          // resumes the worker's persisted session instead of failing the task:
+          // finished tool calls stay done. Each attempt reports its own usage
+          // and turns, so earlier attempts are carried forward here.
+          const prior = { usage: emptyUsage(), turns: 0, toolErrors: 0, toolSuccesses: 0 };
+          let result: WorkerResult;
+          for (let attempt = 0; ; attempt += 1) {
+            result = await this.runner({
+              run: runtime.record,
+              task,
+              signal: taskRuntime.controller.signal,
+              sessionDir: this.sessionDir?.(runtime.record, task),
+              onProgress: (progress) => this.applyProgress(runtime, task, attempt === 0 ? progress : {
+                ...progress,
+                ...(progress.usage ? { usage: addUsage(cloneUsage(prior.usage), progress.usage) } : {}),
+                ...(progress.turns !== undefined ? { turns: prior.turns + progress.turns } : {}),
+                ...(progress.toolErrors !== undefined ? { toolErrors: prior.toolErrors + progress.toolErrors } : {}),
+                ...(progress.toolSuccesses !== undefined ? { toolSuccesses: prior.toolSuccesses + progress.toolSuccesses } : {}),
+              }),
+            });
+            if (attempt > 0) {
+              result = { ...result,
+                usage: addUsage(cloneUsage(prior.usage), result.usage),
+                turns: prior.turns + safeTurns(result.turns, 0),
+                toolErrors: prior.toolErrors + safeTurns(result.toolErrors, 0),
+                toolSuccesses: prior.toolSuccesses + safeTurns(result.toolSuccesses, 0) };
+            }
+            const transient = result.state === "failed" ? transientFailure(result.error, attempt) : undefined;
+            if (!transient || isTerminal(task.state) || taskRuntime.stopState || taskRuntime.controller.signal.aborted
+              || !(task.sessionFile || task.claudeSessionId)
+              || this.remainingRunBudgetMs(runtime) < transient.delayMs + MIN_RESUME_BUDGET_MS) break;
+            await result.cleanup;
+            prior.usage = cloneUsage(result.usage);
+            prior.turns = safeTurns(result.turns, 0);
+            prior.toolErrors = safeTurns(result.toolErrors, 0);
+            prior.toolSuccesses = safeTurns(result.toolSuccesses, 0);
+            task.autoResumes = [...(task.autoResumes ?? []), `${transient.reason}: ${String(result.error).slice(0, 200)}`];
+            task.usage = cloneUsage(prior.usage);
+            task.turns = prior.turns;
+            task.lastStep = `auto-resume ${attempt + 1} after ${transient.reason}`;
+            task.currentTool = "retry";
+            task.retryAttempt = attempt + 1;
+            task.retryDelayMs = transient.delayMs;
+            this.observe(runtime);
+            if (!(await abortableDelay(transient.delayMs, taskRuntime.controller.signal))) break;
+            delete task.currentTool;
+          }
           if (!isTerminal(task.state)) {
             this.finishTask(runtime, task, taskRuntime.stopState ?? result.state, {
               ...result,
@@ -497,6 +551,7 @@ export class SubagentCoordinator {
       if (progress[field] !== undefined) task[field] = safeTurns(progress[field], task[field] ?? 0);
     }
     if (progress.sessionFile !== undefined) task.sessionFile = progress.sessionFile;
+    if (progress.claudeSessionId !== undefined) task.claudeSessionId = progress.claudeSessionId;
     task.lastProgressAt = this.now();
     this.observe(runtime);
 
