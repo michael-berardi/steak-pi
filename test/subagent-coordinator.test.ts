@@ -550,3 +550,71 @@ it("terminalizes cancelled initialization but retains its scheduler lease until 
   await second.wait("new", "all");
   expect(launched).toHaveBeenCalledTimes(1);
 });
+
+describe("automatic resume after transient worker failures", () => {
+  const failing = (error: string, tokens = 2): WorkerResult => ({ state: "failed", output: "partial", error, turns: tokens, usage: usage(tokens) });
+
+  it("resumes a network drop from the worker's session and carries usage across attempts", async () => {
+    vi.useFakeTimers();
+    const seen: Array<{ sessionFile?: string; claudeSessionId?: string }> = [];
+    let calls = 0;
+    const coordinator = new Coordinator(async ({ task: recordTask, onProgress }) => {
+      seen.push({ sessionFile: recordTask.sessionFile });
+      calls += 1;
+      if (calls === 1) { onProgress({ sessionFile: "/tmp/worker.jsonl" }); return failing("fetch failed", 2); }
+      return result("done", 3, "finished");
+    }, { scheduler: new Scheduler(1) });
+    coordinator.start(run("resume", 1, 1, 30 * 60_000)); await flush();
+    expect(coordinator.snapshot("resume")!.tasks[0].currentTool).toBe("retry");
+    await vi.advanceTimersByTimeAsync(10_000);
+    const settled = await coordinator.wait("resume", "all");
+    expect(calls).toBe(2);
+    expect(seen[1].sessionFile).toBe("/tmp/worker.jsonl");
+    const done = settled.tasks[0];
+    expect(done.state).toBe("done");
+    expect(done.autoResumes).toEqual(["network drop: fetch failed"]);
+    expect(done.turns).toBe(5);
+    expect(done.usage.totalTokens).toBe(50);
+    expect(settled.usage.totalTokens).toBe(50);
+    await coordinator.shutdown();
+  });
+
+  it("stops after two resumes and reports the last error", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const coordinator = new Coordinator(async ({ onProgress }) => {
+      calls += 1;
+      onProgress({ claudeSessionId: "0b5e1c2a-1111-4222-8333-944455556666" });
+      return failing("claude-code ended with an incomplete stream-json frame", 1);
+    }, { scheduler: new Scheduler(1) });
+    coordinator.start(run("cap", 1, 1, 30 * 60_000)); await flush();
+    await vi.advanceTimersByTimeAsync(60_000);
+    const settled = await coordinator.wait("cap", "all");
+    expect(calls).toBe(3);
+    expect(settled.tasks[0].state).toBe("failed");
+    expect(settled.tasks[0].autoResumes).toHaveLength(2);
+    expect(settled.tasks[0].error).toMatch(/incomplete stream-json frame/);
+    await coordinator.shutdown();
+  });
+
+  it("never resumes decisions, sessionless workers, or a run without budget left", async () => {
+    for (const [name, error, session, timeoutMs] of [
+      ["turns", "Child exceeded the 32-turn limit; the partial report above is evidence, not acceptance", true, 30 * 60_000],
+      ["filter", "Provider finish_reason: content_filter", true, 30 * 60_000],
+      ["nosession", "fetch failed", false, 30 * 60_000],
+      ["budget", "fetch failed", true, 60_000],
+    ] as const) {
+      let calls = 0;
+      const coordinator = new Coordinator(async ({ onProgress }) => {
+        calls += 1;
+        if (session) onProgress({ sessionFile: "/tmp/w.jsonl" });
+        return failing(error);
+      }, { scheduler: new Scheduler(1) });
+      coordinator.start(run(name, 1, 1, timeoutMs));
+      const settled = await coordinator.wait(name, "all");
+      expect(calls, name).toBe(1);
+      expect(settled.tasks[0].autoResumes, name).toBeUndefined();
+      await coordinator.shutdown();
+    }
+  });
+});

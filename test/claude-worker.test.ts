@@ -154,6 +154,21 @@ describe("claude-code worker CLI surface", () => {
     expect(CLAUDE_CODE_ROUTE).toBe("claude-code/claude-opus-5-5");
   });
 
+  it("resumes a cut-off worker's own Claude session with a continuation prompt, never the leaf prompt", async () => {
+    const id = "0b5e1c2a-1111-4222-8333-944455556666";
+    const progress: Array<{ claudeSessionId?: string }> = [];
+    const { spawn, calls } = fakeSpawn((child) => child.exit(0));
+    await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run(), task: { ...task(), claudeSessionId: id }, signal: new AbortController().signal, onProgress: (p) => progress.push(p) });
+    const joined = calls[0].args.join(" ");
+    expect(joined).toContain(`--resume ${id}`);
+    expect(joined).not.toContain("--session-id");
+    const prompt = calls[0].child.stdinChunks.join("");
+    expect(prompt).toContain("was resumed from its history");
+    expect(prompt).not.toContain("Report the routing entrypoint");
+    expect(progress[0]).toEqual({ claudeSessionId: id });
+    expect(() => claudeWorkerArgs(undefined, {}, undefined, "claude-sonnet-5-5", { id: "../../etc", resume: true })).toThrow(/lowercase UUID/);
+  });
+
   it("passes the leaf prompt on stdin and never inherits API-key/billing override env", async () => {
     const { spawn, calls } = fakeSpawn((child) => child.exit(0));
     const runner = createClaudeWorkerRunner(runnerOptions(spawn));
@@ -163,7 +178,8 @@ describe("claude-code worker CLI surface", () => {
     expect(command).toBe("claude");
     expect(cwd).toBe("/repo");
     const joined = args.join(" ");
-    expect(joined).toContain("--no-session-persistence");
+    expect(joined).toMatch(/--session-id [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12} /);
+    expect(joined).not.toContain("--resume");
     expect(joined).toContain("--strict-mcp-config");
     expect(joined).toContain("--permission-mode dontAsk");
     expect(joined).not.toContain("bypassPermissions");

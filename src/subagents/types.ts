@@ -146,6 +146,10 @@ export interface TaskRecord extends NormalizedTask {
    * that persisted history instead of starting from an empty in-memory session.
    */
   sessionFile?: string;
+  /** Claude Code worker session id (`--session-id`), resumable with `--resume`. */
+  claudeSessionId?: string;
+  /** Automatic resumes after transient failures, each `reason: error`. */
+  autoResumes?: string[];
   /** Successful edit/write tool paths journaled for the final report. */
   changedPaths?: string[];
   /** Last observed worker step (tool name or compaction/retry phase). */
@@ -200,6 +204,8 @@ export interface WorkerProgress {
   usage?: UsageTotals;
   /** Checkpoint path when the worker session is persisted to disk. */
   sessionFile?: string;
+  /** Claude Code session id once the CLI has been launched with it. */
+  claudeSessionId?: string;
 }
 
 export interface WorkerResult {
