@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.7 (2026-10-04)
+
+Fixes from an independent GPT-6 Astra review of 0.9.6:
+
+- An automatically resumed worker shares its task's turn budget instead of
+  getting a fresh one, and is not resumed once the budget is used up.
+- A Claude Code worker stopped for serving the wrong model (or for malformed
+  output) is never retried automatically, even when its stream was cut.
+- Deleting a finished Claude worker's transcript never follows a symlinked
+  project folder.
+- Full suite: 758 passed, 1 skipped.
+
 ## 0.9.6 (2026-10-04)
 
 - Workers recover from transient faults on their own. A worker that fails on a
