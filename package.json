@@ -1,6 +1,6 @@
 {
   "name": "steak-pi",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "bin": {
     "steak-pi": "bin/steak-pi"
   },

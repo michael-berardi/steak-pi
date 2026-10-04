@@ -106,9 +106,11 @@ The same harness serves workers and scouts too: select it explicitly and grant
 `mayEdit` + `ownedPaths` and/or `allowBash` exactly as on Pi. Reads stay confined
 to cwd; each owned path becomes a CLI `Edit(...)` allow rule under `dontAsk`, so
 the CLI itself denies writes outside owned paths. `allowBash` adds the Bash tool
-and, as on Pi, is operator-level shell that can bypass ownership. Relay, image
-admission and native worker resume are unavailable on this harness and refused
-explicitly. Interactive Claude `/resume` is separate.
+and, as on Pi, is operator-level shell that can bypass ownership. Each Claude
+worker runs with its own session id, so a cut-off worker resumes (automatically
+after a transient fault, or through hub `resume`); its transcript is deleted
+once it finishes. Relay and image admission are unavailable on this harness and
+refused explicitly.
 Scheduling, bounded waits/cancel, usage and reports use the same USAP coordinator.
 
 ### Native Pi routes

@@ -98,14 +98,24 @@ capability and billing safeguards apply regardless of profile metadata.
 Model/profile selection does not alter budgets: `timeoutMs` defaults to 10
 minutes (1 second–8 hours), and `maxTurns` defaults to 64 (1–2,048 assistant
 turns per task). Pi workers use native compaction and at most one native retry;
-this is distinct from subscription route fallback. CLI workers never retry or
-silently replay a partial conversation.
+this is distinct from subscription route fallback. CLI workers never silently
+replay a partial conversation.
+
+A worker that fails on a transient fault (network drop, provider stream cut or
+stall, Claude CLI stream cut or process death, overload, rate limit) resumes its
+own persisted session automatically: at most twice, after a 10 s to 2 min
+backoff, and only with at least 90 s of run budget left. It continues with a
+short continuation prompt and its original permissions, so finished tool calls
+are not redone; usage and turns carry across attempts and each resume is listed
+on the task (`autoResumes`). Deadlines, turn limits, content filters, route or
+policy refusals and cancellations are never resumed automatically.
 
 Persistent parent sessions retain private run and native worker checkpoints.
 Hub `diagnose` exposes bounded metadata, not worker transcripts. Explicit
 `resume` creates a new run for unfinished tasks on the original model/reasoning
 route, rechecking availability and authorization with fresh budgets; completed
-tasks are not replayed. There is no automatic restart or detached daemon.
+tasks are not replayed. Apart from the transient-fault resume above there is no
+automatic restart, and no detached daemon.
 Background completion is passive at idle, with no added model call.
 
 ## Evidence and activation

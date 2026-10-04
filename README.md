@@ -95,6 +95,9 @@ parent
 - **Control:** runs have stable IDs with `list`, `status`, `wait`, `send`,
   `inbox`, `cancel`, `diagnose` and `resume`. Checkpoints let you inspect and
   resume unfinished work after a restart.
+- **Recovery:** a worker cut off by a network drop, a provider stream cut or
+  stall, an overload or a rate limit resumes its own session automatically (at
+  most twice, within the run deadline), so finished steps are not redone.
 
 **Models.** Routine workers use MiMo V2.6 Flash on the Xiaomi Token Plan, and
 automatic reviewers use MiMo V2.6 Pro. Text runs fall back only to GPT-6.1 Sol
