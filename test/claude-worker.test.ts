@@ -238,7 +238,7 @@ describe("claude-code worker stream handling", () => {
     });
     const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run(), task: task(), signal: new AbortController().signal, onProgress() {} });
     expect(result.state).toBe("failed");
-    expect(result.error).toMatch(/other than the pinned/);
+    expect(result.error).toMatch(/claude-fable-5-1, not the pinned/);
   });
 
   it("spawns Sonnet 5.5 for a Sonnet route and refuses an Opus-attested stream on it", async () => {
@@ -257,7 +257,35 @@ describe("claude-code worker stream handling", () => {
     });
     const refused = await createClaudeWorkerRunner(runnerOptions(swapped.spawn))({ run: sonnet, task: task(), signal: new AbortController().signal, onProgress() {} });
     expect(refused.state).toBe("failed");
-    expect(refused.error).toMatch(/other than the pinned Sonnet 5.5 route/);
+    expect(refused.error).toMatch(/claude-opus-5-5, not the pinned Sonnet 5.5 route/);
+  });
+
+  it("accepts Claude's Haiku helper in the result usage and sidechain frames, never as the worker's own turn", async () => {
+    const sonnet = run({ model: "claude-code/claude-sonnet-5-5" });
+    const helper = "claude-haiku-4-5-20251001";
+    // Real stream from a WebFetch run (2026-10-04): the summary call adds Haiku to modelUsage.
+    const served = fakeSpawn((child) => {
+      child.stdout(line({ type: "system", subtype: "init", model: "claude-sonnet-5-5" }));
+      child.stdout(line({ type: "assistant", parent_tool_use_id: "toolu_1", message: { id: "m-side", model: helper, content: [] } }));
+      child.stdout(line({ ...JSON.parse(successResult("title", {})), modelUsage: { "claude-sonnet-5-5": {}, [helper]: {} } }));
+      child.exit(0);
+    });
+    const ok = await createClaudeWorkerRunner(runnerOptions(served.spawn))({ run: sonnet, task: task(), signal: new AbortController().signal, onProgress() {} });
+    expect(ok.state).toBe("done");
+    const ownTurn = fakeSpawn((child) => {
+      child.stdout(line({ type: "assistant", message: { id: "m1", model: helper, content: [] } }));
+      child.exit(0);
+    });
+    const refused = await createClaudeWorkerRunner(runnerOptions(ownTurn.spawn))({ run: sonnet, task: task(), signal: new AbortController().signal, onProgress() {} });
+    expect(refused.state).toBe("failed");
+    expect(refused.error).toMatch(/claude-haiku-4-5-20251001, not the pinned Sonnet 5.5 route/);
+    const helperOnly = fakeSpawn((child) => {
+      child.stdout(line({ ...JSON.parse(successResult("x", {})), modelUsage: { [helper]: {} } }));
+      child.exit(0);
+    });
+    const noPinned = await createClaudeWorkerRunner(runnerOptions(helperOnly.spawn))({ run: sonnet, task: task(), signal: new AbortController().signal, onProgress() {} });
+    expect(noPinned.state).toBe("failed");
+    expect(noPinned.error).toMatch(/usage shows no turn on the pinned Sonnet 5.5 route/);
   });
 
   it("refuses success with no served-model evidence", async () => {

@@ -213,7 +213,7 @@ export function buildClaudeWorkerPrompt(run: RunRecord, task: TaskRecord): strin
 }
 
 export type ClaudeStreamEvent =
-  | { kind: "assistant"; text: string; toolUses: string[]; toolCalls: ClaudeToolCall[]; usage?: unknown; messageId?: string; model?: string }
+  | { kind: "assistant"; text: string; toolUses: string[]; toolCalls: ClaudeToolCall[]; usage?: unknown; messageId?: string; model?: string; sidechain?: boolean }
   | { kind: "identity"; model: string }
   | { kind: "tool_result"; isError: boolean; results: Array<{ id: string; isError: boolean }> }
   | { kind: "result"; subtype?: string; isError: boolean; result?: string; usage?: unknown; totalCostUsd?: number; numTurns?: number; models?: string[] }
@@ -244,6 +244,12 @@ function textBlocks(content: unknown): { text: string; toolUses: string[]; toolC
   return { text: parts.join(""), toolUses, toolCalls };
 }
 
+/** Claude Code's own helper model (Haiku) for WebFetch summaries and
+ * subagent side tasks. Accepted only outside the worker's own turns. */
+export function isClaudeHelperModel(model: string): boolean {
+  return /^claude-haiku-[0-9]/.test(model);
+}
+
 /** Parse one stream-json line. Any syntax/shape failure is `malformed` so the
  * caller can fail closed instead of guessing. */
 export function parseClaudeStreamLine(line: string): ClaudeStreamEvent {
@@ -251,7 +257,8 @@ export function parseClaudeStreamLine(line: string): ClaudeStreamEvent {
   try { parsed = JSON.parse(line); } catch { return { kind: "malformed" }; }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { kind: "malformed" };
   const event = parsed as { type?: unknown; subtype?: unknown; is_error?: unknown; result?: unknown;
-    usage?: unknown; total_cost_usd?: unknown; num_turns?: unknown; message?: unknown; model?: unknown; modelUsage?: unknown };
+    usage?: unknown; total_cost_usd?: unknown; num_turns?: unknown; message?: unknown; model?: unknown; modelUsage?: unknown;
+    parent_tool_use_id?: unknown };
   if (event.type === "system" && event.subtype === "init" && typeof event.model === "string") return { kind: "identity", model: event.model };
   if (event.type === "assistant") {
     const { text, toolUses, toolCalls } = textBlocks((event.message as { content?: unknown } | undefined)?.content);
@@ -259,7 +266,8 @@ export function parseClaudeStreamLine(line: string): ClaudeStreamEvent {
     const message = event.message as { id?: unknown; model?: unknown } | undefined;
     return { kind: "assistant", text, toolUses, toolCalls, ...(usage === undefined ? {} : { usage }),
       ...(typeof message?.id === "string" ? { messageId: message.id } : {}),
-      ...(typeof message?.model === "string" ? { model: message.model } : {}) };
+      ...(typeof message?.model === "string" ? { model: message.model } : {}),
+      ...(typeof event.parent_tool_use_id === "string" ? { sidechain: true } : {}) };
   }
   if (event.type === "user") {
     const content = (event.message as { content?: unknown } | undefined)?.content;
@@ -566,8 +574,16 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
         const reportedModels = event.kind === "identity" ? [event.model]
           : event.kind === "assistant" ? (event.model === undefined ? [] : [event.model])
           : event.kind === "result" ? event.models ?? [] : [];
-        if (reportedModels.some((model) => model !== pinnedModel)) {
-          state.failure = `Claude CLI reported a model other than the pinned ${claudeCodeModelName(pinnedModel)} route`;
+        // The worker's own turns must be the pinned model. Claude Code runs
+        // its Haiku helper for side work (WebFetch summaries, subagent tasks),
+        // which shows up in sidechain frames and the result's model usage;
+        // that is not a route change. Any other model still fails closed.
+        const helperAllowed = (event.kind === "assistant" && event.sidechain === true) || event.kind === "result";
+        const wrong = reportedModels.filter((model) => model !== pinnedModel && !(helperAllowed && isClaudeHelperModel(model)));
+        if (wrong.length > 0 || (event.kind === "result" && reportedModels.length > 0 && !reportedModels.includes(pinnedModel))) {
+          state.failure = wrong.length > 0
+            ? `Claude CLI reported ${wrong.join(", ")}, not the pinned ${claudeCodeModelName(pinnedModel)} route`
+            : `Claude CLI usage shows no turn on the pinned ${claudeCodeModelName(pinnedModel)} route`;
           killOnce(true);
           return;
         }
