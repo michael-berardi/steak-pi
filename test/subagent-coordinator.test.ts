@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Coordinator, CoordinatorWaitTimeoutError } from "../src/subagents/coordinator.ts";
 import { Scheduler } from "../src/subagents/scheduler.ts";
+import { workerTurnBudget } from "../src/subagents/pi-worker.ts";
 import type { MachineSlots } from "../src/subagents/machine-slots.ts";
 import {
   MAX_ACTIVE_RUNS,
@@ -576,6 +577,73 @@ describe("automatic resume after transient worker failures", () => {
     expect(done.turns).toBe(5);
     expect(done.usage.totalTokens).toBe(50);
     expect(settled.usage.totalTokens).toBe(50);
+    await coordinator.shutdown();
+  });
+
+  it("passes only remaining turns through the Pi runner budget seam without changing the shared run", async () => {
+    vi.useFakeTimers();
+    const budgets: number[] = [];
+    const coordinator = new Coordinator(async ({ run: attemptRun, onProgress }) => {
+      budgets.push(workerTurnBudget(attemptRun));
+      onProgress({ sessionFile: "/tmp/worker.jsonl" });
+      return budgets.length === 1 ? failing("fetch failed", 3) : result("done", workerTurnBudget(attemptRun));
+    }, { scheduler: new Scheduler(1) });
+    const original = { ...run("turn-budget", 1, 1, 30 * 60_000), maxTurns: 4 };
+    coordinator.start(original); await flush();
+    await vi.advanceTimersByTimeAsync(10_000);
+    const settled = await coordinator.wait(original.id, "all");
+    expect(budgets).toEqual([4, 1]);
+    expect(settled.tasks[0].turns).toBe(4);
+    expect(settled.maxTurns).toBe(4);
+    expect(original.maxTurns).toBe(4);
+    await coordinator.shutdown();
+  });
+
+  it("subtracts cumulative turns across multiple automatic resumes", async () => {
+    vi.useFakeTimers();
+    const budgets: number[] = [];
+    const coordinator = new Coordinator(async ({ run: attemptRun, onProgress }) => {
+      budgets.push(workerTurnBudget(attemptRun));
+      onProgress({ sessionFile: "/tmp/worker.jsonl" });
+      return budgets.length < 3 ? failing("fetch failed", budgets.length === 1 ? 2 : 1) : result("done", workerTurnBudget(attemptRun));
+    }, { scheduler: new Scheduler(1) });
+    coordinator.start({ ...run("cumulative-turns", 1, 1, 30 * 60_000), maxTurns: 4 });
+    await flush();
+    await vi.advanceTimersByTimeAsync(40_000);
+    const settled = await coordinator.wait("cumulative-turns", "all");
+    expect(budgets).toEqual([4, 2, 1]);
+    expect(settled.tasks[0].turns).toBe(4);
+    expect(settled.maxTurns).toBe(4);
+    await coordinator.shutdown();
+  });
+
+  it("keeps a fresh authorized budget for an explicitly resumed run", async () => {
+    const resumed = { ...run("explicit-turns", 1, 1, 30 * 60_000), maxTurns: 4 };
+    resumed.tasks[0].sessionFile = "/tmp/worker.jsonl";
+    resumed.tasks[0].turns = 3;
+    const runner = vi.fn(async ({ run: attemptRun }: WorkerRunContext) => result("done", workerTurnBudget(attemptRun)));
+    const coordinator = new Coordinator(runner, { scheduler: new Scheduler(1) });
+    coordinator.start(resumed);
+    const settled = await coordinator.wait(resumed.id, "all");
+    expect(runner.mock.calls[0][0].run.maxTurns).toBe(4);
+    expect(settled.tasks[0].turns).toBe(4);
+    await coordinator.shutdown();
+  });
+
+  it.each([4, 5])("refuses automatic resume after %i turns consume the entire budget", async (turns) => {
+    vi.useFakeTimers();
+    const runner = vi.fn(async ({ onProgress }: WorkerRunContext) => {
+      onProgress({ sessionFile: "/tmp/worker.jsonl" });
+      return failing("fetch failed", turns);
+    });
+    const coordinator = new Coordinator(runner, { scheduler: new Scheduler(1) });
+    coordinator.start({ ...run(`exhausted-${turns}`, 1, 1, 30 * 60_000), maxTurns: 4 });
+    await flush();
+    await vi.advanceTimersByTimeAsync(60_000);
+    const settled = await coordinator.wait(`exhausted-${turns}`, "all");
+    expect(runner).toHaveBeenCalledTimes(1);
+    expect(settled.tasks[0].error).toMatch(/4-turn limit/);
+    expect(settled.tasks[0].autoResumes).toBeUndefined();
     await coordinator.shutdown();
   });
 

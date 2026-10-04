@@ -1,4 +1,6 @@
-import { workerJournal } from "../src/subagents/coordinator.ts";
+import { Coordinator, workerJournal } from "../src/subagents/coordinator.ts";
+import { Scheduler } from "../src/subagents/scheduler.ts";
+import { NoopSlots } from "../src/subagents/machine-slots.ts";
 import { describe, expect, it, vi } from "vitest";
 import {
   assertClaudeSubscriptionStatus,
@@ -204,6 +206,70 @@ describe("claude-code worker CLI surface", () => {
     const env = claudeWorkerEnv(base);
     expect(env).toEqual({ PATH: "/usr/bin", HOME: "/home/op" });
     expect(base.ANTHROPIC_API_KEY).toBe("sk-leak");
+  });
+});
+
+describe("claude-code worker automatic resume safety", () => {
+  it("gives the resumed CLI only remaining --max-turns and retains the original run budget", async () => {
+    vi.useFakeTimers();
+    try {
+      let attempt = 0;
+      const { spawn, calls } = fakeSpawn((child) => {
+        if (++attempt === 1) {
+          for (let turn = 0; turn < 3; turn += 1) child.stdout(line({ type: "assistant", message: { content: [] } }));
+          child.stdout('{"type":'); child.exit(0);
+        } else {
+          child.stdout(successResult("finished", {})); child.exit(0);
+        }
+      });
+      const coordinator = new Coordinator(createClaudeWorkerRunner(runnerOptions(spawn)), { scheduler: new Scheduler(1), machineSlots: new NoopSlots() });
+      const record = run({ maxTurns: 4, timeoutMs: 30 * 60_000, tasks: [task({ state: "queued" })] });
+      coordinator.start(record);
+      await vi.advanceTimersByTimeAsync(10_000);
+      const settled = await coordinator.wait(record.id, "all");
+      expect(calls.map(({ args }) => args[args.indexOf("--max-turns") + 1])).toEqual(["4", "1"]);
+      expect(calls[1].args).toContain("--resume");
+      expect(settled.tasks[0].turns).toBe(4);
+      expect(settled.tasks[0].state).toBe("done");
+      expect(settled.maxTurns).toBe(4);
+      expect(record.maxTurns).toBe(4);
+      await coordinator.shutdown();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each([
+    ["wrong model", line({ type: "system", subtype: "init", model: "claude-sonnet-5-5" }), /pinned Opus/],
+    ["malformed", "{bad-json}\n", /malformed stream-json/],
+    ["missing message ID", JSON.stringify({ type: "assistant", message: { model: CLAUDE_CODE_MODEL, content: [] } }) + "\n", /stable message ID/],
+  ])("never respawns after %s followed by a partial frame", async (_name, frame, error) => {
+    vi.useFakeTimers();
+    try {
+      const { spawn, calls } = fakeSpawn((child) => {
+        child.stdout(frame + '{"type":'); child.exit(null, "SIGTERM");
+      });
+      const coordinator = new Coordinator(createClaudeWorkerRunner(runnerOptions(spawn)), { scheduler: new Scheduler(1), machineSlots: new NoopSlots() });
+      const record = run({ timeoutMs: 30 * 60_000, tasks: [task({ state: "queued" })] });
+      coordinator.start(record);
+      await vi.advanceTimersByTimeAsync(60_000);
+      const settled = await coordinator.wait(record.id, "all");
+      expect(calls).toHaveLength(1);
+      expect(settled.tasks[0].state).toBe("failed");
+      expect(settled.tasks[0].error).toMatch(error);
+      expect(settled.tasks[0].autoResumes).toBeUndefined();
+      await coordinator.shutdown();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("reports explicit turn exhaustion instead of a kill-induced partial tail", async () => {
+    const { spawn } = fakeSpawn((child) => {
+      child.stdout(line({ type: "assistant", message: { content: [] } }));
+      child.stdout(line({ type: "assistant", message: { content: [] } }) + '{"type":');
+      child.exit(null, "SIGTERM");
+    });
+    const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run({ maxTurns: 1 }), task: task(), signal: new AbortController().signal, onProgress: () => {} });
+    expect(result.state).toBe("failed");
+    expect(result.error).toMatch(/exhausted the 1-turn limit/);
+    expect(result.error).not.toMatch(/incomplete stream-json/);
   });
 });
 
