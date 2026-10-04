@@ -73,8 +73,8 @@ mkdir -p "$TMP/config" "$TMP/sessions" "$TMP/home" \
 PI_VERSION="$(env -i HOME="$TMP/home" PATH="$SAFE_PATH" \
   PI_CODING_AGENT_DIR="$TMP/config" PI_OFFLINE=1 PI_TELEMETRY=0 \
   "$PI_EXECUTABLE" --version)"
-[[ "$PI_VERSION" == "0.85.1" || "$PI_VERSION" == "0.86.0" || "$PI_VERSION" == "0.86.1" || "$PI_VERSION" == "0.87.0" || "$PI_VERSION" == "0.87.1" ]] || {
-  echo "Steak Pi smoke requires reviewed Pi 0.85.1, 0.86.0, 0.86.1, 0.87.0 or 0.87.1; found $PI_VERSION" >&2
+[[ "$PI_VERSION" == "0.85.1" || "$PI_VERSION" == "0.86.0" || "$PI_VERSION" == "0.86.1" || "$PI_VERSION" == "0.87.0" || "$PI_VERSION" == "0.87.1" || "$PI_VERSION" == "0.99.2" || "$PI_VERSION" == "1.0.0" ]] || {
+  echo "Steak Pi smoke requires reviewed Pi 0.85.1, 0.86.0, 0.86.1, 0.87.0, 0.87.1, 0.99.2 or 1.0.0; found $PI_VERSION" >&2
   exit 1
 }
 
@@ -134,8 +134,8 @@ node - "$TMP/config/settings.json" "$STEAK_PACKAGE" <<'NODE'
 const fs = require("node:fs");
 const [file, root] = process.argv.slice(2);
 fs.writeFileSync(file, JSON.stringify({
-  defaultProvider: "zai",
-  defaultModel: "glm-5.3-flash",
+  defaultProvider: "xiaomi",
+  defaultModel: "mimo-v2.6-flash",
   defaultThinkingLevel: "high",
   defaultProjectTrust: "always",
   enableInstallTelemetry: false,
@@ -151,9 +151,9 @@ const iso = new Date(now - 60_000).toISOString();
 const lines = [
   { type: "session", version: 3, id: "11111111-1111-4111-8111-111111111111", timestamp: iso, cwd },
   { type: "message", id: "a1b2c3d4", parentId: null, timestamp: iso, message: { role: "user", content: "fixture-resume-marker", timestamp: now - 60_000 } },
-  { type: "message", id: "b2c3d4e5", parentId: "a1b2c3d4", timestamp: iso, message: { role: "assistant", content: [{ type: "text", text: "fixture restored" }], api: "openai-completions", provider: "zai", model: "glm-5.3-flash", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: now - 59_000 } },
+  { type: "message", id: "b2c3d4e5", parentId: "a1b2c3d4", timestamp: iso, message: { role: "assistant", content: [{ type: "text", text: "fixture restored" }], api: "openai-completions", provider: "xiaomi", model: "mimo-v2.6-flash", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: now - 59_000 } },
 ];
-const run = { runId: "run-visual-fixture", goal: "Verify the subagent workgroup", state: "failed", model: "zai/glm-5.3-flash", createdAt: now - 60_000, endedAt: now - 1_000, tasks: [
+const run = { runId: "run-visual-fixture", goal: "Verify the subagent workgroup", state: "failed", model: "xiaomi/mimo-v2.6-flash", createdAt: now - 60_000, endedAt: now - 1_000, tasks: [
   { taskId: "one", label: "Source review", state: "done", turns: 8, toolSuccesses: 6, toolErrors: 0, startedAt: now - 60_000, endedAt: now - 10_000, output: "Reviewed implementation and retained evidence." },
   { taskId: "two", label: "Long-running verification", state: "failed", turns: 64, toolSuccesses: 55, toolErrors: 1, startedAt: now - 60_000, endedAt: now - 1_000, error: "Turn budget reached — partial work retained", output: "Partial verification report is available for inspection." },
 ] };
@@ -172,13 +172,13 @@ import { createUltratermSubagentsExtension } from "$ROOT/extensions/ultraterm-su
 import { emptyUsage } from "$ROOT/src/subagents/types.ts";
 export default function(pi) {
   const tools = new Map();
-  const model = { provider: "zai", id: "glm-5.3-flash", baseUrl: "https://api.z.ai/api/coding/paas/v4", input: ["text"] };
+  const model = { provider: "xiaomi", id: "mimo-v2.6-flash", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1", input: ["text"] };
   createUltratermSubagentsExtension({ checkpointRoot: "$TMP/completion-checkpoints", profiles: [], idFactory: () => "completion-proof", createRunner: () => async () => ({ state: "done", output: "offline proof", turns: 1, usage: emptyUsage() }) })({
     registerTool: (tool) => tools.set(tool.name, tool), on: () => {},
     appendEntry: (...args) => pi.appendEntry(...args), sendMessage: (...args) => pi.sendMessage(...args),
   });
   pi.registerCommand("usap-smoke", { description: "Offline completion proof", handler: async (_args, ctx) => {
-    await tools.get("ultraterm_subagents").execute("proof", { goal: "offline completion proof", model: "zai/glm-5.3-flash", background: true, tasks: [{ label: "Completion delivery verified", task: "offline" }] }, undefined, undefined, {
+    await tools.get("ultraterm_subagents").execute("proof", { goal: "offline completion proof", model: "xiaomi/mimo-v2.6-flash", background: true, tasks: [{ label: "Completion delivery verified", task: "offline" }] }, undefined, undefined, {
       ...ctx, model, thinkingLevel: "medium",
       modelRegistry: { isUsingOAuth: () => false, hasConfiguredAuth: () => true, getAvailable: () => [model], find: () => model, getProvider: () => ({ streamSimple() {} }) },
     });
