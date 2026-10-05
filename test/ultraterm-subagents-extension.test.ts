@@ -1,7 +1,7 @@
 import { mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { CheckpointStore } from "../src/subagents/checkpoints.ts";
 import { normalizeDispatch } from "../src/subagents/policy.ts";
-import { retiredRouteError } from "../src/subagents/model-selection.ts";
+import { resolveClaudeCodeSelection, retiredRouteError } from "../src/subagents/model-selection.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -297,11 +297,11 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
   it("emits bounded assignment labels and genuine lifecycle, never prompts or fake progress", () => {
     const run = {
       id: "run-1", state: "done", goal: "PRIVATE GOAL",
-      tasks: [{ id: "task-1", label: "Review\nsidebar", state: "done", startedAt: 1000, endedAt: 2400,
+      tasks: [{ id: "task-1", label: "Review\nsidebar", role: "reviewer", state: "done", startedAt: 1000, endedAt: 2400,
         task: "PRIVATE PROMPT", output: "PRIVATE OUTPUT", currentTool: "read" }],
     } as unknown as Parameters<typeof usapTelemetrySnapshot>[0];
     const snapshot = usapTelemetrySnapshot(run);
-    expect(snapshot.tasks[0]).toEqual({ taskId: "task-1", label: "Review sidebar", state: "done", detail: "Finished — ready for parent verification", startedAt: 1000, endedAt: 2400, currentTool: "read", toolErrors: 0, toolSuccesses: 0 });
+    expect(snapshot.tasks[0]).toEqual({ taskId: "task-1", label: "Review sidebar", role: "reviewer", state: "done", detail: "Finished — ready for parent verification", startedAt: 1000, endedAt: 2400, currentTool: "read", toolErrors: 0, toolSuccesses: 0 });
     expect(JSON.stringify(snapshot)).not.toContain("PRIVATE");
     expect(snapshot.tasks[0]).not.toHaveProperty("totalSteps");
     run.tasks[0].label = "a".repeat(200);
@@ -811,5 +811,187 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     expect(renderRunResult(run)).toContain("model openai-codex/gpt-6.1-sol · thinking high");
     expect(renderRunResult(run)).toContain("openai-codex/");
     expect(toRunView(run).model).toBe("openai-codex/gpt-6.1-sol");
+  });
+  describe("explicit partial outcome and bounded resume", () => {
+    const turnLimit = (turns: number) => `Child exceeded the ${turns}-turn limit; the partial report above is evidence, not acceptance`;
+    const telemetryFor = (h: ReturnType<typeof harness>, runId: string) =>
+      h.entries.filter((entry) => entry.type === "ultraterm-usap-telemetry" && entry.data.runId === runId).map((entry) => entry.data);
+
+    /** A settled checkpoint whose reviewer stopped on its turn budget with a resumable native session. */
+    function partialCheckpoint(name: string, overrides: { model?: string; thinkingLevel?: string; selection?: any; claude?: boolean } = {}) {
+      const root = mkdtempSync(join(tmpdir(), `usap-${name}-`)); dirs.push(root);
+      const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: name };
+      const store = new CheckpointStore(durable.parent, durable.root, durable.parent);
+      const run = normalizeDispatch({ goal: "review", background: true, maxTurns: 12, tasks: [{ label: "Metadata signoff", task: "Review the metadata", role: "reviewer" }, { label: "Impl", task: "Done already", role: "worker" }] }, root, overrides.model ?? "openai-codex/gpt-6.1-sol", overrides.thinkingLevel ?? "medium", Date.now(), () => `${name}-origin`);
+      if (overrides.selection) run.selection = overrides.selection;
+      if (overrides.claude) { run.harness = "claude-code"; run.selection = { ...resolveClaudeCodeSelection("claude-opus-5-5") }; }
+      run.tasks[1].state = "done";
+      Object.assign(run.tasks[0], { state: "failed", startedAt: Date.now(), turns: 12, error: turnLimit(12), outcome: "partial", partialReason: "turn_budget", partialSummary: "Turn budget reached after 12/12 turns" });
+      run.state = "failed";
+      const sessionFile = join(store.sessionsDirectory, "native.jsonl"); writeFileSync(sessionFile, "checkpoint", { mode: 0o600 });
+      if (overrides.claude) run.tasks[0].claudeSessionId = "5b1d6a56-3a4c-4f0e-9a9e-0d6f4c6f2a11";
+      else run.tasks[0].sessionFile = sessionFile;
+      store.save(run, true); store.close();
+      return { durable, run, sessionFile };
+    }
+    const resume = (h: ReturnType<typeof harness>, runId: string) => h.tools.get("ultraterm_hub").execute("hub", { action: "resume", runId }, undefined, undefined, h.ctx);
+
+    it("marks a turn- or time-budget stop partial with role and label in the result, receipt and telemetry", async () => {
+      const h = harness(() => async ({ task }) => task.label === "Metadata signoff"
+        ? { state: "failed" as const, output: "findings so far", error: turnLimit(5), turns: 5, usage: emptyUsage() }
+        : task.label === "Slow"
+          ? { state: "timed_out" as const, output: "", error: "Run deadline exceeded", turns: 2, usage: emptyUsage() }
+          : { state: "done" as const, output: "ok", turns: 1, usage: emptyUsage() });
+      await h.handlers.get("session_start")!({}, h.ctx);
+      const tasks = [{ label: "Metadata signoff", task: "Review", role: "reviewer" }, { label: "Slow", task: "Wait", role: "worker" }, { label: "Impl", task: "Build", role: "worker" }];
+      const dispatched = await h.tools.get("ultraterm_subagents").execute("d", { goal: "partial", harness: "pi", background: true, tasks }, undefined, undefined, h.ctx);
+      const runId = dispatched.details.run.runId;
+      await flush();
+      // Run result: explicit outcome, role, retained-work summary, and a visible partial count.
+      const status = await h.tools.get("ultraterm_hub").execute("s", { action: "status", runId }, undefined, undefined, h.ctx);
+      const [review, slow, impl] = status.details.run.tasks;
+      expect(review).toMatchObject({ label: "Metadata signoff", role: "reviewer", state: "failed", outcome: "partial", partialReason: "turn_budget" });
+      expect(review.partialSummary).toMatch(/^Turn budget reached after 5\/64 turns/);
+      expect(slow).toMatchObject({ role: "worker", state: "timed_out", outcome: "partial", partialReason: "time_budget" });
+      expect(impl).toMatchObject({ state: "done" });
+      expect(impl.outcome).toBeUndefined();
+      expect(status.content[0].text).toContain("2 partial");
+      expect(status.content[0].text).toContain("[Metadata signoff] failed · PARTIAL turn_budget (reviewer; not complete)");
+      expect(status.content[0].text).toMatch(/retained: Turn budget reached after 5\/64 turns/);
+      // Receipt: the completion message names the partial leaf, its role and label.
+      expect(h.messages).toHaveLength(1);
+      expect(h.messages[0].message.content).toContain("/PARTIAL(turn_budget, reviewer \"Metadata signoff\")");
+      expect(h.messages[0].message.content).toContain("/PARTIAL(time_budget, worker \"Slow\")");
+      expect(h.messages[0].message.details.runs[0].tasks[0]).toMatchObject({ role: "reviewer", outcome: "partial", partialReason: "turn_budget" });
+      // Telemetry: the latest record carries role, label, outcome and the bounded summary, never output.
+      const latest = telemetryFor(h, runId).at(-1);
+      expect(latest.runState).toBe("failed");
+      expect(latest.tasks[0]).toMatchObject({ label: "Metadata signoff", role: "reviewer", state: "failed", outcome: "partial", partialReason: "turn_budget", detail: "Turn budget reached — partial work retained" });
+      expect(latest.tasks[1]).toMatchObject({ role: "worker", state: "timed_out", outcome: "partial", partialReason: "time_budget" });
+      expect(latest.tasks[2].outcome).toBeUndefined();
+      expect(JSON.stringify(latest)).not.toContain("findings so far");
+      await h.handlers.get("session_shutdown")!({}, h.ctx);
+    });
+
+    it("resumes a partial task once on the same budget and route, and the success supersedes it in telemetry", async () => {
+      const { durable, run, sessionFile } = partialCheckpoint("resume-once");
+      const seen: Array<{ sessionFile?: string; maxTurns: number; timeoutMs: number; model: string; source?: string; resumedFrom?: string; taskResumedFrom?: string }> = [];
+      const h = harness(() => async ({ run: context, task }) => {
+        seen.push({ sessionFile: task.sessionFile, maxTurns: context.maxTurns, timeoutMs: context.timeoutMs, model: context.model, source: context.selection?.source, resumedFrom: context.resumedFrom, taskResumedFrom: task.resumedFrom });
+        return { state: "done", output: "finished", turns: 3, usage: emptyUsage() };
+      }, durable);
+      await h.handlers.get("session_start")!({}, h.ctx);
+      const resumed = await resume(h, run.id);
+      const successorId = resumed.details.run.runId;
+      expect(resumed.content[0].text).toMatch(/the one bounded resume; no second resume is possible/);
+      expect(resumed.content[0].text).toContain("maxTurns 12");
+      expect(resumed.details.run).toMatchObject({ resumedFrom: run.id, model: run.model });
+      expect(resumed.details.run.tasks).toHaveLength(1);
+      expect(resumed.details.run.tasks[0]).toMatchObject({ role: "reviewer", label: "Metadata signoff", resumedFrom: run.tasks[0].id });
+      await vi.waitFor(() => expect(seen).toHaveLength(1));
+      // Continues the checkpointed session, with the original budget (never larger) and route, pinned (no chain hop).
+      expect(seen[0]).toEqual({ sessionFile, maxTurns: 12, timeoutMs: run.timeoutMs, model: run.model, source: "override", resumedFrom: run.id, taskResumedFrom: run.tasks[0].id });
+      await flush();
+      // Telemetry lineage: predecessor names its successor, then is superseded once the successor finishes.
+      const successor = telemetryFor(h, successorId).at(-1);
+      expect(successor).toMatchObject({ runState: "done", resumedFrom: run.id });
+      expect(successor.tasks[0]).toMatchObject({ role: "reviewer", label: "Metadata signoff", state: "done", resumedFrom: run.tasks[0].id, supersedes: run.tasks[0].id });
+      const records = telemetryFor(h, run.id);
+      expect(records.length).toBeGreaterThanOrEqual(2);
+      expect(records[0]).toMatchObject({ resumedAs: successorId });
+      expect(records[0].supersededBy).toBeUndefined();
+      expect(records.at(-1)).toMatchObject({ resumedAs: successorId, supersededBy: successorId });
+      expect(records.at(-1).tasks[0]).toMatchObject({ role: "reviewer", outcome: "partial" });
+      // Hub views expose the same lineage.
+      const status = await h.tools.get("ultraterm_hub").execute("s", { action: "status", runId: run.id }, undefined, undefined, h.ctx);
+      expect(status.details.run).toMatchObject({ resumedAs: successorId, supersededBy: successorId });
+      await h.handlers.get("session_shutdown")!({}, h.ctx);
+    });
+
+    it("refuses a second resume of the same run and of a resumed attempt that stopped partial again", async () => {
+      const { durable, run } = partialCheckpoint("resume-twice");
+      const launches: string[] = [];
+      const h = harness(() => async ({ task }) => {
+        launches.push(task.id);
+        return { state: "failed", output: "second attempt notes", error: turnLimit(12), turns: 12, usage: emptyUsage() };
+      }, durable);
+      await h.handlers.get("session_start")!({}, h.ctx);
+      const first = await resume(h, run.id);
+      const successorId = first.details.run.runId;
+      await vi.waitFor(() => expect(h.entries.some((entry) => entry.data.runId === successorId && entry.data.runState === "failed")).toBe(true));
+      await flush();
+      expect(launches).toHaveLength(1);
+      // The predecessor cannot be resumed again.
+      await expect(resume(h, run.id)).rejects.toThrow(/Already resumed as .*; a task is resumed at most once/);
+      // The resumed attempt stopped partial again; it keeps the explicit marker and cannot be resumed.
+      const status = await h.tools.get("ultraterm_hub").execute("s", { action: "status", runId: successorId }, undefined, undefined, h.ctx);
+      expect(status.details.run.tasks[0]).toMatchObject({ state: "failed", outcome: "partial", resumedFrom: run.tasks[0].id });
+      expect(status.details.run.tasks[0].partialSummary).toContain("its one resume is used");
+      const refusal = await resume(h, successorId).then(() => undefined, (error: Error) => error.message);
+      expect(refusal).toMatch(/Resume refused: "Metadata signoff" already used the one bounded resume \(continuing .*\)\. A task is resumed at most once/);
+      expect(refusal).toMatch(/dispatch a new, explicitly scoped task/);
+      expect(launches).toHaveLength(1);
+      // Never superseded: the second partial stays visible.
+      expect(telemetryFor(h, run.id).at(-1).supersededBy).toBeUndefined();
+      await h.handlers.get("session_shutdown")!({}, h.ctx);
+    });
+
+    it("resumes a Claude Code partial once on its pinned Opus route, and refuses a changed Claude route", async () => {
+      const claude = partialCheckpoint("claude-resume", { model: "claude-code/claude-opus-5-5", thinkingLevel: "xhigh", claude: true });
+      const seen: Array<{ harness?: string; model: string; maxTurns: number; claudeSessionId?: string }> = [];
+      const h = harness(() => async ({ run: context, task }) => {
+        seen.push({ harness: context.harness, model: context.model, maxTurns: context.maxTurns, claudeSessionId: task.claudeSessionId });
+        return { state: "done", output: "finished", turns: 2, usage: emptyUsage() };
+      }, claude.durable);
+      h.ctx.modelRegistry.find = () => { throw new Error("must not query Pi models"); };
+      await h.handlers.get("session_start")!({}, h.ctx);
+      const resumed = await resume(h, claude.run.id);
+      expect(resumed.details.run).toMatchObject({ harness: "claude-code", model: "claude-code/claude-opus-5-5", resumedFrom: claude.run.id });
+      await vi.waitFor(() => expect(seen).toHaveLength(1));
+      expect(seen[0]).toEqual({ harness: "claude-code", model: "claude-code/claude-opus-5-5", maxTurns: 12, claudeSessionId: claude.run.tasks[0].claudeSessionId });
+      await expect(resume(h, claude.run.id)).rejects.toThrow(/Already resumed/);
+      await h.handlers.get("session_shutdown")!({}, h.ctx);
+
+      // A checkpoint whose recorded selection names another Claude route is a changed route.
+      const other = { ...resolveClaudeCodeSelection("claude-sonnet-5-5") };
+      const stale = partialCheckpoint("claude-stale", { model: "claude-code/claude-opus-5-5", thinkingLevel: "xhigh", claude: true });
+      const store = new CheckpointStore(stale.durable.parent, stale.durable.root, stale.durable.parent);
+      const record = store.get(stale.run.id)!.run; record.selection = other; store.save(record, true); store.close();
+      const k = harness(() => async () => { throw new Error("must not launch"); }, stale.durable);
+      await k.handlers.get("session_start")!({}, k.ctx);
+      await expect(resume(k, stale.run.id)).rejects.toThrow(/Resume refused: the route changed \(checkpoint claude-code\/claude-sonnet-5-5, run claude-code\/claude-opus-5-5/);
+      await k.handlers.get("session_shutdown")!({}, k.ctx);
+    });
+
+    it("refuses a changed or paid route before spending the one resume", async () => {
+      const staleSelection = { provider: "xiaomi", modelId: "mimo-v2.6-flash", source: "override", harness: "pi", images: false, tools: true };
+      const stale = partialCheckpoint("route-stale", { selection: staleSelection });
+      const launches: string[] = [];
+      const runnerFactory = () => async ({ task }: { task: { id: string } }) => { launches.push(task.id); return { state: "done" as const, output: "ok", turns: 1, usage: emptyUsage() }; };
+      const h = harness(runnerFactory, stale.durable);
+      await h.handlers.get("session_start")!({}, h.ctx);
+      await expect(resume(h, stale.run.id)).rejects.toThrow(/Resume refused: the route changed \(checkpoint xiaomi\/mimo-v2\.6-flash, run openai-codex\/gpt-6\.1-sol, now openai-codex\/gpt-6\.1-sol\)\. A resume continues only on the original subscription route/);
+      const listed = await h.tools.get("ultraterm_hub").execute("l", { action: "list" }, undefined, undefined, h.ctx);
+      expect(listed.details.runs.every((view: any) => view.resumedAs === undefined)).toBe(true);
+      expect(launches).toEqual([]);
+      await h.handlers.get("session_shutdown")!({}, h.ctx);
+
+      // A route that now bills as paid/API-key is refused; restoring the subscription route then succeeds, so the refusal did not burn the resume.
+      const paid = partialCheckpoint("route-paid", { model: "xiaomi/mimo-v2.6-flash" });
+      const subscription = { provider: "xiaomi", id: "mimo-v2.6-flash", api: "openai-completions", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1", input: ["text"], reasoning: false };
+      const payg = { ...subscription, baseUrl: "https://api.xiaomimimo.com/v1" };
+      const g = harness(runnerFactory, paid.durable);
+      g.ctx.modelRegistry.find = () => payg;
+      g.ctx.modelRegistry.getAvailable = () => [payg];
+      await g.handlers.get("session_start")!({}, g.ctx);
+      await expect(resume(g, paid.run.id)).rejects.toThrow(/Resume refused: xiaomi\/mimo-v2\.6-flash is no longer a subscription route \(paid or API-key billing\)/);
+      expect(launches).toEqual([]);
+      g.ctx.modelRegistry.find = () => subscription;
+      g.ctx.modelRegistry.getAvailable = () => [subscription];
+      const resumed = await resume(g, paid.run.id);
+      expect(resumed.details.run.resumedFrom).toBe(paid.run.id);
+      await vi.waitFor(() => expect(launches).toHaveLength(1));
+      await g.handlers.get("session_shutdown")!({}, g.ctx);
+    });
   });
 });

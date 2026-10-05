@@ -4,6 +4,7 @@ import { NoopSlots } from "../src/subagents/machine-slots.ts";
 import { describe, expect, it, vi } from "vitest";
 import {
   assertClaudeSubscriptionStatus,
+  buildClaudeWorkerContinuationPrompt,
   buildClaudeWorkerPrompt,
   claudeUsage,
   claudeWorkerArgs,
@@ -599,6 +600,16 @@ describe("claude-code stream-json parsing", () => {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
     });
     expect(claudeUsage(undefined, 1.5).cost.total).toBe(1.5);
+  });
+
+  it("tells a Claude child its request budget up front, since stdin closes after the prompt", () => {
+    const budgeted = { ...run(), maxTurns: 9 };
+    const prompt = buildClaudeWorkerPrompt(budgeted, task());
+    expect(prompt).toContain("at most 9 assistant requests");
+    expect(prompt).toMatch(/when about 2 remain, stop gathering evidence and write your findings so far plus a precise remaining-work list/);
+    expect(prompt).toContain("cannot interrupt you mid-run");
+    expect(buildClaudeWorkerContinuationPrompt(task(), 9)).toContain("at most 9 assistant requests");
+    expect(buildClaudeWorkerContinuationPrompt(task())).not.toContain("assistant requests");
   });
 
   it("keeps the leaf prompt bounded and role-complete", () => {

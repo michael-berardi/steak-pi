@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Coordinator, CoordinatorWaitTimeoutError } from "../src/subagents/coordinator.ts";
+import { Coordinator, CoordinatorWaitTimeoutError, workerJournal } from "../src/subagents/coordinator.ts";
 import { Scheduler } from "../src/subagents/scheduler.ts";
 import { workerTurnBudget } from "../src/subagents/pi-worker.ts";
 import type { MachineSlots } from "../src/subagents/machine-slots.ts";
@@ -712,5 +712,59 @@ describe("automatic resume after transient worker failures", () => {
       expect(settled.tasks[0].autoResumes, name).toBeUndefined();
       await coordinator.shutdown();
     }
+  });
+});
+
+describe("explicit partial outcome for budget stops", () => {
+  const stopped = (state: WorkerResult["state"], error: string, output = "findings so far"): WorkerResult =>
+    ({ state, output, error, turns: 7, usage: usage(1) });
+
+  it("marks a turn-budget stop partial while it stays failed, with a content-free summary", async () => {
+    const coordinator = new Coordinator(async ({ task: leaf }) => {
+      workerJournal(leaf).lastStep = "grep";
+      return stopped("failed", "Child exceeded the 12-turn limit; the partial report above is evidence, not acceptance");
+    }, { scheduler: new Scheduler(1) });
+    coordinator.start({ ...run("partial-turns", 1, 1), maxTurns: 12 });
+    const settled = await coordinator.wait("partial-turns", "all");
+    expect(settled.tasks[0]).toMatchObject({ state: "failed", outcome: "partial", partialReason: "turn_budget" });
+    expect(settled.tasks[0].partialSummary).toMatch(/^Turn budget reached after 7\/12 turns; 0 changed paths; last step: grep; partial report retained/);
+    expect(settled.tasks[0].partialSummary).not.toContain("findings so far");
+    expect(settled.state).toBe("failed");
+    await coordinator.shutdown();
+  });
+
+  it("marks a started time-budget stop partial, and records when no report was written", async () => {
+    const coordinator = new Coordinator(async () => stopped("timed_out", "Run deadline exceeded", ""), { scheduler: new Scheduler(1) });
+    coordinator.start(run("partial-time", 1, 1));
+    const settled = await coordinator.wait("partial-time", "all");
+    expect(settled.tasks[0]).toMatchObject({ state: "timed_out", outcome: "partial", partialReason: "time_budget" });
+    expect(settled.tasks[0].partialSummary).toContain("Time budget reached after 7/64 turns");
+    expect(settled.tasks[0].partialSummary).toContain("no written report");
+    await coordinator.shutdown();
+  });
+
+  it("never marks cancelled, ordinary failed, done, or never-started tasks partial", async () => {
+    let call = 0;
+    const coordinator = new Coordinator(async () => {
+      call += 1;
+      return call === 1 ? stopped("failed", "Provider finish_reason: content_filter")
+        : call === 2 ? stopped("aborted", "Task cancelled")
+        : result("done");
+    }, { scheduler: new Scheduler(1) });
+    coordinator.start(run("not-partial", 3, 1));
+    const settled = await coordinator.wait("not-partial", "all");
+    expect(settled.tasks.map((leaf) => [leaf.state, leaf.outcome])).toEqual([["failed", undefined], ["aborted", undefined], ["done", undefined]]);
+    await coordinator.shutdown();
+
+    // A queued task that the deadline reaches before it ever started retained no work.
+    const idle = new Coordinator(() => new Promise<WorkerResult>(() => {}), { scheduler: new Scheduler(1) });
+    vi.useFakeTimers();
+    idle.start(run("never-started", 2, 1, 1_000));
+    await flush();
+    await vi.advanceTimersByTimeAsync(1_100);
+    const expired = idle.snapshot("never-started")!;
+    expect(expired.tasks[1].state).toBe("timed_out");
+    expect(expired.tasks[1].startedAt).toBeUndefined();
+    expect(expired.tasks[1].outcome).toBeUndefined();
   });
 });

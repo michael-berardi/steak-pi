@@ -27,6 +27,7 @@ import {
 import type { RelayBroker, RelayPeer, RelaySendResult } from "./relay.ts";
 import { CODEX_REPLY_LIMIT_REASON } from "./auto-resume.ts";
 import { SMALLER_STEP_INSTRUCTION } from "../codex-reply-limit.ts";
+import { TURN_BUDGET_NOTICE_REMAINING, turnBudgetNotice, turnBudgetNoticeAt } from "./turn-budget.ts";
 import {
   OUTPUT_LIMIT,
   addUsage,
@@ -48,8 +49,8 @@ import {
  * ceiling is `run.maxTurns` (normalized in policy.ts; default 64, max 2048).
  */
 export const MAX_PI_WORKER_TURNS = DEFAULT_MAX_TURNS;
-/** Turns reserved at the end of any budget for the final report. */
-export const PI_WORKER_TURN_REPORT_RESERVE = 3;
+/** Requests left when the one-time budget notice is injected (see turn-budget.ts). */
+export const PI_WORKER_TURN_REPORT_RESERVE = TURN_BUDGET_NOTICE_REMAINING;
 /** Warning threshold for the default budget (legacy constant). */
 export const PI_WORKER_TURN_WARNING_AT = MAX_PI_WORKER_TURNS - PI_WORKER_TURN_REPORT_RESERVE;
 export const PI_WORKER_ABORT_GRACE_MS = 2_000;
@@ -623,7 +624,7 @@ export function workerTurnBudget(run: Pick<RunRecord, "maxTurns"> | undefined): 
 
 /** Turn at which a worker is told to stop gathering and report (any budget). */
 export function piWorkerTurnWarningAt(maxTurns: number): number {
-  return Math.max(1, maxTurns - PI_WORKER_TURN_REPORT_RESERVE);
+  return turnBudgetNoticeAt(maxTurns);
 }
 
 /**
@@ -814,6 +815,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
     let toolSuccesses = 0;
     let compactions = 0;
     let turnLimitReached = false;
+    let turnNoticeSent = false;
     let stalled = false;
     let lastEventAt = Date.now();
     let toolsRunning = 0;
@@ -1006,10 +1008,10 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
           onProgress({ state: "running", turns, usage: cloneUsage(usage) });
           const stillUsingTools = finalAssistant?.stopReason === "toolUse"
             || finalAssistant?.stopReason === "tool_use";
-          if (turns === piWorkerTurnWarningAt(maxTurns) && stillUsingTools && session?.isStreaming) {
-            void session.steer(
-              `Only ${maxTurns - turns} assistant turns remain. Stop gathering new evidence and return the required concise report now.`,
-            ).catch(() => {});
+          // One notice per worker run, only while a request is still left to act on it.
+          if (!turnNoticeSent && turns >= piWorkerTurnWarningAt(maxTurns) && maxTurns - turns >= 1 && stillUsingTools && session?.isStreaming) {
+            turnNoticeSent = true;
+            void session.steer(turnBudgetNotice(maxTurns - turns)).catch(() => {});
           }
         }
       });

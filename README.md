@@ -91,10 +91,19 @@ parent
 - **Ownership:** read-only workers have no edit tools. Writers may only touch
   their own paths, and overlapping ownership is refused before the run starts.
 - **Budgets:** a 10-minute deadline by default (up to 8 hours) and 64 turns per
-  worker by default. Output, relay and history are also bounded.
+  worker by default. Output, relay and history are also bounded. A worker is told
+  once when two requests remain, so it writes its findings and a remaining-work
+  list as its final answer. A task that stops on its turn or time budget is marked
+  `outcome: "partial"` (with its role, label and a retained-work summary) in the
+  result, the completion receipt and the `ultraterm-usap-telemetry` record: it is
+  never a finished leaf.
 - **Control:** runs have stable IDs with `list`, `status`, `wait`, `send`,
   `inbox`, `cancel`, `diagnose` and `resume`. Checkpoints let you inspect and
-  resume unfinished work after a restart.
+  resume unfinished work after a restart. A resume is bounded: each task resumes
+  at most once, with the same `maxTurns` and deadline (never larger), on the same
+  subscription route (a changed or paid route is refused). The resumed run records
+  `resumedFrom`, the original `resumedAs`, and a successful resume supersedes the
+  partial attempt in telemetry. A second resume is refused.
 - **Recovery:** a worker cut off by a network drop, a provider stream cut or
   stall, an overload or a rate limit resumes its own session automatically (at
   most twice, within the run deadline), so finished steps are not redone.

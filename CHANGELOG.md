@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+- A child that is about to run out of turns is told once, when two requests
+  remain, to write its findings so far and a precise remaining-work list as its
+  final answer (Claude Code children get the budget and the same instruction up
+  front, since they cannot be interrupted mid-run).
+- A task that stops on its turn or time budget is now explicitly partial:
+  `outcome: "partial"`, `partialReason` and a bounded `partialSummary`, shown with
+  the task's role and label in the run result, the completion receipt, `diagnose`
+  and the `ultraterm-usap-telemetry` record. It keeps its `failed` / `timed_out`
+  state. A partial can no longer be mistaken for a finished required review.
+- Resume is bounded: each task continues its checkpointed session at most once,
+  with the same `maxTurns` and deadline (never larger), on the same subscription
+  route and reasoning level. A changed, paid or API-key route is refused before the
+  one resume is spent, and a resumed run no longer carries an automatic chain, so
+  it cannot hop to another route. The resumed run records `resumedFrom`, the
+  original records `resumedAs`, and a successful resume marks the partial attempt
+  `supersededBy` in telemetry. A second resume is refused with a clear message.
+  Behavior change: a resumed run that is interrupted again can no longer be
+  resumed; re-dispatch the remaining work.
+
 ## 0.9.8 (2026-10-04)
 
 - A reply that Codex ends at its 15-minute limit is no longer resent unchanged.
