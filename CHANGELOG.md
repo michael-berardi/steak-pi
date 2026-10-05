@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.8 (2026-10-04)
+
+- A reply that Codex ends at its 15-minute limit is no longer resent unchanged.
+  Codex cuts every reply stream after about 15 minutes; Pi's automatic retry and
+  USAP's automatic resume used to send the identical request again, which failed
+  the same way every 15 minutes (one analytics worker lost an hour this way).
+  Steak Pi now replaces that bare "terminated" with an explicit "Codex reply
+  limit" error that names the model and reasoning level (both unchanged; nothing
+  is downgraded) and continues once with a smaller-step instruction. A second
+  cut stops with the explicit error. A quick "terminated" is still a network drop
+  and keeps its normal retry. Nothing from the cut reply ran, so no tool call is
+  repeated.
+- Full suite: 767 passed, 1 skipped.
+
 ## 0.9.7 (2026-10-04)
 
 Fixes from an independent GPT-6 Astra review of 0.9.6:

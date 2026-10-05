@@ -13,7 +13,11 @@ export const MAX_AUTO_RESUMES = 2;
 /** A resume is only worth starting with at least this much run budget left. */
 export const MIN_RESUME_BUDGET_MS = 90_000;
 
+/** A reply Codex ended at its ~15-minute limit (src/codex-reply-limit.ts): resumed once, in smaller steps. */
+export const CODEX_REPLY_LIMIT_REASON = "codex reply limit";
+
 const TRANSIENT: ReadonlyArray<{ pattern: RegExp; reason: string; delaysMs: readonly number[] }> = [
+	{ pattern: /^Codex reply limit:/, reason: CODEX_REPLY_LIMIT_REASON, delaysMs: [5_000] },
 	{ pattern: /rate.?limit|\b429\b|too many requests/i, reason: "rate limited", delaysMs: [60_000, 120_000] },
 	{ pattern: /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EPIPE|socket hang up|network (?:error|connection)/i, reason: "network drop", delaysMs: [10_000, 30_000] },
 	{ pattern: /^terminated$|response headers timed out|Request timed out|stream (?:ended|closed) (?:early|unexpectedly)/i, reason: "provider stream cut", delaysMs: [10_000, 30_000] },
@@ -37,7 +41,10 @@ export function transientFailure(error: string | undefined, attempt: number): Tr
 	const text = error.trim();
 	if (NEVER.test(text)) return undefined;
 	for (const rule of TRANSIENT) {
-		if (rule.pattern.test(text)) return { reason: rule.reason, delayMs: rule.delaysMs[Math.min(attempt, rule.delaysMs.length - 1)] };
+		if (!rule.pattern.test(text)) continue;
+		// The same request would hit the same limit: one resume, and only with the smaller-step instruction.
+		if (rule.reason === CODEX_REPLY_LIMIT_REASON && attempt >= 1) return undefined;
+		return { reason: rule.reason, delayMs: rule.delaysMs[Math.min(attempt, rule.delaysMs.length - 1)] };
 	}
 	return undefined;
 }

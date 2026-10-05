@@ -25,6 +25,8 @@ import {
   type WorkerRouteStep,
 } from "../model-route-policy.ts";
 import type { RelayBroker, RelayPeer, RelaySendResult } from "./relay.ts";
+import { CODEX_REPLY_LIMIT_REASON } from "./auto-resume.ts";
+import { SMALLER_STEP_INSTRUCTION } from "../codex-reply-limit.ts";
 import {
   OUTPUT_LIMIT,
   addUsage,
@@ -677,6 +679,7 @@ export function buildPiWorkerContinuationPrompt(task: TaskRecord): string {
       : ["Before acting, review the conversation history above."]),
     "Treat prior tool results as historical evidence only, and never assume a previously attempted edit, write, or command completed.",
     "Re-read each file you depend on before editing it, then finish the remaining work and return the required concise report.",
+    ...((task.autoResumes ?? []).at(-1)?.startsWith(CODEX_REPLY_LIMIT_REASON) ? [SMALLER_STEP_INSTRUCTION] : []),
   ].join("\n");
 }
 
