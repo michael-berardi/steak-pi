@@ -28,6 +28,7 @@ import { lstatSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertActiveModelSelector, RetiredModelSelectionError } from "./retired-model-selection.ts";
 
 const LIMIT = 1024 * 1024;
 export const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -153,6 +154,28 @@ function nativeManifestError(config: Record<string, any>, builtIn: boolean): str
   return undefined;
 }
 
+/** GPT-6.0 Sol is retired: refuse it wherever a manifest profile names it (id,
+ * label, model arguments, worker/reviewer defaults), before any shape skip so a
+ * retired route cannot hide in an entry the curated extraction would drop. */
+function assertProfileActive(p: unknown, harness: unknown): void {
+  if (!object(p)) return;
+  assertActiveModelSelector(p.id);
+  assertActiveModelSelector(typeof p.id === "string" && typeof harness === "string" ? `${harness}/${p.id}` : undefined);
+  assertActiveModelSelector(p.name);
+  if (Array.isArray(p.args)) {
+    for (const [index, arg] of p.args.entries()) {
+      if (arg === "--model") assertActiveModelSelector(p.args[index + 1]);
+      if (typeof arg === "string" && arg.startsWith("--model=")) assertActiveModelSelector(arg.slice("--model=".length));
+    }
+  }
+  for (const defaults of [p.workerDefault, p.reviewerDefault]) {
+    if (object(defaults)) {
+      assertActiveModelSelector(defaults.model);
+      assertActiveModelSelector(defaults.profile);
+    }
+  }
+}
+
 /** Shape gate shared by every manifest read: same refusal as before, now reused
  * by both the curated-only parse and the effective merge. */
 function parseManifestConfig(raw: Buffer): Record<string, any> {
@@ -162,6 +185,7 @@ function parseManifestConfig(raw: Buffer): Record<string, any> {
   if (!object(config) || config.schemaVersion !== HARNESS_SCHEMA_VERSION || !Array.isArray(config.profiles)) {
     throw new HarnessProfileError("Unsupported profile schema");
   }
+  for (const p of config.profiles) assertProfileActive(p, config.id);
   return config;
 }
 
@@ -226,7 +250,9 @@ function externalCandidate(directory: string, harness: string): Candidate | unde
     const stat = lstatSync(path, { throwIfNoEntry: false });
     if (!stat || !stat.isFile() || stat.size > MAX_MANIFEST_BYTES) return undefined;
     return { path, config: parseManifestConfig(readFileSync(path)) };
-  } catch {
+  } catch (error) {
+    // Retirement is authoritative: an otherwise ignorable manifest still fails loudly.
+    if (error instanceof RetiredModelSelectionError) throw error;
     return undefined;
   }
 }

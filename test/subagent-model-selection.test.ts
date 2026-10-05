@@ -188,25 +188,28 @@ describe("USAP 1.1 explicit model/profile contract", () => {
     expect(result.selection).toMatchObject({ source: "override", provider: "opencode-go", modelId: "deepseek-v4.1-flash" });
     expect(result.selection.chainRoutes).toBeUndefined();
   });
-  it("keeps parent-added GPT-6 Sol/Luna profiles explicit-only", () => {
-    const sol = { ...astra, id: "gpt-6-sol", name: "GPT-6 Sol" } as Model;
-    const added = BUILTIN_WORKER_PROFILES.filter((profile) => ["steak-pi/gpt-6-sol", "steak-pi/gpt-6-luna"].includes(profile.id));
-    expect(added.map((profile) => profile.id)).toEqual(["steak-pi/gpt-6-sol", "steak-pi/gpt-6-luna"]);
+  it("keeps parent-added GPT-6.1 Sol/Luna profiles explicit-only and refuses retired GPT-6.0 Sol", () => {
+    const added = BUILTIN_WORKER_PROFILES.filter((profile) => ["steak-pi/gpt-6-1-sol", "steak-pi/gpt-6-luna"].includes(profile.id));
+    expect(added.map((profile) => profile.id)).toEqual(["steak-pi/gpt-6-1-sol", "steak-pi/gpt-6-luna"]);
     for (const profile of added) {
       // Never an automatic worker default: routine workers stay on the chain.
       expect(profile.workerDefault).toEqual({ profile: "steak-pi/mimo-v2-6-flash" });
-      expect(DEFAULT_TEXT_WORKER_CHAIN.some((step) => step.id === profile.model.split("/")[1])).toBe(false);
+      expect(DEFAULT_TEXT_WORKER_CHAIN.some((step) => step.id === profile.model.split("/")[1] && step.id !== "gpt-6.1-sol")).toBe(false);
     }
     // Explicit selection is exact, with the profile's high thinking preference.
-    const explicit = choose(astra, { profile: "steak-pi/gpt-6-sol" }, registry([astra, sol, mimoFlash]));
+    const explicit = choose(astra, { profile: "steak-pi/gpt-6-1-sol" }, registry([astra, sol, mimoFlash]));
     expect(explicit.model).toBe(sol);
-    expect(explicit.selection).toMatchObject({ source: "override", provider: "openai-codex", modelId: "gpt-6-sol", profile: "steak-pi/gpt-6-sol" });
+    expect(explicit.selection).toMatchObject({ source: "override", provider: "openai-codex", modelId: "gpt-6.1-sol", profile: "steak-pi/gpt-6-1-sol" });
     expect(explicit.thinkingLevel).toBe("high");
+    // GPT-6.0 Sol is retired: no built-in profile names it and selectors are refused, never remapped to 6.1.
+    expect(BUILTIN_WORKER_PROFILES.some((profile) => /gpt-6-sol/.test(profile.id) || /gpt-6-sol/.test(profile.model))).toBe(false);
+    const retired = { ...astra, id: "gpt-6-sol", name: "GPT-6 Sol" } as Model;
+    expect(() => choose(astra, { profile: "steak-pi/gpt-6-sol" }, registry([astra, sol, retired, mimoFlash]))).toThrow(/RetiredModelSelectionError/);
     // A Sol parent keeps workers and reviewers on the routine chain — Sol and
     // Astra are never automatic defaults in any role.
     const solParent = choose(sol, {}, registry([astra, sol, mimoFlash]));
     expect(solParent.model).toBe(mimoFlash);
-    expect(solParent.selection).toMatchObject({ source: "chain", parentProfile: "steak-pi/gpt-6-sol" });
+    expect(solParent.selection).toMatchObject({ source: "chain", parentProfile: "steak-pi/gpt-6-1-sol" });
     const solReview = choose(sol, { tasks: [{ label: "r", task: "review", role: "reviewer" }] }, registry([astra, sol, mimoPro, mimoFlash]));
     expect(solReview.model).toBe(mimoPro);
   });

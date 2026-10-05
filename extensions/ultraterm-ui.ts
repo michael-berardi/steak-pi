@@ -6,6 +6,7 @@ import { getPrimaryHostIdentity } from "../src/primary-host.ts";
 import { activeHarnessId, harnessManifestPaths, harnessProfileDirs, levels, readHarnessProfiles, type HarnessProfile, type Thinking } from "../src/harness-profiles.ts";
 import { isModelRouteAllowed } from "../src/model-route-policy.ts";
 import { curatedPickerModels, sharedPickerModels } from "../src/model-visibility.ts";
+import { assertActiveModelIdentity, RetiredModelSelectionError } from "../src/retired-model-selection.ts";
 import { createUiStream } from "../src/ui-stream.ts";
 
 const LIMIT = 1024 * 1024;
@@ -30,6 +31,7 @@ export function decodeRequest(encoded: string): Request {
   if (r.action === "resume") {
     if (!clean(r.path) || !isAbsolute(r.path) || resolve(r.path) !== r.path || !r.path.endsWith(".jsonl")) fail("Invalid session path");
   } else if ((r.action === "message" && (typeof r.text !== "string" || !r.text.trim())) || !object(r.model) || Object.keys(r.model).sort().join() !== "id,provider" || !clean(r.model.provider) || !clean(r.model.id) || !levels.includes(r.thinking)) fail("Invalid model/message request");
+  if (r.action !== "resume") assertActiveModelIdentity(r.model);
   return r as Request;
 }
 
@@ -196,7 +198,10 @@ function nativeModels(ctx: ExtensionContext) {
  */
 export function catalogModels(ctx: ExtensionContext, metadata: () => Profile[] = readProfiles): Profile[] {
   let curated: Profile[] | undefined;
-  try { curated = metadata(); } catch { /* Optional metadata must not hide native choices. */ }
+  try { curated = metadata(); } catch (error) {
+    if (error instanceof RetiredModelSelectionError) throw error;
+    // Optional malformed metadata must not hide native choices; retirement is authoritative.
+  }
   const native = curatedPickerModels(
     sharedPickerModels(nativeModels(ctx)).filter(model => ctx.modelRegistry.hasConfiguredAuth(model)).filter(isModelRouteAllowed),
     curated && new Set(curated.map(profile => `${profile.provider}/${profile.id}`)),
@@ -363,6 +368,7 @@ export function installUi(pi: ExtensionAPI, profiles: () => Profile[] = readProf
           const scopeRevision = () => JSON.stringify(ctx.scopedModels.map(s => [s.model.provider, s.model.id, s.thinkingLevel]));
           const requestedScope = scopeRevision();
           const model = nativeModels(ctx).find(p => p.provider === r.model.provider && p.id === r.model.id);
+          if (model) assertActiveModelIdentity(model);
           if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) fail("Model unavailable or credentials not configured");
           if (/gpt/i.test(model.id) && (model.provider !== "openai-codex" || model.api !== "openai-codex-responses" || !ctx.modelRegistry.isUsingOAuth(model))) fail("GPT requires paid openai-codex OAuth routing");
           const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
@@ -370,6 +376,7 @@ export function installUi(pi: ExtensionAPI, profiles: () => Profile[] = readProf
           guard();
           if (scopeRevision() !== requestedScope) fail("Model scope changed while credentials were resolving; retry the selection");
           if (!nativeModels(ctx).some(p => p.provider === model.provider && p.id === model.id) || !ctx.modelRegistry.hasConfiguredAuth(model)) fail("Model no longer available in native scope");
+          assertActiveModelIdentity(model);
           const previous = ctx.model, effort = pi.getThinkingLevel();
           if (!previous) fail("Cannot safely restore an unknown previous model");
           let attempted = false, delivered = false;

@@ -2,7 +2,8 @@ import { readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { assertSubscriptionRequest, selectChainedWorkerModel, selectWorkerModel, selectWorkerThinking,
+import { assertActiveModelIdentity, assertActiveModelSelector, SOL_MODEL_ROUTE, SOL_PROFILE } from "../retired-model-selection.ts";
+import { assertModelRoute, assertSubscriptionRequest, selectChainedWorkerModel, selectWorkerModel, selectWorkerThinking,
   DEFAULT_MULTIMODAL_WORKER_CHAIN, DEFAULT_TEXT_WORKER_CHAIN, workerChainFor, type ChainOptions } from "../model-route-policy.ts";
 import type { DispatchInput, ModelSelection } from "./types.ts";
 
@@ -36,8 +37,9 @@ export const BUILTIN_WORKER_PROFILES: readonly WorkerProfile[] = [
   // Their workerDefault keeps routine workers on the MiMo→Sol automatic chain, so
   // launching or selecting them never makes Sol or Luna an automatic worker, and
   // reviewer runs resolve the same routine subscription chain. High
-  // reasoning applies to explicit runs of these profiles.
-  { id: "steak-pi/gpt-6-sol", model: "openai-codex/gpt-6-sol", thinking: "high",
+  // reasoning applies to explicit runs of these profiles. GPT-6.0 Sol was
+  // retired on 2026-10-05: Sol is GPT-6.1 only (see retired-model-selection.ts).
+  { id: SOL_PROFILE, model: SOL_MODEL_ROUTE, thinking: "high",
     workerDefault: { profile: "steak-pi/mimo-v2-6-flash" },
     reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: "steak-pi/gpt-6-luna", model: "openai-codex/gpt-6-luna", thinking: "high",
@@ -80,6 +82,8 @@ export const retiredRouteError = (route: string) =>
 
 function selector(value: WorkerSelector, label: string): WorkerSelector {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be a model/profile selector.`);
+  assertActiveModelSelector(value.model);
+  assertActiveModelSelector(value.profile);
   for (const route of [value.model, value.profile]) {
     if (typeof route === "string" && RETIRED_ROUTE.test(route)) throw new Error(`${label}: ${retiredRouteError(route)}`);
   }
@@ -101,7 +105,7 @@ export function loadWorkerProfiles(directory = join(homedir(), ".config", "ultra
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return [...profiles.values()]; throw new Error("USAP profile catalog cannot be read."); }
   const seen = new Set<string>();
   for (const file of files) {
-    let manifest: { id?: string; executable?: string; profiles?: Array<{ id?: string; args?: string[]; workerDefault?: WorkerSelector; reviewerDefault?: WorkerSelector }> };
+    let manifest: { id?: string; executable?: string; profiles?: Array<{ id?: string; name?: string; args?: string[]; workerDefault?: WorkerSelector; reviewerDefault?: WorkerSelector }> };
     try { manifest = JSON.parse(readFileSync(join(directory, file), "utf8")); }
     catch { throw new Error(`USAP cannot parse harness metadata ${file}; repair the catalog before dispatch.`); }
     if (typeof manifest.id !== "string" || !Array.isArray(manifest.profiles)) continue;
@@ -112,11 +116,27 @@ export function loadWorkerProfiles(directory = join(homedir(), ".config", "ultra
     const piFamily = PI_FAMILY_HARNESSES.has(manifest.id) || PI_FAMILY_HARNESSES.has(executable);
     for (const entry of manifest.profiles) {
       if (manifest.id === "steak-pi" && entry.id === "claude-opus-5-5") continue;
-      if (typeof entry.id !== "string" || !Array.isArray(entry.args)) continue;
+      if (typeof entry.id !== "string") continue;
+      // Retired Sol is refused wherever the manifest names it, before any
+      // CLI-only or foreign-harness skip, so a retired route cannot hide there.
+      assertActiveModelSelector(entry.id);
+      assertActiveModelSelector(entry.name);
+      assertActiveModelSelector(`${manifest.id}/${entry.id}`);
+      for (const defaults of [entry.workerDefault, entry.reviewerDefault]) {
+        if (defaults && typeof defaults === "object") {
+          assertActiveModelSelector(defaults.model);
+          assertActiveModelSelector(defaults.profile);
+        }
+      }
+      if (!Array.isArray(entry.args)) continue;
+      for (const arg of entry.args) {
+        if (typeof arg === "string" && arg.startsWith("--model=")) assertActiveModelSelector(arg.slice("--model=".length));
+      }
       const modelFlags = entry.args.filter((arg) => arg === "--model");
       if (modelFlags.length === 0) continue; // CLI-only profiles are not native model routes.
       if (modelFlags.length !== 1) throw new Error(`Ambiguous model route in profile ${manifest.id}/${entry.id}.`);
       const model = entry.args[entry.args.indexOf("--model") + 1];
+      assertActiveModelSelector(model);
       if (typeof model !== "string" || !model.includes("/")) {
         if (!piFamily) continue;
         throw new Error(`Profile ${manifest.id}/${entry.id} needs a provider/model route.`);
@@ -194,9 +214,11 @@ export function resolveClaudeCodeSelection(model: ClaudeCodeModel = CLAUDE_CODE_
 
 function route(model: Model): string { return `${model.provider}/${model.id}`; }
 function findModel(key: string, registry: Registry): Model {
+  assertActiveModelSelector(key);
   const slash = key.indexOf("/");
   if (slash < 1 || slash === key.length - 1) throw new Error("USAP model must use the exact provider/model form.");
   const model = registry.find(key.slice(0, slash), key.slice(slash + 1));
+  if (model) assertActiveModelIdentity(model);
   if (!model || route(model) !== key) throw new Error(`USAP model ${key} is unavailable. Choose an exact model from the authenticated registry; no fallback was selected.`);
   return model;
 }
@@ -225,6 +247,13 @@ export function resolveWorkerSelection(
   }
   // Capture caller intent once, before consulting task/profile/registry objects.
   const requested: WorkerSelector = { model: input.model, profile: input.profile };
+  assertActiveModelSelector(requested.model);
+  assertActiveModelSelector(requested.profile);
+  assertModelRoute(parent);
+  for (const task of input.tasks) {
+    if ("model" in task) assertActiveModelSelector(task.model);
+    if ("profile" in task) assertActiveModelSelector(task.profile);
+  }
   if (input.tasks.some((task) => "model" in task || "profile" in task)) {
     throw new Error("USAP model/profile selection is run-level only; split different routes into separate runs.");
   }
@@ -232,8 +261,11 @@ export function resolveWorkerSelection(
   const explicit = requested.model !== undefined || requested.profile !== undefined;
   const parentKey = route(parent);
   const profileById = (id: string): WorkerProfile => {
+    assertActiveModelSelector(id);
     const matches = profiles.filter((p) => p.id === id || (!id.includes("/") && p.id === `steak-pi/${id}`));
     if (matches.length !== 1) throw new Error(`USAP profile ${id} is unavailable or ambiguous; use its harness/profile identity.`);
+    assertActiveModelSelector(matches[0].id);
+    assertActiveModelSelector(matches[0].model);
     return matches[0];
   };
   const parents = profiles.filter((p) => p.model === parentKey);

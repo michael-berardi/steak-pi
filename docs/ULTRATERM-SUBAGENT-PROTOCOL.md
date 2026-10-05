@@ -390,8 +390,8 @@ expert sign-off. All-reviewer waves with no explicit route use the official Clau
 Opus 5.5/xhigh pass. Existing explicitly selected Pi profiles keep their native
 route semantics. No failed Opus review silently falls back to Astra or another
 model.
-`gpt-6-sol` and `gpt-6-luna` are explicit-selection profiles only, never
-automatic workers. Explicit model/profile selection wins. See [PROFILES.md](./PROFILES.md)
+`gpt-6-1-sol` (GPT-6.0 Sol is retired and refused) and `gpt-6-luna` are
+explicit-selection profiles only, never automatic workers. Explicit model/profile selection wins. See [PROFILES.md](./PROFILES.md)
 for reviewer defaults and route-specific fallback. Record the resolved
 provider/model on the run so results are auditable.
 

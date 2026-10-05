@@ -7,6 +7,31 @@ OpenAI API-key billing, custom endpoints, and batch GPT variants are rejected.
 The parent session has no provider fallback. Child worker runs have exactly one
 ordered automatic chain (below); every other selection is exact.
 
+## Sol retirement — 2026-10-05
+
+**Sol means GPT-6.1 Sol only:** model `openai-codex/gpt-6.1-sol`, profile
+`steak-pi/gpt-6-1-sol`. The built-in profile for explicit Sol selection is the
+6.1 route, and the Sol step of the automatic MiMo → Sol chain below is 6.1.
+Unavailable 6.1 fails closed, never selecting another model. Other model routes
+and their defaults are unchanged; Astra is not retired Sol.
+
+GPT-6.0 Sol selectors (`gpt-6-sol`, `gpt-6.0-sol`, `gpt-6-0-sol`,
+`openai-codex/gpt-6-sol`, `steak-pi/gpt-6-sol`, shorthand and qualified
+`gpt-6-sol-*` variants, and display names such as "GPT-6 Sol" or "GPT-6.0 Sol")
+are rejected with **`RetiredModelSelectionError`**. Profile IDs, labels, model
+arguments, worker/reviewer defaults, UI control input, run normalization, and
+resolved child/request identities are checked. A friendly profile or opaque
+model alias cannot bypass rejection when its target or catalog display name
+identifies retired Sol. A retired selector is never rewritten to 6.1.
+
+Restart keeps historical checkpoints inspectable and unchanged. Explicit resume
+rechecks the saved model and profile before reserving or launching a successor;
+a retired selection fails with the same error. Provider guards recheck streaming,
+deferred operations, restored sessions, compaction and controlled child turns.
+Event-hook validation alone is not an execution boundary: the provider guards
+remain authoritative. This package has no automatic Sol provider/text-error
+fallback.
+
 ## Explicit paid Inco profile
 
 The user-owned `~/.pi/agent/paid-routes.json` must contain:
@@ -89,7 +114,7 @@ Astra gets **no runtime hop**: a failed expert review fails visibly and is
 reported — it is never silently downgraded to a weaker model, and no output may
 claim expert approval that did not happen. Astra keeps its medium
 reasoning default; reviewer role alone does not raise effort. Astra is never a
-routine worker default: parent-added `steak-pi/gpt-6-sol` and
+routine worker default: parent-added `steak-pi/gpt-6-1-sol` and
 `steak-pi/gpt-6-luna` profiles are explicit-selection routes only, whose own
 `workerDefault` keeps workers on the MiMo → Sol chain.
 
@@ -273,5 +298,9 @@ publishes exactly `getAvailableSnapshot()` after a config add, label/id rename, 
 removal and credential removal, and that the unfiltered dispatch catalog still serves the
 chain fallback. `test/model-profile-catalog.test.ts` covers profile additions, removals and
 renames for the sidebar list and the shared scope plus the native/composer/sidebar equality.
+`test/retired-sol-selection.test.ts`, the native worker-runner tests, and the
+extension checkpoint-resume tests cover named retirement errors at ingestion,
+defaults, resolved aliases, all provider request entries, child creation, and
+restart/resume, plus 6.1 Sol routing and non-Sol preservation.
 Allowed live probes remain a separate release check. Production
 failures must never trigger OpenRouter GPT fallback.

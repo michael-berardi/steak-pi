@@ -3,6 +3,7 @@ import { createAllowlistApproval, findPaidRoute } from "./explicit-paid-route.ts
 import { curatedPickerScope } from "./harness-profiles.ts";
 import { curatedPickerModels, sharedPickerModels } from "./model-visibility.ts";
 import { eligibleGoFallback, withOpenCodeGoRouting } from "./opencode-go-routing.ts";
+import { assertActiveModelIdentity, isRetiredSolSelector } from "./retired-model-selection.ts";
 import { authHeadersMatch, gatedMeteredStream, isSubscriptionOrLocalRoute, SUBSCRIPTION_FIRST_ERROR } from "./subscription-first-routing.ts";
 
 type Registry = ExtensionContext["modelRegistry"];
@@ -76,12 +77,14 @@ export function isGptFamily(model: { id: string; name?: string }): boolean {
 
 /** Catalog filtering must not allocate exceptions for routinely excluded models. */
 export function isModelRouteAllowed(model: { id: string; name?: string; provider: string }): boolean {
-  return !isGptFamily(model) || (model.provider === "openai-codex" && !/batch/i.test(model.id) &&
-    (!model.id.includes("/") || model.id.startsWith("openai-codex/")));
+  return !isRetiredSolSelector(model.id) && !isRetiredSolSelector(model.name) &&
+    (!isGptFamily(model) || (model.provider === "openai-codex" && !/batch/i.test(model.id) &&
+    (!model.id.includes("/") || model.id.startsWith("openai-codex/"))));
 }
 
 /** Validate resolved identity, never infer a provider from a friendly model name. */
 export function assertModelRoute(model: { id: string; name?: string; provider: string }): void {
+  assertActiveModelIdentity(model);
   if (!isModelRouteAllowed(model)) throw new Error(GPT_ROUTE_ERROR);
 }
 
@@ -110,6 +113,7 @@ export function guardProvider(provider: Provider, usingOAuth: () => boolean,
   const root = original ?? provider;
   provider = withOpenCodeGoRouting(provider);
   const check = (model: Model) => {
+    assertActiveModelIdentity(model);
     if (model.provider !== provider.id) throw new Error(GPT_ROUTE_ERROR);
     assertSubscriptionRequest(model, !isGptFamily(model) || usingOAuth());
   };
