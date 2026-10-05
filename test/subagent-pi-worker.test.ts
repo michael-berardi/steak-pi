@@ -324,6 +324,21 @@ describe("Pi USAP worker tools", () => {
 });
 
 describe("native in-process Pi worker runner", () => {
+  it.each(["frozen-runtime", "run-model", "run-profile"])("rejects retired Sol at child launch (%s) before session creation", async boundary => {
+    const cwd = await mkdtemp(join(tmpdir(), "steak-retired-child-"));
+    try {
+      const recordTask = task(), recordRun = run(cwd, recordTask);
+      if (boundary === "run-model") recordRun.model = "openai-codex/gpt-6-sol";
+      if (boundary === "run-profile") recordRun.selection = { provider: "fake", modelId: "model", profile: "steak-pi/gpt-6-sol", source: "override", images: false, tools: true };
+      const sessionFactory = vi.fn(async () => ({ session: new FakeSession() }));
+      const model = boundary === "frozen-runtime" ? { ...fakeModel, provider: "openai-codex", id: "gpt-6-sol", name: "GPT-6 Sol" } : fakeModel;
+      const runner = createPiWorkerRunner({ relay: setupBroker(), resolveRuntime: () => ({ model, thinkingLevel: "off" }), sessionFactory });
+      const result = await runner({ run: recordRun, task: recordTask, signal: new AbortController().signal, onProgress: vi.fn() });
+      expect(result.state).toBe("failed");
+      expect(result.error).toContain("RetiredModelSelectionError");
+      expect(sessionFactory).not.toHaveBeenCalled();
+    } finally { await rm(cwd, { recursive: true, force: true }); }
+  });
   it.each([0, 1])("preserves tool failure evidence with %s subsequent successes", async (successes) => {
     const cwd = await mkdtemp(join(tmpdir(), "steak-tool-evidence-"));
     const recordTask = task(), fake = new FakeSession();

@@ -1,4 +1,5 @@
 import type { ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { assertActiveModelIdentity, isRetiredSolSelector, SOL_MODEL_ID } from "./retired-model-selection.ts";
 import { withOpenCodeGoRouting } from "./opencode-go-routing.ts";
 import { authHeadersMatch, gatedMeteredStream, isSubscriptionOrLocalRoute, SUBSCRIPTION_FIRST_ERROR } from "./subscription-first-routing.ts";
 
@@ -23,12 +24,14 @@ export function isGptFamily(model: { id: string; name?: string }): boolean {
 
 /** Catalog filtering must not allocate exceptions for routinely excluded models. */
 export function isModelRouteAllowed(model: { id: string; name?: string; provider: string }): boolean {
-  return !isGptFamily(model) || (model.provider === "openai-codex" && !/batch/i.test(model.id) &&
-    (!model.id.includes("/") || model.id.startsWith("openai-codex/")));
+  return !isRetiredSolSelector(model.id) && !isRetiredSolSelector(model.name) &&
+    (!isGptFamily(model) || (model.provider === "openai-codex" && !/batch/i.test(model.id) &&
+    (!model.id.includes("/") || model.id.startsWith("openai-codex/"))));
 }
 
 /** Validate resolved identity, never infer a provider from a friendly model name. */
 export function assertModelRoute(model: { id: string; name?: string; provider: string }): void {
+  assertActiveModelIdentity(model);
   if (!isModelRouteAllowed(model)) throw new Error(GPT_ROUTE_ERROR);
 }
 
@@ -56,6 +59,7 @@ export function guardProvider(provider: Provider, usingOAuth: () => boolean,
   const root = original ?? provider;
   provider = withOpenCodeGoRouting(provider);
   const check = (model: Model) => {
+    assertActiveModelIdentity(model);
     if (model.provider !== provider.id) throw new Error(GPT_ROUTE_ERROR);
     assertSubscriptionRequest(model, !isGptFamily(model) || usingOAuth());
   };
@@ -193,7 +197,8 @@ export function selectWorkerModel(parent: Model, roles: readonly (string | undef
   assertModelRoute(parent);
   if (!isGptFamily(parent)) return parent;
   assertSubscriptionRequest(parent, registry.isUsingOAuth(parent));
-  if (roles.some((role) => role === "reviewer")) return parent;
+  // An unmapped Sol launch retains its exact 6.1 route, never the Luna legacy default.
+  if (parent.id === SOL_MODEL_ID || parent.id === `openai-codex/${SOL_MODEL_ID}` || roles.some((role) => role === "reviewer")) return parent;
   const luna = registry.find("openai-codex", ROUTINE_GPT_MODEL);
   if (!luna || !registry.hasConfiguredAuth(luna)) {
     throw new Error(`Routine GPT work requires available paid openai-codex/${ROUTINE_GPT_MODEL}; no fallback was selected.`);

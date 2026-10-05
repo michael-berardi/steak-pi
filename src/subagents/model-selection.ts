@@ -2,7 +2,8 @@ import { readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { assertSubscriptionRequest, selectWorkerModel, selectWorkerThinking } from "../model-route-policy.ts";
+import { assertActiveModelIdentity, assertActiveModelSelector, SOL_MODEL_ROUTE, SOL_PROFILE } from "../retired-model-selection.ts";
+import { assertModelRoute, assertSubscriptionRequest, selectWorkerModel, selectWorkerThinking } from "../model-route-policy.ts";
 import type { DispatchInput, ModelSelection } from "./types.ts";
 
 type Model = NonNullable<ExtensionContext["model"]>;
@@ -24,11 +25,15 @@ export const BUILTIN_WORKER_PROFILES: readonly WorkerProfile[] = [
     reviewerDefault: { model: "openai-codex/gpt-6-astra" } },
   { id: "steak-pi/opencode-go", model: "opencode-go/deepseek-v4.1-flash", thinking: "high",
     workerDefault: { profile: "steak-pi/opencode-go" } },
+  { id: SOL_PROFILE, model: SOL_MODEL_ROUTE,
+    workerDefault: { profile: SOL_PROFILE }, reviewerDefault: { profile: SOL_PROFILE } },
 ];
 const thinkingLevels = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
 
 function selector(value: WorkerSelector, label: string): WorkerSelector {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be a model/profile selector.`);
+  assertActiveModelSelector(value.model);
+  assertActiveModelSelector(value.profile);
   if (value.model !== undefined && value.profile !== undefined) throw new Error(`${label}: model and profile conflict; specify exactly one.`);
   for (const [key, field] of Object.entries(value)) {
     if (!["model", "profile"].includes(key) || typeof field !== "string" || !field.trim() || field !== field.trim() || field.length > 256) {
@@ -47,16 +52,26 @@ export function loadWorkerProfiles(directory = join(homedir(), ".config", "ultra
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return [...profiles.values()]; throw new Error("USAP profile catalog cannot be read."); }
   const seen = new Set<string>();
   for (const file of files) {
-    let manifest: { id?: string; profiles?: Array<{ id?: string; args?: string[]; workerDefault?: WorkerSelector; reviewerDefault?: WorkerSelector }> };
+    let manifest: { id?: string; profiles?: Array<{ id?: string; name?: string; args?: string[]; workerDefault?: WorkerSelector; reviewerDefault?: WorkerSelector }> };
     try { manifest = JSON.parse(readFileSync(join(directory, file), "utf8")); }
     catch { throw new Error(`USAP cannot parse harness metadata ${file}; repair the catalog before dispatch.`); }
     if (typeof manifest.id !== "string" || !Array.isArray(manifest.profiles)) continue;
     for (const entry of manifest.profiles) {
-      if (typeof entry.id !== "string" || !Array.isArray(entry.args)) continue;
+      if (typeof entry.id !== "string") continue;
+      assertActiveModelSelector(entry.id);
+      assertActiveModelSelector(entry.name);
+      assertActiveModelSelector(`${manifest.id}/${entry.id}`);
+      if (entry.workerDefault !== undefined) selector(entry.workerDefault, `${entry.id}.workerDefault`);
+      if (entry.reviewerDefault !== undefined) selector(entry.reviewerDefault, `${entry.id}.reviewerDefault`);
+      if (!Array.isArray(entry.args)) continue;
+      for (const arg of entry.args) {
+        if (typeof arg === "string" && arg.startsWith("--model=")) assertActiveModelSelector(arg.slice("--model=".length));
+      }
       const modelFlags = entry.args.filter((arg) => arg === "--model");
       if (modelFlags.length === 0) continue; // CLI-only profiles are not native model routes.
       if (modelFlags.length !== 1) throw new Error(`Ambiguous model route in profile ${manifest.id}/${entry.id}.`);
       const model = entry.args[entry.args.indexOf("--model") + 1];
+      assertActiveModelSelector(model);
       if (typeof model !== "string" || !model.includes("/")) throw new Error(`Profile ${manifest.id}/${entry.id} needs a provider/model route.`);
       const id = `${manifest.id}/${entry.id}`;
       if (seen.has(id)) throw new Error(`Duplicate USAP profile ${id}.`);
@@ -77,9 +92,11 @@ export function loadWorkerProfiles(directory = join(homedir(), ".config", "ultra
 
 function route(model: Model): string { return `${model.provider}/${model.id}`; }
 function findModel(key: string, registry: Registry): Model {
+  assertActiveModelSelector(key);
   const slash = key.indexOf("/");
   if (slash < 1 || slash === key.length - 1) throw new Error("USAP model must use the exact provider/model form.");
   const model = registry.find(key.slice(0, slash), key.slice(slash + 1));
+  if (model) assertActiveModelIdentity(model);
   if (!model || route(model) !== key) throw new Error(`USAP model ${key} is unavailable. Choose an exact model from the authenticated registry; no fallback was selected.`);
   return model;
 }
@@ -101,14 +118,24 @@ export function resolveWorkerSelection(
 ): { model: Model; thinkingLevel: Thinking; selection: ModelSelection } {
   // Capture caller intent once, before consulting task/profile/registry objects.
   const requested: WorkerSelector = { model: input.model, profile: input.profile };
+  assertActiveModelSelector(requested.model);
+  assertActiveModelSelector(requested.profile);
+  assertModelRoute(parent);
+  for (const task of input.tasks) {
+    if ("model" in task) assertActiveModelSelector(task.model);
+    if ("profile" in task) assertActiveModelSelector(task.profile);
+  }
   if (input.tasks.some((task) => "model" in task || "profile" in task)) {
     throw new Error("USAP model/profile selection is run-level only; split different routes into separate runs.");
   }
   const explicit = requested.model !== undefined || requested.profile !== undefined;
   const parentKey = route(parent);
   const profileById = (id: string): WorkerProfile => {
+    assertActiveModelSelector(id);
     const matches = profiles.filter((p) => p.id === id || (!id.includes("/") && p.id === `steak-pi/${id}`));
     if (matches.length !== 1) throw new Error(`USAP profile ${id} is unavailable or ambiguous; use its harness/profile identity.`);
+    assertActiveModelSelector(matches[0].id);
+    assertActiveModelSelector(matches[0].model);
     return matches[0];
   };
   const parents = profiles.filter((p) => p.model === parentKey);

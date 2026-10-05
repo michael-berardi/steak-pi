@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { RetiredModelSelectionError } from "../src/retired-model-selection.ts";
 import { CheckpointStore } from "../src/subagents/checkpoints.ts";
 import { normalizeDispatch } from "../src/subagents/policy.ts";
 import { tmpdir } from "node:os";
@@ -387,6 +388,32 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     const diagnostics = await next.tools.get("ultraterm_hub").execute("hub", { action: "diagnose", runId }, undefined, undefined, next.ctx);
     expect(diagnostics.details.diagnostics.persistence).toBe("checkpointed");
     await next.handlers.get("session_shutdown")!({}, next.ctx);
+  });
+
+  it.each(["model", "profile"])("rejects retired Sol %s again after restart without rewriting its checkpoint", async boundary => {
+    const root = mkdtempSync(join(tmpdir(), "usap-retired-restart-")); dirs.push(root);
+    const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "retired" };
+    const store = new CheckpointStore(durable.parent, durable.root);
+    const run = normalizeDispatch({ goal: "continue", background: true, tasks: [{ label: "unfinished", task: "continue" }] }, root, "openai-codex/gpt-6.1-sol", "medium", Date.now(), () => "retired-checkpoint");
+    // Model an already-persisted pre-retirement record: never migrate history.
+    if (boundary === "model") run.model = "openai-codex/gpt-6-sol";
+    else run.selection = { provider: "openai-codex", modelId: "gpt-6.1-sol", profile: "steak-pi/gpt-6-sol", source: "override", images: false, tools: true };
+    store.save(run, true); store.close();
+    const runner = vi.fn(async () => ({ state: "done" as const, output: "unexpected", turns: 1, usage: emptyUsage() }));
+    const h = harness(() => runner, durable);
+    await h.handlers.get("session_start")!({}, h.ctx);
+    try {
+      await expect(h.tools.get("ultraterm_hub").execute("hub", { action: "resume", runId: run.id }, undefined, undefined, h.ctx)).rejects.toThrow(RetiredModelSelectionError);
+      expect(runner).not.toHaveBeenCalled();
+      const status = await h.tools.get("ultraterm_hub").execute("hub", { action: "status", runId: run.id }, undefined, undefined, h.ctx);
+      expect(status.details.run.model).toBe(run.model);
+    } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+    const reopened = new CheckpointStore(durable.parent, durable.root);
+    try {
+      expect(reopened.get(run.id)?.run.model).toBe(run.model);
+      expect(reopened.get(run.id)?.resumedAs).toBeUndefined();
+      expect(reopened.get(run.id)?.pendingResume).toBeUndefined();
+    } finally { reopened.close(); }
   });
 
   it("resumes an interrupted native checkpoint once and excludes completed siblings", async () => {

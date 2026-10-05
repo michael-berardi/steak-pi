@@ -3,6 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type, type TSchema } from "typebox";
 import { SubagentCoordinator, CoordinatorWaitTimeoutError } from "../src/subagents/coordinator.ts";
 import { normalizeDispatch, SubagentPolicyError } from "../src/subagents/policy.ts";
+import { assertActiveModelSelector } from "../src/retired-model-selection.ts";
 import { resolveWorkerSelection, type WorkerProfile } from "../src/subagents/model-selection.ts";
 import {
   RelayBroker,
@@ -61,7 +62,7 @@ const TaskSchema = Type.Object({
 export const ultratermSubagentsSchema = Type.Object({
   goal: Type.String({ minLength: 1, maxLength: 8_000 }),
   model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Exact authenticated provider/model for all tasks; mutually exclusive with profile." })),
-  profile: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Native harness/profile route (e.g. steak-pi/glm-5-3-flash); mutually exclusive with model." })),
+  profile: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Native harness/profile route (e.g. steak-pi/gpt-6-1-sol); mutually exclusive with model. GPT-6.0 Sol is retired and rejected." })),
   requireImages: Type.Optional(Type.Boolean({ description: "Require advertised image input; no silent fallback." })),
   constraints: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4_000 }), { maxItems: 64 })),
   contract: Type.Optional(Type.String({ minLength: 1, maxLength: 8_000 })),
@@ -894,6 +895,10 @@ export function createUltratermSubagentsExtension(
         }
 
         if (params.action === "resume") {
+          // Inspect historical selectors again without rewriting or discarding checkpoints.
+          assertActiveModelSelector(snapshot.model);
+          assertActiveModelSelector(snapshot.selection?.modelId);
+          assertActiveModelSelector(snapshot.selection?.profile);
           if (snapshot.state === "running") throw new Error("Run is still active; resume would duplicate work");
           if (checkpoint?.resumedAs) throw new Error(`Already resumed as ${checkpoint.resumedAs}; inspect that run instead`);
           if (checkpoint?.pendingResume) throw new Error("Resume reservation interrupted; reload the host to recover it before retrying");
