@@ -5,6 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type, type TSchema } from "typebox";
 import { SubagentCoordinator, CoordinatorWaitTimeoutError } from "../src/subagents/coordinator.ts";
 import { normalizeDispatch, SubagentPolicyError } from "../src/subagents/policy.ts";
+import { assertActiveModelSelector } from "../src/retired-model-selection.ts";
 import { resolveWorkerSelection, resolveClaudeCodeSelection, claudeCodeModelOf, claudeCodeModelName, defaultClaudeCodeRoute, CLAUDE_CODE_ROUTES, type WorkerProfile } from "../src/subagents/model-selection.ts";
 import { AUTOMATIC_CHAIN_APPROVAL, type ChainOptions } from "../src/model-route-policy.ts";
 import { isSubscriptionOrLocalRoute } from "../src/subscription-first-routing.ts";
@@ -90,7 +91,7 @@ const TaskSchema = Type.Object({
 export const ultratermSubagentsSchema = Type.Object({
   goal: Type.String({ minLength: 1, maxLength: 8_000 }),
   model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Exact authenticated provider/model for all tasks; mutually exclusive with profile." })),
-  profile: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Native harness/profile route (e.g. steak-pi/gpt-6-1-sol); mutually exclusive with model." })),
+  profile: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Native harness/profile route (e.g. steak-pi/gpt-6-1-sol); mutually exclusive with model. GPT-6.0 Sol is retired and rejected." })),
   harness: Type.Optional(Type.Unsafe<"pi" | "claude-code">({ type: "string", enum: ["pi", "claude-code"], description: "Execution harness. pi (default) is the native runner; claude-code is the official headless Claude CLI at xhigh: Sonnet 5.5 by default, Opus 5.5 for all-reviewer waves or model claude-code/claude-opus-5-5; workers, scouts and reviewers alike, with CLI-enforced ownedPaths and optional bash." })),
   requireImages: Type.Optional(Type.Boolean({ description: "Require advertised image input; no silent fallback." })),
   constraints: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4_000 }), { maxItems: 64 })),
@@ -1448,6 +1449,10 @@ export function createUltratermSubagentsExtension(
         }
 
         if (params.action === "resume") {
+          // Inspect historical selectors again without rewriting or discarding checkpoints.
+          assertActiveModelSelector(snapshot.model);
+          assertActiveModelSelector(snapshot.selection?.modelId);
+          assertActiveModelSelector(snapshot.selection?.profile);
           if (snapshot.state === "running") throw new Error("Run is still active; resume would duplicate work");
           if (checkpoint?.resumedAs) throw new Error(`Already resumed as ${checkpoint.resumedAs}; a task is resumed at most once, so inspect that run instead`);
           if (checkpoint?.pendingResume) throw new Error("Resume reservation interrupted; reload the host to recover it before retrying");

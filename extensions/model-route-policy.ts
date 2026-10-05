@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { assertActiveModelIdentity } from "../src/retired-model-selection.ts";
 import { createRegistryGuard } from "../src/model-route-policy.ts";
 import { createExplicitPaidApproval, createSelectedRouteApproval, PAID_ROUTE_FLAG } from "../src/explicit-paid-route.ts";
 
@@ -22,13 +23,19 @@ export default function modelRoutePolicy(pi: ExtensionAPI): void {
     launch = createExplicitPaidApproval(pi.getFlag(PAID_ROUTE_FLAG), ctx.model);
     install = createRegistryGuard(approval);
     install(ctx.modelRegistry, ctx.model);
+    if (ctx.model) assertActiveModelIdentity(ctx.model);
   });
   // Only dispatch-capable providers are guarded; the active model's provider
   // always is. Selecting a model is not a new paid launch authorization.
   pi.on("model_select", (event, ctx) => {
     selected = event.model ?? ctx.model;
     install(ctx.modelRegistry, selected);
+    if (selected) assertActiveModelIdentity(selected);
   });
-  pi.on("before_agent_start", (_event, ctx) => install(ctx.modelRegistry, ctx.model));
-  pi.on("session_before_compact", (_event, ctx) => install(ctx.modelRegistry, ctx.model));
+  const refresh = (_event: unknown, ctx: ExtensionContext) => {
+    install(ctx.modelRegistry, ctx.model);
+    if (ctx.model) assertActiveModelIdentity(ctx.model);
+  };
+  pi.on("before_agent_start", refresh);
+  pi.on("session_before_compact", refresh);
 }

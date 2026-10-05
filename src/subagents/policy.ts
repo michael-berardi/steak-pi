@@ -1,3 +1,4 @@
+import { assertActiveModelSelector } from "../retired-model-selection.ts";
 import { lstatSync, realpathSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
@@ -193,6 +194,9 @@ export function normalizeDispatch(
   idFactory: IdFactory = randomUUID,
 ): RunRecord {
   if (input === null || typeof input !== "object") fail("input must be an object");
+  assertActiveModelSelector(input.model);
+  assertActiveModelSelector(input.profile);
+  assertActiveModelSelector(model);
   const root = normalizedCwd(cwd);
   const goal = nonemptyString(input.goal, "goal");
   nonemptyString(model, "model");

@@ -118,9 +118,19 @@ Scheduling, bounded waits/cancel, usage and reports use the same USAP coordinato
 Use one run-level `model: "provider/model"` **or**
 `profile: "steak-pi/gpt-6-1-sol"`, never both. All tasks share that route.
 Explicit selection overrides role defaults, including reviewers. An Astra
-manager can explicitly select Sol; a MiMo parent can explicitly select authorized GPT.
+manager can explicitly select GPT-6.1 Sol; a MiMo parent can explicitly select authorized GPT.
 GLM 5.3 and the Z.ai plan are retired (2026-10-03); GLM or `zai/` selectors are refused.
 Prose saying a model name does not select it.
+
+GPT-6.0 Sol was retired on **2026-10-05**. Sol is only
+`openai-codex/gpt-6.1-sol` / `steak-pi/gpt-6-1-sol`; the Sol step of the
+automatic chain below is 6.1. Retired `gpt-6-sol` / `gpt-6.0-sol` selectors,
+qualified profiles, and display names such as "GPT-6 Sol" are rejected at
+profile/manifest ingestion and child/request resolution with
+`RetiredModelSelectionError`, including explicit checkpoint resume after
+restart. Never reinterpret a retired selector as 6.1 or convert Astra, Luna,
+Sonnet, Opus, MiMo or DeepSeek to Sol. Preserve checkpoints and ownership;
+inspect and use a supported explicit model-change/handoff, never kill a run.
 
 Without a selector, all-reviewer waves use the Opus Pass above. Other waves use
 the matching parent profile's worker defaults; routine automatic workers follow

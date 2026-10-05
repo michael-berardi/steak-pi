@@ -12,6 +12,7 @@ import type {
 import { Type } from "typebox";
 import { assertOwnedPath } from "./policy.ts";
 import { finalWorkerReport, workerJournal } from "./coordinator.ts";
+import { assertActiveModelSelector } from "../retired-model-selection.ts";
 import { assertWorkerDependencies, resolveWorkerDependency } from "./dependency-preflight.ts";
 import {
   assertModelRoute,
@@ -871,6 +872,9 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
 
     try {
       signal.throwIfAborted();
+      assertActiveModelSelector(run.model);
+      assertActiveModelSelector(run.selection?.modelId);
+      assertActiveModelSelector(run.selection?.profile);
       assertWorkerDependencies(import.meta.url, (specifier) =>
         resolveWorkerDependency(specifier, (name) => import.meta.resolve(name)));
       const [managers, runtime] = await initialize(Promise.all([
