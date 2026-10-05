@@ -7,6 +7,7 @@ import { SubagentCoordinator, CoordinatorWaitTimeoutError } from "../src/subagen
 import { normalizeDispatch, SubagentPolicyError } from "../src/subagents/policy.ts";
 import { resolveWorkerSelection, resolveClaudeCodeSelection, claudeCodeModelOf, claudeCodeModelName, defaultClaudeCodeRoute, CLAUDE_CODE_ROUTES, type WorkerProfile } from "../src/subagents/model-selection.ts";
 import { AUTOMATIC_CHAIN_APPROVAL, type ChainOptions } from "../src/model-route-policy.ts";
+import { isSubscriptionOrLocalRoute } from "../src/subscription-first-routing.ts";
 import {
   RelayBroker,
   RUN_BROADCAST_TARGET,
@@ -23,11 +24,15 @@ import {
   MAX_TASKS,
   MAX_TIMEOUT_MS,
   MAX_WORKER_TURNS,
+  PARTIAL_SUMMARY_LIMIT,
   RELAY_MAILBOX_LIMIT,
+  TURN_BUDGET_ERROR,
   harnessOf,
   type DispatchInput,
   type HarnessId,
+  type PartialReason,
   type RunRecord,
+  type TaskOutcome,
   type TaskRecord,
   type UsageTotals,
   type WorkerRunner,
@@ -139,7 +144,15 @@ export interface UltratermHubParams {
 export interface SettledTaskView {
   taskId: string;
   label: string;
+  /** Lets a reader tell a required review from any other leaf. */
+  role: TaskRecord["role"];
   state: TaskRecord["state"];
+  /** Set only for a turn- or time-budget stop; such a task is never a completed leaf. */
+  outcome?: TaskOutcome;
+  partialReason?: PartialReason;
+  partialSummary?: string;
+  /** Predecessor task this attempt continues (explicit bounded resume). */
+  resumedFrom?: string;
   output: string;
   error?: string;
   currentTool?: string;
@@ -171,6 +184,18 @@ export interface RunView {
   totalTokens: number;
   totalCost: number;
   tasks: SettledTaskView[];
+  /** Predecessor run this run continues; set only by an explicit bounded resume. */
+  resumedFrom?: string;
+  /** Successor run that continued this run; a run is resumed at most once. */
+  resumedAs?: string;
+  /** Set once the successor finished every unfinished task: this run's partials are replaced. */
+  supersededBy?: string;
+}
+
+/** Lineage that lives in the checkpoint store, not on the run record. */
+export interface RunLinks {
+  resumedAs?: string;
+  supersededBy?: string;
 }
 
 /** Durable recovery capability of the runtime that produced a view. */
@@ -195,6 +220,8 @@ export interface DispatchDetails {
       ownedPaths: number;
       modelRoute: string;
       selectionSource: string;
+      outcome?: TaskOutcome;
+      resumedFrom?: string;
     }>;
   };
 }
@@ -345,7 +372,7 @@ function observedCompletionIds(ctx?: ExtensionContext): Set<string> | undefined 
 
 function taskDetail(task: TaskRecord): string | undefined {
   if (/Host interrupted|Coordinator shut down/i.test(task.error ?? "")) return task.sessionFile ? "Interrupted — inspect the checkpoint" : "Interrupted — inspect diagnostics";
-  if (/turn.limit|turn budget/i.test(task.error ?? "")) return "Turn budget reached — partial work retained";
+  if (TURN_BUDGET_ERROR.test(task.error ?? "")) return "Turn budget reached — partial work retained";
   if (task.state === "timed_out") return "Time budget reached — partial work retained";
   if (task.state === "aborted") return "Cancelled";
   if (task.state === "failed") return "Needs attention — inspect diagnostics";
@@ -354,20 +381,35 @@ function taskDetail(task: TaskRecord): string | undefined {
   return task.currentTool ? steps[task.currentTool] : undefined;
 }
 
-/** Bounded UI labels/lifecycle only: never include goals, task prompts, output, or usage. */
-export function usapTelemetrySnapshot(run: RunRecord) {
+/** Bounded UI labels/lifecycle only: never include goals, task prompts, output, or usage.
+ * `role` and `label` name which leaf this is; `outcome: "partial"` marks a turn- or
+ * time-budget stop, whose `state` stays failed/timed_out. A successful bounded resume
+ * supersedes the partial attempt explicitly: the successor's done task carries
+ * `supersedes` and the predecessor run carries `resumedAs` and, once every unfinished
+ * task finished, `supersededBy`. Readers keep the latest record per runId. */
+export function usapTelemetrySnapshot(run: RunRecord, links: RunLinks = {}) {
   return {
     version: USAP_TELEMETRY_VERSION,
     runId: run.id,
     ...(run.ownerSessionId ? { ownerSessionId: run.ownerSessionId } : {}),
     ...(run.ownerSessionFile ? { ownerSessionFile: run.ownerSessionFile } : {}),
     runState: run.state,
+    ...(run.resumedFrom ? { resumedFrom: run.resumedFrom } : {}),
+    ...(links.resumedAs ? { resumedAs: links.resumedAs } : {}),
+    ...(links.supersededBy ? { supersededBy: links.supersededBy } : {}),
     ...(run.harness === undefined ? {} : { harness: run.harness }),
     ...(run.selection ? { selection: { ...run.selection }, model: run.model, thinkingLevel: run.thinkingLevel } : {}),
     tasks: run.tasks.map((task) => ({
       taskId: task.id,
       label: task.label.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 80),
+      role: task.role,
       state: task.state,
+      ...(task.outcome ? {
+        outcome: task.outcome,
+        ...(task.partialReason ? { partialReason: task.partialReason } : {}),
+        ...(task.partialSummary ? { partialSummary: task.partialSummary.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, PARTIAL_SUMMARY_LIMIT) } : {}),
+      } : {}),
+      ...(task.resumedFrom ? { resumedFrom: task.resumedFrom, ...(task.state === "done" ? { supersedes: task.resumedFrom } : {}) } : {}),
       ...(taskDetail(task) ? { detail: taskDetail(task) } : {}),
       ...(Number.isFinite(task.startedAt) && task.startedAt! >= 0 ? { startedAt: task.startedAt } : {}),
       ...(Number.isFinite(task.endedAt) && task.endedAt! >= 0 ? { endedAt: task.endedAt } : {}),
@@ -426,7 +468,14 @@ function taskView(task: TaskRecord): SettledTaskView {
   return {
     taskId: task.id,
     label: task.label,
+    role: task.role,
     state: task.state,
+    ...(task.outcome ? {
+      outcome: task.outcome,
+      ...(task.partialReason ? { partialReason: task.partialReason } : {}),
+      ...(task.partialSummary ? { partialSummary: task.partialSummary } : {}),
+    } : {}),
+    ...(task.resumedFrom ? { resumedFrom: task.resumedFrom } : {}),
     output: task.output,
     ...(task.error === undefined ? {} : { error: task.error }),
     ...(task.currentTool ? { currentTool: task.currentTool.slice(0, 80) } : {}),
@@ -442,7 +491,7 @@ function taskView(task: TaskRecord): SettledTaskView {
 }
 
 /** Create a stable, JSON-safe view without duplicating nested model usage. */
-export function toRunView(run: RunRecord): RunView {
+export function toRunView(run: RunRecord, links: RunLinks = {}): RunView {
   return {
     observedAt: Date.now(),
     runId: run.id,
@@ -460,6 +509,9 @@ export function toRunView(run: RunRecord): RunView {
     totalTokens: run.usage.totalTokens,
     totalCost: run.usage.cost.total,
     tasks: run.tasks.map(taskView),
+    ...(run.resumedFrom ? { resumedFrom: run.resumedFrom } : {}),
+    ...(links.resumedAs ? { resumedAs: links.resumedAs } : {}),
+    ...(links.supersededBy ? { supersededBy: links.supersededBy } : {}),
   };
 }
 
@@ -475,7 +527,8 @@ function terminalCount(run: RunRecord): number {
 /** Pure compact renderer used by progress updates and status tests. */
 export function renderRunProgress(run: RunRecord): string {
   const done = terminalCount(run);
-  return `USAP ${run.id}: ${done}/${run.tasks.length} settled · ${run.state}`;
+  const partial = run.tasks.filter((task) => task.outcome === "partial").length;
+  return `USAP ${run.id}: ${done}/${run.tasks.length} settled · ${run.state}${partial ? ` · ${partial} partial` : ""}`;
 }
 
 function appendBounded(target: string, addition: string, limit: number): { text: string; truncated: boolean } {
@@ -493,9 +546,12 @@ export function renderRunResult(run: RunRecord, limit = MAX_TOOL_CONTENT): strin
   let text = `${renderRunProgress(run)}\nmodel ${run.model} · thinking ${run.thinkingLevel}${run.selection ? ` · ${run.selection.source}${run.selection.profile ? ` · ${run.selection.profile}` : ""}` : ""}`.slice(0, limit);
   let wasTruncated = false;
   for (const task of run.tasks) {
-    const suffix = `${task.toolErrors ? ` · ${task.toolErrors} tool errors` : ""}${task.truncated ? " · worker output truncated" : ""}`;
+    // A budget stop is named explicitly (with its role) so it cannot be mistaken for a finished leaf.
+    const partial = task.outcome ? ` · PARTIAL ${task.partialReason ?? "budget"} (${task.role}; not complete)` : "";
+    const suffix = `${partial}${task.toolErrors ? ` · ${task.toolErrors} tool errors` : ""}${task.truncated ? " · worker output truncated" : ""}`;
     const error = task.error ? `\nerror: ${task.error}` : "";
-    const block = `\n\n[${task.label}] ${task.state}${suffix}${error}\n${task.output || "(no output)"}`;
+    const retained = task.partialSummary ? `\nretained: ${task.partialSummary}` : "";
+    const block = `\n\n[${task.label}] ${task.state}${suffix}${error}${retained}\n${task.output || "(no output)"}`;
     const next = appendBounded(text, block, limit);
     text = next.text;
     if (next.truncated) {
@@ -513,7 +569,9 @@ export function renderRunResult(run: RunRecord, limit = MAX_TOOL_CONTENT): strin
 /** Pure bounded background completion renderer; it never includes child output. */
 export function renderCompletionMessage(run: RunRecord, limit = MAX_COMPLETION_MESSAGE): string {
   if (!Number.isSafeInteger(limit) || limit < 0) throw new RangeError("render limit must be a non-negative integer");
-  const tasks = run.tasks.map((task) => `${task.id}=${task.state}`).join(", ");
+  const tasks = run.tasks.map((task) => task.outcome
+    ? `${task.id}=${task.state}/PARTIAL(${task.partialReason ?? "budget"}, ${task.role} ${JSON.stringify(task.label.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 40))})`
+    : `${task.id}=${task.state}`).join(", ");
   return `${renderRunProgress(run)}\n${tasks}`.slice(0, limit);
 }
 
@@ -545,6 +603,8 @@ function dispatchDetails(run: RunRecord, persistence: Persistence): DispatchDeta
         ownedPaths: task.ownedPaths.length,
         modelRoute: run.model,
         selectionSource: run.selection?.source ?? "unknown",
+        ...(task.outcome ? { outcome: task.outcome } : {}),
+        ...(task.resumedFrom ? { resumedFrom: task.resumedFrom } : {}),
       })),
     },
   };
@@ -646,9 +706,28 @@ export function createUltratermSubagentsExtension(
       }
     };
 
+    /** A run as this session can read it: live first, else recovered from its checkpoint. */
+    const readRun = (current: SessionRuntime, runId: string): RunRecord | undefined => {
+      const live = current.coordinator.snapshot(runId);
+      if (live) return live;
+      const saved = current.store?.get(runId);
+      return saved ? recoveredRun(saved) : undefined;
+    };
+
+    /** Resume lineage lives in the checkpoint store. Only a settled run can have
+     * been resumed, so live progress events never pay for the lookup. */
+    const linksFor = (current: SessionRuntime, run: RunRecord): RunLinks => {
+      if (run.state === "running") return {};
+      const resumedAs = current.store?.get(run.id)?.resumedAs;
+      if (!resumedAs) return {};
+      const successor = readRun(current, resumedAs);
+      const replaced = successor?.state === "done" && successor.tasks.every((task) => task.state === "done");
+      return { resumedAs, ...(replaced ? { supersededBy: resumedAs } : {}) };
+    };
+
     const persistTelemetry = (current: SessionRuntime, run: RunRecord): void => {
       if (runtime !== current || !current.telemetryWritable || !ownsContext(current, current.statusContext)) return;
-      const snapshot = usapTelemetrySnapshot(run);
+      const snapshot = usapTelemetrySnapshot(run, linksFor(current, run));
       const signature = JSON.stringify(snapshot);
       if (current.telemetrySignatures.get(run.id) === signature) return;
       try {
@@ -957,6 +1036,11 @@ export function createUltratermSubagentsExtension(
         const binding = current.bindings.get(runId);
         current.workerRuntimes.delete(runId);
         persistTelemetry(current, run);
+        // A successful resume explicitly supersedes the partial attempt it continued.
+        if (run.resumedFrom) {
+          const predecessor = readRun(current, run.resumedFrom);
+          if (predecessor) persistTelemetry(current, predecessor);
+        }
         setStatus(current);
         reconcileRetainedBindings(current);
         if (!binding) return;
@@ -1038,7 +1122,7 @@ export function createUltratermSubagentsExtension(
               runs: batch.flatMap((item) => {
                 const saved = current.store?.get(item.runId);
                 const run = current.coordinator.snapshot(item.runId) ?? (saved ? recoveredRun(saved) : undefined);
-                return run ? [{ ...toRunView(run), goal: "", tasks: run.tasks.map((task) => ({ ...taskView(task), output: "", ...(task.error ? { error: taskDetail(task) } : {}) })) }] : [];
+                return run ? [{ ...toRunView(run, linksFor(current, run)), goal: "", tasks: run.tasks.map((task) => ({ ...taskView(task), output: "", ...(task.error ? { error: taskDetail(task) } : {}) })) }] : [];
               }),
             },
           }, { deliverAs: "steer", triggerTurn: false });
@@ -1320,7 +1404,7 @@ export function createUltratermSubagentsExtension(
                 ? `No USAP runs in this session.${warning ? `\n${warning}` : ""}`
                 : runs.map((run) => renderRunProgress(run)).join("\n").slice(0, MAX_TOOL_CONTENT),
             }],
-            details: { action: "list" as const, runs: runs.map(toRunView), persistence: persistenceOf(current), readOnly: !current.store && current.checkpointDegraded, checkpointError: current.checkpointError ?? null, shutdownWarning: warning ?? null },
+            details: { action: "list" as const, runs: runs.map((run) => toRunView(run, linksFor(current, run))), persistence: persistenceOf(current), readOnly: !current.store && current.checkpointDegraded, checkpointError: current.checkpointError ?? null, shutdownWarning: warning ?? null },
           };
         }
 
@@ -1365,7 +1449,7 @@ export function createUltratermSubagentsExtension(
 
         if (params.action === "resume") {
           if (snapshot.state === "running") throw new Error("Run is still active; resume would duplicate work");
-          if (checkpoint?.resumedAs) throw new Error(`Already resumed as ${checkpoint.resumedAs}; inspect that run instead`);
+          if (checkpoint?.resumedAs) throw new Error(`Already resumed as ${checkpoint.resumedAs}; a task is resumed at most once, so inspect that run instead`);
           if (checkpoint?.pendingResume) throw new Error("Resume reservation interrupted; reload the host to recover it before retrying");
           // A retained lease or a duplicate in-process owner must refuse loudly
           // rather than continue a run whose session file may still be written.
@@ -1375,6 +1459,13 @@ export function createUltratermSubagentsExtension(
           if (!statSync(snapshot.cwd).isDirectory()) throw new Error("Checkpoint workspace is unavailable");
           const unfinished = snapshot.tasks.filter((task) => task.state !== "done");
           if (!unfinished.length) throw new Error("No unfinished tasks to resume");
+          // Bounded resume: a task continues its checkpointed session at most once.
+          // Every task of a resumed run is itself a resumed attempt, so a second
+          // resume is refused here, before any state changes (the store re-checks).
+          const spent = snapshot.resumedFrom ?? unfinished.find((task) => task.resumedFrom)?.resumedFrom;
+          if (spent) {
+            throw new Error(`Resume refused: ${unfinished.map((task) => JSON.stringify(task.label)).join(", ")} already used the one bounded resume (continuing ${spent}). A task is resumed at most once; inspect its retained partial work and dispatch a new, explicitly scoped task for what remains.`);
+          }
           for (const task of unfinished) {
             if (task.startedAt !== undefined && !task.sessionFile && !task.claudeSessionId) throw new Error(`No native checkpoint for ${task.label}${snapshot.harness === "claude-code" ? " (this Claude CLI task ran before resumable sessions)" : ""}; inspect partial work before a new dispatch`);
             if (task.sessionFile) current.store.validateSession(task.sessionFile);
@@ -1399,13 +1490,26 @@ export function createUltratermSubagentsExtension(
             ? undefined
             : await resolvePiSelection(() => resolveWorkerSelection(ctx.model!, ctx.thinkingLevel, input, ctx.modelRegistry, dependencies.profiles, undefined, automaticChainOptions(dependencies)), ctx.modelRegistry);
           const resumeSelection = resolved ? resolved.selection : resolveClaudeCodeSelection(claudeCodeModelOf(snapshot.model));
-          const run = normalizeDispatch(input, snapshot.cwd, snapshot.model, resolved ? String(resolved.thinkingLevel) : "xhigh", dependencies.now?.() ?? Date.now(), dependencies.idFactory);
-          run.selection = { ...resumeSelection,
-            ...(snapshot.selection?.source === "chain" ? {
-              source: "chain" as const,
-              chainRoutes: snapshot.selection.chainRoutes ? [...snapshot.selection.chainRoutes] : undefined,
-            } : {}),
+          // Same subscription route as the original, or no resume: a changed or
+          // paid route is refused before the one resume is spent.
+          const originalRoute = snapshot.selection ? `${snapshot.selection.provider}/${snapshot.selection.modelId}` : snapshot.model;
+          const refuseRoute = (why: string): never => {
+            throw new Error(`Resume refused: ${why}. A resume continues only on the original subscription route (${originalRoute}, ${snapshot.thinkingLevel}); dispatch a new task to change it.`);
           };
+          const resumedRoute = resolved ? `${resolved.model.provider}/${resolved.model.id}` : `${resumeSelection.provider}/${resumeSelection.modelId}`;
+          if (originalRoute !== snapshot.model || resumedRoute !== snapshot.model) refuseRoute(`the route changed (checkpoint ${originalRoute}, run ${snapshot.model}, now ${resumedRoute})`);
+          if (resolved) {
+            if (String(resolved.thinkingLevel) !== snapshot.thinkingLevel) refuseRoute(`the reasoning level changed (${snapshot.thinkingLevel} → ${String(resolved.thinkingLevel)})`);
+            if (!isSubscriptionOrLocalRoute(resolved.model, ctx.modelRegistry.isUsingOAuth(resolved.model))) refuseRoute(`${resumedRoute} is no longer a subscription route (paid or API-key billing)`);
+          } else if (snapshot.thinkingLevel !== "xhigh") {
+            refuseRoute(`Claude Code runs only at xhigh, not ${snapshot.thinkingLevel}`);
+          }
+          const run = normalizeDispatch(input, snapshot.cwd, snapshot.model, resolved ? String(resolved.thinkingLevel) : "xhigh", dependencies.now?.() ?? Date.now(), dependencies.idFactory);
+          // The resume pins the original route: a recorded automatic chain is not
+          // carried over, so no pre-output hop can move the session to another route.
+          run.selection = { ...resumeSelection };
+          run.resumedFrom = runId;
+          if (run.maxTurns > snapshot.maxTurns || run.timeoutMs > snapshot.timeoutMs) throw new Error("Resume refused: a resume never raises the original turn or time budget");
           run.ownerSessionId = current.ownerSessionId;
           run.ownerSessionFile = current.ownerSessionFile;
           run.tasks.forEach((task, index) => {
@@ -1413,8 +1517,11 @@ export function createUltratermSubagentsExtension(
             task.claudeSessionId = unfinished[index].claudeSessionId;
             task.changedPaths = unfinished[index].changedPaths;
             task.lastStep = unfinished[index].lastStep;
+            task.resumedFrom = unfinished[index].id;
           });
           current.store.prepareResume(runId, run);
+          // The predecessor's latest telemetry record now names its successor.
+          persistTelemetry(current, snapshot);
           if (!claudeResume) {
             current.workerRuntimes.set(run.id, Object.freeze({ model: Object.freeze({ ...resolved!.model }), thinkingLevel: resolved!.thinkingLevel }));
           }
@@ -1426,7 +1533,7 @@ export function createUltratermSubagentsExtension(
             current.bindings.set(run.id, resumed);
             resumed.completion = attachCompletion(current, run.id);
             setStatus(current, ctx);
-            return { content: [{ type: "text" as const, text: `Resumed ${unfinished.length} unfinished tasks as ${run.id}. Completed tasks were not replayed. A fresh explicit budget applies; inspect prior side effects.` }], details: dispatchDetails(started, persistenceOf(current)) };
+            return { content: [{ type: "text" as const, text: `Resumed ${unfinished.length} unfinished tasks as ${run.id} (the one bounded resume; no second resume is possible). Completed tasks were not replayed. The same budget applies again — maxTurns ${run.maxTurns}, timeoutMs ${run.timeoutMs}, never raised — on the same route ${snapshot.model}; inspect prior side effects.` }], details: dispatchDetails(started, persistenceOf(current)) };
           } catch (error) { parent.close(); current.relay.cleanupRun(run.id); current.workerRuntimes.delete(run.id); throw error; }
         }
 
@@ -1434,7 +1541,7 @@ export function createUltratermSubagentsExtension(
           const warning = sessionWarning(current);
           return {
             content: [{ type: "text" as const, text: warning ? `${renderRunResult(snapshot)}\n${warning}` : renderRunResult(snapshot) }],
-            details: { action: "status" as const, run: toRunView(snapshot), persistence: persistenceOf(current), readOnly: !current.store && current.checkpointDegraded, shutdownWarning: warning ?? null },
+            details: { action: "status" as const, run: toRunView(snapshot, linksFor(current, snapshot)), persistence: persistenceOf(current), readOnly: !current.store && current.checkpointDegraded, shutdownWarning: warning ?? null },
           };
         }
 

@@ -3,7 +3,7 @@ import { closeSync, constants, existsSync, fchmodSync, fsyncSync, fstatSync, lst
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { removeClaudeWorkerSession } from "./claude-session.ts";
-import { MAX_ACTIVE_RUNS, MAX_RETAINED_TERMINAL_RUNS, MAX_TASKS, OUTPUT_LIMIT, type RunRecord } from "./types.ts";
+import { MAX_ACTIVE_RUNS, MAX_RETAINED_TERMINAL_RUNS, MAX_TASKS, OUTPUT_LIMIT, TURN_BUDGET_ERROR, type RunRecord } from "./types.ts";
 
 const MAX_BYTES = 2_000_000;
 const ID = /^run-[a-zA-Z0-9-]{1,120}$/;
@@ -253,6 +253,14 @@ export class CheckpointStore {
   prepareResume(id: string, successor: RunRecord): void {
     const checkpoint = this.cache.get(id);
     if (!checkpoint || checkpoint.resumedAs || checkpoint.pendingResume) throw new Error("Checkpoint is already resumed or reserved");
+    // The single choke point for the bounded-resume contract: a successor may
+    // continue one predecessor, only once, and never with a larger or different
+    // budget or route. Callers cannot widen it by building a different record.
+    const original = checkpoint.run;
+    if (original.resumedFrom) throw new Error(`Resume refused: ${id} is already a resumed attempt of ${original.resumedFrom}; a task is resumed at most once`);
+    if (successor.resumedFrom !== id) throw new Error("Resume refused: the successor does not record the run it resumes");
+    if (successor.maxTurns > original.maxTurns || successor.timeoutMs > original.timeoutMs) throw new Error("Resume refused: a resume never raises the original turn or time budget");
+    if (successor.model !== original.model || successor.thinkingLevel !== original.thinkingLevel || (successor.harness ?? "pi") !== (original.harness ?? "pi")) throw new Error("Resume refused: a resume stays on the original route");
     checkpoint.pendingResume = successor.id;
     this.atomic(id, checkpoint);
     this.save(successor, true);
@@ -360,7 +368,7 @@ export function diagnoseRun(run: RunRecord, now = Date.now()) {
     tasks: run.tasks.map((task) => {
       const error = task.error ?? "";
       const reason = /Host interrupted|Coordinator shut down/i.test(error) ? "host_interrupted"
-        : /turn.limit|turn budget/i.test(error) ? "turn_budget"
+        : TURN_BUDGET_ERROR.test(error) ? "turn_budget"
         : task.state === "timed_out" ? "deadline"
         : task.state === "aborted" ? "cancelled"
         : /Cannot find package|ERR_MODULE_NOT_FOUND|worker dependencies/i.test(error) ? "initialization_dependency"
@@ -373,7 +381,10 @@ export function diagnoseRun(run: RunRecord, now = Date.now()) {
         : /auth|401|403|credential/i.test(error) ? "provider_auth"
         : task.toolErrors && !task.toolSuccesses ? "tool_failures"
         : task.state === "failed" ? "worker_failure" : task.state;
-      return { taskId: task.id, state: task.state, reason, turns: task.turns,
+      return { taskId: task.id, label: task.label, role: task.role, state: task.state,
+        ...(task.outcome ? { outcome: task.outcome, partialReason: task.partialReason ?? null, partialSummary: task.partialSummary ?? null } : {}),
+        ...(task.resumedFrom ? { resumedFrom: task.resumedFrom } : {}),
+        reason, turns: task.turns,
         toolSuccesses: task.toolSuccesses ?? 0, toolErrors: task.toolErrors ?? 0,
         retryAttempt: task.retryAttempt ?? 0, retryDelayMs: task.retryDelayMs ?? 0, compactions: task.compactions ?? 0,
         lastProgressAgeMs: task.lastProgressAt === undefined ? null : Math.max(0, now - task.lastProgressAt),

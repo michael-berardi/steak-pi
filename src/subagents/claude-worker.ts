@@ -36,6 +36,7 @@ import { OUTPUT_LIMIT, addUsage, emptyUsage, harnessOf, sanitizeUsage, type RunR
 import { CLAUDE_CODE_EFFORT, CLAUDE_CODE_MODEL, CLAUDE_CODE_ROUTE, claudeCodeModelName, claudeCodeModelOf, type ClaudeCodeModel } from "./model-selection.ts";
 import { truncatePiWorkerOutput } from "./pi-worker.ts";
 import { workerJournal } from "./coordinator.ts";
+import { turnBudgetPromptLine } from "./turn-budget.ts";
 
 /** Audit route recorded on the run and asserted by focused tests. */
 export { CLAUDE_CODE_ROUTE, CLAUDE_CODE_MODEL };
@@ -178,13 +179,14 @@ export interface ClaudeWorkerSession { id: string; resume: boolean }
 
 /** Continuation for a resumed Claude worker: the original leaf prompt is in
  * the resumed history and is never replayed. */
-export function buildClaudeWorkerContinuationPrompt(task: TaskRecord): string {
+export function buildClaudeWorkerContinuationPrompt(task: TaskRecord, maxTurns?: number): string {
   return [
     `Continue the exact assigned leaf "${task.label}" (task ${task.id}). Your previous run was cut off by a transient fault; this session was resumed from its history.`,
     "Treat earlier tool results as historical evidence only and never assume an interrupted edit, write, or command completed: re-check the current state of anything you depend on.",
     "Your permissions are exactly those of the original assignment above; resuming neither widens nor narrows them.",
     ...(task.ownedPaths.length > 0 ? ["Owned paths:", ...task.ownedPaths.map((value) => `- ${value}`)] : []),
     "Finish the remaining work only, then return the required concise final report.",
+    ...(maxTurns === undefined ? [] : [turnBudgetPromptLine(maxTurns)]),
   ].join("\n");
 }
 
@@ -202,6 +204,7 @@ export function buildClaudeWorkerPrompt(run: RunRecord, task: TaskRecord): strin
     "Do not run project-wide builds, linters, or test suites. Run only the focused checks needed for this leaf.",
     "You have no commit, push, or deploy permission; this prompt grants none. Before this leaf's work is committed, pushed, or deployed it needs exactly one bounded expert review, requested through the parent. If that review is unavailable, say so plainly in your final report and never claim, imply, or fabricate expert approval.",
     "Stop promptly with a concise report; long-horizon work must be split by the parent, not extended here.",
+    turnBudgetPromptLine(Math.max(1, Math.min(run.maxTurns, 2048))),
     "",
     "## Shared run contract",
     `Run ID: ${run.id}`,
@@ -701,7 +704,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
       if (signal.aborted) onAbort();
       else signal.addEventListener("abort", onAbort, { once: true });
       if (!signal.aborted) {
-        child.writeStdin(resuming ? buildClaudeWorkerContinuationPrompt(task) : buildClaudeWorkerPrompt(run, task));
+        child.writeStdin(resuming ? buildClaudeWorkerContinuationPrompt(task, maxTurns) : buildClaudeWorkerPrompt(run, task));
       }
       child.endStdin();
       await Promise.race([exitPromise, stopPromise]);

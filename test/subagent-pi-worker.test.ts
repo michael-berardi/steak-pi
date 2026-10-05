@@ -29,6 +29,7 @@ import {
   DEFAULT_TEXT_WORKER_CHAIN,
 } from "../src/model-route-policy.ts";
 import { RelayBroker } from "../src/subagents/relay.ts";
+import { TURN_BUDGET_NOTICE_REMAINING, turnBudgetNotice } from "../src/subagents/turn-budget.ts";
 import {
   DEFAULT_MAX_TURNS,
   MAX_MAX_TURNS,
@@ -536,7 +537,7 @@ describe("native in-process Pi worker runner", () => {
     expect(fake.abortCalls).toBe(0);
   });
 
-  it("enforces the run turn budget and steers at the report threshold", async () => {
+  it("enforces the run turn budget and gives one findings-and-remaining-work notice when two requests remain", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "steak-pi-turns-"));
     const recordTask = task();
     const relay = setupBroker();
@@ -563,11 +564,17 @@ describe("native in-process Pi worker runner", () => {
     // The fake provider emits two late billed messages after abort; retain
     // their accounting even though execution turns stay frozen at the limit.
     expect(result.usage.input).toBe(budget + 2);
-    expect(budget - piWorkerTurnWarningAt(budget)).toBe(3);
+    expect(budget - piWorkerTurnWarningAt(budget)).toBe(TURN_BUDGET_NOTICE_REMAINING);
+    expect(TURN_BUDGET_NOTICE_REMAINING).toBe(2);
+    // Turns 5 and 6 are still tool turns past the threshold: the notice is never repeated.
     expect(fake.steers).toEqual([
-      `Only 3 assistant turns remain. Stop gathering new evidence and return the required concise report now.`,
+      turnBudgetNotice(2),
       "Execution budget ended. Stop tool use and flush your partial report, changed paths and remaining work.",
     ]);
+    expect(fake.steers.filter((text) => text.startsWith("Turn budget notice")).length).toBe(1);
+    expect(fake.steers[0]).toMatch(/only 2 assistant requests remain/);
+    expect(fake.steers[0]).toMatch(/findings so far/);
+    expect(fake.steers[0]).toMatch(/remaining-work list/);
     expect(fake.abortCalls).toBe(1);
   });
 
@@ -580,12 +587,35 @@ describe("native in-process Pi worker runner", () => {
     expect(workerTurnBudget({ maxTurns: 5000 })).toBe(MAX_MAX_TURNS);
     expect(workerTurnBudget({ maxTurns: 0 })).toBe(DEFAULT_MAX_TURNS);
     expect(workerTurnBudget(undefined)).toBe(DEFAULT_MAX_TURNS);
-    expect(piWorkerTurnWarningAt(64)).toBe(61);
+    expect(piWorkerTurnWarningAt(64)).toBe(62);
     expect(piWorkerTurnWarningAt(1)).toBe(1);
     expect(compactionOrRetryPhase("compaction_end")).toBe("compaction");
     expect(compactionOrRetryPhase("retry_start")).toBe("retry");
     expect(compactionOrRetryPhase("message_end")).toBeUndefined();
     expect(compactionOrRetryPhase(7)).toBeUndefined();
+  });
+
+  it("sends no budget notice when no request is left to act on it or the child is already answering", async () => {
+    for (const [budget, stopReason] of [[1, "toolUse"], [6, "stop"]] as const) {
+      const cwd = await mkdtemp(join(tmpdir(), "steak-pi-notice-"));
+      const recordTask = task();
+      const fake = new FakeSession();
+      fake.onPrompt = async (session) => {
+        for (let index = 0; index < Math.min(budget, 5); index += 1) {
+          const message = assistant(`turn ${index}`, stopReason);
+          session.emit({ type: "turn_start" } as AgentSessionEvent);
+          session.emit({ type: "message_end", message } as AgentSessionEvent);
+          session.emit({ type: "turn_end", message, toolResults: [] } as AgentSessionEvent);
+        }
+      };
+      const runner = createPiWorkerRunner({
+        relay: setupBroker(),
+        resolveRuntime: () => ({ model: fakeModel, thinkingLevel: "off" }),
+        sessionFactory: async () => ({ session: fake }),
+      });
+      await runner({ run: run(cwd, recordTask, budget), task: recordTask, signal: new AbortController().signal, onProgress: vi.fn() });
+      expect(fake.steers.filter((text) => text.startsWith("Turn budget notice"))).toEqual([]);
+    }
   });
 
   it("reports compaction phases and journals the last step for the final report", async () => {

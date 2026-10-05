@@ -146,6 +146,33 @@ describe("durable USAP checkpoints", () => {
     expect(JSON.stringify(diagnostics)).not.toContain("PRIVATE");
   });
 
+  it("enforces the bounded-resume contract at the reservation: once, same budget, same route", () => {
+    const { store, run } = setup(); store.save(run, true);
+    const successor = (overrides: Partial<typeof run> = {}) => ({ ...structuredClone(run), id: "run-successor", resumedFrom: run.id, ...overrides });
+    // Each refusal happens before any reservation is written, so none burns the one resume.
+    expect(() => store.prepareResume(run.id, successor({ resumedFrom: undefined }))).toThrow(/does not record the run it resumes/);
+    expect(() => store.prepareResume(run.id, successor({ maxTurns: run.maxTurns + 1 }))).toThrow(/never raises the original turn or time budget/);
+    expect(() => store.prepareResume(run.id, successor({ timeoutMs: run.timeoutMs + 1 }))).toThrow(/never raises/);
+    expect(() => store.prepareResume(run.id, successor({ model: "xiaomi/mimo-v2.6-pro" }))).toThrow(/original route/);
+    expect(() => store.prepareResume(run.id, successor({ thinkingLevel: "xhigh" }))).toThrow(/original route/);
+    expect(() => store.prepareResume(run.id, successor({ harness: "claude-code" }))).toThrow(/original route/);
+    expect(store.get(run.id)).toMatchObject({ resumedAs: undefined, pendingResume: undefined });
+    store.prepareResume(run.id, successor({ maxTurns: run.maxTurns - 1 }));
+    expect(store.get(run.id)!.resumedAs).toBe("run-successor");
+    expect(store.get("run-successor")!.run.resumedFrom).toBe(run.id);
+    // A second resume of the same run, and a resume of the resumed attempt, are both refused.
+    expect(() => store.prepareResume(run.id, successor({ id: "run-again" }))).toThrow(/already resumed or reserved/);
+    expect(() => store.prepareResume("run-successor", { ...successor({ id: "run-third" }), resumedFrom: "run-successor" })).toThrow(/already a resumed attempt of .* at most once/);
+  });
+
+  it("reports role, label and the explicit partial outcome in diagnostics without worker content", () => {
+    const { run } = setup();
+    Object.assign(run.tasks[0], { role: "reviewer", state: "failed", error: "Child exceeded the 12-turn limit", outcome: "partial", partialReason: "turn_budget", partialSummary: "Turn budget reached after 12/12 turns", resumedFrom: "run-before-task-1", output: "private output" });
+    const [task] = diagnoseRun(run).tasks;
+    expect(task).toMatchObject({ label: "one", role: "reviewer", state: "failed", reason: "turn_budget", outcome: "partial", partialReason: "turn_budget", resumedFrom: "run-before-task-1" });
+    expect(JSON.stringify(task)).not.toContain("private");
+  });
+
   it("recovers a write-ahead resume reservation without replaying either run", () => {
     const { root, store, run } = setup(); store.save(run, true);
     const successor = structuredClone(run); successor.id = "run-successor";

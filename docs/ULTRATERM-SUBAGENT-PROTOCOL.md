@@ -237,6 +237,29 @@ A run is `running` while work remains. It becomes:
 
 Partial task evidence remains visible when a run fails or is aborted.
 
+**Partial outcome.** A task that stops on its turn budget or its time budget
+keeps its terminal state (`failed` for turns, `timed_out` for time) and also
+carries the explicit marker `outcome: "partial"`, a `partialReason`
+(`turn_budget` or `time_budget`) and a bounded, content-free `partialSummary`
+(turns used of the budget, changed-path count, last step, whether a written report
+was retained). Only a task that actually started can be partial; a queued task the
+deadline reached first is not. A partial is retained evidence, never a completed
+leaf: a parent must not report a required review or leaf as done while it is
+partial. Run results, the background completion receipt (`task=failed/PARTIAL(reason,
+role "label")` plus a `· N partial` run count), `diagnose` and the
+`ultraterm-usap-telemetry` record all carry `role` and `label` with the outcome, so a
+reader can tell a required reviewer from any other leaf. Telemetry stays at version 1
+(additive fields): `role`, `outcome`, `partialReason`, `partialSummary`, `resumedFrom`,
+`supersedes` (per task) and `resumedFrom`, `resumedAs`, `supersededBy` (per run).
+
+**Budget notice.** Before a child exhausts `maxTurns` it is told once. A Pi child
+gets a steering message when two requests remain (only if it is still using tools
+and a request is left to act on it) asking it to stop gathering evidence and write
+its findings so far plus a precise remaining-work list as its final answer, so the
+retained partial is useful. A headless Claude child cannot be interrupted mid-run
+(its stdin closes after the prompt), so its request budget and the same instruction
+are part of the up-front prompt instead.
+
 `ultraterm_hub` provides these canonical management and relay operations:
 
 - **`list`** — list retained runs without polling an individual run;
@@ -254,7 +277,16 @@ Partial task evidence remains visible when a run fails or is aborted.
   progress age, checkpoint availability, truncation and persistence warnings,
   without worker transcripts; and
 - **`resume`** — explicitly create a new background run for unfinished tasks
-  from a healthy checkpoint; completed tasks are not replayed.
+  from a healthy checkpoint; completed tasks are not replayed. A resume is
+  bounded: a task continues its checkpointed session at most once, with the same
+  `maxTurns` and `timeoutMs` (never larger), on the same subscription route and
+  reasoning level (a changed, paid or API-key route is refused before the resume
+  is spent), pinned to that route (a recorded automatic chain is not carried over,
+  so no fallback hop). The successor records `resumedFrom`, the predecessor
+  `resumedAs`; when the successor finishes every unfinished task the predecessor's
+  telemetry also records `supersededBy`, and the successor's done task records
+  `supersedes`. A second resume of the same run, or of a resumed attempt that
+  stopped again, is refused with a message naming the task.
 
 A hub wait timeout ends observation only: workers continue until their actual
 deadline or cancellation. Background completion is passively displayed at the
@@ -322,7 +354,7 @@ The Steak Pi implementation profile uses these ceilings:
 | Tasks accepted in one run | 8 hard maximum; excess tasks remain a parent planning problem |
 | Run wall clock | finite; default 10 minutes, accepted range 1 second–8 hours (`timeoutMs`) |
 | Retained terminal runs | 50 per coordinator session; oldest terminal records are evicted while live runs remain |
-| Child turns | `maxTurns`: default 64, accepted range 1–2,048 assistant turns per task, including relay follow-ups |
+| Child turns | `maxTurns`: default 64, accepted range 1–2,048 assistant turns per task, including relay follow-ups; a child is told once when two remain; a resume reuses the same value, never a larger one |
 | Final output retained per child | 20,000 characters, with explicit truncation metadata |
 | Relay body | 4,000 characters per envelope |
 | Recipient mailbox | 100 retained envelopes |
@@ -423,10 +455,14 @@ public artifacts, project memory, or a cross-session relay queue.
   host-interruption reason; completed tasks retain their terminal evidence.
 - Use hub `status` and metadata-only `diagnose` before explicit `resume`.
   Persistence errors mean recovery is not guaranteed.
-- Resume creates a new run for tasks not marked `done`, with fresh explicit
-  time/turn budgets and revalidated original model/reasoning selection. Started
-  tasks need valid native history; missing/unsafe checkpoints fail closed rather
-  than silently replaying their original prompt. Never-started tasks may start.
+- Resume creates a new run for tasks not marked `done`, once per task, with the
+  same time/turn budgets (the budget applies again; it is never raised) and
+  revalidated original model/reasoning selection on the same subscription route.
+  Started tasks need valid native history; missing/unsafe checkpoints fail closed
+  rather than silently replaying their original prompt. Never-started tasks may
+  start. Because every task of a resumed run is itself a resumed attempt, a host
+  interruption of a resumed run cannot be resumed again either: re-dispatch the
+  remaining work instead.
 - The original run remains terminal. Relay mailboxes are ephemeral and are not
   restored as durable conversations. Completion receipts are checkpointed, but
   this is not a crash-proof exactly-once delivery guarantee.

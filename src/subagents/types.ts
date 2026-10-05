@@ -42,6 +42,24 @@ export type TaskState =
   | "timed_out";
 export type RunState = "running" | "done" | "failed" | "aborted";
 
+/** A budget stop that leaves usable but unfinished work. The task keeps its
+ * terminal state (`failed` for turns, `timed_out` for time); `outcome: "partial"`
+ * is the explicit marker, so a partial can never be read as a completed leaf. */
+export type TaskOutcome = "partial";
+export type PartialReason = "turn_budget" | "time_budget";
+/** Upper bound for the retained-work summary carried in receipts and telemetry. */
+export const PARTIAL_SUMMARY_LIMIT = 400;
+
+/** The one pattern for "this error is a turn-budget stop" (Pi and Claude workers). */
+export const TURN_BUDGET_ERROR = /turn.limit|turn budget/i;
+
+/** Classify a settled task. Only a task that actually started can retain work. */
+export function partialReasonOf(state: TaskState, error: string | undefined, started: boolean): PartialReason | undefined {
+  if (state === "timed_out") return started ? "time_budget" : undefined;
+  if (state === "failed" && TURN_BUDGET_ERROR.test(error ?? "")) return "turn_budget";
+  return undefined;
+}
+
 export interface UsageTotals {
   input: number;
   output: number;
@@ -159,6 +177,13 @@ export interface TaskRecord extends NormalizedTask {
   routeFallbacks?: string[];
   /** Epoch ms of the last accepted progress update; drives staleness diagnosis. */
   lastProgressAt?: number;
+  /** Set only for a turn- or time-budget stop; absent for every other settlement. */
+  outcome?: TaskOutcome;
+  partialReason?: PartialReason;
+  /** Bounded, content-free description of the retained work (counts and last step). */
+  partialSummary?: string;
+  /** Predecessor task this attempt continues; set only by an explicit bounded resume. */
+  resumedFrom?: string;
 }
 
 export interface RunRecord {
@@ -186,6 +211,8 @@ export interface RunRecord {
   endedAt?: number;
   tasks: TaskRecord[];
   usage: UsageTotals;
+  /** Predecessor run this run continues; set only by an explicit bounded resume. */
+  resumedFrom?: string;
 }
 
 export interface WorkerProgress {

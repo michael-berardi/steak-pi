@@ -6,9 +6,13 @@ import {
   MAX_TIMEOUT_MS,
   MAX_WORKER_TURNS,
   MIN_TIMEOUT_MS,
+  PARTIAL_SUMMARY_LIMIT,
+  TURN_BUDGET_ERROR,
   addUsage,
   emptyUsage,
+  partialReasonOf,
   sanitizeUsage,
+  type PartialReason,
   type RunRecord,
   type TaskRecord,
   type TaskState,
@@ -160,7 +164,7 @@ export function workerJournal(task: TaskRecord): WorkerJournal {
 
 export function finalWorkerReport(task: TaskRecord, state: WorkerResult["state"], output: string, error?: string): string {
   const journal = workerJournal(task);
-  const exhausted = error?.includes("turn limit") === true || error?.includes("-turn limit") === true;
+  const exhausted = TURN_BUDGET_ERROR.test(error ?? "");
   const status = state === "done" ? "done" : state === "aborted" || state === "timed_out" || exhausted ? "incomplete" : "failed";
   const reason = exhausted ? "turn budget exhausted" : error ?? (state === "done" ? "completed" : state);
   return [
@@ -170,6 +174,26 @@ export function finalWorkerReport(task: TaskRecord, state: WorkerResult["state"]
     `Progress: last step: ${journal.lastStep}`,
     ...(output.trim() && output.trim() !== "(no output)" ? ["", output] : []),
   ].join("\n");
+}
+
+/** Body of a settled report: what the child itself wrote, without the host header. */
+function reportBody(output: string): string {
+  const split = output.startsWith("FINAL REPORT\n") ? output.indexOf("\n\n") : -2;
+  const trimmed = (split === -2 ? output : split < 0 ? "" : output.slice(split + 2)).trim();
+  return trimmed === "(no output)" ? "" : trimmed;
+}
+
+/** Content-free (counts and last step only) so receipts and telemetry stay bounded and private. */
+function partialSummary(task: TaskRecord, reason: PartialReason, maxTurns: number, reportChars: number): string {
+  const journal = workerJournal(task);
+  const step = journal.lastStep.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 80);
+  return [
+    `${reason === "turn_budget" ? "Turn" : "Time"} budget reached after ${task.turns}/${maxTurns} turns`,
+    `${journal.changedPaths.size} changed path${journal.changedPaths.size === 1 ? "" : "s"}`,
+    `last step: ${step}`,
+    reportChars > 0 ? `partial report retained (${reportChars} chars)` : "no written report",
+    task.resumedFrom ? "unfinished: its one resume is used; re-dispatch the remaining work" : "unfinished: resume once or re-dispatch the remaining work",
+  ].join("; ").slice(0, PARTIAL_SUMMARY_LIMIT);
 }
 
 function safeTurns(value: unknown, fallback = 0): number {
@@ -628,6 +652,13 @@ export class SubagentCoordinator {
     else delete task.error;
     delete task.currentTool;
     task.endedAt = this.now();
+    // A budget stop is explicit partial work: never a completed leaf, never a bare failure.
+    const partialReason = partialReasonOf(state, task.error, task.startedAt !== undefined);
+    if (partialReason) {
+      task.outcome = "partial";
+      task.partialReason = partialReason;
+      task.partialSummary = partialSummary(task, partialReason, runtime.record.maxTurns, reportBody(task.output).length);
+    }
 
     const taskRuntime = runtime.tasks.get(task.id)!;
     if (!taskRuntime.accounted) {
