@@ -12,7 +12,7 @@ type Model = Parameters<typeof resolveWorkerSelection>[0];
 const astra = { id: "gpt-6-astra", name: "GPT-6 Astra", provider: "openai-codex", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text", "image"] } as Model;
 const sol = { ...astra, id: SOL_MODEL_ID, name: "GPT-6.1 Sol" };
 const retired = { ...astra, id: "gpt-6-sol", name: "GPT-6 Sol" };
-const aliases = ["gpt-6-sol", "openai-codex/gpt-6-sol", "steak-pi/gpt-6-sol", "gpt-6-sol-pro", "gpt-6-sol-900k", "gpt-6-sol-2026-09-01"];
+const aliases = ["gpt-6-sol", "openai-codex/gpt-6-sol", "steak-pi/gpt-6-sol", "gpt-6-sol-pro", "gpt-6-sol-900k", "gpt-6-sol-2026-09-01", "gpt-6.0-sol", "gpt-6-0-sol", "gpt-6.0-sol-900k", "GPT 6 Sol", "GPT-6.0 Sol", "GPT6 Sol"];
 function registry(models = [astra, sol, retired]) {
   return {
     find: vi.fn((provider: string, id: string) => models.find(m => m.provider === provider && m.id === id)),
