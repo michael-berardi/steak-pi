@@ -647,6 +647,34 @@ describe("automatic resume after transient worker failures", () => {
     await coordinator.shutdown();
   });
 
+  it("resumes a reply Codex ended at its limit once, from its own session, and stops if the smaller step is cut too", async () => {
+    vi.useFakeTimers();
+    const limit = "Codex reply limit: Codex ended this reply after 15 minutes of thinking, its longest allowed reply. The same request was not sent again because it would end the same way. Model and reasoning level are unchanged (gpt-6.1-sol, high). Continue in smaller steps: one check or one edit per reply.";
+    for (const [name, outcomes, expectedCalls, expectedState] of [
+      ["recovers", [limit, null], 2, "done"],
+      ["stops", [limit, limit, null], 2, "failed"],
+    ] as const) {
+      let calls = 0;
+      const sessions: Array<string | undefined> = [];
+      const coordinator = new Coordinator(async ({ task: recordTask, onProgress }) => {
+        sessions.push(recordTask.sessionFile);
+        const outcome = outcomes[calls];
+        calls += 1;
+        onProgress({ sessionFile: "/tmp/codex-worker.jsonl" });
+        return outcome ? failing(outcome, 1) : result("done", 1, "finished in small steps");
+      }, { scheduler: new Scheduler(1) });
+      coordinator.start(run(`codex-${name}`, 1, 1, 60 * 60_000)); await flush();
+      await vi.advanceTimersByTimeAsync(60_000);
+      const settled = await coordinator.wait(`codex-${name}`, "all");
+      expect(calls, name).toBe(expectedCalls);
+      expect(sessions[1], name).toBe("/tmp/codex-worker.jsonl"); // the same session, never a fresh replay
+      expect(settled.tasks[0].state, name).toBe(expectedState);
+      expect(settled.tasks[0].autoResumes, name).toEqual([`codex reply limit: ${limit.slice(0, 200)}`]);
+      if (expectedState === "failed") expect(settled.tasks[0].error).toMatch(/^Codex reply limit:/);
+      await coordinator.shutdown();
+    }
+  });
+
   it("stops after two resumes and reports the last error", async () => {
     vi.useFakeTimers();
     let calls = 0;

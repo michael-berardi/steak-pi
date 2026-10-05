@@ -98,6 +98,9 @@ parent
 - **Recovery:** a worker cut off by a network drop, a provider stream cut or
   stall, an overload or a rate limit resumes its own session automatically (at
   most twice, within the run deadline), so finished steps are not redone.
+  A reply that Codex ends at its 15-minute limit is not resent unchanged (it
+  would end the same way): Steak Pi names the failure, keeps the model and
+  reasoning level, and continues once in smaller steps.
 
 **Models.** Routine workers use MiMo V2.6 Flash on the Xiaomi Token Plan, and
 automatic reviewers use MiMo V2.6 Pro. Text runs fall back only to GPT-6.1 Sol
