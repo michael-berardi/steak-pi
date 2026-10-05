@@ -3,6 +3,7 @@ import { openSync, readSync, closeSync, realpathSync, statSync, readFileSync, mk
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, resolve, relative, join } from "node:path";
 import { getPrimaryHostIdentity } from "../src/primary-host.ts";
+import { assertActiveModelIdentity, assertActiveModelSelector, isRetiredSolSelector, RetiredModelSelectionError } from "../src/retired-model-selection.ts";
 import { createUiStream } from "../src/ui-stream.ts";
 
 const LIMIT = 1024 * 1024;
@@ -28,6 +29,7 @@ export function decodeRequest(encoded: string): Request {
   if (r.action === "resume") {
     if (!clean(r.path) || !isAbsolute(r.path) || resolve(r.path) !== r.path || !r.path.endsWith(".jsonl")) fail("Invalid session path");
   } else if ((r.action === "message" && (typeof r.text !== "string" || !r.text.trim())) || !object(r.model) || Object.keys(r.model).sort().join() !== "id,provider" || !clean(r.model.provider) || !clean(r.model.id) || !levels.includes(r.thinking)) fail("Invalid model/message request");
+  if (r.action !== "resume") assertActiveModelIdentity(r.model);
   return r as Request;
 }
 
@@ -41,6 +43,22 @@ export function readProfiles(directory = join(homedir(), ".config/ultraterm/harn
     const config = JSON.parse(raw.toString("utf8"));
     if (config.schemaVersion !== 1 || !Array.isArray(config.profiles)) fail("Unsupported profile schema");
     for (const p of config.profiles) {
+      if (object(p)) {
+        assertActiveModelSelector(p.id);
+        assertActiveModelSelector(p.name);
+        if (Array.isArray(p.args)) {
+          for (const [index, arg] of p.args.entries()) {
+            if (arg === "--model") assertActiveModelSelector(p.args[index + 1]);
+            if (typeof arg === "string" && arg.startsWith("--model=")) assertActiveModelSelector(arg.slice("--model=".length));
+          }
+        }
+        for (const defaults of [p.workerDefault, p.reviewerDefault]) {
+          if (object(defaults)) {
+            assertActiveModelSelector(defaults.model);
+            assertActiveModelSelector(defaults.profile);
+          }
+        }
+      }
       // Deliberately refuse tool/system-prompt/extension/launcher overrides: no profile transfer.
       if (!object(p) || !clean(p.id) || !clean(p.name) || !Array.isArray(p.args) || p.args.length !== 4 || p.args[0] !== "--model" || p.args[2] !== "--thinking" || !levels.includes(p.args[3]) || !clean(p.args[1]) || Object.keys(p).some(k => !["id", "name", "description", "args", "workerDefault"].includes(k))) continue;
       const slash = p.args[1].indexOf("/");
@@ -59,8 +77,11 @@ function nativeModels(ctx: ExtensionContext) {
 }
 export function catalogModels(ctx: ExtensionContext, metadata: () => Profile[] = readProfiles): Profile[] {
   let labels: Profile[] = [];
-  try { labels = metadata(); } catch { /* Optional metadata must not hide native choices. */ }
-  return nativeModels(ctx).filter(model => ctx.modelRegistry.hasConfiguredAuth(model)).map(model => {
+  try { labels = metadata(); } catch (error) {
+    if (error instanceof RetiredModelSelectionError) throw error;
+    // Optional malformed metadata must not hide native choices; retirement is authoritative.
+  }
+  return nativeModels(ctx).filter(model => !isRetiredSolSelector(model.id) && !isRetiredSolSelector(model.name) && ctx.modelRegistry.hasConfiguredAuth(model)).map(model => {
     const label = labels.find(p => p.provider === model.provider && p.id === model.id);
     const scoped = ctx.scopedModels.find(s => s.model.provider === model.provider && s.model.id === model.id);
     return { profileId: label?.profileId ?? `${model.provider}/${model.id}`, label: label?.label ?? model.name ?? model.id,
@@ -189,12 +210,14 @@ export function installUi(pi: ExtensionAPI, profiles: () => Profile[] = readProf
           }
           const r = request;
           const model = nativeModels(ctx).find(p => p.provider === r.model.provider && p.id === r.model.id);
+          if (model) assertActiveModelIdentity(model);
           if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) fail("Model unavailable or credentials not configured");
           if (/gpt/i.test(model.id) && (model.provider !== "openai-codex" || model.api !== "openai-codex-responses" || !ctx.modelRegistry.isUsingOAuth(model))) fail("GPT requires paid openai-codex OAuth routing");
           const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
           if (!auth.ok) fail("Model credentials could not be resolved");
           guard();
           if (!nativeModels(ctx).some(p => p.provider === model.provider && p.id === model.id) || !ctx.modelRegistry.hasConfiguredAuth(model)) fail("Model no longer available in native scope");
+          assertActiveModelIdentity(model);
           const previous = ctx.model, effort = pi.getThinkingLevel();
           if (!previous) fail("Cannot safely restore an unknown previous model");
           let attempted = false, delivered = false;

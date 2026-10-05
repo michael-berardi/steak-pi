@@ -7,6 +7,30 @@ OpenAI API-key billing, custom endpoints, and batch GPT variants are rejected;
 there is no provider fallback. This verifies the subscription route, not the
 account's billing status or entitlement, which the service verifies.
 
+## Sol retirement — 2026-10-05
+
+**Sol means GPT-6.1 Sol only:** model `openai-codex/gpt-6.1-sol`, profile
+`steak-pi/gpt-6-1-sol`. The built-in Sol worker and reviewer defaults select
+that same profile; unmapped Sol parent text-work selection retains 6.1.
+Unavailable 6.1 fails closed, never selecting another model. Other model routes
+and their defaults are unchanged; Astra is not retired Sol.
+
+GPT-6.0 Sol selectors (`gpt-6-sol`, `openai-codex/gpt-6-sol`,
+`steak-pi/gpt-6-sol`, shorthand and qualified `gpt-6-sol-*` variants) are
+rejected with **`RetiredModelSelectionError`**. Profile IDs, model arguments,
+worker/reviewer defaults, UI control input, run normalization, and resolved
+child/request identities are checked. A friendly profile or opaque model alias
+cannot bypass rejection when its target or catalog display name identifies
+retired Sol. A retired selector is never rewritten to 6.1.
+
+Restart keeps historical checkpoints inspectable and unchanged. Explicit resume
+rechecks the saved model and profile before reserving or launching a successor;
+a retired selection fails with the same error. Provider guards recheck streaming,
+deferred operations, restored sessions, compaction and controlled child turns.
+Event-hook validation alone is not an execution boundary: the provider guards
+remain authoritative. This package has no automatic Sol provider/text-error
+fallback; the existing non-Sol Go retry policy is unchanged.
+
 ## Explicit paid Inco profile
 
 The user-owned `~/.pi/agent/paid-routes.json` must contain:
@@ -44,8 +68,8 @@ Each run uses one frozen model for all its tasks. Set **either** `model` to an
 exact authenticated `provider/model` or `profile` to a native `harness/profile`
 route. Explicit selection takes precedence over roles and defaults, including
 reviewers. For example, an Astra manager can dispatch
-`profile: "steak-pi/glm-5-3-flash"`; a GLM manager can explicitly choose an
-available paid Codex model. No CLI is launched to resolve a profile.
+`profile: "steak-pi/gpt-6-1-sol"`; a non-Sol manager can explicitly choose an
+available subscription Codex model. No CLI is launched to resolve a profile.
 
 Omitting both selectors uses the matching parent profile's `workerDefault`, or
 `reviewerDefault` for runs containing reviewers. Built-in routine workers use
@@ -116,4 +140,8 @@ registration idempotence/API changes, and Luna/frontier/GLM selection.
 prove zero requests for forbidden extension, models.json, model-level API changes,
 and friendly-alias routes, plus allowed GLM-style dispatch with an intact image URL.
 Each fixture asserts the SDK's actual selected API, not merely its JSON input.
+`test/retired-sol-selection.test.ts`, the native worker-runner tests, and the
+extension checkpoint-resume tests cover named retirement errors at ingestion,
+defaults, resolved aliases, all provider request entries, child creation, and
+restart/resume, plus 6.1 Sol routing and non-Sol preservation.
 Allowed live probes remain a separate release check. Production failures must never trigger OpenRouter GPT fallback.

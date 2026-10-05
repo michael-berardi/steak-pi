@@ -93,10 +93,19 @@ is best effort and does not roll back side effects.
 ## Native model/profile selection (USAP 1.2 candidate)
 
 Use one run-level `model: "provider/model"` **or**
-`profile: "steak-pi/glm-5-3-flash"`, never both. All tasks share that route.
-Explicit selection overrides role defaults, including reviewers. An Astra
-manager can explicitly select GLM; GLM can explicitly select authorized GPT.
+`profile: "steak-pi/gpt-6-1-sol"`, never both. All tasks share that route.
+Explicit selection overrides role defaults, including reviewers. A non-Sol
+manager can explicitly select authorized GPT-6.1 Sol.
 Prose saying a model name does not select it.
+
+GPT-6.0 Sol was retired on **2026-10-05**. Sol is only
+`openai-codex/gpt-6.1-sol` / `steak-pi/gpt-6-1-sol`; its built-in worker and
+reviewer defaults retain 6.1. Retired `gpt-6-sol` selectors, qualified profiles,
+and retired aliases are rejected at ingestion and child/request resolution with
+`RetiredModelSelectionError`, including explicit checkpoint resume after
+restart. Never reinterpret a retired selector as 6.1 or convert Astra, Luna,
+Sonnet, Opus, MiMo or DeepSeek to Sol. Preserve checkpoints and ownership;
+inspect and use a supported explicit model-change/handoff, never kill a run.
 
 Without a selector, the matching parent profile's worker/reviewer defaults
 apply. Built-in routine workers use OpenCode Go (DeepSeek V4.1 Flash); Astra
