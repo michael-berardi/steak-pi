@@ -339,7 +339,7 @@ describe("native in-process Pi worker runner", () => {
       if (boundary === "run-model") recordRun.model = "openai-codex/gpt-6-sol";
       if (boundary === "run-profile") recordRun.selection = { provider: "fake", modelId: "model", profile: "steak-pi/gpt-6-sol", source: "override", images: false, tools: true };
       const sessionFactory = vi.fn(async () => ({ session: new FakeSession() }));
-      const model = boundary === "frozen-runtime" ? { ...fakeModel, provider: "openai-codex", id: "gpt-6-sol", name: "GPT-6 Sol" } : fakeModel;
+      const model = boundary === "frozen-runtime" ? ({ provider: "openai-codex", id: "gpt-6-sol", name: "GPT-6 Sol" } as never) : fakeModel;
       const runner = createPiWorkerRunner({ relay: setupBroker(), resolveRuntime: () => ({ model, thinkingLevel: "off" }), sessionFactory });
       const result = await runner({ run: recordRun, task: recordTask, signal: new AbortController().signal, onProgress: vi.fn() });
       expect(result.state).toBe("failed");

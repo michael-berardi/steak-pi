@@ -102,6 +102,15 @@ describe('Pi UI machine control', () => {
     expect(h.messages).toEqual([]); expect(h.model()).toBe(h.prior);
     expect(h.entries.at(-1).data.ok).toBe(false);
   });
+  it('refuses a retired Sol model named only by its catalog display name at execution, without switching', async () => {
+    const h = harness(); const { text, ...control } = request({ action: 'model' });
+    const alias = { provider: 'openai-codex', id: 'opaque-alias', name: 'GPT-6 Sol', api: 'openai-codex-responses' };
+    h.context.modelRegistry.getAvailable = () => [alias];
+    control.model = { provider: alias.provider, id: alias.id };
+    await h.run(control as any);
+    expect(h.pi.setModel).not.toHaveBeenCalled(); expect(h.messages).toEqual([]); expect(h.model()).toBe(h.prior);
+    expect(h.entries.at(-1).data.ok).toBe(false);
+  });
   it('keeps optional broken profile metadata from hiding authenticated native choices', () => {
     const h = harness();
     expect(catalogModels(h.context, () => { throw new Error('bad metadata'); })).toEqual([expect.objectContaining({ provider: 'zai' })]);
