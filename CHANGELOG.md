@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.10 (2026-10-06)
+
+- Claude Code review failures now distinguish subscription limits, login errors
+  and connection failures from a different-model response. Quota reset timing is
+  preserved without exposing arbitrary diagnostic text. Synthetic CLI messages
+  never count as a model response or review approval; the pinned route remains
+  mandatory and no fallback is introduced.
+- Startup model metadata alone no longer proves that a review actually ran.
+
 ## 0.9.9 (2026-10-05)
 
 - GPT-6.0 Sol is retired, and Sol now means GPT-6.1 Sol only. Choosing the old

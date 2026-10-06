@@ -210,6 +210,83 @@ describe("claude-code worker CLI surface", () => {
   });
 });
 
+describe("claude-code synthetic CLI failures (offline stream envelopes)", () => {
+  const sonnet = "claude-sonnet-5-5";
+  const sonnetRun = () => run({ model: `claude-code/${sonnet}` });
+  const synthetic = (text: string) => line({
+    type: "assistant", session_id: "fixture-session", parent_tool_use_id: null,
+    message: { id: "synthetic-message", type: "message", role: "assistant", model: "<synthetic>",
+      content: [{ type: "text", text }], stop_reason: "end_turn",
+      usage: { input_tokens: 0, output_tokens: 0 } },
+  });
+  const final = (model?: string) => line({ type: "result", subtype: "success", is_error: false,
+    result: "review", num_turns: 1, ...(model ? { modelUsage: { [model]: {} } } : {}) });
+
+  it.each([
+    ["You've hit your weekly limit · resets Oct 7 at 5pm (America/New_York)", /quota limit reached; resets Oct 7 at 5pm \(America\/New_York\)/],
+    ["Invalid API key · Please run /login sk-ant-secret https://private.invalid?token=secret", /authentication failed/],
+    ["API Error: Connection error. ECONNRESET https://private.invalid?token=secret", /transport failure/],
+    ["Unexpected local failure sk-ant-secret https://private.invalid?token=secret", /unrecognized synthetic error \(fail closed\)/],
+  ])("reports bounded sanitized cause without treating %s as inference", async (text, cause) => {
+    const { spawn, calls } = fakeSpawn((child) => {
+      child.stdout(line({ type: "system", subtype: "init", model: sonnet }));
+      child.stdout(synthetic(text)); child.exit(1);
+    });
+    const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: sonnetRun(), task: task(), signal: new AbortController().signal, onProgress() {} });
+    expect(result.state).toBe("failed"); expect(result.error).toMatch(cause);
+    expect(result.error).toContain("synthetic frame is not a model response or approval");
+    expect(result.error).not.toMatch(/sk-ant-secret|private\.invalid|token=secret|not the pinned/);
+    expect(result.error!.length).toBeLessThan(300);
+    expect(result.output).toBe(""); expect(result.turns).toBe(0);
+    expect(result.usage).toEqual(emptyUsage()); expect(calls).toHaveLength(1);
+    expect(calls[0].args.join(" ")).toContain("--model claude-sonnet-5-5 --effort xhigh");
+  });
+
+  it("does not echo controls, arbitrary diagnostic suffixes or oversized text", async () => {
+    const { spawn } = fakeSpawn((child) => {
+      child.stdout(synthetic("You've hit your weekly limit · resets Oct 7 at 5pm (America/New_York)\u001b[31m " + "secret".repeat(2000)));
+      child.exit(0);
+    });
+    const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: sonnetRun(), task: task(), signal: new AbortController().signal, onProgress() {} });
+    expect(result.state).toBe("failed"); expect(result.error).toContain("resets Oct 7 at 5pm (America/New_York)");
+    expect(result.error).not.toMatch(/secret|\u001b/); expect(result.error!.length).toBeLessThan(300);
+  });
+
+  it.each(["same-chunk", "later-chunk"])("synthetic then genuine remains terminal FAILED (%s)", async (delivery) => {
+    const genuine = line({ type: "assistant", message: { id: "genuine-message", model: sonnet, content: [{ type: "text", text: "approved" }] } }) + final(sonnet);
+    const { spawn } = fakeSpawn((child) => {
+      if (delivery === "same-chunk") child.stdout(synthetic("You've hit your weekly limit") + genuine);
+      else { child.stdout(synthetic("You've hit your weekly limit")); child.stdout(genuine); }
+      child.exit(0);
+    });
+    const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: sonnetRun(), task: task(), signal: new AbortController().signal, onProgress() {} });
+    expect(result.state).toBe("failed"); expect(result.error).toContain("quota limit reached");
+    expect(result.output).toBe(""); expect(result.turns).toBe(0); expect(result.usage).toEqual(emptyUsage());
+  });
+
+  it.each(["init-only", "init-and-success", "no-model-success", "synthetic-usage"])("never approves %s", async (shape) => {
+    const { spawn } = fakeSpawn((child) => {
+      if (shape.startsWith("init")) child.stdout(line({ type: "system", subtype: "init", model: sonnet }));
+      if (shape !== "init-only") child.stdout(final(shape === "synthetic-usage" ? "<synthetic>" : undefined));
+      child.exit(0);
+    });
+    const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: sonnetRun(), task: task(), signal: new AbortController().signal, onProgress() {} });
+    expect(result.state).toBe("failed");
+  });
+
+  it("accepts a genuine pinned assistant plus success but rejects a real different model", async () => {
+    for (const servedModel of [sonnet, "claude-opus-5-5"]) {
+      const { spawn } = fakeSpawn((child) => {
+        child.stdout(line({ type: "assistant", message: { id: "real-message", model: servedModel, content: [{ type: "text", text: "review" }] } }));
+        child.stdout(final()); child.exit(0);
+      });
+      const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: sonnetRun(), task: task(), signal: new AbortController().signal, onProgress() {} });
+      expect(result.state).toBe(servedModel === sonnet ? "done" : "failed");
+      if (servedModel !== sonnet) expect(result.error).toMatch(/claude-opus-5-5, not the pinned Sonnet 5.5 route/);
+    }
+  });
+});
+
 describe("claude-code worker automatic resume safety", () => {
   it("gives the resumed CLI only remaining --max-turns and retains the original run budget", async () => {
     vi.useFakeTimers();
