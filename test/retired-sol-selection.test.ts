@@ -7,6 +7,8 @@ import { RetiredModelSelectionError, SOL_MODEL_ID, SOL_MODEL_ROUTE, SOL_PROFILE 
 import { BUILTIN_WORKER_PROFILES, loadWorkerProfiles, resolveWorkerSelection } from "../src/subagents/model-selection.ts";
 import { normalizeDispatch } from "../src/subagents/policy.ts";
 import { catalogModels, decodeRequest, readProfiles } from "../extensions/ultraterm-ui.ts";
+import modelRoutePolicy from "../extensions/model-route-policy.ts";
+import { readHarnessProfiles } from "../src/harness-profiles.ts";
 
 type Model = Parameters<typeof resolveWorkerSelection>[0];
 const astra = { id: "gpt-6-astra", name: "GPT-6 Astra", provider: "openai-codex", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text", "image"] } as Model;
@@ -88,6 +90,10 @@ describe("GPT-6.0 Sol retirement (2026-10-05)", () => {
     const r = registry([astra]);
     expect(() => resolveWorkerSelection(sol, "medium", input, r as never, BUILTIN_WORKER_PROFILES, "")).toThrow(/no fallback|no chain route/i);
   });
+  it("refuses to spawn children from a retired parent even for an explicit non-retired route", () => {
+    expect(() => resolveWorkerSelection(retired, "medium", { ...input, model: SOL_MODEL_ROUTE }, registry() as never, BUILTIN_WORKER_PROFILES, "")).toThrow(RetiredModelSelectionError);
+    expect(() => resolveWorkerSelection({ ...astra, id: "opaque-alias", name: "GPT-6.0 Sol" }, "medium", input, registry() as never, BUILTIN_WORKER_PROFILES, "")).toThrow(RetiredModelSelectionError);
+  });
   it("rejects retired resolved identities and opaque aliases at all request boundaries", async () => {
     const stream = vi.fn();
     const provider = { id: "openai-codex", getModels: () => [astra, sol, retired], stream, streamSimple: stream, fetchDeferred: stream, cancelDeferred: stream } as never;
@@ -115,5 +121,29 @@ describe("GPT-6.0 Sol retirement (2026-10-05)", () => {
       const model = id.startsWith("gpt") ? { ...astra, id, name: id } : { ...astra, id, name: id, provider: "non-gpt", api: "openai-completions" } as Model;
       expect(resolveWorkerSelection(model, "medium", { ...input, model: `${model.provider}/${id}` }, registry([model]) as never, [], "").model).toBe(model);
     }
+  });
+  it("refuses a retired active model at every policy-extension hook, but accepts 6.1 Sol", () => {
+    const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
+    modelRoutePolicy({ registerFlag: vi.fn(), getFlag: () => undefined, on: (name: string, handler: (event: unknown, ctx: unknown) => void) => { handlers.set(name, handler); } } as never);
+    const modelRegistry = { getAll: () => [], getProvider: () => undefined, getRegisteredNativeProvider: () => undefined, registerProvider: vi.fn(), isUsingOAuth: () => true };
+    for (const hook of ["session_start", "model_select", "before_agent_start", "session_before_compact"]) {
+      expect(() => handlers.get(hook)!({ model: retired }, { model: retired, modelRegistry })).toThrow(RetiredModelSelectionError);
+      expect(() => handlers.get(hook)!({ model: sol }, { model: sol, modelRegistry })).not.toThrow();
+    }
+  });
+  it("refuses a retired profile in an otherwise ignorable or merged harness manifest, never a 6.1 one", () => {
+    const named = (extra: Record<string, unknown>) => ({ id: "friendly", name: "Friendly", args: ["--model", SOL_MODEL_ROUTE, "--thinking", "medium"], ...extra });
+    for (const entry of [named({ name: "GPT-6.0 Sol" }), named({ name: "GPT 6 Sol (old)" }), named({ id: "gpt-6-0-sol" }), named({ workerDefault: { model: "openai-codex/gpt-6.0-sol" } }), named({ args: ["--model=openai-codex/gpt-6-sol", "--thinking", "medium"] })]) {
+      fixture(directory => {
+        manifest(directory, entry);
+        expect(() => readHarnessProfiles(directory, "steak-pi")).toThrow(RetiredModelSelectionError);
+        expect(() => loadWorkerProfiles(directory)).toThrow(RetiredModelSelectionError);
+      });
+    }
+    fixture(directory => {
+      manifest(directory, named({ id: "gpt-6-1-sol", name: "GPT-6.1 Sol" }));
+      expect(readHarnessProfiles(directory, "steak-pi").map(p => p.id)).toContain(SOL_MODEL_ID);
+      expect(loadWorkerProfiles(directory).some(p => p.id === "steak-pi/gpt-6-1-sol")).toBe(true);
+    });
   });
 });
