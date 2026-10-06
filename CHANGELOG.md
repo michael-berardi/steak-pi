@@ -1,7 +1,24 @@
 # Changelog
 
-## Unreleased
+## 0.9.9 (2026-10-05)
 
+- GPT-6.0 Sol is retired, and Sol now means GPT-6.1 Sol only. Choosing the old
+  model (`gpt-6-sol`, `gpt-6.0-sol`, `openai-codex/gpt-6-sol`,
+  `steak-pi/gpt-6-sol`, or a model whose name reads "GPT-6 Sol" or "GPT-6.0 Sol")
+  is refused with a `RetiredModelSelectionError` that names GPT-6.1 Sol as the
+  replacement. The refusal applies wherever the old model can come in: harness
+  profile files (id, label, model arguments, worker and reviewer defaults), a
+  dispatch's `model` or `profile`, the UltraTerm model picker and controls, the
+  session's own model, worker start-up, every provider request, and resuming a
+  saved run after a restart. A retired choice is never quietly switched to 6.1,
+  and saved runs are left as they were.
+- The built-in profile for choosing Sol explicitly is now `steak-pi/gpt-6-1-sol`
+  (route `openai-codex/gpt-6.1-sol`); it replaces `steak-pi/gpt-6-sol`. A harness
+  profile file that still lists GPT-6.0 Sol has to be edited: dispatch refuses
+  it with the same error, and the UltraTerm model picker offers no choices,
+  until it is.
+- GPT-6.1 Sol, Astra, Luna, Sonnet, Opus, MiMo and DeepSeek routes, and the
+  MiMo, then GPT-6.1 Sol fallback for routine work, are unchanged.
 - A child that is about to run out of turns is told once, when two requests
   remain, to write its findings so far and a precise remaining-work list as its
   final answer (Claude Code children get the budget and the same instruction up
@@ -20,6 +37,7 @@
   `supersededBy` in telemetry. A second resume is refused with a clear message.
   Behavior change: a resumed run that is interrupted again can no longer be
   resumed; re-dispatch the remaining work.
+- Full suite: 806 passed, 1 skipped.
 
 ## 0.9.8 (2026-10-04)
 

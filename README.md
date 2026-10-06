@@ -114,7 +114,9 @@ parent
 **Models.** Routine workers use MiMo V2.6 Flash on the Xiaomi Token Plan, and
 automatic reviewers use MiMo V2.6 Pro. Text runs fall back only to GPT-6.1 Sol
 on Codex OAuth; image runs have no fallback. GLM 5.3 and the Z.ai plan were
-retired on 2026-10-03, and selecting them is refused. An explicit `model`, `profile` or `harness`
+retired on 2026-10-03, and selecting them is refused. GPT-6.0 Sol was retired on
+2026-10-05: Sol means GPT-6.1 Sol only, and selecting the old model is refused
+with an error that names the replacement. An explicit `model`, `profile` or `harness`
 always wins. A wave of reviewers with no explicit route goes to the **Opus
 Pass**: the official Claude Code CLI on Opus 5.5 at `xhigh` effort, using your
 existing Claude login. GPT models run only through Codex OAuth, never an API
