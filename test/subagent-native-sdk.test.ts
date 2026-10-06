@@ -12,9 +12,10 @@ import { MachineSlots } from "../src/subagents/machine-slots.ts";
 import { normalizeDispatch } from "../src/subagents/policy.ts";
 import { emptyUsage, USAP_VERSION, type RunRecord, type TaskRecord, type WorkerProgress } from "../src/subagents/types.ts";
 
-// Resolve the SDK's own pi-ai, rather than assuming a hoisted dependency.
-const sdkEntry = import.meta.resolve("@earendil-works/pi-coding-agent");
-const { AssistantMessageEventStream, InMemoryCredentialStore, InMemoryModelsStore, getCurrentSystemPrompt, getCurrentTools } = await import(/* @vite-ignore */ new URL("../node_modules/@earendil-works/pi-ai/dist/index.js", sdkEntry).href);
+import { sdkPiAiUrl } from "./helpers/pi-sdk-dependencies.ts";
+
+// Resolve the SDK's own pi-ai, whether nested or hoisted.
+const { AssistantMessageEventStream, InMemoryCredentialStore, InMemoryModelsStore, getCurrentSystemPrompt, getCurrentTools } = await import(/* @vite-ignore */ sdkPiAiUrl);
 export const SENTINEL = "NATIVE_OFFLINE_SENTINEL_7291";
 export const localModel = {
   id: "scripted-local", name: "Scripted local", provider: "usap-offline-proof",

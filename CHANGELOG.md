@@ -8,6 +8,9 @@
   never count as a model response or review approval; the pinned route remains
   mandatory and no fallback is introduced.
 - Startup model metadata alone no longer proves that a review actually ran.
+- Verified on Pi 1.0.4, including offline native TUI startup, completion delivery
+  and session resume. Updated the development lockfile to fix the reported
+  brace-expansion and source-map-js security advisories.
 
 ## 0.9.9 (2026-10-05)
 

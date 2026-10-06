@@ -109,7 +109,7 @@ const HOST_BUNDLE_EXPORTS = [
  * (devDependencies) and the runtimes UltraTerm has bundled. Each entry exports
  * every HOST_BUNDLE_EXPORTS name from dist/bundle/index.js. Others use the
  * package-resolved path. */
-export const SUPPORTED_HOST_PI_VERSIONS = ["0.87.0", "0.87.1", "0.99.2", "1.0.0"] as const;
+export const SUPPORTED_HOST_PI_VERSIONS = ["0.87.0", "0.87.1", "0.99.2", "1.0.0", "1.0.4"] as const;
 
 /**
  * The bundle directory of the Pi CLI running this process, when `entry` (the

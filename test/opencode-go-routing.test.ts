@@ -1,12 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import { sdkPiAiUrl } from "./helpers/pi-sdk-dependencies.ts";
 import { eligibleGoFallback, GO_FALLBACK_MODEL, withOpenCodeGoRouting } from "../src/opencode-go-routing.ts";
-const { createAssistantMessageEventStream } = await import(new URL("../node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
+const { createAssistantMessageEventStream } = await import(/* @vite-ignore */ sdkPiAiUrl);
 type Provider = Parameters<typeof withOpenCodeGoRouting>[0];
 // Resolve the SDK's own pi-ai: 0.86 requires normalization before provider dispatch.
-const { normalizeContext } = await import(/* @vite-ignore */ new URL(
-  "../node_modules/@earendil-works/pi-ai/dist/index.js",
-  import.meta.resolve("@earendil-works/pi-coding-agent"),
-).href);
+const { normalizeContext } = await import(/* @vite-ignore */ sdkPiAiUrl);
 function emptyContext(): Parameters<Provider["streamSimple"]>[1] {
   // 0.85 accepts Context directly and does not export normalizeContext.
   const normalize = typeof normalizeContext === "function" ? normalizeContext : (context: { messages: never[] }) => context;

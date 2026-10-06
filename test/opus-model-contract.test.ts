@@ -3,14 +3,13 @@ import { findPackageJSON } from 'node:module';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, expect, it, vi } from 'vitest';
+import { sdkPiAiUrl, sdkPiAiInternalUrl } from './helpers/pi-sdk-dependencies.ts';
 
 const sdk = dirname(findPackageJSON('@earendil-works/pi-coding-agent', import.meta.url)!);
-const ai = join(sdk, 'node_modules/@earendil-works/pi-ai/dist');
 const load = (path: string) => import(pathToFileURL(path).href);
 const { ModelRuntime } = await load(join(sdk, 'dist/core/model-runtime.js'));
-const { InMemoryCredentialStore } = await load(join(ai, 'auth/credential-store.js'));
-const { InMemoryModelsStore } = await load(join(ai, 'models-store.js'));
-const { streamSimple } = await load(join(ai, 'api/anthropic-messages.js'));
+const { InMemoryCredentialStore, InMemoryModelsStore } = await import(/* @vite-ignore */ sdkPiAiUrl);
+const { streamSimple } = await import(/* @vite-ignore */ sdkPiAiInternalUrl('api/anthropic-messages.js'));
 const fragmentPath = new URL('../docs/opus-5-5.models.json', import.meta.url);
 const fragment = JSON.parse(readFileSync(fragmentPath, 'utf8'));
 const definition = fragment.providers.anthropic.models[0];

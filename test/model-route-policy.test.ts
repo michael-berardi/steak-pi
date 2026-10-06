@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sdkPiAiUrl } from "./helpers/pi-sdk-dependencies.ts";
 import {
   assertModelRoute, assertSubscriptionRequest, guardProvider, selectWorkerModel, selectWorkerThinking,
   createRegistryGuard, GPT_ROUTE_ERROR, isModelRouteAllowed, guardModelRuntime, isExpertReviewModel,
@@ -13,10 +14,7 @@ import { workerChainFallback } from "../src/subagents/pi-worker.ts";
 import { eligibleGoFallback } from "../src/opencode-go-routing.ts";
 
 // The SDK's own pi-ai event stream: chain tests exercise real provider streams.
-const { createAssistantMessageEventStream } = await import(/* @vite-ignore */ new URL(
-  "../node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js",
-  import.meta.resolve("@earendil-works/pi-coding-agent"),
-).href);
+const { createAssistantMessageEventStream } = await import(/* @vite-ignore */ sdkPiAiUrl);
 
 type Model = Parameters<typeof assertSubscriptionRequest>[0];
 type Provider = Parameters<typeof guardProvider>[0];
@@ -28,10 +26,7 @@ const emptyHarnessDir = mkdtempSync(join(tmpdir(), "policy-no-harness-"));
 beforeAll(() => { vi.stubEnv("ULTRATERM_HARNESS_DIR", emptyHarnessDir); vi.stubEnv("ULTRATERM_HARNESS_RESOURCES", emptyHarnessDir); });
 afterAll(() => { vi.unstubAllEnvs(); rmSync(emptyHarnessDir, { recursive: true, force: true }); });
 // Resolve the SDK's own pi-ai: 0.86 requires normalization before provider dispatch.
-const { normalizeContext } = await import(/* @vite-ignore */ new URL(
-  "../node_modules/@earendil-works/pi-ai/dist/index.js",
-  import.meta.resolve("@earendil-works/pi-coding-agent"),
-).href);
+const { normalizeContext } = await import(/* @vite-ignore */ sdkPiAiUrl);
 function emptyContext(): Parameters<Provider["streamSimple"]>[1] {
   // 0.85 accepts Context directly and does not export normalizeContext.
   const normalize = typeof normalizeContext === "function" ? normalizeContext : (context: { messages: never[] }) => context;

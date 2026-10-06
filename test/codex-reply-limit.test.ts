@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 // Pi's own retry classifier, the one that resent J-0022's request every 15 minutes.
-import { isRetryableAssistantError } from "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/utils/retry.js";
+import { sdkPiAiUrl } from "./helpers/pi-sdk-dependencies.ts";
+const { isRetryableAssistantError } = await import(/* @vite-ignore */ sdkPiAiUrl);
 import codexReplyLimitExtension from "../extensions/codex-reply-limit.ts";
 import {
   CODEX_REPLY_LIMIT_MS,

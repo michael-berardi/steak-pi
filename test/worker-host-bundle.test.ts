@@ -19,9 +19,11 @@ function fakePi(version: string, withIndex = true) {
 
 describe("worker SDK host-bundle detection", () => {
   it("accepts a supported bundled Pi CLI, including through its bin symlink", () => {
-    const { bundle, bin } = fakePi("0.87.1");
-    expect(hostPiBundle(join(bundle, "cli.js"))).toBeDefined();
-    expect(hostPiBundle(bin)).toBe(hostPiBundle(join(bundle, "cli.js")));
+    for (const version of ["0.87.0", "0.87.1", "0.99.2", "1.0.0", "1.0.4"]) {
+      const { bundle, bin } = fakePi(version);
+      expect(hostPiBundle(join(bundle, "cli.js"))).toBeDefined();
+      expect(hostPiBundle(bin)).toBe(hostPiBundle(join(bundle, "cli.js")));
+    }
   });
 
   it("rejects unsupported versions, missing SDK entries, embedded hosts and missing paths", () => {

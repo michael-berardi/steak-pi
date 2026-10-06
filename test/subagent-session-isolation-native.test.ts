@@ -13,9 +13,10 @@ import { canonicalSessionFile } from "../src/subagents/checkpoints.ts";
 import { SessionScheduler } from "../src/subagents/scheduler.ts";
 import { emptyUsage, type WorkerRunContext, type WorkerResult } from "../src/subagents/types.ts";
 
+import { sdkPiAiUrl } from "./helpers/pi-sdk-dependencies.ts";
+
 // Resolve the SDK's own dependency; never import another test (which registers tests).
-const sdkEntry = import.meta.resolve("@earendil-works/pi-coding-agent");
-const { InMemoryCredentialStore, InMemoryModelsStore } = await import(/* @vite-ignore */ new URL("../node_modules/@earendil-works/pi-ai/dist/index.js", sdkEntry).href);
+const { InMemoryCredentialStore, InMemoryModelsStore } = await import(/* @vite-ignore */ sdkPiAiUrl);
 const model = {
   id: "mimo-v2.6-flash", name: "Offline MiMo fixture", provider: "xiaomi",
   api: "openai-completions" as const, baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1",
