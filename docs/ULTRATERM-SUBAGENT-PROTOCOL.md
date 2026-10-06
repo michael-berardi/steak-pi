@@ -157,6 +157,17 @@ environment variables are not inherited, and there is no fallback to another
 model, route, or billing arrangement. Quota exhaustion is a failed review,
 not permission to buy credits or an expert approval.
 
+CLI assistant frames with `model: "<synthetic>"` are local errors, not model
+identity evidence or inference turns. Recognized quota, authentication and
+transport failures report a bounded sanitized cause (quota reset timing is
+retained when it matches the supported calendar/time/timezone shape); unknown
+synthetic errors fail closed without echoing arbitrary diagnostic text. Any
+synthetic frame is terminal FAILED, even if followed by genuine pinned-model
+frames or a success result. Init metadata alone cannot attest served inference;
+init-only, synthetic-only and successful results without served-model evidence
+cannot approve a review. Real different-model frames remain identity mismatches;
+route pins and the no-fallback rule are unchanged.
+
 | Capability | Pi | Claude Code first slice |
 | --- | --- | --- |
 | Scheduling, status, bounded wait/cancel, telemetry | Supported | Same coordinator |

@@ -4,9 +4,9 @@ Issues and focused pull requests are welcome.
 
 ## Development
 
-Requirements: Node.js 22.19 or newer and Pi 0.85.1 or 0.86.0 (release-tested
-with 0.86.0). Pi 0.85.0 does not expose the required companion lifecycle API,
-and Pi 0.87.x is not claimed.
+Requirements: Node.js 22.19 or newer and Pi 0.87 or newer (release-tested
+with Pi 1.0.0, pinned in the development lockfile). Pi 0.85.0 does not expose
+the required companion lifecycle API.
 
 ```sh
 git clone https://github.com/michael-berardi/steak-pi.git

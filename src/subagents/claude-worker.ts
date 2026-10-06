@@ -165,6 +165,24 @@ export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPer
   ];
 }
 
+/** Local CLI error messages are not model responses. Never echo arbitrary error
+ * text (credentials, URLs, control characters); retain only a bounded quota
+ * reset in the observed calendar/time/timezone format and fixed cause labels. */
+function syntheticClaudeCause(text: string): string {
+  const diagnostic = text.slice(0, 4096).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
+  if (/\b(?:hit your (?:weekly |usage )?limit|(?:weekly|usage|rate) limit|quota (?:exceeded|exhausted))\b/i.test(diagnostic)) {
+    const reset = diagnostic.match(/\bresets ((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2} at \d{1,2}(?::\d{2})?(?:am|pm) \([A-Za-z_]{1,32}\/[A-Za-z_]{1,32}(?:\/[A-Za-z_]{1,32})?\))/i)?.[1];
+    return `quota limit reached${reset ? `; resets ${reset}` : ""}`;
+  }
+  if (/\b(?:authentication (?:failed|error)|authentication_error|not logged in|invalid (?:api key|authentication (?:token|credentials))|(?:oauth|access) token (?:has )?expired|please (?:run \/login|log in))\b/i.test(diagnostic)) {
+    return "authentication failed; subscription login requires attention";
+  }
+  if (/\b(?:connection (?:error|failed|refused|reset)|network (?:error|unreachable)|unable to connect to (?:the )?api|request timed out|fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT)\b/i.test(diagnostic)) {
+    return "transport failure; connection or request did not complete";
+  }
+  return "unrecognized synthetic error (fail closed)";
+}
+
 function permissionLine(task: TaskRecord): string {
   if (!task.mayEdit && !task.allowBash) {
     return "This is a read-only leaf: your tool allowlist is Read, Grep, Glob only. Do not attempt writes, edits, or shell commands.";
@@ -579,7 +597,10 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
 
     let stdoutBuffer = "";
     let rawBytes = 0;
+    let syntheticFailed = false;
     child.onStdout((chunk) => {
+      // A synthetic error is terminal even if later buffered frames claim success.
+      if (syntheticFailed) return;
       rawBytes += Buffer.byteLength(chunk, "utf8");
       if (rawBytes > CLAUDE_CODE_STREAM_BYTES_LIMIT) {
         state.failure = "claude-code stream exceeded the 8 MiB bound; child terminated";
@@ -603,6 +624,13 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
         const reportedModels = event.kind === "identity" ? [event.model]
           : event.kind === "assistant" ? (event.model === undefined ? [] : [event.model])
           : event.kind === "result" ? event.models ?? [] : [];
+        if (reportedModels.includes("<synthetic>")) {
+          syntheticFailed = true;
+          state.failure ??= `Claude CLI synthetic error: ${syntheticClaudeCause(event.kind === "assistant" ? event.text : "")}; synthetic frame is not a model response or approval`;
+          // Do not count this frame as a turn, usage, output, or model evidence.
+          killOnce(true);
+          return;
+        }
         // The worker's own turns must be the pinned model. Claude Code runs
         // its Haiku helper for side work (WebFetch summaries, subagent tasks),
         // which shows up in sidechain frames and the result's model usage;
@@ -616,7 +644,10 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
           killOnce(true);
           return;
         }
-        if (reportedModels.length > 0) state.modelVerified = true;
+        // Init identifies requested configuration, not served inference; helpers
+        // likewise cannot attest the worker's pinned model.
+        if ((event.kind === "assistant" && !event.sidechain && event.model === pinnedModel)
+          || (event.kind === "result" && reportedModels.includes(pinnedModel))) state.modelVerified = true;
         if (event.kind === "assistant") {
           if (!event.messageId) {
             state.failure = "Claude CLI assistant frame lacks a stable message ID";
