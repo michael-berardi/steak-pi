@@ -21,7 +21,7 @@ serious sessions need: parallel subagents with hard limits, compaction that
 costs no model calls, checks that run after every edit, and a status line that
 tells you what the agent is doing.
 
-Current release: **0.9.10**, for Pi 0.87 or newer (verified on Pi 1.0.0). Steak Pi also ships inside
+Current release: **0.9.10**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
 [UltraTerm](https://implosecybernetics.com/software/).
 
 ## Install
@@ -38,7 +38,7 @@ tar -xzf steak-pi-0.9.4.tgz
 pi install "$PWD/package"
 ```
 
-Requires Node.js 22.19 or newer and Pi 0.87 or newer (verified on Pi 1.0.0). Steak Pi is distributed
+Requires Node.js 22.19 or newer and Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi is distributed
 through this repository's tags and GitHub releases, not the npm registry.
 
 For the leanest sessions, start Pi through the bundled launcher. It passes

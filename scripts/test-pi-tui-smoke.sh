@@ -73,8 +73,8 @@ mkdir -p "$TMP/config" "$TMP/sessions" "$TMP/home" \
 PI_VERSION="$(env -i HOME="$TMP/home" PATH="$SAFE_PATH" \
   PI_CODING_AGENT_DIR="$TMP/config" PI_OFFLINE=1 PI_TELEMETRY=0 \
   "$PI_EXECUTABLE" --version)"
-[[ "$PI_VERSION" == "0.85.1" || "$PI_VERSION" == "0.86.0" || "$PI_VERSION" == "0.86.1" || "$PI_VERSION" == "0.87.0" || "$PI_VERSION" == "0.87.1" || "$PI_VERSION" == "0.99.2" || "$PI_VERSION" == "1.0.0" ]] || {
-  echo "Steak Pi smoke requires reviewed Pi 0.85.1, 0.86.0, 0.86.1, 0.87.0, 0.87.1, 0.99.2 or 1.0.0; found $PI_VERSION" >&2
+[[ "$PI_VERSION" == "0.85.1" || "$PI_VERSION" == "0.86.0" || "$PI_VERSION" == "0.86.1" || "$PI_VERSION" == "0.87.0" || "$PI_VERSION" == "0.87.1" || "$PI_VERSION" == "0.99.2" || "$PI_VERSION" == "1.0.0" || "$PI_VERSION" == "1.0.4" ]] || {
+  echo "Steak Pi smoke requires reviewed Pi 0.85.1, 0.86.0, 0.86.1, 0.87.0, 0.87.1, 0.99.2, 1.0.0 or 1.0.4; found $PI_VERSION" >&2
   exit 1
 }
 

@@ -5,7 +5,7 @@ Issues and focused pull requests are welcome.
 ## Development
 
 Requirements: Node.js 22.19 or newer and Pi 0.87 or newer (release-tested
-with Pi 1.0.0, pinned in the development lockfile). Pi 0.85.0 does not expose
+with Pi 1.0.4, pinned in the development lockfile). Pi 0.85.0 does not expose
 the required companion lifecycle API.
 
 ```sh
