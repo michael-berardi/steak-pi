@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { assertModelRoute, assertSubscriptionRequest, guardProvider, isModelRouteAllowed, selectWorkerModel } from "../src/model-route-policy.ts";
 import { RetiredModelSelectionError, SOL_MODEL_ID, SOL_MODEL_ROUTE, SOL_PROFILE } from "../src/retired-model-selection.ts";
 import { BUILTIN_WORKER_PROFILES, loadWorkerProfiles, resolveWorkerSelection } from "../src/subagents/model-selection.ts";
@@ -33,6 +33,9 @@ function manifest(directory: string, profile: unknown) {
 const profile = { id: "friendly", name: "Friendly", args: ["--model", SOL_MODEL_ROUTE, "--thinking", "medium"] };
 
 describe("GPT-6.0 Sol retirement (2026-10-05)", () => {
+  // The fixtures are Steak Pi manifests: never read the harness of the shell running the tests.
+  beforeEach(() => { vi.stubEnv("ULTRATERM_HARNESS_ID", "steak-pi"); vi.stubEnv("ULTRATERM_HARNESS", "steak-pi"); });
+  afterEach(() => { vi.unstubAllEnvs(); });
   it.each(aliases)("rejects %s at profile ingestion and child resolution with one named error", alias => {
     fixture(directory => {
       manifest(directory, { ...profile, args: ["--model", alias, "--thinking", "medium"] });
