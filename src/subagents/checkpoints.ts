@@ -322,7 +322,13 @@ export class CheckpointStore {
     const temp = join(this.directory, `.${id}-${randomUUID()}.tmp`);
     const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     try {
-      try { writeFileSync(fd, data); fsyncSync(fd); } finally { closeSync(fd); }
+      try { writeFileSync(fd, data); fsyncSync(fd); } catch (error) {
+        // Close still runs, but a secondary close error must not replace the
+        // first write/fsync failure (including its errno).
+        try { closeSync(fd); } catch { /* Preserve the first failure. */ }
+        throw error;
+      }
+      closeSync(fd); // With no earlier failure, a close error is authoritative.
       renameSync(temp, join(this.directory, `${id}.json`));
     } finally {
       // Cleanup must not mask the original errno (or remove a prior snapshot).

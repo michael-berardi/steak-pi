@@ -5,6 +5,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CheckpointStore, diagnoseRun, recoveredRun } from "../src/subagents/checkpoints.ts";
 import { normalizeDispatch } from "../src/subagents/policy.ts";
 
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  return { ...fs, writeFileSync: vi.fn(fs.writeFileSync), fsyncSync: vi.fn(fs.fsyncSync), closeSync: vi.fn(fs.closeSync) };
+});
+
 const dirs: string[] = [];
 const stores: CheckpointStore[] = [];
 function setup() {
@@ -16,6 +21,41 @@ function setup() {
 afterEach(() => { for (const store of stores.splice(0)) store.close(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 describe("durable USAP checkpoints", () => {
+  it.each(["write", "fsync", "close"])("preserves the first %s failure and prior evidence when close fails", async (stage) => {
+    const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const { root, store, run } = setup();
+    store.save(run, true);
+    const file = join(store.directory, `${run.id}.json`);
+    const before = readFileSync(file, "utf8");
+    const foreignTemp = join(store.directory, ".another-owner.tmp");
+    writeFileSync(foreignTemp, "untouched");
+    run.state = "done";
+    run.tasks[0].state = "done";
+    const primary = Object.assign(new Error("injected first failure"), { code: stage === "close" ? "EIO" : "ENOSPC", syscall: stage });
+    const write = vi.spyOn(await import("node:fs"), "writeFileSync");
+    const sync = vi.spyOn(await import("node:fs"), "fsyncSync");
+    const close = vi.spyOn(await import("node:fs"), "closeSync").mockClear().mockImplementationOnce((fd) => {
+      fs.closeSync(fd); // Release the real fixture descriptor before simulating EIO.
+      throw stage === "close" ? primary : Object.assign(new Error("secondary close failure"), { code: "EIO", syscall: "close" });
+    });
+    if (stage === "write") write.mockImplementationOnce(() => { throw primary; });
+    if (stage === "fsync") sync.mockImplementationOnce(() => { throw primary; });
+    try {
+      let caught: unknown;
+      try { store.save(run, true); } catch (error) { caught = error; }
+      expect(caught).toBe(primary);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(readFileSync(file, "utf8")).toBe(before);
+      expect(store.get(run.id)!.run.state).toBe("running");
+      expect(readdirSync(store.directory).filter((name) => name.endsWith(".tmp"))).toEqual([".another-owner.tmp"]);
+      expect(readFileSync(foreignTemp, "utf8")).toBe("untouched");
+    } finally { write.mockRestore(); sync.mockRestore(); close.mockRestore(); }
+    expect(store.save(run, true)).toBe(true);
+    store.close();
+    const reopened = new CheckpointStore(join(root, "parent.jsonl"), join(root, "checkpoints")); stores.push(reopened);
+    expect(reopened.get(run.id)!.run.tasks[0].state).toBe("done");
+  });
+
   it("retains the prior validated snapshot after a failed terminal write and commits a later retry", () => {
     const { store, run } = setup();
     store.save(run, true);
