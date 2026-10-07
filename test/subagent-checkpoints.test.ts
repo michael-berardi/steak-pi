@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CheckpointStore, diagnoseRun, recoveredRun } from "../src/subagents/checkpoints.ts";
 import { normalizeDispatch } from "../src/subagents/policy.ts";
 
@@ -16,6 +16,29 @@ function setup() {
 afterEach(() => { for (const store of stores.splice(0)) store.close(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 describe("durable USAP checkpoints", () => {
+  it("retains the prior validated snapshot after a failed terminal write and commits a later retry", () => {
+    const { store, run } = setup();
+    store.save(run, true);
+    const file = join(store.directory, `${run.id}.json`);
+    const before = readFileSync(file, "utf8");
+    run.state = "done";
+    run.tasks[0].state = "done";
+    run.tasks[0].output = "terminal evidence";
+    const atomic = vi.spyOn(store as any, "atomic").mockImplementationOnce(() => { throw Object.assign(new Error("ENOSPC /secret"), { code: "ENOSPC" }); });
+    try {
+      expect(() => store.save(run, true)).toThrow(/ENOSPC/);
+      expect(store.get(run.id)!.run.state).toBe("running");
+      expect(readFileSync(file, "utf8")).toBe(before);
+      expect(store.save(run, true)).toBe(true);
+      expect(store.get(run.id)!.run.tasks[0]).toMatchObject({ state: "done", output: "terminal evidence" });
+      const terminal = readFileSync(file, "utf8");
+      store.close();
+      const recovered = new CheckpointStore(join(run.cwd, "parent.jsonl"), join(run.cwd, "checkpoints")); stores.push(recovered);
+      expect(recoveredRun(recovered.get(run.id)!).tasks[0].state).toBe("done");
+      expect(readFileSync(file, "utf8")).toBe(terminal);
+    } finally { atomic.mockRestore(); }
+  });
+
   it("does not promise native resume for an interrupted Claude CLI task", () => {
     const { store, run } = setup();
     run.harness = "claude-code";

@@ -2,6 +2,11 @@
 
 ## 0.9.10 (2026-10-06)
 
+- Checkpoint failures now name their safe error code, stop the affected run's
+  unfinished workers and retain completed results. New work stays blocked until
+  failed snapshots save successfully; recovery never silently replays workers.
+- Diagnostics distinguish current persistence failures from recovered writes,
+  without exposing private paths or inventing a cause for older generic warnings.
 - Claude Code review failures now distinguish subscription limits, login errors
   and connection failures from a different-model response. Quota reset timing is
   preserved without exposing arbitrary diagnostic text. Synthetic CLI messages

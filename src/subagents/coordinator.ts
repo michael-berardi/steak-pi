@@ -370,14 +370,14 @@ export class SubagentCoordinator {
   }
 
   /** Cancel one task, or the entire run when taskId is omitted. */
-  cancel(runId: string, taskId?: string): boolean {
+  cancel(runId: string, taskId?: string, reason?: string): boolean {
     const runtime = this.runs.get(runId);
     if (!runtime) return false;
 
     if (taskId !== undefined) {
       const task = runtime.record.tasks.find((candidate) => candidate.id === taskId);
       if (!task || isTerminal(task.state)) return false;
-      this.stopTask(runtime, task, "aborted", "Task cancelled");
+      this.stopTask(runtime, task, "aborted", reason ?? "Task cancelled");
       this.pump(runtime);
       return true;
     }
@@ -385,7 +385,7 @@ export class SubagentCoordinator {
     if (runtime.record.state !== "running") return false;
     runtime.accepting = false;
     for (const task of runtime.record.tasks) {
-      if (!isTerminal(task.state)) this.stopTask(runtime, task, "aborted", "Run cancelled");
+      if (!isTerminal(task.state)) this.stopTask(runtime, task, "aborted", reason ?? "Run cancelled");
     }
     return true;
   }

@@ -1,4 +1,5 @@
 import { statSync } from "node:fs";
+import { PersistenceHealth } from "../src/subagents/persistence-health.ts";
 import { deferredToolsEnabled, setToolActive } from "../src/deferred-tools.ts";
 import { setPinnedPanel } from "../src/tui/pinned-panels.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -238,6 +239,7 @@ export interface HubDetails {
   /** True when the run data came from a lease this session may not write. */
   readOnly?: boolean;
   checkpointError?: string | null;
+  checkpointHealth?: ReturnType<PersistenceHealth["diagnose"]>;
   shutdownWarning?: string | null;
 }
 
@@ -321,6 +323,9 @@ interface SessionRuntime {
   deliveryRetries: number;
   store?: CheckpointStore;
   checkpointError?: string;
+  checkpointHealth: PersistenceHealth;
+  checkpointPending: Map<string, RunRecord>;
+  checkpointStopping: Set<string>;
   /** Set when a duplicate owner in this process holds the namespace. */
   checkpointCollision?: string;
   /** A durable namespace exists but this runtime cannot claim it: never launch
@@ -779,7 +784,7 @@ export function createUltratermSubagentsExtension(
         for (const task of run.tasks) {
           if (task.state === "aborted" && /Coordinator shut down/.test(task.error ?? "")) task.error = "Host interrupted; inspect checkpoint and explicitly resume unfinished work";
         }
-        try { current.store?.save(run, true); } catch { current.checkpointError = "Final shutdown checkpoint failed"; }
+        saveCheckpoint(current, run, true, "final-shutdown");
       }
     };
 
@@ -833,7 +838,7 @@ export function createUltratermSubagentsExtension(
       clearTimeout(current.deliveryRetry);
       // Snapshot before shutdown changes active tasks into ordinary cancellations.
       for (const run of current.coordinator.list()) {
-        try { current.store?.save(run, true); } catch { current.checkpointError = "Checkpoint write failed during host shutdown"; }
+        saveCheckpoint(current, run, true, "host-shutdown");
       }
       // Keep one authoritative shutdown promise. Calling shutdown again could
       // observe a different task set and is not evidence that the first settled.
@@ -909,11 +914,57 @@ export function createUltratermSubagentsExtension(
     const readOnlyCheckpointsFor = (owner: string): Checkpoint[] | undefined =>
       retainedTeardowns.find((entry) => entry.owner === owner)?.runtime.store?.list();
 
+    const checkpointFailed = (current: SessionRuntime, run: RunRecord, error: unknown, stage: string): void => {
+      const cause = current.checkpointHealth.failed(run.id, error, stage);
+      if (stage === "initial") {
+        // No producer was admitted: a later snapshot-only retry must not invent live work.
+        run.state = "aborted";
+        run.endedAt = Date.now();
+        for (const task of run.tasks) {
+          task.state = "aborted";
+          task.endedAt = run.endedAt;
+          task.error = "Initial checkpoint failed; worker was never launched";
+        }
+      }
+      current.checkpointPending.set(run.id, run);
+      current.checkpointError = `Checkpoint ${stage} failed (${cause.code}${cause.syscall ? `/${cause.syscall}` : ""}); recovery is not guaranteed — hub diagnose`;
+      try { if (ownsContext(current, current.statusContext)) current.statusContext?.ui.setStatus("usap-checkpoint", current.checkpointError); } catch { /* Observation only. */ }
+      // Reuse per-run cancellation: retain done siblings and wait for native disposal.
+      // Recursive lifecycle observations must not repeatedly cancel the same run.
+      if (current.coordinator.has(run.id) && run.state === "running" && !current.checkpointStopping.has(run.id)) {
+        current.checkpointStopping.add(run.id);
+        current.coordinator.cancel(run.id, undefined, current.checkpointError);
+      }
+    };
+    const saveCheckpoint = (current: SessionRuntime, run: RunRecord, force: boolean, stage: string, propagate = false): void => {
+      if (!current.store) return;
+      try {
+        const written = current.store.save(run, force || current.checkpointHealth.needsSave(run.id));
+        if (written) {
+          current.checkpointHealth.saved(run.id);
+          current.checkpointPending.delete(run.id);
+          if (!current.checkpointHealth.blocked) {
+            current.checkpointError = undefined;
+            try { current.statusContext?.ui.setStatus("usap-checkpoint", undefined); } catch { /* Observation only. */ }
+          }
+        }
+      } catch (error) {
+        checkpointFailed(current, run, error, stage);
+        if (propagate) throw new Error(current.checkpointError);
+      }
+    };
+
     /** A degraded runtime must never launch work that only exists in memory: the
      * operator would have no durable recovery path. Chat, list and diagnose stay
      * available read-only until the live owner releases the lease. */
     const assertDurableForNewWork = (current: SessionRuntime, action = "New dispatch"): void => {
-      if (current.store || !current.checkpointDegraded) return;
+      if (current.store && current.checkpointHealth.blocked) {
+        // Explicit new-work admission retries snapshots only, never worker execution.
+        for (const [id, pending] of current.checkpointPending) {
+          saveCheckpoint(current, current.coordinator.snapshot(id) ?? pending, true, "retry", true);
+        }
+      }
+      if (!current.checkpointHealth.blocked && (current.store || !current.checkpointDegraded)) return;
       throw new Error(`${action} is refused: ${current.checkpointError ?? "this session cannot own its durable checkpoint store"}. A run started now could not be resumed; hub list and hub diagnose stay read-only.`);
     };
 
@@ -956,10 +1007,8 @@ export function createUltratermSubagentsExtension(
         sessionDir: () => store?.sessionsDirectory,
         onChange: (run) => {
           if (!created || created.closed) return;
-          try { store?.save(run, run.state !== "running"); } catch {
-            created.checkpointError = "Checkpoint write failed; recovery is not guaranteed. Inspect disk space and private directory permissions.";
-            try { if (ownsContext(created, created.statusContext)) created.statusContext?.ui.setStatus("usap-checkpoint", "USAP checkpoint error — hub diagnose"); } catch { /* Observation only. */ }
-          }
+          saveCheckpoint(created, run, run.state !== "running", "lifecycle");
+          if (run.state !== "running") created.checkpointStopping.delete(run.id);
           persistTelemetry(created, run);
           setStatus(created);
         },
@@ -1012,6 +1061,9 @@ export function createUltratermSubagentsExtension(
         awaitingReceipt: new Set(),
         deliveryRetries: 0,
         store,
+        checkpointHealth: new PersistenceHealth(),
+        checkpointPending: new Map(),
+        checkpointStopping: new Set(),
         checkpointDegraded: claim.degraded,
         checkpointCollision: claim.collision,
         checkpointError: claim.error,
@@ -1100,7 +1152,10 @@ export function createUltratermSubagentsExtension(
         current.completionBuffer = current.completionBuffer.filter((item) => {
           if (!ids.has(item.runId)) return true;
           current.awaitingReceipt.delete(item.runId);
-          try { current.store?.markDelivered(item.runId); } catch { current.checkpointError = "Completion receipt checkpoint failed"; }
+          try { current.store?.markDelivered(item.runId); } catch (error) {
+            const run = readRun(current, item.runId);
+            if (run) checkpointFailed(current, run, error, "receipt");
+          }
           return false;
         });
       };
@@ -1305,7 +1360,7 @@ export function createUltratermSubagentsExtension(
         run.ownerSessionId = current.ownerSessionId;
         run.ownerSessionFile = current.ownerSessionFile;
         // Never launch a supposedly durable run whose initial checkpoint failed.
-        current.store?.save(run, true);
+        saveCheckpoint(current, run, true, "initial", true);
         // Foreign-harness runs have no frozen Pi runtime: their runner branches on
         // run.harness and never consults the Pi registry or the relay workers.
         if (!foreignHarness) {
@@ -1405,7 +1460,7 @@ export function createUltratermSubagentsExtension(
                 ? `No USAP runs in this session.${warning ? `\n${warning}` : ""}`
                 : runs.map((run) => renderRunProgress(run)).join("\n").slice(0, MAX_TOOL_CONTENT),
             }],
-            details: { action: "list" as const, runs: runs.map((run) => toRunView(run, linksFor(current, run))), persistence: persistenceOf(current), readOnly: !current.store && current.checkpointDegraded, checkpointError: current.checkpointError ?? null, shutdownWarning: warning ?? null },
+            details: { action: "list" as const, runs: runs.map((run) => toRunView(run, linksFor(current, run))), persistence: persistenceOf(current), readOnly: !current.store && current.checkpointDegraded, checkpointError: current.checkpointError ?? null, checkpointHealth: current.checkpointHealth.diagnose(), shutdownWarning: warning ?? null },
           };
         }
 
@@ -1422,7 +1477,7 @@ export function createUltratermSubagentsExtension(
               persistence: persistenceOf(current),
               readOnly: true,
               reason: "run-unreadable",
-              checkpointError: current.checkpointError ?? null,
+              checkpointError: current.checkpointError ?? null, checkpointHealth: current.checkpointHealth.diagnose(),
               checkpointCollision: current.checkpointCollision ?? null,
               shutdownWarning: sessionWarning(current) ?? null,
               note: "This session cannot read its durable checkpoint namespace, so no run data is available for this id.",
@@ -1439,7 +1494,7 @@ export function createUltratermSubagentsExtension(
             persistence: persistenceOf(current),
             // True when this view came from a lease this session may not write.
             readOnly: !current.store && current.checkpointDegraded,
-            checkpointError: current.checkpointError ?? null,
+            checkpointError: current.checkpointError ?? null, checkpointHealth: current.checkpointHealth.diagnose(),
             checkpointCollision: current.checkpointCollision ?? null,
             shutdownWarning: warning ?? null,
             warnings: current.store?.warnings ?? [],
@@ -1524,7 +1579,10 @@ export function createUltratermSubagentsExtension(
             task.lastStep = unfinished[index].lastStep;
             task.resumedFrom = unfinished[index].id;
           });
-          current.store.prepareResume(runId, run);
+          try { current.store.prepareResume(runId, run); } catch (error) {
+            checkpointFailed(current, snapshot, error, "resume-reservation");
+            throw new Error(current.checkpointError);
+          }
           // The predecessor's latest telemetry record now names its successor.
           persistTelemetry(current, snapshot);
           if (!claudeResume) {
