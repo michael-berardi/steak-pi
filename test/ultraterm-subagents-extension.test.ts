@@ -2,7 +2,7 @@ import { mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from "no
 import { RetiredModelSelectionError } from "../src/retired-model-selection.ts";
 import { CheckpointStore } from "../src/subagents/checkpoints.ts";
 import { normalizeDispatch } from "../src/subagents/policy.ts";
-import { resolveClaudeCodeSelection, retiredRouteError } from "../src/subagents/model-selection.ts";
+import { resolveClaudeCodeSelection, retiredRouteError, type ClaudeCodeModel } from "../src/subagents/model-selection.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -245,6 +245,47 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     }
     await h.handlers.get("session_shutdown")!({}, h.ctx);
   });
+  it("synthetic: runs Haiku 5.5 only on its explicit route, at medium unless thinking is explicit, and names unknown ids", async () => {
+    const runner = vi.fn(async (_context: Parameters<WorkerRunner>[0]) => ({ state: "done" as const, output: "ok", turns: 1, usage: emptyUsage() }));
+    const h = harness(() => runner);
+    h.ctx.modelRegistry.find = () => { throw new Error("must not query Pi models"); };
+    const work = [{ label: "Extract", task: "Extract fields", role: "worker" }];
+    const haiku = "claude-code/claude-haiku-5-5";
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ model: haiku, tasks: work }, "medium"],
+      [{ harness: "claude-code", model: haiku, tasks: work }, "medium"],
+      [{ model: haiku, thinking: "high", tasks: work }, "high"],
+      [{ model: haiku, thinking: "xhigh", tasks: work }, "xhigh"],
+      [{ model: haiku, thinking: "medium", tasks: work }, "medium"],
+    ];
+    for (const [route, effort] of cases) {
+      const result = await h.tools.get("ultraterm_subagents").execute("haiku", { goal: "bounded extraction", ...route }, undefined, undefined, h.ctx);
+      expect(result.details.run.harness).toBe("claude-code");
+      expect(result.details.run.model).toBe(haiku);
+      expect(result.details.run.selection).toMatchObject({ provider: "claude-code", modelId: "claude-haiku-5-5", source: "override", harness: "claude-code" });
+      expect(runner.mock.calls.at(-1)?.[0].run.model).toBe(haiku);
+      expect(runner.mock.calls.at(-1)?.[0].run.thinkingLevel).toBe(effort);
+    }
+    // Haiku is never implicit: bare harness and reviewer waves keep Sonnet and Opus, and Sonnet/Opus still refuse a non-xhigh effort.
+    for (const [route, expected] of [[{ harness: "claude-code", tasks: work }, "claude-code/claude-sonnet-5-5"], [{ tasks: [{ label: "Review", task: "Review", role: "reviewer" }] }, "claude-code/claude-opus-5-5"]] as const) {
+      const result = await h.tools.get("ultraterm_subagents").execute("default", { goal: "default", ...route }, undefined, undefined, h.ctx);
+      expect(result.details.run.model).toBe(expected);
+      expect(runner.mock.calls.at(-1)?.[0].run.thinkingLevel).toBe("xhigh");
+    }
+    for (const model of ["claude-code/claude-sonnet-5-5", "claude-code/claude-opus-5-5"]) {
+      await expect(h.tools.get("ultraterm_subagents").execute("bad", { goal: "bad", model, thinking: "medium", tasks: work }, undefined, undefined, h.ctx)).rejects.toThrow(/requires xhigh effort/);
+    }
+    const launches = runner.mock.calls.length;
+    // Unknown ids get a named refusal without a harness and with one; retired routes keep their own errors.
+    for (const route of [{ model: "claude-code/claude-haiku-4-5" }, { model: "claude-code/claude-haiku-5-5-latest" }, { harness: "claude-code", model: "claude-haiku-5-5" }, { harness: "claude-code", profile: "claude-code/haiku-5-5" }]) {
+      await expect(h.tools.get("ultraterm_subagents").execute("unknown", { goal: "bad", ...route, tasks: work }, undefined, undefined, h.ctx)).rejects.toThrow(/unknown claude-code (model|profile) .*no fallback was selected/);
+    }
+    await expect(h.tools.get("ultraterm_subagents").execute("sol", { goal: "bad", harness: "claude-code", model: "openai-codex/gpt-6-sol", tasks: work }, undefined, undefined, h.ctx)).rejects.toThrow(RetiredModelSelectionError);
+    await expect(h.tools.get("ultraterm_subagents").execute("glm", { goal: "bad", harness: "claude-code", model: "zai/glm-5.3", tasks: work }, undefined, undefined, h.ctx)).rejects.toThrow(/retired/);
+    expect(runner).toHaveBeenCalledTimes(launches);
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+
   it("refuses every foreign-session hub action and dispatch before exposing a run", async () => {
     const runner = vi.fn(async () => ({ state: "done" as const, output: "owner-only evidence", turns: 1, usage: emptyUsage() }));
     const h = harness(() => runner);
@@ -997,13 +1038,13 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       h.entries.filter((entry) => entry.type === "ultraterm-usap-telemetry" && entry.data.runId === runId).map((entry) => entry.data);
 
     /** A settled checkpoint whose reviewer stopped on its turn budget with a resumable native session. */
-    function partialCheckpoint(name: string, overrides: { model?: string; thinkingLevel?: string; selection?: any; claude?: boolean } = {}) {
+    function partialCheckpoint(name: string, overrides: { model?: string; thinkingLevel?: string; selection?: any; claude?: boolean; claudeModel?: ClaudeCodeModel } = {}) {
       const root = mkdtempSync(join(tmpdir(), `usap-${name}-`)); dirs.push(root);
       const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: name };
       const store = new CheckpointStore(durable.parent, durable.root, durable.parent);
       const run = normalizeDispatch({ goal: "review", background: true, maxTurns: 12, tasks: [{ label: "Metadata signoff", task: "Review the metadata", role: "reviewer" }, { label: "Impl", task: "Done already", role: "worker" }] }, root, overrides.model ?? "openai-codex/gpt-6.1-sol", overrides.thinkingLevel ?? "medium", Date.now(), () => `${name}-origin`);
       if (overrides.selection) run.selection = overrides.selection;
-      if (overrides.claude) { run.harness = "claude-code"; run.selection = { ...resolveClaudeCodeSelection("claude-opus-5-5") }; }
+      if (overrides.claude) { run.harness = "claude-code"; run.selection = { ...resolveClaudeCodeSelection(overrides.claudeModel ?? "claude-opus-5-5") }; }
       run.tasks[1].state = "done";
       Object.assign(run.tasks[0], { state: "failed", startedAt: Date.now(), turns: 12, error: turnLimit(12), outcome: "partial", partialReason: "turn_budget", partialSummary: "Turn budget reached after 12/12 turns" });
       run.state = "failed";
@@ -1140,6 +1181,43 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       await k.handlers.get("session_start")!({}, k.ctx);
       await expect(resume(k, stale.run.id)).rejects.toThrow(/Resume refused: the route changed \(checkpoint claude-code\/claude-sonnet-5-5, run claude-code\/claude-opus-5-5/);
       await k.handlers.get("session_shutdown")!({}, k.ctx);
+    });
+
+    it("synthetic: resumes a Claude Code Haiku partial on its exact model and effort, and fails closed on any other", async () => {
+      const haiku = partialCheckpoint("haiku-resume", { model: "claude-code/claude-haiku-5-5", thinkingLevel: "medium", claude: true, claudeModel: "claude-haiku-5-5" });
+      const seen: Array<{ harness?: string; model: string; thinkingLevel: string; claudeSessionId?: string; source?: string; modelId?: string }> = [];
+      const h = harness(() => async ({ run: context, task }) => {
+        seen.push({ harness: context.harness, model: context.model, thinkingLevel: context.thinkingLevel, claudeSessionId: task.claudeSessionId, source: context.selection?.source, modelId: context.selection?.modelId });
+        return { state: "done", output: "finished", turns: 2, usage: emptyUsage() };
+      }, haiku.durable);
+      h.ctx.modelRegistry.find = () => { throw new Error("must not query Pi models"); };
+      await h.handlers.get("session_start")!({}, h.ctx);
+      const resumed = await resume(h, haiku.run.id);
+      expect(resumed.details.run).toMatchObject({ harness: "claude-code", model: "claude-code/claude-haiku-5-5", resumedFrom: haiku.run.id });
+      await vi.waitFor(() => expect(seen).toHaveLength(1));
+      expect(seen[0]).toEqual({ harness: "claude-code", model: "claude-code/claude-haiku-5-5", thinkingLevel: "medium", claudeSessionId: haiku.run.tasks[0].claudeSessionId, source: "override", modelId: "claude-haiku-5-5" });
+      await h.handlers.get("session_shutdown")!({}, h.ctx);
+
+      // A Haiku checkpoint resumed after its recorded selection moved to Sonnet: changed route, nothing launches.
+      const moved = partialCheckpoint("haiku-moved", { model: "claude-code/claude-haiku-5-5", thinkingLevel: "medium", claude: true, claudeModel: "claude-sonnet-5-5" });
+      // An unrecognized Claude model in the checkpoint never maps to a default.
+      const unknown = partialCheckpoint("haiku-unknown", { model: "claude-code/claude-haiku-4-5", thinkingLevel: "medium", claude: true, claudeModel: "claude-haiku-5-5" });
+      // Sonnet cannot resume at medium; Haiku at an unsupported effort cannot either.
+      const sonnetMedium = partialCheckpoint("sonnet-medium", { model: "claude-code/claude-sonnet-5-5", thinkingLevel: "medium", claude: true, claudeModel: "claude-sonnet-5-5" });
+      const haikuLow = partialCheckpoint("haiku-low", { model: "claude-code/claude-haiku-5-5", thinkingLevel: "low", claude: true, claudeModel: "claude-haiku-5-5" });
+      for (const [checkpoint, expected] of [
+        [moved, /Resume refused: the route changed \(checkpoint claude-code\/claude-sonnet-5-5, run claude-code\/claude-haiku-5-5/],
+        [unknown, /Resume refused: unknown claude-code model "claude-code\/claude-haiku-4-5"/],
+        [sonnetMedium, /Resume refused: Claude Code Sonnet 5\.5 does not run at medium/],
+        [haikuLow, /Resume refused: Claude Code Haiku 5\.5 does not run at low/],
+      ] as const) {
+        const launches: string[] = [];
+        const k = harness(() => async ({ run: context }) => { launches.push(context.model); return { state: "done" as const, output: "no", turns: 1, usage: emptyUsage() }; }, checkpoint.durable);
+        await k.handlers.get("session_start")!({}, k.ctx);
+        await expect(resume(k, checkpoint.run.id)).rejects.toThrow(expected);
+        expect(launches).toEqual([]);
+        await k.handlers.get("session_shutdown")!({}, k.ctx);
+      }
     });
 
     it("refuses a changed or paid route before spending the one resume", async () => {

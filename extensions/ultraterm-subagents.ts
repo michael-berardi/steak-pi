@@ -7,7 +7,7 @@ import { Type, type TSchema } from "typebox";
 import { SubagentCoordinator, CoordinatorWaitTimeoutError } from "../src/subagents/coordinator.ts";
 import { normalizeDispatch, SubagentPolicyError } from "../src/subagents/policy.ts";
 import { assertActiveModelSelector } from "../src/retired-model-selection.ts";
-import { resolveWorkerSelection, resolveClaudeCodeSelection, claudeCodeModelOf, claudeCodeModelName, defaultClaudeCodeRoute, CLAUDE_CODE_ROUTES, type WorkerProfile } from "../src/subagents/model-selection.ts";
+import { resolveWorkerSelection, resolveClaudeCodeSelection, resolveClaudeCodeEffort, assertClaudeCodeSelector, claudeCodeEffortAllowed, claudeCodeModelOf, claudeCodeModelName, claudeCodeUnknownSelectorError, defaultClaudeCodeRoute, type WorkerProfile } from "../src/subagents/model-selection.ts";
 import { AUTOMATIC_CHAIN_APPROVAL, type ChainOptions } from "../src/model-route-policy.ts";
 import { isSubscriptionOrLocalRoute } from "../src/subscription-first-routing.ts";
 import {
@@ -91,9 +91,9 @@ const TaskSchema = Type.Object({
 /** Public dispatcher schema, exported so contract tests do not have to load Pi. */
 export const ultratermSubagentsSchema = Type.Object({
   goal: Type.String({ minLength: 1, maxLength: 8_000 }),
-  model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Exact authenticated provider/model for all tasks; mutually exclusive with profile." })),
+  model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Exact authenticated provider/model for all tasks; mutually exclusive with profile. Claude Code routes: claude-code/claude-sonnet-5-5, claude-code/claude-opus-5-5, claude-code/claude-haiku-5-5 (explicit opt-in only)." })),
   profile: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Native harness/profile route (e.g. steak-pi/gpt-6-1-sol); mutually exclusive with model. GPT-6.0 Sol is retired and rejected." })),
-  harness: Type.Optional(Type.Unsafe<"pi" | "claude-code">({ type: "string", enum: ["pi", "claude-code"], description: "Execution harness. pi (default) is the native runner; claude-code is the official headless Claude CLI at xhigh: Sonnet 5.5 by default, Opus 5.5 for all-reviewer waves or model claude-code/claude-opus-5-5; workers, scouts and reviewers alike, with CLI-enforced ownedPaths and optional bash." })),
+  harness: Type.Optional(Type.Unsafe<"pi" | "claude-code">({ type: "string", enum: ["pi", "claude-code"], description: "Execution harness. pi (default) is the native runner; claude-code is the official headless Claude CLI at xhigh: Sonnet 5.5 by default, Opus 5.5 for all-reviewer waves or model claude-code/claude-opus-5-5, and Haiku 5.5 only when model claude-code/claude-haiku-5-5 is named (opt-in routine tier, medium effort by default); workers, scouts and reviewers alike, with CLI-enforced ownedPaths and optional bash." })),
   requireImages: Type.Optional(Type.Boolean({ description: "Require advertised image input; no silent fallback." })),
   constraints: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4_000 }), { maxItems: 64 })),
   contract: Type.Optional(Type.String({ minLength: 1, maxLength: 8_000 })),
@@ -1278,14 +1278,14 @@ export function createUltratermSubagentsExtension(
     pi.registerTool({
       name: "ultraterm_subagents",
       label: "UltraTerm Subagents",
-      description: "Dispatch 1-8 bounded tasks through Pi or the official headless Claude Code CLI. All-reviewer waves default to Opus 5.5 xhigh; other claude-code waves run Sonnet 5.5 xhigh. Explicit routes win. Foreground default; ownedPaths grants guarded writes on either harness; allowBash is unsandboxed shell.",
+      description: "Dispatch 1-8 bounded tasks through Pi or the official headless Claude Code CLI. All-reviewer waves default to Opus 5.5 xhigh; other claude-code waves run Sonnet 5.5 xhigh; Haiku 5.5 (medium) runs only when explicitly named. Explicit routes win. Foreground default; ownedPaths grants guarded writes on either harness; allowBash is unsandboxed shell.",
       promptSnippet: "Dispatch bounded independent child tasks with explicit permissions and path ownership",
       promptGuidelines: [
         "Fan out by default: independent leaves (disjoint files, modules, screens, angles) dispatch in ONE parallel wave — width defaults to min(8, task count); automatic MiMo/Sol chain lanes fill 8, explicit Luna lanes stay at 6 or fewer.",
         "Delegation must buy completion speed; modest token premiums for real throughput are correct. Trivial or tightly coupled edits and direct answers stay in the parent.",
         "Parent owns decomposition, integration, verification; workers own leaves end to end. With exact disjoint paths and acceptance contracts in hand, dispatch in the first tool turn without pre-reading child-owned files; do not duplicate child discovery in the parent.",
         "model or profile picks an explicit authenticated route (mutually exclusive, overrides roles). Every GPT choice requires paid openai-codex OAuth — never OpenRouter, API-key, or batch GPT. Astra workers default to medium reasoning; high/xhigh needs a concrete thinkingReason. requireImages=true for visual critics or render inspection.",
-        "Claude work defaults to Sonnet 5.5: harness claude-code (or model claude-code/claude-sonnet-5-5) runs Sonnet 5.5 xhigh, nearly Opus-level at far less quota. Escalate to Opus 5.5 (model claude-code/claude-opus-5-5) only for frontier needs: expert review and sign-off (all-reviewer waves default to it), hard architecture or security reasoning, or a leaf Sonnet already failed. mayEdit+ownedPaths and allowBash work as on Pi. No fallback between the two; images, relay and native resume are unavailable on this harness.",
+        "Claude work defaults to Sonnet 5.5: harness claude-code (or model claude-code/claude-sonnet-5-5) runs Sonnet 5.5 xhigh, nearly Opus-level at far less quota. Escalate to Opus 5.5 (model claude-code/claude-opus-5-5) only for frontier needs: expert review and sign-off (all-reviewer waves default to it), hard architecture or security reasoning, or a leaf Sonnet already failed. mayEdit+ownedPaths and allowBash work as on Pi. Haiku 5.5 (model claude-code/claude-haiku-5-5, medium effort unless thinking is set) is an explicit opt-in for bounded mechanical tasks only (extraction, validation, renames); it is never the default and not for planning, review or sign-off. No fallback between Claude models or to any other route; images, relay and native resume are unavailable on this harness.",
         "Background only when the parent can integrate while children run, then one bounded ultraterm_hub wait. Never start a background run merely to wait immediately.",
         "For read-only tasks omit ownedPaths and state the read scope in task text; mayEdit requires ownedPaths. allowBash bypasses ownedPaths — grant only when operator-level shell access is necessary.",
       ],
@@ -1308,7 +1308,9 @@ export function createUltratermSubagentsExtension(
         const opusReviewDefault = implicitRoute && allReviewers;
         const params: UltratermSubagentsParams = {
           ...requested,
-          ...((opusReviewDefault || (requested.harness === undefined && CLAUDE_CODE_ROUTES.includes(requested.model ?? ""))) ? { harness: "claude-code" as const } : {}),
+          // Any claude-code/ model id selects the CLI harness, so an unknown id
+          // gets the named claude-code refusal instead of a registry miss.
+          ...((opusReviewDefault || (requested.harness === undefined && typeof requested.model === "string" && requested.model.startsWith("claude-code/"))) ? { harness: "claude-code" as const } : {}),
         };
         if (!ctx.model) throw new Error("ultraterm_subagents requires a resolved current model");
         const current = ensureRuntime(ctx);
@@ -1322,15 +1324,13 @@ export function createUltratermSubagentsExtension(
         // CLI route is explicit and fixed, and the native Pi registry is never
         // consulted for it (it cannot resolve, and must not appear to).
         const foreignHarness = params.harness === "claude-code";
-        if (foreignHarness && ((params.model !== undefined && !CLAUDE_CODE_ROUTES.includes(params.model)) || params.profile !== undefined)) {
-          throw new Error("USAP harness claude-code runs only claude-code/claude-sonnet-5-5 or claude-code/claude-opus-5-5 at xhigh; other model/profile selectors are refused.");
-        }
+        if (foreignHarness) assertClaudeCodeSelector({ model: params.model, profile: params.profile });
         // Sonnet 5.5 is the default Claude worker; all-reviewer waves keep the Opus Pass.
+        // Haiku 5.5 is never chosen here: only an explicit model names it.
         const claudeRoute = foreignHarness ? params.model ?? defaultClaudeCodeRoute(params.tasks) : undefined;
         const claudeModel = claudeCodeModelOf(claudeRoute);
-        if (foreignHarness && params.thinking !== undefined && params.thinking !== "xhigh") {
-          throw new Error(`USAP claude-code ${claudeCodeModelName(claudeModel!)} requires xhigh effort; a different explicit effort is not silently overridden.`);
-        }
+        // Sonnet/Opus stay at xhigh; Haiku runs medium unless thinking is explicit.
+        const claudeEffort = foreignHarness ? resolveClaudeCodeEffort(claudeModel!, params.thinking) : undefined;
         if (foreignHarness && params.requireImages === true) {
           throw new Error("USAP harness claude-code does not advertise image inspection; requireImages is refused. No fallback was selected.");
         }
@@ -1338,7 +1338,7 @@ export function createUltratermSubagentsExtension(
           ? undefined
           : await resolvePiSelection(() => resolveWorkerSelection(ctx.model!, ctx.thinkingLevel, params, ctx.modelRegistry, dependencies.profiles, undefined, automaticChainOptions(dependencies)), ctx.modelRegistry);
         const resolvedSelection = piResolved ? piResolved.selection : resolveClaudeCodeSelection(claudeModel);
-        const resolvedThinking = piResolved ? String(piResolved.thinkingLevel) : "xhigh";
+        const resolvedThinking = piResolved ? String(piResolved.thinkingLevel) : claudeEffort!;
         const model = foreignHarness ? claudeRoute! : `${piResolved!.model.provider}/${piResolved!.model.id}`;
         const thinking = resolvedThinking;
         const input: DispatchInput = {
@@ -1564,10 +1564,16 @@ export function createUltratermSubagentsExtension(
           // history, so the check above fails closed; never-started tasks
           // may start fresh.
           const claudeResume = snapshot.harness === "claude-code";
+          // The exact selected Claude model is preserved or the resume fails
+          // closed; an unrecognized checkpoint model is never mapped to a default.
+          const resumeClaudeModel = claudeResume ? claudeCodeModelOf(snapshot.model) : undefined;
+          if (claudeResume && resumeClaudeModel === undefined) {
+            throw new Error(`Resume refused: ${claudeCodeUnknownSelectorError("model", snapshot.model)}`);
+          }
           const resolved = claudeResume
             ? undefined
             : await resolvePiSelection(() => resolveWorkerSelection(ctx.model!, ctx.thinkingLevel, input, ctx.modelRegistry, dependencies.profiles, undefined, automaticChainOptions(dependencies)), ctx.modelRegistry);
-          const resumeSelection = resolved ? resolved.selection : resolveClaudeCodeSelection(claudeCodeModelOf(snapshot.model));
+          const resumeSelection = resolved ? resolved.selection : resolveClaudeCodeSelection(resumeClaudeModel);
           // Same subscription route as the original, or no resume: a changed or
           // paid route is refused before the one resume is spent.
           const originalRoute = snapshot.selection ? `${snapshot.selection.provider}/${snapshot.selection.modelId}` : snapshot.model;
@@ -1579,10 +1585,10 @@ export function createUltratermSubagentsExtension(
           if (resolved) {
             if (String(resolved.thinkingLevel) !== snapshot.thinkingLevel) refuseRoute(`the reasoning level changed (${snapshot.thinkingLevel} → ${String(resolved.thinkingLevel)})`);
             if (!isSubscriptionOrLocalRoute(resolved.model, ctx.modelRegistry.isUsingOAuth(resolved.model))) refuseRoute(`${resumedRoute} is no longer a subscription route (paid or API-key billing)`);
-          } else if (snapshot.thinkingLevel !== "xhigh") {
-            refuseRoute(`Claude Code runs only at xhigh, not ${snapshot.thinkingLevel}`);
+          } else if (!claudeCodeEffortAllowed(resumeClaudeModel!, snapshot.thinkingLevel)) {
+            refuseRoute(`Claude Code ${claudeCodeModelName(resumeClaudeModel!)} does not run at ${snapshot.thinkingLevel}`);
           }
-          const run = normalizeDispatch(input, snapshot.cwd, snapshot.model, resolved ? String(resolved.thinkingLevel) : "xhigh", dependencies.now?.() ?? Date.now(), dependencies.idFactory);
+          const run = normalizeDispatch(input, snapshot.cwd, snapshot.model, resolved ? String(resolved.thinkingLevel) : snapshot.thinkingLevel, dependencies.now?.() ?? Date.now(), dependencies.idFactory);
           // The resume pins the original route: a recorded automatic chain is not
           // carried over, so no pre-output hop can move the session to another route.
           run.selection = { ...resumeSelection };

@@ -9,8 +9,8 @@
  *
  * The CLI flag surface below is the exact operator-confirmed set for the
  * installed CLI:
- *   --print --output-format stream-json --verbose --model <claude-sonnet-5-5|claude-opus-5-5>
- *   --effort xhigh --no-session-persistence --permission-mode dontAsk
+ *   --print --output-format stream-json --verbose --model <claude-sonnet-5-5|claude-opus-5-5|claude-haiku-5-5>
+ *   --effort <xhigh; Haiku defaults to medium> --no-session-persistence --permission-mode dontAsk
  *   --safe-mode --restricted --setting-sources "" --strict-mcp-config
  *   --max-turns <run budget> --tools <allowlist> [--allowedTools <rules>]
  * The installed CLI help documents settings/read confinement; live USAP smoke
@@ -33,7 +33,8 @@ import { CLAUDE_SESSION_ID, removeClaudeWorkerSession } from "./claude-session.t
 import type { ChildProcess } from "node:child_process";
 import { OUTPUT_LIMIT, addUsage, emptyUsage, harnessOf, sanitizeUsage, type RunRecord, type TaskRecord,
   type UsageTotals, type WorkerProgress, type WorkerResult, type WorkerRunner } from "./types.ts";
-import { CLAUDE_CODE_EFFORT, CLAUDE_CODE_MODEL, CLAUDE_CODE_ROUTE, claudeCodeModelName, claudeCodeModelOf, type ClaudeCodeModel } from "./model-selection.ts";
+import { CLAUDE_CODE_MODEL, CLAUDE_CODE_ROUTE, claudeCodeDefaultEffort, claudeCodeEffortAllowed, claudeCodeModelName, claudeCodeModelOf,
+  claudeCodeUnknownSelectorError, type ClaudeCodeModel } from "./model-selection.ts";
 import { truncatePiWorkerOutput } from "./pi-worker.ts";
 import { workerJournal } from "./coordinator.ts";
 import { turnBudgetPromptLine } from "./turn-budget.ts";
@@ -133,7 +134,9 @@ async function verifyClaudeSubscription(executable: string, env: NodeJS.ProcessE
  * as a positional argument, so task text can never be parsed as CLI flags.
  * Permissions default to read-only; write/shell tools and their allow rules
  * appear only when the task grants them. */
-export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPermissions = {}, resolve?: (value: string) => string | undefined, model: ClaudeCodeModel = CLAUDE_CODE_MODEL, session?: ClaudeWorkerSession): string[] {
+export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPermissions = {}, resolve?: (value: string) => string | undefined, model: ClaudeCodeModel = CLAUDE_CODE_MODEL, session?: ClaudeWorkerSession, effort: string = claudeCodeDefaultEffort(model)): string[] {
+  if (claudeCodeModelOf(`claude-code/${model}`) === undefined) throw new Error(claudeCodeUnknownSelectorError("model", String(model)));
+  if (!claudeCodeEffortAllowed(model, effort)) throw new Error(`claude-code ${claudeCodeModelName(model)} cannot run at ${JSON.stringify(String(effort).slice(0, 32))} effort`);
   if (session !== undefined && !CLAUDE_SESSION_ID.test(session.id)) throw new Error("claude-code session id must be a lowercase UUID");
   const ownedPaths = permissions.ownedPaths ?? [];
   if (permissions.mayEdit && ownedPaths.length === 0) throw new Error("claude-code mayEdit leaves require at least one owned path");
@@ -150,7 +153,7 @@ export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPer
     "--output-format", "stream-json",
     "--verbose",
     "--model", model,
-    "--effort", CLAUDE_CODE_EFFORT,
+    "--effort", effort,
     // A persisted session lets a worker cut off by a transient fault resume
     // with its history (`--resume`); the transcript is deleted once it is done.
     ...(session === undefined ? ["--no-session-persistence"] : session.resume ? ["--resume", session.id] : ["--session-id", session.id]),
@@ -167,20 +170,39 @@ export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPer
 
 /** Local CLI error messages are not model responses. Never echo arbitrary error
  * text (credentials, URLs, control characters); retain only a bounded quota
- * reset in the observed calendar/time/timezone format and fixed cause labels. */
-function syntheticClaudeCause(text: string): string {
+ * reset in the observed calendar/time/timezone format and fixed cause labels.
+ * `allowance` (quota/rate limit, billing) and `model` (unknown or inaccessible
+ * model id) are named so a refusal never reads as a model response and no
+ * other model is substituted. `apiError` is the frame's own error code. */
+interface SyntheticCause { kind: "allowance" | "model" | "other"; text: string }
+function syntheticClaudeCause(text: string, apiError?: string): SyntheticCause {
   const diagnostic = text.slice(0, 4096).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
-  if (/\b(?:hit your (?:weekly |usage )?limit|(?:weekly|usage|rate) limit|quota (?:exceeded|exhausted))\b/i.test(diagnostic)) {
+  if (apiError === "rate_limit" || /\b(?:hit your (?:weekly |usage )?limit|(?:weekly|usage|rate) limit|quota (?:exceeded|exhausted))\b/i.test(diagnostic)) {
     const reset = diagnostic.match(/\bresets ((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2} at \d{1,2}(?::\d{2})?(?:am|pm) \([A-Za-z_]{1,32}\/[A-Za-z_]{1,32}(?:\/[A-Za-z_]{1,32})?\))/i)?.[1];
-    return `quota limit reached${reset ? `; resets ${reset}` : ""}`;
+    return { kind: "allowance", text: `quota limit reached${reset ? `; resets ${reset}` : ""}` };
+  }
+  if (apiError === "billing_error" || /\b(?:credit balance is too low|billing (?:error|issue)|extra usage|usage credits?)\b/i.test(diagnostic)) {
+    return { kind: "allowance", text: "billing or extra usage required; included allowance unavailable" };
+  }
+  if (/\bissue with the selected model\b|\bmay not exist or you may not have access\b/i.test(diagnostic)) {
+    return { kind: "model", text: "requested model is unknown or not accessible to this login" };
   }
   if (/\b(?:authentication (?:failed|error)|authentication_error|not logged in|invalid (?:api key|authentication (?:token|credentials))|(?:oauth|access) token (?:has )?expired|please (?:run \/login|log in))\b/i.test(diagnostic)) {
-    return "authentication failed; subscription login requires attention";
+    return { kind: "other", text: "authentication failed; subscription login requires attention" };
   }
   if (/\b(?:connection (?:error|failed|refused|reset)|network (?:error|unreachable)|unable to connect to (?:the )?api|request timed out|fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT)\b/i.test(diagnostic)) {
-    return "transport failure; connection or request did not complete";
+    return { kind: "other", text: "transport failure; connection or request did not complete" };
   }
-  return "unrecognized synthetic error (fail closed)";
+  return { kind: "other", text: "unrecognized synthetic error (fail closed)" };
+}
+
+/** Terminal message for a synthetic frame. Allowance and unknown-model refusals
+ * name the requested model and state that nothing else was substituted. */
+function syntheticFailure(cause: SyntheticCause, requested: ClaudeCodeModel): string {
+  const tail = "synthetic frame is not a model response or approval";
+  if (cause.kind === "allowance") return `Claude allowance unavailable for ${requested}: ${cause.text}; no fallback model was selected; ${tail}`;
+  if (cause.kind === "model") return `Claude model unavailable: requested ${requested} is unknown or not accessible to this login; no fallback model was selected; ${tail}`;
+  return `Claude CLI synthetic error: ${cause.text}; ${tail}`;
 }
 
 function permissionLine(task: TaskRecord): string {
@@ -253,7 +275,7 @@ export function buildClaudeWorkerPrompt(run: RunRecord, task: TaskRecord): strin
 }
 
 export type ClaudeStreamEvent =
-  | { kind: "assistant"; text: string; toolUses: string[]; toolCalls: ClaudeToolCall[]; usage?: unknown; messageId?: string; model?: string; sidechain?: boolean }
+  | { kind: "assistant"; text: string; toolUses: string[]; toolCalls: ClaudeToolCall[]; usage?: unknown; messageId?: string; model?: string; sidechain?: boolean; apiError?: string }
   | { kind: "identity"; model: string }
   | { kind: "tool_result"; isError: boolean; results: Array<{ id: string; isError: boolean }> }
   | { kind: "result"; subtype?: string; isError: boolean; result?: string; usage?: unknown; totalCostUsd?: number; numTurns?: number; models?: string[] }
@@ -298,16 +320,18 @@ export function parseClaudeStreamLine(line: string): ClaudeStreamEvent {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { kind: "malformed" };
   const event = parsed as { type?: unknown; subtype?: unknown; is_error?: unknown; result?: unknown;
     usage?: unknown; total_cost_usd?: unknown; num_turns?: unknown; message?: unknown; model?: unknown; modelUsage?: unknown;
-    parent_tool_use_id?: unknown };
+    parent_tool_use_id?: unknown; error?: unknown };
   if (event.type === "system" && event.subtype === "init" && typeof event.model === "string") return { kind: "identity", model: event.model };
   if (event.type === "assistant") {
     const { text, toolUses, toolCalls } = textBlocks((event.message as { content?: unknown } | undefined)?.content);
     const usage = (event.message as { usage?: unknown } | undefined)?.usage;
-    const message = event.message as { id?: unknown; model?: unknown } | undefined;
+    const message = event.message as { id?: unknown; model?: unknown; error?: unknown } | undefined;
+    const apiError = typeof event.error === "string" ? event.error : typeof message?.error === "string" ? message.error : undefined;
     return { kind: "assistant", text, toolUses, toolCalls, ...(usage === undefined ? {} : { usage }),
       ...(typeof message?.id === "string" ? { messageId: message.id } : {}),
       ...(typeof message?.model === "string" ? { model: message.model } : {}),
-      ...(typeof event.parent_tool_use_id === "string" ? { sidechain: true } : {}) };
+      ...(typeof event.parent_tool_use_id === "string" ? { sidechain: true } : {}),
+      ...(apiError !== undefined ? { apiError: apiError.slice(0, 64) } : {}) };
   }
   if (event.type === "user") {
     const content = (event.message as { content?: unknown } | undefined)?.content;
@@ -469,8 +493,9 @@ export function classifyClaudeWorkerState(input: {
   exitCode: number | null;
   exitSignal: string | null;
   spawnError?: Error;
+  requestedModel?: string;
 }): Pick<WorkerResult, "state" | "error"> {
-  const { signal, state, maxTurns, exitCode, exitSignal, spawnError } = input;
+  const { signal, state, maxTurns, exitCode, exitSignal, spawnError, requestedModel } = input;
   if (spawnError !== undefined) return { state: "failed", error: `claude-code CLI could not start: ${spawnError.message}` };
   if (state.failure !== undefined) return { state: "failed", error: state.failure };
   if (isTimeoutSignal(signal)) return { state: "timed_out", error: errorText(signal.reason ?? "Run deadline exceeded") };
@@ -491,7 +516,9 @@ export function classifyClaudeWorkerState(input: {
     if (result.isError || (result.subtype !== undefined && result.subtype !== "success")) {
       return { state: "failed", error: `claude-code CLI reported ${result.subtype ?? "an error"} result` };
     }
-    if (!state.modelVerified) return { state: "failed", error: "Claude CLI did not attest the pinned route model" };
+    if (!state.modelVerified) {
+      return { state: "failed", error: `${requestedModel ? `effective model unverified: requested ${requestedModel}; ` : ""}Claude CLI did not attest the pinned route model` };
+    }
     return { state: "done" };
   }
   if (exitCode !== null && exitCode !== 0) {
@@ -520,13 +547,16 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
       return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "harness claude-code cannot resume a native Pi worker session" };
     }
     const pinnedModel = claudeCodeModelOf(run.model);
-    if (pinnedModel === undefined || run.thinkingLevel !== CLAUDE_CODE_EFFORT) {
-      return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "Claude Code requires the exact Sonnet 5.5 or Opus 5.5 xhigh route" };
+    if (pinnedModel === undefined) {
+      return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: claudeCodeUnknownSelectorError("model", String(run.model)) };
+    }
+    if (!claudeCodeEffortAllowed(pinnedModel, run.thinkingLevel)) {
+      return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: `Claude Code ${claudeCodeModelName(pinnedModel)} cannot run at ${JSON.stringify(String(run.thinkingLevel).slice(0, 32))} effort; Sonnet and Opus require xhigh, Haiku medium, high or xhigh` };
     }
     const resuming = typeof task.claudeSessionId === "string" && CLAUDE_SESSION_ID.test(task.claudeSessionId);
     const sessionId = resuming ? task.claudeSessionId! : randomUUID();
     let args: string[];
-    try { args = claudeWorkerArgs(Math.max(1, Math.min(run.maxTurns, 2048)), task, undefined, pinnedModel, { id: sessionId, resume: resuming }); }
+    try { args = claudeWorkerArgs(Math.max(1, Math.min(run.maxTurns, 2048)), task, undefined, pinnedModel, { id: sessionId, resume: resuming }, run.thinkingLevel); }
     catch (error) { return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
     if (signal.aborted) return { state: isTimeoutSignal(signal) ? "timed_out" : "aborted", output: "", turns: 0, usage: emptyUsage(), error: "Cancelled before CLI launch" };
     if (!options.spawn) {
@@ -624,9 +654,12 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
         const reportedModels = event.kind === "identity" ? [event.model]
           : event.kind === "assistant" ? (event.model === undefined ? [] : [event.model])
           : event.kind === "result" ? event.models ?? [] : [];
-        if (reportedModels.includes("<synthetic>")) {
+        // An allowance error code (rate limit, billing) is a refusal, not a model
+        // response, even if the frame names a model instead of <synthetic>.
+        const allowanceCode = event.kind === "assistant" && (event.apiError === "rate_limit" || event.apiError === "billing_error");
+        if (reportedModels.includes("<synthetic>") || allowanceCode) {
           syntheticFailed = true;
-          state.failure ??= `Claude CLI synthetic error: ${syntheticClaudeCause(event.kind === "assistant" ? event.text : "")}; synthetic frame is not a model response or approval`;
+          state.failure ??= syntheticFailure(syntheticClaudeCause(event.kind === "assistant" ? event.text : "", event.kind === "assistant" ? event.apiError : undefined), pinnedModel);
           // Do not count this frame as a turn, usage, output, or model evidence.
           killOnce(true);
           return;
@@ -638,9 +671,17 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
         const helperAllowed = (event.kind === "assistant" && event.sidechain === true) || event.kind === "result";
         const wrong = reportedModels.filter((model) => model !== pinnedModel && !(helperAllowed && isClaudeHelperModel(model)));
         if (wrong.length > 0 || (event.kind === "result" && reportedModels.length > 0 && !reportedModels.includes(pinnedModel))) {
+          // Named failure; the "pinned" wording keeps it out of automatic resume.
           state.failure = wrong.length > 0
-            ? `Claude CLI reported ${wrong.join(", ")}, not the pinned ${claudeCodeModelName(pinnedModel)} route`
-            : `Claude CLI usage shows no turn on the pinned ${claudeCodeModelName(pinnedModel)} route`;
+            ? `effective model mismatch: requested ${pinnedModel}, got ${wrong.join(", ")} (Claude CLI reported ${wrong.join(", ")}, not the pinned ${claudeCodeModelName(pinnedModel)} route)`
+            : `effective model mismatch: requested ${pinnedModel}, got ${reportedModels.join(", ")} (Claude CLI usage shows no turn on the pinned ${claudeCodeModelName(pinnedModel)} route)`;
+          killOnce(true);
+          return;
+        }
+        // A main-agent frame that names no model cannot attest the route; the
+        // requested model is never assumed for it.
+        if (event.kind === "assistant" && !event.sidechain && event.model === undefined) {
+          state.failure = `effective model unverified: requested ${pinnedModel}; a main assistant frame carries no model (Claude CLI did not attest the pinned route model)`;
           killOnce(true);
           return;
         }
@@ -751,7 +792,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     }
     if (!closed) state.failure ??= "claude-code process exit could not be verified; cleanup lease retained";
 
-    const classification = classifyClaudeWorkerState({ signal, state, maxTurns, exitCode, exitSignal, ...(spawnError !== undefined ? { spawnError } : {}) });
+    const classification = classifyClaudeWorkerState({ signal, state, maxTurns, exitCode, exitSignal, requestedModel: pinnedModel, ...(spawnError !== undefined ? { spawnError } : {}) });
     // Keep the transcript only while it may still be resumed.
     if (classification.state === "done" && !options.spawn) {
       try { removeClaudeWorkerSession(sessionId); } catch { /* best effort; the report is unaffected */ }

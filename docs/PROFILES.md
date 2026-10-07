@@ -43,6 +43,20 @@ under `dontAsk`) and `allowBash` exactly as Pi workers do. The harness refuses
 image admission, relay and worker resume.
 A failed or quota-blocked review is not expert approval.
 
+**Haiku 5.5** is the opt-in routine tier: `model: "claude-code/claude-haiku-5-5"`
+(official Claude Code CLI, existing subscription login, no `--bare`, no
+fallback model) for bounded mechanical tasks such as extraction, validation and
+renames. It runs at `medium` effort unless `thinking` names `medium`, `high` or
+`xhigh`; Sonnet and Opus stay at `xhigh`. Nothing selects Haiku implicitly:
+`harness: "claude-code"` alone is Sonnet and all-reviewer waves are Opus. Use
+direct tools first, Sonnet for implementation, and Opus for planning, review and
+sign-off. The CLI must serve the requested model: the main assistant frames and
+the result usage have to name it exactly (the init label alone is not proof) or
+the task fails with `effective model mismatch`. An unknown `claude-code/…` id, an
+unavailable allowance (rate limit, billing) or an inaccessible model fails with
+a named error and never falls back to another Claude model or to GPT. A resume
+keeps the exact model and effort or is refused.
+
 Before commit/push/deploy, weaker implementers request one bounded Opus Pass
 through the parent. USAP never grants permission to release. Explicit native Pi
 model/profile selections remain exact, including image-capable routes selected

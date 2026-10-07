@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- Added `claude-code/claude-haiku-5-5` as an explicit opt-in routine tier for
+  bounded mechanical tasks (extraction, validation, renames) on the official
+  Claude Code CLI with the existing subscription login. It runs at `medium`
+  effort unless `thinking` names `medium`, `high` or `xhigh`; Sonnet 5.5 stays
+  the default Claude worker at `xhigh` and Opus 5.5 the all-reviewer default.
+  Haiku is never selected implicitly. Direct tools first, Sonnet for
+  implementation, Opus for planning, review and sign-off.
+- Claude Code runs now fail with a named `effective model mismatch: requested X,
+  got Y` unless the main assistant frames and result usage show the requested
+  model; the init label alone is never proof, and Claude's own Haiku helper
+  accounting is still ignored. A main frame with no model fails as unverified.
+- An unknown `claude-code/…` model id, an unavailable allowance (rate limit or
+  billing) and an inaccessible model each fail by name with no fallback to
+  another Claude model or to GPT, and are not retried automatically.
+- Resuming a Claude Code checkpoint keeps its exact model and effort, or is
+  refused. GPT-6.0 Sol and GLM remain retired and refused.
+
 ## 0.9.10 (2026-10-06)
 
 - Checkpoint failures now name their safe error code, stop the affected run's
