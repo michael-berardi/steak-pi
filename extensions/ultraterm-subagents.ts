@@ -325,6 +325,8 @@ interface SessionRuntime {
   checkpointError?: string;
   checkpointHealth: PersistenceHealth;
   checkpointPending: Map<string, RunRecord>;
+  /** Native receipts observed but not yet committed to the durable snapshot. */
+  checkpointReceipts: Set<string>;
   checkpointStopping: Set<string>;
   /** Set when a duplicate owner in this process holds the namespace. */
   checkpointCollision?: string;
@@ -938,9 +940,16 @@ export function createUltratermSubagentsExtension(
     };
     const saveCheckpoint = (current: SessionRuntime, run: RunRecord, force: boolean, stage: string, propagate = false): void => {
       if (!current.store) return;
+      let failureStage = stage;
       try {
         const written = current.store.save(run, force || current.checkpointHealth.needsSave(run.id));
         if (written) {
+          if (current.checkpointReceipts.has(run.id)) {
+            failureStage = "receipt";
+            current.store.markDelivered(run.id);
+            current.checkpointReceipts.delete(run.id);
+          }
+          // A saved snapshot alone cannot validate a failed receipt commit.
           current.checkpointHealth.saved(run.id);
           current.checkpointPending.delete(run.id);
           if (!current.checkpointHealth.blocked) {
@@ -949,7 +958,7 @@ export function createUltratermSubagentsExtension(
           }
         }
       } catch (error) {
-        checkpointFailed(current, run, error, stage);
+        checkpointFailed(current, run, error, failureStage);
         if (propagate) throw new Error(current.checkpointError);
       }
     };
@@ -959,7 +968,7 @@ export function createUltratermSubagentsExtension(
      * available read-only until the live owner releases the lease. */
     const assertDurableForNewWork = (current: SessionRuntime, action = "New dispatch"): void => {
       if (current.store && current.checkpointHealth.blocked) {
-        // Explicit new-work admission retries snapshots only, never worker execution.
+        // Retry pending snapshots and receipts only, never worker execution.
         for (const [id, pending] of current.checkpointPending) {
           saveCheckpoint(current, current.coordinator.snapshot(id) ?? pending, true, "retry", true);
         }
@@ -1063,6 +1072,7 @@ export function createUltratermSubagentsExtension(
         store,
         checkpointHealth: new PersistenceHealth(),
         checkpointPending: new Map(),
+        checkpointReceipts: new Set(),
         checkpointStopping: new Set(),
         checkpointDegraded: claim.degraded,
         checkpointCollision: claim.collision,
@@ -1152,10 +1162,18 @@ export function createUltratermSubagentsExtension(
         current.completionBuffer = current.completionBuffer.filter((item) => {
           if (!ids.has(item.runId)) return true;
           current.awaitingReceipt.delete(item.runId);
-          try { current.store?.markDelivered(item.runId); } catch (error) {
-            const run = readRun(current, item.runId);
-            if (run) checkpointFailed(current, run, error, "receipt");
+          if (current.store) {
+            current.checkpointReceipts.add(item.runId);
+            try {
+              current.store.markDelivered(item.runId);
+              current.checkpointReceipts.delete(item.runId);
+            } catch (error) {
+              const run = readRun(current, item.runId);
+              if (run) checkpointFailed(current, run, error, "receipt");
+            }
           }
+          // The native host observed this completion: never submit it again,
+          // even if its durable receipt must be retried on a later save.
           return false;
         });
       };

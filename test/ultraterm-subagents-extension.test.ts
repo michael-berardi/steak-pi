@@ -628,6 +628,77 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it.each(["admission", "shutdown"])("retains failed durable receipts until both commits recover via %s, without replay", async (recovery) => {
+    const root = mkdtempSync(join(tmpdir(), "usap-receipt-health-")); dirs.push(root);
+    const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: `receipt-${recovery}` };
+    const runner = vi.fn<WorkerRunner>(async () => ({ state: "done" as const, output: "retained completion", turns: 1, usage: emptyUsage() }));
+    const h = harness(() => runner, durable);
+    const originalMark = CheckpointStore.prototype.markDelivered;
+    let failing = true;
+    let directory = "";
+    const mark = vi.spyOn(CheckpointStore.prototype, "markDelivered").mockImplementation(function (this: CheckpointStore, id) {
+      directory = this.directory;
+      if (failing) throw Object.assign(new Error("private-session-payload /secret/token"), { code: "ENOSPC", syscall: "write" });
+      return originalMark.call(this, id);
+    });
+    const dispatch = (label: string, background = false) => h.tools.get("ultraterm_subagents").execute("d", {
+      goal: "receipt persistence", background, tasks: [{ label, task: "bounded" }],
+    }, undefined, undefined, h.ctx);
+    let next: ReturnType<typeof harness> | undefined;
+    try {
+      const result = await dispatch("completed", true);
+      const id = result.details.run.runId;
+      await flush();
+      const diagnose = async () => (await h.tools.get("ultraterm_hub").execute("diag", { action: "diagnose", runId: id }, undefined, undefined, h.ctx)).details.diagnostics;
+      const disk = () => JSON.parse(readFileSync(join(directory, `${id}.json`), "utf8"));
+      expect(h.messages).toHaveLength(1);
+      expect(runner).toHaveBeenCalledTimes(1);
+      expect(disk()).toMatchObject({ delivered: false, run: { state: "done" } });
+      const failed = await diagnose();
+      expect(failed.checkpointHealth).toMatchObject({ state: "failed", pendingRuns: 1, retainedFailure: {
+        first: { code: "ENOSPC", syscall: "write", stage: "receipt" }, count: 1,
+      } });
+      expect(JSON.stringify(failed.checkpointHealth)).not.toMatch(/private-session-payload|secret|token/);
+      await expect(dispatch("refused")).rejects.toThrow(/Checkpoint receipt failed/);
+      expect(mark).toHaveBeenCalledTimes(2);
+      expect(runner).toHaveBeenCalledTimes(1);
+      expect(h.messages).toHaveLength(1);
+      const stillFailed = await diagnose();
+      expect(stillFailed.checkpointHealth).toMatchObject({ state: "failed", pendingRuns: 1, retainedFailure: { count: 2, latest: { stage: "receipt" } } });
+      expect(stillFailed.checkpointError).toMatch(/ENOSPC/);
+      expect(disk().delivered).toBe(false);
+      failing = false;
+      if (recovery === "admission") {
+        await dispatch("fresh");
+        const repaired = await diagnose();
+        expect(repaired.checkpointError).toBeNull();
+        expect(repaired.checkpointHealth).toMatchObject({ state: "validated-save", pendingRuns: 0, retainedFailure: {
+          first: { code: "ENOSPC", stage: "receipt" }, latest: { code: "ENOSPC", stage: "receipt" }, count: 2,
+        } });
+        expect(runner.mock.calls.map(([context]) => context.task.label)).toEqual(["completed", "fresh"]);
+      }
+      await h.handlers.get("session_shutdown")!({}, h.ctx);
+      expect(disk()).toMatchObject({ delivered: true, run: { state: "done" } });
+      expect(mark).toHaveBeenCalledTimes(3);
+      const reopenRunner = vi.fn(async () => ({ state: "done" as const, output: "must not run", turns: 1, usage: emptyUsage() }));
+      next = harness(() => reopenRunner, { ...durable, prefix: "reopened" });
+      // No old native receipt is supplied: only the committed delivered bit prevents redelivery.
+      await next.handlers.get("session_start")!({}, next.ctx);
+      await next.handlers.get("agent_settled")!({}, next.ctx);
+      await flush();
+      expect(next.messages).toHaveLength(0);
+      expect(reopenRunner).not.toHaveBeenCalled();
+      const status = await next.tools.get("ultraterm_hub").execute("s", { action: "status", runId: id }, undefined, undefined, next.ctx);
+      expect(status.details.run.tasks[0]).toMatchObject({ state: "done" });
+    } finally {
+      failing = false;
+      try {
+        await h.handlers.get("session_shutdown")!({}, h.ctx);
+        if (next) await next.handlers.get("session_shutdown")!({}, next.ctx);
+      } finally { mark.mockRestore(); }
+    }
+  });
+
   it("does not resend a submission while its native receipt is delayed", async () => {
     vi.useFakeTimers();
     const h = harness(() => async () => ({ state: "done", output: "ready", turns: 1, usage: emptyUsage() }));
