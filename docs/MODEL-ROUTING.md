@@ -105,7 +105,11 @@ Pass** — the official Claude Code CLI on `claude-code/claude-opus-5-5` at
 explicitly or implied by an all-reviewer wave with no explicit route (routine
 Claude Code work runs `claude-code/claude-sonnet-5-5` instead, see PROFILES.md); a failed
 or quota-blocked CLI review is reported honestly, never silently downgraded,
-and never substituted with another model or billing route. Astra itself is
+and never substituted with another model or billing route. Claude Code also
+offers **Haiku 5.5** (`claude-code/claude-haiku-5-5`, medium effort by default)
+as an explicit opt-in for bounded mechanical tasks (extraction, validation,
+renames); it is never a default and not for planning, review or sign-off, and the CLI must
+serve the requested model (`effective model mismatch` otherwise). Astra itself is
 reachable only through an exact explicit selector on the paid Codex OAuth coding
 plan; eligibility is the exact subscription identity (OAuth, Codex Responses
 API, official `chatgpt.com/backend-api`), so a batch id, API-key endpoint, or

@@ -159,47 +159,98 @@ export function loadWorkerProfiles(directory = join(homedir(), ".config", "ultra
 }
 
 /** Exact spellings pinned by the candidate manifest (docs/opus-5-5.models.json):
- * model ids `claude-sonnet-5-5` and `claude-opus-5-5`. The `claude-code`
- * provider namespace is deliberately NOT `anthropic/…`: that Pi registry route
- * would imply API-key billing, which this harness never touches (CLI OAuth
- * existing auth only, with API-key/billing override env stripped at spawn). */
+ * model ids `claude-sonnet-5-5` and `claude-opus-5-5`, plus the opt-in routine
+ * tier `claude-haiku-5-5` (measured by a paired real trial, 2026-10-07). The
+ * `claude-code` provider namespace is deliberately NOT `anthropic/…`: that Pi
+ * registry route would imply API-key billing, which this harness never touches
+ * (CLI OAuth existing auth only, with API-key/billing override env stripped at
+ * spawn). */
 export const CLAUDE_CODE_OPUS_MODEL = "claude-opus-5-5" as const;
 export const CLAUDE_CODE_SONNET_MODEL = "claude-sonnet-5-5" as const;
+export const CLAUDE_CODE_HAIKU_MODEL = "claude-haiku-5-5" as const;
 /** The Opus Pass model, kept under its historical name for callers. */
 export const CLAUDE_CODE_MODEL = CLAUDE_CODE_OPUS_MODEL;
 export const CLAUDE_CODE_EFFORT = "xhigh" as const;
+/** Haiku is a routine tier: medium unless the caller names an effort. */
+export const CLAUDE_CODE_HAIKU_EFFORT = "medium" as const;
 export const CLAUDE_CODE_OPUS_ROUTE = `claude-code/${CLAUDE_CODE_OPUS_MODEL}` as const;
 export const CLAUDE_CODE_SONNET_ROUTE = `claude-code/${CLAUDE_CODE_SONNET_MODEL}` as const;
+export const CLAUDE_CODE_HAIKU_ROUTE = `claude-code/${CLAUDE_CODE_HAIKU_MODEL}` as const;
 /** The Opus Pass route (expert review and explicit Opus escalation). */
 export const CLAUDE_CODE_ROUTE = CLAUDE_CODE_OPUS_ROUTE;
-export type ClaudeCodeModel = typeof CLAUDE_CODE_OPUS_MODEL | typeof CLAUDE_CODE_SONNET_MODEL;
-export const CLAUDE_CODE_ROUTES: readonly string[] = [CLAUDE_CODE_SONNET_ROUTE, CLAUDE_CODE_OPUS_ROUTE];
+export type ClaudeCodeModel = typeof CLAUDE_CODE_OPUS_MODEL | typeof CLAUDE_CODE_SONNET_MODEL | typeof CLAUDE_CODE_HAIKU_MODEL;
+export type ClaudeCodeEffort = "medium" | "high" | "xhigh";
+export const CLAUDE_CODE_ROUTES: readonly string[] = [CLAUDE_CODE_SONNET_ROUTE, CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_HAIKU_ROUTE];
 
 /** The pinned Claude model behind a `claude-code/…` route, or undefined for
  * anything else (never a prefix or fuzzy match). */
 export function claudeCodeModelOf(route: string | undefined): ClaudeCodeModel | undefined {
   if (route === CLAUDE_CODE_OPUS_ROUTE) return CLAUDE_CODE_OPUS_MODEL;
   if (route === CLAUDE_CODE_SONNET_ROUTE) return CLAUDE_CODE_SONNET_MODEL;
+  if (route === CLAUDE_CODE_HAIKU_ROUTE) return CLAUDE_CODE_HAIKU_MODEL;
   return undefined;
 }
 
-/** Product name for messages: "Opus 5.5" / "Sonnet 5.5". */
+/** Product name for messages: "Opus 5.5" / "Sonnet 5.5" / "Haiku 5.5". */
 export function claudeCodeModelName(model: ClaudeCodeModel): string {
-  return model === CLAUDE_CODE_OPUS_MODEL ? "Opus 5.5" : "Sonnet 5.5";
+  return model === CLAUDE_CODE_OPUS_MODEL ? "Opus 5.5" : model === CLAUDE_CODE_HAIKU_MODEL ? "Haiku 5.5" : "Sonnet 5.5";
+}
+
+/** Effort a Claude Code route runs when the caller names none: Haiku medium,
+ * Sonnet and Opus xhigh. */
+export function claudeCodeDefaultEffort(model: ClaudeCodeModel): ClaudeCodeEffort {
+  return model === CLAUDE_CODE_HAIKU_MODEL ? CLAUDE_CODE_HAIKU_EFFORT : CLAUDE_CODE_EFFORT;
+}
+
+/** Sonnet and Opus stay pinned to xhigh; only Haiku accepts an explicit effort. */
+export function claudeCodeEffortAllowed(model: ClaudeCodeModel, effort: unknown): effort is ClaudeCodeEffort {
+  return model === CLAUDE_CODE_HAIKU_MODEL ? effort === "medium" || effort === "high" || effort === "xhigh" : effort === CLAUDE_CODE_EFFORT;
+}
+
+/** The effort a Claude Code run uses: the explicit request when the route
+ * accepts it, the route default when none was named, otherwise a refusal. An
+ * explicit effort is never silently replaced. */
+export function resolveClaudeCodeEffort(model: ClaudeCodeModel, requested?: string): ClaudeCodeEffort {
+  if (requested === undefined) return claudeCodeDefaultEffort(model);
+  if (claudeCodeEffortAllowed(model, requested)) return requested;
+  throw new Error(model === CLAUDE_CODE_HAIKU_MODEL
+    ? `USAP claude-code ${claudeCodeModelName(model)} accepts medium, high or xhigh effort; a different explicit effort is not silently overridden.`
+    : `USAP claude-code ${claudeCodeModelName(model)} requires xhigh effort; a different explicit effort is not silently overridden.`);
+}
+
+/** Named refusal for a claude-code model/profile id outside the exact routes. */
+export function claudeCodeUnknownSelectorError(kind: "model" | "profile", value: string): string {
+  return `unknown claude-code ${kind} ${JSON.stringify(value.slice(0, 80))}: USAP harness claude-code runs only claude-code/claude-sonnet-5-5 or claude-code/claude-opus-5-5 at xhigh, or the explicit opt-in claude-code/claude-haiku-5-5 (medium default); other model/profile selectors are refused and no fallback was selected.`;
+}
+
+/** Fail closed on any harness-claude-code selector that is retired or not an
+ * exact claude-code route. Retired Sol 6.0 and GLM keep their own named errors. */
+export function assertClaudeCodeSelector(selector: WorkerSelector): void {
+  assertActiveModelSelector(selector.model);
+  assertActiveModelSelector(selector.profile);
+  for (const value of [selector.model, selector.profile]) {
+    if (typeof value === "string" && RETIRED_ROUTE.test(value)) throw new Error(retiredRouteError(value));
+  }
+  if (selector.profile !== undefined) throw new Error(claudeCodeUnknownSelectorError("profile", selector.profile));
+  if (selector.model !== undefined && claudeCodeModelOf(selector.model) === undefined) {
+    throw new Error(claudeCodeUnknownSelectorError("model", selector.model));
+  }
 }
 
 /** Which Claude model a claude-code wave runs when the caller named none:
  * all-reviewer waves are expert review and take the Opus Pass; every other
- * wave is routine work and takes Sonnet 5.5, which preserves Opus quota. */
+ * wave is routine work and takes Sonnet 5.5, which preserves Opus quota. Haiku
+ * 5.5 is never a default: it runs only when the caller names its exact route. */
 export function defaultClaudeCodeRoute(tasks: readonly { role?: string }[]): string {
   return tasks.length > 0 && tasks.every((task) => task.role === "reviewer") ? CLAUDE_CODE_OPUS_ROUTE : CLAUDE_CODE_SONNET_ROUTE;
 }
 
 /** The explicit foreign-harness routes in this USAP slice: the official
- * headless Claude Code CLI at xhigh effort on Sonnet 5.5 (the default Claude
- * worker) or Opus 5.5 (the operator's "Opus Pass" route for expert review and
- * frontier work). Both are override-provenance, never an automatic chain step,
- * and neither falls back to the other or to any other model. */
+ * headless Claude Code CLI on Sonnet 5.5 (the default Claude worker) or Opus
+ * 5.5 (the operator's "Opus Pass" route for expert review and frontier work),
+ * both at xhigh, and the opt-in Haiku 5.5 routine tier at medium by default.
+ * All are override-provenance, never an automatic chain step, and none falls
+ * back to another model. */
 export function resolveClaudeCodeSelection(model: ClaudeCodeModel = CLAUDE_CODE_OPUS_MODEL): ModelSelection {
   return {
     provider: "claude-code",

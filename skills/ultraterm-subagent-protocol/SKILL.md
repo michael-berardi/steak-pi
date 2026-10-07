@@ -99,7 +99,15 @@ far less quota. **Escalate to Opus 5.5 only when the frontier is needed**:
 expert planning, review and sign-off, hard architecture or security reasoning,
 or a leaf Sonnet already failed. Select `model: "claude-code/claude-opus-5-5"`
 for that; all-reviewer waves with no explicit route (or `harness: "claude-code"`
-with only reviewer tasks) default to Opus 5.5. Existing first-party
+with only reviewer tasks) default to Opus 5.5. **Haiku 5.5 is an opt-in
+routine tier**: `model: "claude-code/claude-haiku-5-5"` for bounded mechanical
+leaves only (extraction, validation, renames); it runs at medium effort unless
+`thinking` is set, is never implied by `harness: "claude-code"`, and is not for
+planning, review or sign-off. Tool order: direct tools first, Haiku for bounded
+routine leaves, Sonnet for implementation, Opus for planning, review and
+sign-off. A stream that does not show the requested model fails as an
+`effective model mismatch`; an unknown id, rate limit or billing refusal fails
+by name and never falls back to another model or GPT. Existing first-party
 Claude subscription login is required; quota exhaustion is a failed review,
 never permission for credits or silent fallback. This replaces the Astra pass.
 The same harness serves workers and scouts too: select it explicitly and grant
