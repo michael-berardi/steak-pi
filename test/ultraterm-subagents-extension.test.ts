@@ -88,6 +88,84 @@ afterEach(() => {
 });
 
 describe("UltraTerm Subagent Protocol Pi extension", () => {
+  it("refuses an initial checkpoint failure before worker execution and retries snapshots only", async () => {
+    const root = mkdtempSync(join(tmpdir(), "usap-initial-health-")); dirs.push(root);
+    const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "initial-health" };
+    const runner = vi.fn(async () => ({ state: "done" as const, output: "fresh", turns: 1, usage: emptyUsage() }));
+    const h = harness(() => runner, durable);
+    const spy = vi.spyOn(CheckpointStore.prototype, "save").mockImplementationOnce(() => { throw Object.assign(new Error("private payload"), { code: "ENOSPC", syscall: "open" }); });
+    const dispatch = () => h.tools.get("ultraterm_subagents").execute("d", { goal: "bounded", tasks: [{ label: "fresh", task: "bounded" }] }, undefined, undefined, h.ctx);
+    try {
+      await expect(dispatch()).rejects.toThrow(/Checkpoint initial failed \(ENOSPC\/open\)/);
+      expect(runner).not.toHaveBeenCalled();
+      await dispatch();
+      const list = await h.tools.get("ultraterm_hub").execute("l", { action: "list" }, undefined, undefined, h.ctx);
+      expect(list.details.runs[0].tasks[0]).toMatchObject({ state: "aborted" });
+      expect(list.details.checkpointHealth.retainedFailure.first.code).toBe("ENOSPC");
+      expect(runner).toHaveBeenCalledTimes(1);
+    } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); spy.mockRestore(); }
+  });
+
+  it.each(["ENOSPC", "EACCES", "UNKNOWN"])("stops producers on %s, retains done evidence, and validates recovery without replay", async (code) => {
+    const root = mkdtempSync(join(tmpdir(), "usap-persistence-health-")); dirs.push(root);
+    const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: `health-${code}` };
+    const originalSave = CheckpointStore.prototype.save;
+    let failing = false;
+    let directory = "";
+    const save = vi.spyOn(CheckpointStore.prototype, "save").mockImplementation(function (this: CheckpointStore, run, force) {
+      directory = this.directory;
+      if (failing) throw Object.assign(new Error("private-session-payload /secret/token"), { code, syscall: "write" });
+      return originalSave.call(this, run, force);
+    });
+    const runner = vi.fn(async ({ task, onProgress, signal }: Parameters<WorkerRunner>[0]) => {
+      if (task.label === "loss") {
+        failing = true;
+        onProgress({ turns: 1 });
+        expect(signal.aborted).toBe(true);
+        return { state: "aborted" as const, output: "retained partial", turns: 1, usage: emptyUsage() };
+      }
+      return { state: "done" as const, output: "retained success", turns: 1, usage: emptyUsage() };
+    });
+    const h = harness(() => runner, durable);
+    const dispatch = (tasks: any[]) => h.tools.get("ultraterm_subagents").execute("d", {
+      goal: "checkpoint loss", concurrency: 1, tasks,
+    }, undefined, undefined, h.ctx);
+    try {
+      const result = await dispatch(["done", "loss", "never"].map(label => ({ label, task: "bounded" })));
+      const id = result.details.run.runId;
+      expect(result.details.run.tasks.map((task: any) => task.state)).toEqual(["done", "aborted", "aborted"]);
+      expect(runner.mock.calls.map(([context]) => context.task.label)).toEqual(["done", "loss"]);
+      const diagnose = async () => (await h.tools.get("ultraterm_hub").execute("diag", { action: "diagnose", runId: id }, undefined, undefined, h.ctx)).details.diagnostics;
+      const failed = await diagnose();
+      expect(failed.checkpointHealth.state).toBe("failed");
+      expect(failed.checkpointHealth.retainedFailure.first).toMatchObject({ code, syscall: "write", stage: "lifecycle", name: "Error" });
+      expect(JSON.stringify(failed.checkpointHealth)).not.toMatch(/private-session-payload|secret|token/);
+      await expect(dispatch([{ label: "refused", task: "not launched" }])).rejects.toThrow(/Checkpoint retry failed/);
+      expect(runner).toHaveBeenCalledTimes(2);
+      failing = false;
+      await dispatch([{ label: "fresh", task: "new exact leaf" }]);
+      const repaired = await diagnose();
+      expect(repaired.checkpointError).toBeNull();
+      expect(repaired.checkpointHealth.state).toBe("validated-save");
+      expect(repaired.checkpointHealth.retainedFailure.first.code).toBe(code);
+      const terminal = JSON.parse(readFileSync(join(directory, `${id}.json`), "utf8"));
+      expect(terminal.run.state).toBe("aborted");
+      expect(terminal.run.tasks[0]).toMatchObject({ state: "done" });
+      expect(terminal.run.tasks[0].output).toContain("retained success");
+      for (const stopped of terminal.run.tasks.slice(1)) {
+        expect(stopped.error).toContain(`Checkpoint lifecycle failed (${code}/write)`);
+        expect(stopped.error).not.toMatch(/private-session-payload|secret|token/);
+      }
+      expect(runner.mock.calls.map(([context]) => context.task.label)).toEqual(["done", "loss", "fresh"]);
+      await expect(h.tools.get("ultraterm_hub").execute("resume", { action: "resume", runId: id }, undefined, undefined, h.ctx)).rejects.toThrow(/No native checkpoint/);
+      expect(runner).toHaveBeenCalledTimes(3);
+    } finally {
+      failing = false;
+      await h.handlers.get("session_shutdown")!({}, h.ctx);
+      save.mockRestore();
+    }
+  });
+
   it("routes explicit headless Claude and default reviewer waves through the same coordinator without the Pi registry", async () => {
     const runner = vi.fn(async (_context: Parameters<WorkerRunner>[0]) => ({ state: "done" as const, output: "reviewed", turns: 1, usage: emptyUsage() }));
     const h = harness(() => runner);

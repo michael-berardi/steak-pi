@@ -227,7 +227,7 @@ export class CheckpointStore {
   list(): Checkpoint[] { return structuredClone([...this.cache.values()].sort((a, b) => a.savedAt - b.savedAt)); }
   get(id: string): Checkpoint | undefined { const value = this.cache.get(id); return value ? structuredClone(value) : undefined; }
 
-  save(run: RunRecord, force = false): void {
+  save(run: RunRecord, force = false): boolean {
     if (this.closed) throw new Error("USAP checkpoint store is closed");
     if (!ID.test(run.id)) throw new Error("Invalid checkpoint run ID");
     const now = Date.now();
@@ -242,11 +242,13 @@ export class CheckpointStore {
     }
     for (const task of copy.tasks) task.output = task.output.slice(-OUTPUT_LIMIT);
     const checkpoint: Checkpoint = { version: 1, run: copy, delivered: this.cache.get(run.id)?.delivered ?? false, savedAt: now, resumedAs: this.cache.get(run.id)?.resumedAs, pendingResume: this.cache.get(run.id)?.pendingResume };
-    this.cache.set(run.id, checkpoint);
-    if (!force && previous?.state === state && now - previous.at < 1000) return;
+    if (!force && previous?.state === state && now - previous.at < 1000) return false;
     this.atomic(run.id, checkpoint);
+    // Never advertise an unwritten terminal snapshot as durable recovery evidence.
+    this.cache.set(run.id, checkpoint);
     this.writes.set(run.id, { at: now, state });
     this.prune();
+    return true;
   }
 
   /** Write-ahead reservation: execution may start only after both records commit. */
@@ -280,8 +282,9 @@ export class CheckpointStore {
   markDelivered(id: string): void {
     const checkpoint = this.cache.get(id);
     if (!checkpoint || checkpoint.delivered) return;
-    checkpoint.delivered = true;
-    this.atomic(id, checkpoint);
+    const delivered = { ...checkpoint, delivered: true };
+    this.atomic(id, delivered);
+    this.cache.set(id, delivered);
   }
 
   /** A continuation can open only a regular owner-only native session in this store. */
@@ -318,8 +321,13 @@ export class CheckpointStore {
     if (Buffer.byteLength(data) > MAX_BYTES) throw new Error("USAP checkpoint exceeds size budget");
     const temp = join(this.directory, `.${id}-${randomUUID()}.tmp`);
     const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-    try { writeFileSync(fd, data); fsyncSync(fd); } finally { closeSync(fd); }
-    try { renameSync(temp, join(this.directory, `${id}.json`)); } finally { if (existsSync(temp)) unlinkSync(temp); }
+    try {
+      try { writeFileSync(fd, data); fsyncSync(fd); } finally { closeSync(fd); }
+      renameSync(temp, join(this.directory, `${id}.json`));
+    } finally {
+      // Cleanup must not mask the original errno (or remove a prior snapshot).
+      try { if (existsSync(temp)) unlinkSync(temp); } catch { /* Retain failed temp for private inspection. */ }
+    }
   }
 
   private prune(): void {

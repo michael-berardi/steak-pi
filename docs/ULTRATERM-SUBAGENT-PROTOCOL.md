@@ -465,7 +465,13 @@ public artifacts, project memory, or a cross-session relay queue.
   process, or recovery daemon. Recovered live tasks are marked aborted with a
   host-interruption reason; completed tasks retain their terminal evidence.
 - Use hub `status` and metadata-only `diagnose` before explicit `resume`.
-  Persistence errors mean recovery is not guaranteed.
+  Persistence errors mean recovery is not guaranteed. A checkpoint write failure
+  stops that run's unfinished producers and names the safe error code in their
+  cancellation evidence; completed tasks are retained. New dispatch/resume is
+  refused until pending snapshots can actually be saved. That retry writes
+  snapshots only, never replays workers. Diagnose distinguishes an active failure
+  from a validated save and retains bounded first/latest failure facts for the
+  current host lifetime. Unknown historical errors are not labelled ENOSPC.
 - Resume creates a new run for tasks not marked `done`, once per task, with the
   same time/turn budgets (the budget applies again; it is never raised) and
   revalidated original model/reasoning selection on the same subscription route.
