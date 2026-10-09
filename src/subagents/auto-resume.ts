@@ -19,7 +19,7 @@ export const CODEX_REPLY_LIMIT_REASON = "codex reply limit";
 const TRANSIENT: ReadonlyArray<{ pattern: RegExp; reason: string; delaysMs: readonly number[] }> = [
 	{ pattern: /^Codex reply limit:/, reason: CODEX_REPLY_LIMIT_REASON, delaysMs: [5_000] },
 	{ pattern: /rate.?limit|\b429\b|too many requests/i, reason: "rate limited", delaysMs: [60_000, 120_000] },
-	{ pattern: /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EPIPE|socket hang up|network (?:error|connection)/i, reason: "network drop", delaysMs: [10_000, 30_000] },
+	{ pattern: /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EPIPE|socket hang up|network (?:error|connection)|transport failure; connection or request did not complete/i, reason: "network drop", delaysMs: [10_000, 30_000] },
 	{ pattern: /^terminated$|response headers timed out|Request timed out|stream (?:ended|closed) (?:early|unexpectedly)/i, reason: "provider stream cut", delaysMs: [10_000, 30_000] },
 	{ pattern: /No model or tool activity for \d+ min/, reason: "provider stream stalled", delaysMs: [10_000, 30_000] },
 	{ pattern: /incomplete stream-json frame|claude-code CLI produced no result event/, reason: "Claude Code stream cut", delaysMs: [10_000, 30_000] },
