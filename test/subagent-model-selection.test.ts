@@ -2,7 +2,8 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { BUILTIN_WORKER_PROFILES, loadWorkerProfiles, resolveWorkerSelection, RETIRED_ROUTE, retiredRouteError } from "../src/subagents/model-selection.ts";
+import { BUILTIN_WORKER_PROFILES, CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_SONNET_ROUTE, assertClaudeCodeImageAdmission, loadWorkerProfiles,
+  resolveClaudeCodeSelection, resolveWorkerSelection, RETIRED_ROUTE, retiredRouteError } from "../src/subagents/model-selection.ts";
 import { DEFAULT_TEXT_WORKER_CHAIN, type ChainOptions } from "../src/model-route-policy.ts";
 import type { DispatchInput } from "../src/subagents/types.ts";
 
@@ -301,5 +302,50 @@ describe("USAP 1.1 explicit model/profile contract", () => {
       writeFileSync(join(dir, "bad.json"), "not json");
       expect(() => loadWorkerProfiles(dir)).toThrow(/parse harness metadata/);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+// All cases are synthetic: no CLI is spawned and no image is read. The parent's
+// real staged-image CLI smoke is what proves native Read-image behavior.
+describe("P-0579 claude-code staged native Read-image admission (synthetic)", () => {
+  const routes = [
+    { route: CLAUDE_CODE_SONNET_ROUTE, model: "claude-sonnet-5-5" },
+    { route: CLAUDE_CODE_OPUS_ROUTE, model: "claude-opus-5-5" },
+  ] as const;
+  it.each(routes)("admits the exact pinned route $route with images=true and no fallback", ({ route, model }) => {
+    expect(assertClaudeCodeImageAdmission(route)).toBe(model);
+    const selection = resolveClaudeCodeSelection(assertClaudeCodeImageAdmission(route));
+    expect(selection).toEqual({ provider: "claude-code", modelId: model, source: "override", harness: "claude-code", images: true, tools: true });
+    // Explicit pin only: no chain, profile or parent-profile provenance appears.
+    expect(selection).not.toHaveProperty("chainRoutes");
+    expect(selection).not.toHaveProperty("profile");
+    expect(selection).not.toHaveProperty("parentProfile");
+  });
+  it.each([
+    undefined, "", "claude-opus-5-5", "claude-sonnet-5-5", "anthropic/claude-opus-5-5", "claude-code/claude-opus-5",
+    "claude-code/claude-opus-5-5-fast", "claude-code/claude-fable-5-1", "claude-code/claude-haiku-5-5", " claude-code/claude-opus-5-5",
+    "claude-code/claude-opus-5-5 ", "CLAUDE-CODE/claude-opus-5-5", "claude-code/", "openai-codex/gpt-6.1-sol", "xiaomi/mimo-v2.6-flash",
+  ])("refuses a non-exact route %j before any image review starts", (route) => {
+    expect(() => assertClaudeCodeImageAdmission(route)).toThrow(/admits only claude-code\/claude-sonnet-5-5 or claude-code\/claude-opus-5-5.*no fallback/);
+  });
+  it("keeps the two admitted selections distinct instead of defaulting one to the other", () => {
+    expect(resolveClaudeCodeSelection("claude-sonnet-5-5").modelId).toBe("claude-sonnet-5-5");
+    expect(resolveClaudeCodeSelection("claude-opus-5-5").modelId).toBe("claude-opus-5-5");
+  });
+  it("never resolves the claude-code harness through the native Pi registry, even for image requests", () => {
+    const r = registry();
+    expect(() => choose(astra, { harness: "claude-code", requireImages: true }, r)).toThrow(/does not resolve through the native Pi registry/);
+    expect(r.find).not.toHaveBeenCalled();
+    expect(r.getAvailable).not.toHaveBeenCalled();
+  });
+  it("keeps Pi image admission fail-closed and unable to address a claude-code route", () => {
+    const r = registry();
+    for (const route of [CLAUDE_CODE_SONNET_ROUTE, CLAUDE_CODE_OPUS_ROUTE]) {
+      expect(() => choose(astra, { model: route, requireImages: true }, r)).toThrow(/unavailable.*no fallback was selected/);
+    }
+    // Text-only Pi routes still refuse images and nothing substitutes another model.
+    const text = { ...sol, input: ["text"] } as Model;
+    expect(() => choose(astra, { model: "openai-codex/gpt-6.1-sol", requireImages: true }, registry([text]))).toThrow(/image input/);
+    expect(() => choose(sol, { requireImages: true }, registry([sol]))).toThrow();
   });
 });

@@ -1,6 +1,6 @@
 # UltraTerm Subagent Protocol (USAP)
 
-Version: **1.3** (Steak Pi 0.8.0 candidate). This documents the behavior implemented in
+Version: **1.3**. This documents the behavior implemented in
 this checkout; it is not a guarantee of end-to-end recovery in every
 environment. [`AGENT-LIFECYCLE.md`](./AGENT-LIFECYCLE.md) provides
 additional lifecycle background. The legacy `parallel` tool is replaced and
@@ -154,14 +154,15 @@ the Opus route for expert planning, review, or frontier work. Each route runs
 checked against the route. Authentication preflight must report an
 existing first-party Claude subscription login. API-key/provider override
 environment variables are not inherited, and there is no fallback to another
-model, route, or billing arrangement. Quota exhaustion is a failed (blocked)
-review attempt, not permission to buy credits or an expert approval.
+model, route, or billing arrangement. Quota exhaustion is a failed task due to
+quota, not permission to buy credits or an expert approval.
 
 CLI assistant frames with `model: "<synthetic>"` are local errors, not model
 identity evidence or inference turns. Recognized quota, authentication and
 transport failures report a bounded sanitized cause (quota reset timing is
-retained when it matches the supported calendar/time/timezone shape); unknown
-synthetic errors fail closed without echoing arbitrary diagnostic text. Any
+retained for bounded dated or time-only forms, with an optional safe timezone).
+Structured `usage_limit_reached` metadata also names quota exhaustion.
+Unknown synthetic errors fail closed without echoing arbitrary diagnostic text. Any
 synthetic frame is terminal FAILED, even if followed by genuine pinned-model
 frames or a success result. Init metadata alone cannot attest served inference;
 init-only, synthetic-only and successful results without served-model evidence
@@ -174,7 +175,7 @@ Usage) before debugging model identity or the stream. Quota errors diagnose as
 `provider_quota`, ahead of a concurrent 429/rate-limit marker. Retain the
 sanitized reset time in the failed task's status; diagnosis remains metadata-only
 and provides a fixed recovery instruction, not raw error text. Exhausted usage
-blocks this attempt, not proof of a model defect or approval. Finish independent
+is a failed task due to quota, not a completed model review. Finish independent
 work and explicitly retry the same route after confirming the usage reset. If
 reset timing is unavailable, check the usage view rather than inventing a delay.
 Do not immediately auto-retry quota, buy credits, change billing, or fall back to
@@ -182,15 +183,45 @@ another model. Temporary synthetic rate-limit errors remain separate and use
 bounded backoff, not a subscription-reset wait. OverSeer jobs schedule a later
 retry rather than sleeping an idle worker.
 
-| Capability | Pi | Claude Code first slice |
+| Capability | Pi | Claude Code |
 | --- | --- | --- |
 | Scheduling, status, bounded wait/cancel, telemetry | Supported | Same coordinator |
-| Tools | Guarded native tools | Read/Grep/Glob only, restricted to cwd |
-| Writes / shell | Explicit grants | Refused |
+| Tools | Guarded native tools | Read/Grep/Glob; explicit owned writes and worker shell grants |
+| Writes / shell | Explicit grants | CLI-enforced owned writes; read-only reviewers never get Bash |
 | Relay / hub send and inbox | Supported | Explicitly unsupported |
-| Native worker history continuation | Supported | Unsupported; no session persistence |
-| Image review admission | Capability-checked | Refused pending verification |
-| Model selection | Native registry | Exact Opus 5.5/xhigh only |
+| Worker history continuation | Native Pi session | Own persisted Claude session only; no cross-harness resume |
+| Image review admission | Capability-checked | Exact pinned routes only; staged files via native Read |
+| Model selection | Native registry | Exact Sonnet 5.5 or Opus 5.5/xhigh |
+
+**Claude staged image review (P-0579).** `requireImages: true` with
+`harness: "claude-code"` admits only the exact `claude-code/claude-sonnet-5-5` or
+`claude-code/claude-opus-5-5` route. Both routes advertise `images: true` as a
+capability even for text-only tasks; the flag requires that capability rather
+than attaching an image. If `model` is omitted, normal harness defaults resolve
+to one of these exact routes before admission. Any other route string fails
+closed. Admission never changes the default route, adds a fallback, or touches
+authentication. It means the parent has staged image
+files under the run cwd and the child inspects them with the CLI's native Read
+tool, which presents image files to the model. Read-only reviewers' tool
+allowlist stays Read/Grep/Glob and `--restricted` still confines reads to cwd.
+It does not mean inline attachments, base64 in the prompt, relay, or hub send,
+and no such path exists. The task text
+names each staged relative path; a missing, unreadable, non-image, or
+outside-cwd file is a failed review attempt, never something to infer. Pi
+`requireImages` admission and every stream, turn, output and lifetime bound are
+unchanged. Unit checks for this contract are synthetic and prove admission logic
+only; the capability is accepted after a real native CLI staged-image smoke.
+
+**Reviewer shell denial.** A Claude leaf with role `reviewer` and no `mayEdit`
+never receives Bash, even if `allowBash: true` or task text requests a shell.
+The CLI argv enforces Read/Grep/Glob only. Setting `allowBash: true` produces the
+named `claude-review-shell-suppressed` diagnostic in the prompt and final
+output. The parent runs git (diff, status, log) and test commands itself and
+stages the output as task text or files under cwd before dispatch; the reviewer
+reads them with Read/Grep/Glob. A reviewer needing Bash gets more staged
+evidence, not a shell grant.
+Editable reviewers and other roles keep explicit shell grants. This is a
+CLI tool-denial policy, not a shell-command filter or separate OS sandbox.
 
 The CLI runs with safe mode, restricted mode and strict MCP configuration, so
 inherited hooks, skills and plugin bridges cannot create nested agents. Output,
@@ -450,9 +481,10 @@ USAP is coordination, not a security sandbox.
   on macOS and Windows before overlap/authorization checks.
 - `allowBash` is explicit unsandboxed shell access in the operator trust domain.
   It can bypass `ownedPaths` and should be granted only when necessary.
+  Read-only Claude reviewers never receive Bash, even when requested.
 - A child should receive only the tools and context its leaf needs. The child
-  tool surface excludes parent orchestration tools and exposes only
-  `ultraterm_relay` for agent coordination.
+  tool surface excludes parent orchestration tools. Pi children expose
+  `ultraterm_relay` for agent coordination; Claude children have no relay.
 - Run and sender identity are host-derived. Relay must reject forged sender
   IDs, unknown recipients, cross-run access, oversized bodies, and exhausted
   budgets.

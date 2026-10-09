@@ -103,10 +103,10 @@ workers when no explicit selector is given. Expert review is instead the **Opus
 Pass** — the official Claude Code CLI on `claude-code/claude-opus-5-5` at
 `xhigh` effort with an existing first-party Claude subscription login — chosen
 explicitly or implied by an all-reviewer wave with no explicit route (routine
-Claude Code work runs `claude-code/claude-sonnet-5-5` instead, see PROFILES.md); a failed
-or quota-blocked CLI review is reported honestly, never silently downgraded,
-and never substituted with another model or billing route. Astra itself is
-reachable only through an exact explicit selector on the paid Codex OAuth coding
+Claude Code work runs `claude-code/claude-sonnet-5-5` instead, see PROFILES.md).
+A failed CLI task, including quota exhaustion, is reported honestly, never
+silently downgraded, and never substituted with another model or billing route.
+Astra itself is reachable only through an exact explicit selector on the paid Codex OAuth coding
 plan; eligibility is the exact subscription identity (OAuth, Codex Responses
 API, official `chatgpt.com/backend-api`), so a batch id, API-key endpoint, or
 other metered substitute never serves as the expert. An explicitly selected

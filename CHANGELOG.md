@@ -2,9 +2,15 @@
 
 ## Unreleased
 
+- Claude session-limit diagnostics preserve bounded time-only resets and recognize
+  structured `usage_limit_reached` errors without treating them as approval.
+- Read-only Claude reviewers never receive Bash, even when requested. Parents
+  stage git evidence; a named diagnostic explains the denied shell grant.
+- `requireImages: true` admits the exact Claude Sonnet/Opus routes for native
+  Read-image inspection of files staged under cwd, not inline attachments.
 - Claude synthetic failures now direct the parent to check subscription usage
-  before debugging, and quota failures require retrying the same route after
-  reset. Diagnostics identify quota ahead of a concurrent rate-limit marker;
+  before debugging. Retry quota failures only on the same route after reset.
+  Diagnostics identify quota ahead of a concurrent rate-limit marker;
   usage-limit errors cannot trigger immediate automatic retries.
 
 ## 0.9.10 (2026-10-06)
