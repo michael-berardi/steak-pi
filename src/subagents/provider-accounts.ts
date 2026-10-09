@@ -191,10 +191,10 @@ export function createProviderAccountRouter(options: { command: string; env?: No
     if (!answer) throw new ProviderAccountRouterError(operation, "router gave no usable answer");
     return answer;
   };
-  /** release/limit have no payload: an explicit `ok:false` or an unusable answer is a failure. */
+  /** Every mutation requires an explicit success acknowledgement. */
   const acknowledged = async (operation: "release" | "limit", args: string[]): Promise<void> => {
     const answer = await call(operation, args);
-    if (answer.ok === false) throw new ProviderAccountRouterError(operation, boundedText(answer.error, "router refused the request"));
+    if (answer.ok !== true) throw new ProviderAccountRouterError(operation, boundedText(answer.error, "router did not acknowledge the request"));
   };
   return {
     async select({ provider, account, owner, existing }) {
