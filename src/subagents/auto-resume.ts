@@ -28,7 +28,7 @@ const TRANSIENT: ReadonlyArray<{ pattern: RegExp; reason: string; delaysMs: read
 ];
 
 /** Errors that look transient but must never be retried automatically. */
-const NEVER = /deadline|turn limit|content.?filter|flagged|pinned|permission|policy|quota|billing|unauthori[sz]ed|authenticat|forbidden|\b40[13]\b|cancel|abort/i;
+const NEVER = /deadline|turn limit|content.?filter|flagged|pinned|permission|policy|quota|usage.limit|billing|unauthori[sz]ed|authenticat|forbidden|\b40[13]\b|cancel|abort/i;
 
 export interface TransientFailure {
 	reason: string;
