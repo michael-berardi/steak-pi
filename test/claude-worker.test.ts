@@ -224,6 +224,9 @@ describe("claude-code synthetic CLI failures (offline stream envelopes)", () => 
 
   it.each([
     ["You've hit your weekly limit · resets Oct 7 at 5pm (America/New_York)", /quota limit reached; resets Oct 7 at 5pm \(America\/New_York\)/],
+    ["You've hit your 5-hour limit", /quota limit reached; check Claude usage and retry the same route only after reset/],
+    ["Session limit reached", /quota limit reached; check Claude usage and retry the same route only after reset/],
+    ["API Error: 429 rate limit https://private.invalid?token=secret", /rate limit reached; retry with bounded backoff/],
     ["Invalid API key · Please run /login sk-ant-secret https://private.invalid?token=secret", /authentication failed/],
     ["API Error: Connection error. ECONNRESET https://private.invalid?token=secret", /transport failure/],
     ["Unexpected local failure sk-ant-secret https://private.invalid?token=secret", /unrecognized synthetic error \(fail closed\)/],
@@ -236,10 +239,31 @@ describe("claude-code synthetic CLI failures (offline stream envelopes)", () => 
     expect(result.state).toBe("failed"); expect(result.error).toMatch(cause);
     expect(result.error).toContain("synthetic frame is not a model response or approval");
     expect(result.error).not.toMatch(/sk-ant-secret|private\.invalid|token=secret|not the pinned/);
-    expect(result.error!.length).toBeLessThan(300);
+    expect(result.error!.length).toBeLessThan(400);
     expect(result.output).toBe(""); expect(result.turns).toBe(0);
     expect(result.usage).toEqual(emptyUsage()); expect(calls).toHaveLength(1);
     expect(calls[0].args.join(" ")).toContain("--model claude-sonnet-5-5 --effort xhigh");
+  });
+
+  it("keeps transient rate limits distinct from subscription quota exhaustion", async () => {
+    const { spawn } = fakeSpawn((child) => { child.stdout(synthetic("Rate limit exceeded 429")); child.exit(1); });
+    const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: sonnetRun(), task: task(), signal: new AbortController().signal, onProgress() {} });
+    expect(result.state).toBe("failed");
+    expect(result.error).toContain("rate limit reached; retry with bounded backoff");
+    expect(result.error).not.toMatch(/quota|after reset/);
+    expect(result.turns).toBe(0); expect(result.output).toBe("");
+  });
+
+  it("gives a usage-check action for unknown errors and a reset-only retry for quota", async () => {
+    for (const [text, action] of [
+      ["You've hit your weekly limit", "check Claude usage and retry the same route only after reset"],
+      ["Unexpected local failure", "check Claude usage before debugging"],
+    ]) {
+      const { spawn } = fakeSpawn((child) => { child.stdout(synthetic(text)); child.exit(1); });
+      const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: sonnetRun(), task: task(), signal: new AbortController().signal, onProgress() {} });
+      expect(result.state).toBe("failed"); expect(result.error).toContain(action);
+      expect(result.error).not.toContain("resets");
+    }
   });
 
   it("does not echo controls, arbitrary diagnostic suffixes or oversized text", async () => {
@@ -249,7 +273,7 @@ describe("claude-code synthetic CLI failures (offline stream envelopes)", () => 
     });
     const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: sonnetRun(), task: task(), signal: new AbortController().signal, onProgress() {} });
     expect(result.state).toBe("failed"); expect(result.error).toContain("resets Oct 7 at 5pm (America/New_York)");
-    expect(result.error).not.toMatch(/secret|\u001b/); expect(result.error!.length).toBeLessThan(300);
+    expect(result.error).not.toMatch(/secret|\u001b/); expect(result.error!.length).toBeLessThan(400);
   });
 
   it.each(["same-chunk", "later-chunk"])("synthetic then genuine remains terminal FAILED (%s)", async (delivery) => {
