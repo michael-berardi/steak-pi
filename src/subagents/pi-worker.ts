@@ -29,6 +29,7 @@ import type { RelayBroker, RelayPeer, RelaySendResult } from "./relay.ts";
 import { CODEX_REPLY_LIMIT_REASON } from "./auto-resume.ts";
 import { SMALLER_STEP_INSTRUCTION } from "../codex-reply-limit.ts";
 import { TURN_BUDGET_NOTICE_REMAINING, turnBudgetNotice, turnBudgetNoticeAt } from "./turn-budget.ts";
+import { attemptContext, codexAccountAgentDir, piDefaultAgentDir, resolveProviderAccountRouter, runWithProviderAccount, type AccountQueueOptions, type ProviderAccountRouter, type ReserveAccount } from "./provider-accounts.ts";
 import {
   OUTPUT_LIMIT,
   addUsage,
@@ -42,6 +43,7 @@ import {
   type UsageTotals,
   type WorkerProgress,
   type WorkerResult,
+  type WorkerRunContext,
   type WorkerRunner,
 } from "./types.ts";
 
@@ -243,6 +245,16 @@ export interface PiWorkerRunnerOptions {
   abortGraceMs?: number;
   /** Test seam for the stalled-stream watchdog. */
   stallMs?: number;
+  /** Provider-account router for the Codex route. Omitted: the installed
+   * `ut-provider-accounts`, if any (legacy primary route otherwise); a custom
+   * `sessionFactory` disables it unless given explicitly. `false` always disables it. */
+  accounts?: ProviderAccountRouter | false;
+  /** Test seam for the bounded account-capacity wait. */
+  accountQueue?: AccountQueueOptions;
+  /** Test seam: the home directory account agent directories must live under (default: the user's home). */
+  accountHome?: string;
+  /** Receives a named line for a failed best-effort router call (renew, release, limit); default: the task's step line. */
+  accountNotice?: (message: string) => void;
 }
 
 type AnyToolDefinition = ToolDefinition<any, any, any>;
@@ -805,7 +817,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
   if (!Number.isSafeInteger(stallMs) || stallMs <= 0) {
     throw new RangeError("stallMs must be a positive safe integer");
   }
-  return async ({ run, task, signal, onProgress, sessionDir }): Promise<WorkerResult> => {
+  const launch = async ({ run, task, signal, onProgress, sessionDir }: WorkerRunContext, reserve: ReserveAccount): Promise<WorkerResult> => {
     let session: PiWorkerSession | undefined;
     let unsubscribe: (() => void) | undefined;
     let peer: RelayPeer | undefined;
@@ -884,6 +896,12 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       signal.throwIfAborted();
       if (!runtime?.model || !runtime.thinkingLevel) throw new Error(`No child runtime resolved for ${run.id}`);
       assertModelRoute(runtime.model);
+      // Reserved only after every policy refusal. Only the Codex route is
+      // balanced across accounts, and a session with history stays on the
+      // account that owns it (the wait or a router failure settles the task
+      // through the account wrapper's classification below).
+      const account = await reserve(runtime.model.provider === "openai-codex" ? "codex" : undefined);
+      const accountDir = codexAccountAgentDir(account?.account, piDefaultAgentDir(process.env, options.accountHome), options.accountHome);
       const chain = workerChainFallback(run.selection, runtime.model, chainFallback);
       const sdk = options.sessionFactory ? undefined : await initialize(loadPiSdk());
       signal.throwIfAborted();
@@ -918,7 +936,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       };
       const settingsManager = nativeManagers.SettingsManager.inMemory(workerSettings);
       const sessionManager = openWorkerSession(nativeManagers.SessionManager, run.cwd, task, sessionDir);
-      const modelRuntime = sdk ? await initialize(sdk.ModelRuntime.create({ signal })) : undefined;
+      const modelRuntime = sdk ? await initialize(sdk.ModelRuntime.create({ signal, ...(accountDir ? { authPath: accountDir.authPath } : {}) })) : undefined;
       if (modelRuntime) {
         assertSubscriptionRequest(runtime.model, modelRuntime.isUsingOAuth(runtime.model.provider));
         guardModelRuntime(modelRuntime, chain, runtime.model);
@@ -926,6 +944,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       signal.throwIfAborted();
       const created = await initialize(sessionFactory({
         cwd: run.cwd,
+        ...(accountDir ? { agentDir: accountDir.agentDir } : {}),
         model: runtime.model,
         ...(modelRuntime ? { modelRuntime } : {}),
         thinkingLevel: runtime.thinkingLevel,
@@ -1093,4 +1112,13 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       truncated: bounded.truncated,
     };
   };
+  return (context) => runWithProviderAccount({
+    provider: undefined,
+    router: options.accounts === false ? undefined : options.accounts ?? (options.sessionFactory ? undefined : resolveProviderAccountRouter()),
+    runId: context.run.id, task: context.task, signal: context.signal, onProgress: context.onProgress,
+    maxTurns: context.run.maxTurns, ...(context.slots ? { slots: context.slots } : {}),
+    ...(context.sessionDir ? { sessionDir: context.sessionDir } : {}),
+    ...(options.accountHome ? { home: options.accountHome } : {}), ...(options.accountNotice ? { onNotice: options.accountNotice } : {}),
+    ...options.accountQueue,
+  }, (reserve, attempt) => launch(attemptContext(context, attempt), reserve));
 }

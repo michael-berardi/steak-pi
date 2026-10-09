@@ -32,11 +32,12 @@ import { randomUUID } from "node:crypto";
 import { CLAUDE_SESSION_ID, removeClaudeWorkerSession } from "./claude-session.ts";
 import type { ChildProcess } from "node:child_process";
 import { OUTPUT_LIMIT, addUsage, emptyUsage, harnessOf, sanitizeUsage, type RunRecord, type TaskRecord,
-  type UsageTotals, type WorkerProgress, type WorkerResult, type WorkerRunner } from "./types.ts";
+  type UsageTotals, type WorkerProgress, type WorkerResult, type WorkerRunContext, type WorkerRunner } from "./types.ts";
 import { CLAUDE_CODE_EFFORT, CLAUDE_CODE_MODEL, CLAUDE_CODE_ROUTE, claudeCodeModelName, claudeCodeModelOf, type ClaudeCodeModel } from "./model-selection.ts";
 import { truncatePiWorkerOutput } from "./pi-worker.ts";
 import { workerJournal } from "./coordinator.ts";
 import { turnBudgetPromptLine } from "./turn-budget.ts";
+import { attemptContext, claudeAccountConfigDir, resolveProviderAccountRouter, runWithProviderAccount, type AccountQueueOptions, type ProviderAccountRouter, type ReserveAccount } from "./provider-accounts.ts";
 
 /** Audit route recorded on the run and asserted by focused tests. */
 export { CLAUDE_CODE_ROUTE, CLAUDE_CODE_MODEL };
@@ -92,7 +93,8 @@ export const CLAUDE_CODE_DEFAULT_EXECUTABLE = "claude";
  * Environment for the child. OAuth is the only supported auth: the CLI reads
  * its existing credentials from HOME, so HOME survives and everything that
  * could silently substitute API-key/billing routing is stripped. Inheritance is
- * an explicit allowlist, never a copy-with-exceptions.
+ * an explicit allowlist, never a copy-with-exceptions. CLAUDE_CONFIG_DIR is never
+ * inherited either: only a reserved provider account (provider-accounts.ts) sets it.
  */
 export const CLAUDE_CODE_PRESERVED_ENV = new Set([
   "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TZ",
@@ -101,12 +103,15 @@ export const CLAUDE_CODE_PRESERVED_ENV = new Set([
   "http_proxy", "https_proxy", "no_proxy",
 ]);
 
-export function claudeWorkerEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+/** `accountConfigDir` binds the child to one Claude account's config directory;
+ * it is the only way CLAUDE_CONFIG_DIR ever reaches the child. */
+export function claudeWorkerEnv(base: NodeJS.ProcessEnv = process.env, accountConfigDir?: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(base)) {
     if (value === undefined || !CLAUDE_CODE_PRESERVED_ENV.has(key)) continue;
     env[key] = value;
   }
+  if (accountConfigDir !== undefined) env.CLAUDE_CONFIG_DIR = accountConfigDir;
   return env;
 }
 
@@ -417,6 +422,16 @@ export interface ClaudeWorkerRunnerOptions {
   spawn?: ClaudeSpawn;
   /** Bounded wait between SIGTERM and SIGKILL on cancel/timeout. */
   abortGraceMs?: number;
+  /** Provider-account router. Omitted: the installed `ut-provider-accounts`, if
+   * any (legacy primary route otherwise); a custom `spawn` disables it unless
+   * given explicitly. `false` always disables account routing. */
+  accounts?: ProviderAccountRouter | false;
+  /** Test seam for the bounded account-capacity wait. */
+  accountQueue?: AccountQueueOptions;
+  /** Test seam: the home directory account config directories must live under (default: the user's home). */
+  accountHome?: string;
+  /** Receives a named line for a failed best-effort router call (renew, release, limit); default: the task's step line. */
+  accountNotice?: (message: string) => void;
 }
 
 interface RunState {
@@ -511,7 +526,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
   }
   const spawn = options.spawn ?? defaultClaudeSpawn(options.executable ?? CLAUDE_CODE_DEFAULT_EXECUTABLE);
   const executable = options.executable ?? CLAUDE_CODE_DEFAULT_EXECUTABLE;
-  return async ({ run, task, signal, onProgress }): Promise<WorkerResult> => {
+  const launch = async ({ run, task, signal, onProgress }: WorkerRunContext, reserve: ReserveAccount): Promise<WorkerResult> => {
     if (harnessOf(run.harness) !== "claude-code") {
       throw new TypeError("claude-code worker runner only serves runs with harness 'claude-code'");
     }
@@ -529,8 +544,15 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     try { args = claudeWorkerArgs(Math.max(1, Math.min(run.maxTurns, 2048)), task, undefined, pinnedModel, { id: sessionId, resume: resuming }); }
     catch (error) { return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
     if (signal.aborted) return { state: isTimeoutSignal(signal) ? "timed_out" : "aborted", output: "", turns: 0, usage: emptyUsage(), error: "Cancelled before CLI launch" };
+    // The account is reserved only now, after every policy refusal, and a
+    // session that already has history stays on the account that owns it. A
+    // queue wait or router failure throws to the account wrapper, which settles
+    // the task and releases the reservation.
+    const account = await reserve();
+    const accountConfigDir = claudeAccountConfigDir(account?.account, options.accountHome);
+    const childEnv = claudeWorkerEnv(process.env, accountConfigDir);
     if (!options.spawn) {
-      try { await verifyClaudeSubscription(executable, claudeWorkerEnv(), run.cwd, signal, run.timeoutMs); }
+      try { await verifyClaudeSubscription(executable, childEnv, run.cwd, signal, run.timeoutMs); }
       catch (error) { return { state: isTimeoutSignal(signal) ? "timed_out" : signal.aborted ? "aborted" : "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
     }
     if (signal.aborted) return { state: isTimeoutSignal(signal) ? "timed_out" : "aborted", output: "", turns: 0, usage: emptyUsage(), error: "Cancelled before CLI launch" };
@@ -555,7 +577,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     const stopPromise = new Promise<void>((resolve) => { stopExpired = resolve; });
     let killed = false;
     let closed = false;
-    const child = spawn({ command: executable, args, env: claudeWorkerEnv(), cwd: run.cwd });
+    const child = spawn({ command: executable, args, env: childEnv, cwd: run.cwd });
     onProgress({ claudeSessionId: sessionId });
     // Captured process identity at launch; every kill/cleanup revalidates it so
     // a replaced or rebinding handle can never signal an unrelated process.
@@ -754,7 +776,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     const classification = classifyClaudeWorkerState({ signal, state, maxTurns, exitCode, exitSignal, ...(spawnError !== undefined ? { spawnError } : {}) });
     // Keep the transcript only while it may still be resumed.
     if (classification.state === "done" && !options.spawn) {
-      try { removeClaudeWorkerSession(sessionId); } catch { /* best effort; the report is unaffected */ }
+      try { removeClaudeWorkerSession(sessionId, options.accountHome, accountConfigDir); } catch { /* best effort; the report is unaffected */ }
     }
     const bounded = truncatePiWorkerOutput(state.outputParts.join(""));
     return {
@@ -768,6 +790,14 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
       truncated: state.truncated || bounded.truncated,
     } satisfies WorkerResult;
   };
+  return (context) => runWithProviderAccount({
+    provider: harnessOf(context.run.harness) === "claude-code" ? "claude" : undefined,
+    router: options.accounts === false ? undefined : options.accounts ?? (options.spawn ? undefined : resolveProviderAccountRouter()),
+    runId: context.run.id, task: context.task, signal: context.signal, onProgress: context.onProgress,
+    maxTurns: context.run.maxTurns, ...(context.slots ? { slots: context.slots } : {}),
+    ...(options.accountHome ? { home: options.accountHome } : {}), ...(options.accountNotice ? { onNotice: options.accountNotice } : {}),
+    ...options.accountQueue,
+  }, (reserve, attempt) => launch(attemptContext(context, attempt), reserve));
 }
 
 /** Shared progress payload type re-export so callers do not import Pi types. */

@@ -11,6 +11,7 @@ import {
   addUsage,
   emptyUsage,
   partialReasonOf,
+  sanitizeProviderAccountRef,
   sanitizeUsage,
   type PartialReason,
   type RunRecord,
@@ -20,6 +21,7 @@ import {
   type WorkerProgress,
   type WorkerResult,
   type WorkerRunner,
+  type WorkerSlots,
 } from "./types.ts";
 import { abortError, sessionScheduler, type SessionScheduler } from "./scheduler.ts";
 import { MIN_RESUME_BUDGET_MS, transientFailure } from "./auto-resume.ts";
@@ -124,6 +126,7 @@ function cloneTask(task: TaskRecord): TaskRecord {
     lastStep: workerJournal(task).lastStep,
     usage: cloneUsage(task.usage),
     ...(task.autoResumes ? { autoResumes: [...task.autoResumes] } : {}),
+    ...(task.providerAccount ? { providerAccount: { ...task.providerAccount } } : {}),
   };
 }
 
@@ -442,7 +445,7 @@ export class SubagentCoordinator {
       ? runtime.record.model.slice(0, runtime.record.model.indexOf("/"))
       : "default";
     try {
-      await this.scheduler.run(async () => {
+      await this.scheduler.run(async (launchSlot) => {
         if (taskRuntime.controller.signal.aborted || isTerminal(task.state)) {
           throw abortError(taskRuntime.controller.signal);
         }
@@ -457,19 +460,32 @@ export class SubagentCoordinator {
         // wait is bounded by this run's remaining budget only: the implicit
         // ten-minute slot default is never a floor, so a dispatch queued behind
         // machine capacity cannot outlive the run that requested it.
-        const remainingRunMs = this.remainingRunBudgetMs(runtime);
-        if (remainingRunMs <= 0) {
-          // The run deadline has passed but its timer has not fired yet.
-          // Settle this dispatch exactly as the deadline would (timed_out)
-          // instead of waiting on a slot or reporting an exhausted launch.
-          this.stopTask(runtime, task, "timed_out", "Run deadline exceeded");
-          throw abortError(taskRuntime.controller.signal);
-        }
-        const releaseMachine = await (this.machineSlots.acquire as MachineSlotAcquire)(
-          provider,
-          taskRuntime.controller.signal,
-          remainingRunMs,
-        );
+        const takeMachineSlot = async (): Promise<() => void> => {
+          const remainingRunMs = this.remainingRunBudgetMs(runtime);
+          if (remainingRunMs <= 0) {
+            // The run deadline has passed but its timer has not fired yet.
+            // Settle this dispatch exactly as the deadline would (timed_out)
+            // instead of waiting on a slot or reporting an exhausted launch.
+            this.stopTask(runtime, task, "timed_out", "Run deadline exceeded");
+            throw abortError(taskRuntime.controller.signal);
+          }
+          return (this.machineSlots.acquire as MachineSlotAcquire)(
+            provider,
+            taskRuntime.controller.signal,
+            remainingRunMs,
+          );
+        };
+        let releaseMachine: (() => void) | undefined = await takeMachineSlot();
+        // A worker parked behind provider account capacity runs nothing, so it
+        // lends both slots back while it waits and takes them again, in the
+        // launch order, before any work starts.
+        const slots: WorkerSlots = {
+          yield: () => { releaseMachine?.(); releaseMachine = undefined; launchSlot.yield(); },
+          reclaim: async () => {
+            await launchSlot.reclaim(taskRuntime.controller.signal);
+            releaseMachine ??= await takeMachineSlot();
+          },
+        };
         try {
           if (taskRuntime.controller.signal.aborted || isTerminal(task.state)) {
             throw abortError(taskRuntime.controller.signal);
@@ -496,6 +512,7 @@ export class SubagentCoordinator {
               task,
               signal: taskRuntime.controller.signal,
               sessionDir: this.sessionDir?.(runtime.record, task),
+              slots,
               onProgress: (progress) => this.applyProgress(runtime, task, attempt === 0 ? progress : {
                 ...progress,
                 ...(progress.usage ? { usage: addUsage(cloneUsage(prior.usage), progress.usage) } : {}),
@@ -547,7 +564,7 @@ export class SubagentCoordinator {
           // initialization still owns real concurrency until its late disposal.
           await result.cleanup;
         } finally {
-          releaseMachine();
+          releaseMachine?.();
         }
       }, taskRuntime.controller.signal, provider);
     } catch (error) {
@@ -586,6 +603,17 @@ export class SubagentCoordinator {
     }
     if (progress.sessionFile !== undefined) task.sessionFile = progress.sessionFile;
     if (progress.claudeSessionId !== undefined) task.claudeSessionId = progress.claudeSessionId;
+    // The first account a task reserves owns its history; later reports never move it.
+    if (progress.providerAccount !== undefined) {
+      const pinned = sanitizeProviderAccountRef(progress.providerAccount);
+      if (pinned && task.providerAccount === undefined) task.providerAccount = pinned;
+      else if (pinned && task.providerAccount?.provider === pinned.provider && task.providerAccount.id === pinned.id
+        && task.providerAccount.configDir === undefined && pinned.configDir !== undefined) {
+        // Explicit account selectors are pinned before dispatch. Fill in the
+        // verified directory when reserved, without changing account ownership.
+        task.providerAccount = { ...task.providerAccount, configDir: pinned.configDir };
+      }
+    }
     task.lastProgressAt = this.now();
     this.observe(runtime);
 

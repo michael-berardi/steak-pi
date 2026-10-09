@@ -89,7 +89,8 @@ function runRows(raw: unknown, expanded: boolean, observedAt: number): Row[] {
     const stats = `turns ${count(task.turns)} · ${counted(successes, "tool")} succeeded · ${counted(failures, "error")}`;
     // "  · " marks the stats line; report body is indented one level deeper so headings and
     // wrapped output stay distinguishable while the row set still reads compactly.
-    rows.push({ text: `  · ${stats}${task.currentTool ? ` · tool ${sanitize(task.currentTool)}` : ""}`, tone: "muted" });
+    const account = sanitize(record(task.providerAccount).label);
+    rows.push({ text: `  · ${stats}${account ? ` · ${account}` : ""}${task.currentTool ? ` · tool ${sanitize(task.currentTool)}` : ""}`, tone: "muted" });
     const lines = typeof task.output === "string" && task.output.trim() ? task.output.split(/\r?\n/) : [];
     for (const line of lines.slice(0, 12)) rows.push({ text: `    ${sanitize(line)}` });
     if (lines.length > 12 || task.truncated) rows.push({ text: "    … report shortened; inspect hub status for retained output", tone: "muted" });

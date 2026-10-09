@@ -186,6 +186,110 @@ interactive Claude pane is separate and remains available. A CLI worker
 checkpoint cannot be passed to Pi or silently replayed as a new conversation.
 Protocol 1.2 Pi checkpoints remain readable; a new run uses 1.3 envelopes.
 
+### Provider accounts
+
+Claude Code workers and Pi workers on the `openai-codex` route can be balanced
+across the subscription accounts the router has registered: **Claude 1 / Claude 2**
+(router IDs `primary`, `b`) and **GPT 1 / GPT 2** (`primary`, `fallback`) have fixed
+labels, and any further account with a safe ID (lowercase letters, digits and single
+hyphens, 1-24 characters) is accepted the same way and labelled `Claude (ID)` /
+`GPT (ID)` unless the router supplies a `Claude N` / `GPT N` label. No other Pi
+provider is ever routed through accounts. A Claude Code route may name its account
+explicitly, `claude-code/claude-sonnet-5-5@b` or `claude-code/claude-opus-5-5@b`:
+the suffix is never part of the vendor model (`run.model` stays unsuffixed), and the
+task is pinned to that account before its first checkpoint.
+
+Selection belongs to UltraTerm's shared router, `~/.ultraterm/bin/ut-provider-accounts`
+(an absolute `ULTRATERM_ACCOUNT_ROUTER` overrides the path for tests). Steak Pi
+only consumes it, and never reads a credential:
+
+| Step | Router call | Effect on the worker |
+| --- | --- | --- |
+| Before launch | `select --provider claude\|codex [--account ID] --owner OWNER --reserve` | Reserves one account for this task. Policy refusals run first, so a refused task never holds a reservation. |
+| Claude 2 and other secondary accounts | answer carries `configDir` | The CLI runs with `CLAUDE_CONFIG_DIR=<configDir>`, and the login preflight uses the same directory. Claude 1 is left on the CLI's default directory, with the variable unset. |
+| GPT 2 and other secondary accounts | answer carries `agentDir` | The session uses that agent directory's `auth.json` (never opened) and the `agentDir` option. GPT 1 keeps Pi's default directory. |
+| While running | `renew --lease ID` every 5 minutes | Keeps the account counting the worker's load past the router's 15-minute lease. A lease the router no longer knows (`renewed: false`) is re-reserved with `select --account ID --owner OWNER --reserve --existing`, which does not refuse a session that already lives on a cooling account; a re-reservation for another account is released, never held. A renewal that fails never fails the worker, but it is named once on the task's step line (`Claude 2 lease renewal failed: router timed out`) and tried again at the next interval. |
+| Completion | `release --lease ID` | Released after the worker and any late cleanup finish, on every path. A release that fails does not fail the worker; it is named (`... lease release failed: ...; the router expires an abandoned lease`). |
+| Usage limit | `limit --provider P --account ID [--reset-at EPOCH] --reason TEXT` | Sent only for a failed task whose error is an account usage limit (not a rate limit or the 15-minute Codex reply limit). A reset is passed only when the error states a plausible future one: relative ("try again in 90 min"), absolute with an IANA zone in the shape the Claude worker's classifier prints ("resets Oct 7 at 5pm (America/New_York)", or a bare "resets 5pm (Zone)", the next such time), or `limit reached\|EPOCH`. A reset in an unknown zone, in the past or more than 14 days away is dropped and the router derives its own cooldown. The lease is released right after, and the task is relaunched as described below. **If the report itself fails the task is not relaunched**: the router would still offer the exhausted account, so the failure is returned with `the usage limit could not be reported to the account router (<cause>), so the task was not relaunched`. |
+
+**Account directories.** An account directory comes from the router or from a checkpoint,
+so it is untrusted until checked. A secondary directory must lie strictly below the home
+directory, be reached without any symlink, and every component must be a real directory
+owned by the current user; the directories above it must not be group/other-writable and
+the account directory itself must be private (mode `0700`; the mode is checked, never
+repaired). `auth.json` must be a regular, non-symlink file. A secondary account may never
+alias, equal or sit inside `~/.claude` (or Pi's default agent directory), including
+through a link. The primary account's legacy default directory is the one compatibility
+case: it keeps whatever mode it has (often `0755`), is left to the CLI/Pi defaults and is
+never validated against `0700` or modified. Transcript cleanup follows the same rules, so
+a recorded `configDir` that fails them is never deleted from. The home directory is an
+explicit option (`accountHome`) on the runners for synthetic test directories; there is no
+other bypass.
+
+
+With no router installed, every worker takes the legacy primary route and nothing
+above applies. A router that is present but broken, or that answers anything
+unrecognised (an unknown account, a missing directory for a secondary account), is
+not guessed around: the task fails with `no inference started and no account was
+substituted`.
+
+**Pinning.** The first account a task reserves is recorded on the task
+(`providerAccount`: provider, ID, label, and for Claude the config directory) and
+checkpointed. A resume (the checkpoint carries the pin), an automatic continuation
+and the Claude `--resume` session all ask the router for that exact account. If it
+has no capacity, the task waits; its history is never handed to the other account.
+A resumable task recorded before account balancing existed ran on the primary
+account and is pinned there. The only unpinning is a task that hit a usage limit
+before producing anything (see below): it has no history to protect. Per-task
+`--owner` values (`steak-pi:<pid>:<run>:<task>`, with `:rN` on a fresh relaunch
+after a limit) never remap a recorded pin.
+
+**Capacity queue.** When the router reports no available account (a limit, a
+cooldown, a reservation held elsewhere, or usage it cannot verify), the task is
+`waiting` and polls every 15 seconds. It stops when capacity returns, when the
+task is cancelled or the run deadline passes, or after 30 minutes. While it waits
+it runs nothing, so it gives its session launch slot and its machine slot back and
+takes them again (in the original order, bounded by the run deadline) once an
+account is reserved: a task parked on one account never blocks launches that can
+use the other. A task that never launched reports `Waiting for Claude|GPT
+account capacity ended ...; no inference started`: it is not marked partial work,
+`diagnose` reports it as `provider_account_queue`, and a re-dispatch (or resume,
+for a task that already has history) is the way forward. The expanded task view and
+`diagnose` show the account label only; paths and lease IDs are never displayed.
+
+**Usage limit during a run.** A worker that fails on its account's usage limit
+reports the limit and releases its lease, then is relaunched at most twice
+(`limitRetries`), so the failure is queued behind the cooldown instead of ending
+the task:
+
+- *No inference yet* (the failure arrived before any model output, tool call or
+  token usage, and the task owned no history): the half-created session is
+  discarded (a Claude transcript, or the Pi session file this attempt itself
+  announced, removed only when it lies directly in the task session directory, is a
+  regular non-symlink file and holds no assistant message), the account pin cleared,
+  and the task starts fresh under a new router
+  owner. The router then offers whichever account has verified capacity, which is
+  never the one that just reported the limit; with none, the task queues. Unknown
+  usage still never selects an account and no paid route is ever substituted.
+- *Owns history* (a resume, an automatic continuation, or inference already ran):
+  the task asks for its own account only and waits for that account's cooldown,
+  then resumes the same session there, with its turns, tool counts and usage carried
+  forward and the turn budget reduced by the turns already spent. It is not
+  relaunched when its turn budget is spent, when the error states a reset further
+  away than the 30-minute wait, or when the task is cancelled; the session stays on
+  its account and can be resumed later.
+
+**Setup.** Steak Pi has no account settings of its own; accounts are UltraTerm's.
+Install the router at `~/.ultraterm/bin/ut-provider-accounts`, register the second
+(and any further) Claude login's private config directory next to the primary one in
+`~/.config/ultraterm/claude-accounts.json` (IDs `primary`, `b`, ...), and let
+UltraTerm materialize the GPT 2 (`fallback`) Pi agent directory. Then
+`ut-provider-accounts status` lists each provider's accounts, state and usage, and
+`ut-provider-accounts mode --provider claude|codex --value together|fallback` picks
+how the router uses them. Capacity decisions (including "usage unknown means no
+automatic selection") are the router's; Steak Pi waits on them and never
+overrides them.
+
 ### Native Pi model/profile selection
 
 A run may supply `model: "provider/model"` **or** `profile: "harness/profile"`,

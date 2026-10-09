@@ -1,4 +1,4 @@
-import { mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { RetiredModelSelectionError } from "../src/retired-model-selection.ts";
 import { CheckpointStore } from "../src/subagents/checkpoints.ts";
 import { normalizeDispatch } from "../src/subagents/policy.ts";
@@ -142,6 +142,49 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     expect(writer.details.run.model).toBe("claude-code/claude-sonnet-5-5");
     expect(writer.details.run.selection.modelId).toBe("claude-sonnet-5-5");
     expect(runner.mock.calls[0][0].run.thinkingLevel).toBe("xhigh");
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+
+  it("pins an explicit @account Claude route before the first checkpoint, with the vendor model unsuffixed", async () => {
+    const root = mkdtempSync(join(tmpdir(), "usap-account-route-")); dirs.push(root);
+    const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "pin" };
+    /** Every checkpoint file on disk when the runner starts: the pin must already be in it. */
+    const checkpointed = (): unknown[] => {
+      const files: string[] = [];
+      const walk = (dir: string) => { for (const entry of readdirSync(dir, { withFileTypes: true })) { const path = join(dir, entry.name); if (entry.isDirectory()) walk(path); else if (path.endsWith(".json")) files.push(path); } };
+      walk(durable.root);
+      return files.map((file) => JSON.parse(readFileSync(file, "utf8"))?.run?.tasks?.[0]?.providerAccount);
+    };
+    const seen: Array<{ model: string; account: unknown; onDisk: unknown[]; modelEnv: string | undefined }> = [];
+    const runner = vi.fn(async ({ run, task }: Parameters<WorkerRunner>[0]) => {
+      seen.push({ model: run.model, account: task.providerAccount, onDisk: checkpointed(), modelEnv: run.selection?.modelId });
+      return { state: "done" as const, output: "ok", turns: 1, usage: emptyUsage() };
+    });
+    const h = harness(() => runner, durable);
+    h.ctx.modelRegistry.find = () => { throw new Error("must not query Pi models"); };
+    await h.handlers.get("session_start")!({}, h.ctx);
+    const dispatch = (model: string, route: object = {}) => h.tools.get("ultraterm_subagents").execute("acct", { goal: "route", model, ...route, tasks: [{ label: "Work", task: "read", role: "worker" }] }, undefined, undefined, h.ctx);
+    const b = await dispatch("claude-code/claude-sonnet-5-5@b");
+    const opus = await dispatch("claude-code/claude-opus-5-5@b");
+    const third = await dispatch("claude-code/claude-sonnet-5-5@team-3");
+    const plain = await dispatch("claude-code/claude-sonnet-5-5");
+    for (const result of [b, opus, third, plain]) expect(result.details.run.harness).toBe("claude-code");
+    // The canonical run.model never carries the suffix; the vendor model is what the CLI is pinned to.
+    expect(seen.map((value) => value.model)).toEqual(["claude-code/claude-sonnet-5-5", "claude-code/claude-opus-5-5", "claude-code/claude-sonnet-5-5", "claude-code/claude-sonnet-5-5"]);
+    expect(seen.map((value) => value.modelEnv)).toEqual(["claude-sonnet-5-5", "claude-opus-5-5", "claude-sonnet-5-5", "claude-sonnet-5-5"]);
+    expect(seen[0].account).toEqual({ provider: "claude", id: "b", label: "Claude 2" });
+    expect(seen[1].account).toEqual({ provider: "claude", id: "b", label: "Claude 2" });
+    expect(seen[2].account).toEqual({ provider: "claude", id: "team-3", label: "Claude (team-3)" });
+    expect(seen[3].account).toBeUndefined();
+    // Pinned before any launch, and already durable: the checkpoint written before the runner started names the account.
+    expect(seen[0].onDisk).toContainEqual({ provider: "claude", id: "b", label: "Claude 2" });
+    expect(seen[2].onDisk).toContainEqual({ provider: "claude", id: "team-3", label: "Claude (team-3)" });
+    expect(JSON.stringify(b.details)).not.toMatch(/configDir/);
+    const calls = runner.mock.calls.length;
+    for (const bad of ["claude-code/claude-sonnet-5-5@B", "claude-code/claude-sonnet-5-5@a--b", "claude-code/claude-sonnet-5-5@b@c", "claude-code/claude-haiku-5-5@b", "anthropic/claude-sonnet-5-5@b"]) {
+      await expect(dispatch(bad, { harness: "claude-code" }), bad).rejects.toThrow(/runs only claude-code\/claude-sonnet-5-5 or claude-code\/claude-opus-5-5/);
+    }
+    expect(runner).toHaveBeenCalledTimes(calls);
     await h.handlers.get("session_shutdown")!({}, h.ctx);
   });
 
@@ -848,7 +891,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       h.entries.filter((entry) => entry.type === "ultraterm-usap-telemetry" && entry.data.runId === runId).map((entry) => entry.data);
 
     /** A settled checkpoint whose reviewer stopped on its turn budget with a resumable native session. */
-    function partialCheckpoint(name: string, overrides: { model?: string; thinkingLevel?: string; selection?: any; claude?: boolean } = {}) {
+    function partialCheckpoint(name: string, overrides: { model?: string; thinkingLevel?: string; selection?: any; claude?: boolean; account?: any } = {}) {
       const root = mkdtempSync(join(tmpdir(), `usap-${name}-`)); dirs.push(root);
       const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: name };
       const store = new CheckpointStore(durable.parent, durable.root, durable.parent);
@@ -861,6 +904,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       const sessionFile = join(store.sessionsDirectory, "native.jsonl"); writeFileSync(sessionFile, "checkpoint", { mode: 0o600 });
       if (overrides.claude) run.tasks[0].claudeSessionId = "5b1d6a56-3a4c-4f0e-9a9e-0d6f4c6f2a11";
       else run.tasks[0].sessionFile = sessionFile;
+      if (overrides.account) run.tasks[0].providerAccount = overrides.account;
       store.save(run, true); store.close();
       return { durable, run, sessionFile };
     }
@@ -991,6 +1035,42 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       await k.handlers.get("session_start")!({}, k.ctx);
       await expect(resume(k, stale.run.id)).rejects.toThrow(/Resume refused: the route changed \(checkpoint claude-code\/claude-sonnet-5-5, run claude-code\/claude-opus-5-5/);
       await k.handlers.get("session_shutdown")!({}, k.ctx);
+    });
+
+    it("carries the provider account pin with the resumed history, for Claude and Pi, dropping a malformed pin", async () => {
+      const claudePin = { provider: "claude", id: "b", label: "Claude 2", configDir: "/accounts/claude-b" };
+      const claude = partialCheckpoint("account-claude", { model: "claude-code/claude-opus-5-5", thinkingLevel: "xhigh", claude: true, account: claudePin });
+      const seen: Array<{ account?: unknown; claudeSessionId?: string; sessionFile?: string }> = [];
+      const runner = () => async ({ task }: { task: { providerAccount?: unknown; claudeSessionId?: string; sessionFile?: string } }) => {
+        seen.push({ account: task.providerAccount, claudeSessionId: task.claudeSessionId, sessionFile: task.sessionFile });
+        return { state: "done" as const, output: "finished", turns: 1, usage: emptyUsage() };
+      };
+      const h = harness(runner, claude.durable);
+      h.ctx.modelRegistry.find = () => { throw new Error("must not query Pi models"); };
+      await h.handlers.get("session_start")!({}, h.ctx);
+      const resumed = await resume(h, claude.run.id);
+      await vi.waitFor(() => expect(seen).toHaveLength(1));
+      expect(seen[0]).toEqual({ account: claudePin, claudeSessionId: claude.run.tasks[0].claudeSessionId, sessionFile: undefined });
+      expect(resumed.details.run.tasks[0].providerAccount ?? claudePin).toEqual(claudePin);
+      await h.handlers.get("session_shutdown")!({}, h.ctx);
+
+      const gptPin = { provider: "codex", id: "fallback", label: "Anything the checkpoint said" };
+      const pi = partialCheckpoint("account-pi", { account: gptPin });
+      const k = harness(runner, pi.durable);
+      await k.handlers.get("session_start")!({}, k.ctx);
+      await resume(k, pi.run.id);
+      await vi.waitFor(() => expect(seen).toHaveLength(2));
+      // The pin survives next to the session file; its label is always the canonical one.
+      expect(seen[1]).toEqual({ account: { provider: "codex", id: "fallback", label: "GPT 2" }, claudeSessionId: undefined, sessionFile: pi.sessionFile });
+      await k.handlers.get("session_shutdown")!({}, k.ctx);
+
+      const bogus = partialCheckpoint("account-bogus", { account: { provider: "codex", id: "Elsewhere!", label: "GPT 9" } });
+      const m = harness(runner, bogus.durable);
+      await m.handlers.get("session_start")!({}, m.ctx);
+      await resume(m, bogus.run.id);
+      await vi.waitFor(() => expect(seen).toHaveLength(3));
+      expect(seen[2].account).toBeUndefined();
+      await m.handlers.get("session_shutdown")!({}, m.ctx);
     });
 
     it("refuses a changed or paid route before spending the one resume", async () => {
