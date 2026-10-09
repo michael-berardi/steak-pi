@@ -6,7 +6,7 @@ import { Type, type TSchema } from "typebox";
 import { SubagentCoordinator, CoordinatorWaitTimeoutError } from "../src/subagents/coordinator.ts";
 import { normalizeDispatch, SubagentPolicyError } from "../src/subagents/policy.ts";
 import { assertActiveModelSelector } from "../src/retired-model-selection.ts";
-import { resolveWorkerSelection, resolveClaudeCodeSelection, claudeCodeModelOf, claudeCodeModelName, defaultClaudeCodeRoute, CLAUDE_CODE_ROUTES, type WorkerProfile } from "../src/subagents/model-selection.ts";
+import { resolveWorkerSelection, resolveClaudeCodeSelection, claudeCodeModelOf, claudeCodeAccountOf, claudeCodeModelName, defaultClaudeCodeRoute, type WorkerProfile } from "../src/subagents/model-selection.ts";
 import { AUTOMATIC_CHAIN_APPROVAL, type ChainOptions } from "../src/model-route-policy.ts";
 import { isSubscriptionOrLocalRoute } from "../src/subscription-first-routing.ts";
 import {
@@ -29,6 +29,7 @@ import {
   RELAY_MAILBOX_LIMIT,
   TURN_BUDGET_ERROR,
   harnessOf,
+  sanitizeProviderAccountRef,
   type DispatchInput,
   type HarnessId,
   type PartialReason,
@@ -1235,7 +1236,7 @@ export function createUltratermSubagentsExtension(
         const opusReviewDefault = implicitRoute && allReviewers;
         const params: UltratermSubagentsParams = {
           ...requested,
-          ...((opusReviewDefault || (requested.harness === undefined && CLAUDE_CODE_ROUTES.includes(requested.model ?? ""))) ? { harness: "claude-code" as const } : {}),
+          ...((opusReviewDefault || (requested.harness === undefined && claudeCodeModelOf(requested.model) !== undefined)) ? { harness: "claude-code" as const } : {}),
         };
         if (!ctx.model) throw new Error("ultraterm_subagents requires a resolved current model");
         const current = ensureRuntime(ctx);
@@ -1249,8 +1250,8 @@ export function createUltratermSubagentsExtension(
         // CLI route is explicit and fixed, and the native Pi registry is never
         // consulted for it (it cannot resolve, and must not appear to).
         const foreignHarness = params.harness === "claude-code";
-        if (foreignHarness && ((params.model !== undefined && !CLAUDE_CODE_ROUTES.includes(params.model)) || params.profile !== undefined)) {
-          throw new Error("USAP harness claude-code runs only claude-code/claude-sonnet-5-5 or claude-code/claude-opus-5-5 at xhigh; other model/profile selectors are refused.");
+        if (foreignHarness && ((params.model !== undefined && claudeCodeModelOf(params.model) === undefined) || params.profile !== undefined)) {
+          throw new Error("USAP harness claude-code runs only claude-code/claude-sonnet-5-5 or claude-code/claude-opus-5-5 at xhigh, optionally @ACCOUNT for an explicit subscription account; other model/profile selectors are refused.");
         }
         // Sonnet 5.5 is the default Claude worker; all-reviewer waves keep the Opus Pass.
         const claudeRoute = foreignHarness ? params.model ?? defaultClaudeCodeRoute(params.tasks) : undefined;
@@ -1266,7 +1267,7 @@ export function createUltratermSubagentsExtension(
           : await resolvePiSelection(() => resolveWorkerSelection(ctx.model!, ctx.thinkingLevel, params, ctx.modelRegistry, dependencies.profiles, undefined, automaticChainOptions(dependencies)), ctx.modelRegistry);
         const resolvedSelection = piResolved ? piResolved.selection : resolveClaudeCodeSelection(claudeModel);
         const resolvedThinking = piResolved ? String(piResolved.thinkingLevel) : "xhigh";
-        const model = foreignHarness ? claudeRoute! : `${piResolved!.model.provider}/${piResolved!.model.id}`;
+        const model = foreignHarness ? `claude-code/${claudeModel!}` : `${piResolved!.model.provider}/${piResolved!.model.id}`;
         const thinking = resolvedThinking;
         const input: DispatchInput = {
           ...params,
@@ -1302,6 +1303,10 @@ export function createUltratermSubagentsExtension(
         }
 
         run.selection = { ...resolvedSelection };
+        const requestedAccount = foreignHarness ? claudeCodeAccountOf(claudeRoute) : undefined;
+        if (requestedAccount !== undefined) {
+          for (const task of run.tasks) task.providerAccount = sanitizeProviderAccountRef({ provider: "claude", id: requestedAccount });
+        }
         run.ownerSessionId = current.ownerSessionId;
         run.ownerSessionFile = current.ownerSessionFile;
         // Never launch a supposedly durable run whose initial checkpoint failed.
@@ -1520,6 +1525,9 @@ export function createUltratermSubagentsExtension(
           run.tasks.forEach((task, index) => {
             task.sessionFile = unfinished[index].sessionFile;
             task.claudeSessionId = unfinished[index].claudeSessionId;
+            // The resumed history belongs to the account that wrote it: the pin travels with it.
+            const providerAccount = sanitizeProviderAccountRef(unfinished[index].providerAccount);
+            if (providerAccount) task.providerAccount = providerAccount;
             task.changedPaths = unfinished[index].changedPaths;
             task.lastStep = unfinished[index].lastStep;
             task.resumedFrom = unfinished[index].id;

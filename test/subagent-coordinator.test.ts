@@ -768,3 +768,91 @@ describe("explicit partial outcome for budget stops", () => {
     expect(expired.tasks[1].outcome).toBeUndefined();
   });
 });
+
+describe("launch slots lent to a worker that only waits for account capacity", () => {
+  const countingSlots = () => {
+    const held = { machine: 0 };
+    const slots = { acquire: async () => { held.machine += 1; return () => { held.machine -= 1; }; } } as unknown as MachineSlots;
+    return { held, slots };
+  };
+
+  it("lets another launch run while a task is parked, then takes the slots back before the task works", async () => {
+    const { held, slots } = countingSlots();
+    const gate = deferred<void>();
+    const events: string[] = [];
+    // One launch slot for two tasks: t2 can only run because t1 gave its slot back.
+    const coordinator = new Coordinator(async ({ task: leaf, slots: lent }) => {
+      if (leaf.id === "lend-t1") {
+        lent!.yield();
+        events.push(`t1:parked machine=${held.machine}`);
+        await gate.promise;
+        await lent!.reclaim();
+        events.push(`t1:reclaimed machine=${held.machine}`);
+        return result();
+      }
+      events.push("t2:runs");
+      gate.resolve();
+      return result();
+    }, { machineSlots: slots, scheduler: new Scheduler(1) });
+    coordinator.start(run("lend", 2, 2));
+    const settled = await coordinator.wait("lend", "all");
+    expect(events).toEqual(["t1:parked machine=0", "t2:runs", "t1:reclaimed machine=1"]);
+    expect(settled.tasks.map((leaf) => leaf.state)).toEqual(["done", "done"]);
+    await flush();
+    expect(held.machine).toBe(0);
+    await coordinator.shutdown();
+  });
+
+  it("releases nothing twice and leaks no slot when a parked task is cancelled", async () => {
+    const { held, slots } = countingSlots();
+    const scheduler = new Scheduler(1);
+    const coordinator = new Coordinator(async ({ signal, slots: lent }) => {
+      lent!.yield();
+      lent!.yield();
+      await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      return result("aborted");
+    }, { machineSlots: slots, scheduler });
+    coordinator.start(run("park-cancel", 1, 1));
+    await flush();
+    expect(held.machine).toBe(0);
+    expect(scheduler.activeCount).toBe(0);
+    coordinator.cancel("park-cancel");
+    const settled = await coordinator.wait("park-cancel", "all");
+    expect(settled.tasks[0].state).toBe("aborted");
+    await flush();
+    expect(held.machine).toBe(0);
+    expect(scheduler.activeCount).toBe(0);
+    await coordinator.shutdown();
+  });
+
+  it("settles a task cancelled while it waits to take its slots back, holding no slot", async () => {
+    const { held, slots } = countingSlots();
+    const scheduler = new Scheduler(1);
+    const hold = deferred<void>();
+    const coordinator = new Coordinator(async ({ task: leaf, slots: lent }) => {
+      if (leaf.id === "reclaim-t1") {
+        lent!.yield();
+        await flush();
+        await lent!.reclaim();
+        return result();
+      }
+      await hold.promise;
+      return result();
+    }, { machineSlots: slots, scheduler });
+    coordinator.start(run("reclaim", 2, 2));
+    await flush();
+    await flush();
+    // t2 owns the only slot, so t1's reclaim is queued behind it.
+    expect(scheduler.queuedCount).toBe(1);
+    coordinator.cancel("reclaim", "reclaim-t1");
+    await flush();
+    expect(coordinator.snapshot("reclaim")!.tasks[0].state).toBe("aborted");
+    hold.resolve();
+    const settled = await coordinator.wait("reclaim", "all");
+    expect(settled.tasks.map((leaf) => leaf.state)).toEqual(["aborted", "done"]);
+    await flush();
+    expect(held.machine).toBe(0);
+    expect(scheduler.activeCount).toBe(0);
+    await coordinator.shutdown();
+  });
+});

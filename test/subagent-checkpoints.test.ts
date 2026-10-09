@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CheckpointStore, diagnoseRun, recoveredRun } from "../src/subagents/checkpoints.ts";
 import { normalizeDispatch } from "../src/subagents/policy.ts";
 
@@ -13,7 +13,7 @@ function setup() {
   const run = normalizeDispatch({ goal: "private task", tasks: [{ label: "one", task: "private instruction" }], background: true }, root, "zai/glm-5.3-flash", "medium", Date.now(), () => "checkpoint-test");
   return { root, store, run };
 }
-afterEach(() => { for (const store of stores.splice(0)) store.close(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => { vi.unstubAllEnvs(); for (const store of stores.splice(0)) store.close(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 describe("durable USAP checkpoints", () => {
   it("does not promise native resume for an interrupted Claude CLI task", () => {
@@ -211,5 +211,21 @@ describe("durable USAP checkpoints", () => {
     }
     expect(store.list()).toHaveLength(50);
     expect(readdirSync(store.sessionsDirectory)).not.toContain("old.jsonl");
+  });
+});
+
+describe("task-scoped checkpoint root", () => {
+  it("keeps checkpoints under ULTRATERM_USAP_CHECKPOINT_ROOT when no root is passed, and an explicit root wins", () => {
+    const { root, run } = setup();
+    const scoped = join(root, "task-scoped-root");
+    vi.stubEnv("ULTRATERM_USAP_CHECKPOINT_ROOT", scoped);
+    const store = new CheckpointStore(join(root, "env-parent.jsonl")); stores.push(store);
+    store.save(run, true);
+    expect(store.directory.startsWith(scoped)).toBe(true);
+    expect(readdirSync(store.directory)).toContain(`${run.id}.json`);
+    const explicit = join(root, "explicit-root");
+    const other = new CheckpointStore(join(root, "explicit-parent.jsonl"), explicit); stores.push(other);
+    expect(other.directory.startsWith(explicit)).toBe(true);
+    expect(statSync(scoped).mode & 0o077).toBe(0);
   });
 });

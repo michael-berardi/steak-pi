@@ -8,6 +8,51 @@ export type HarnessId = (typeof HARNESS_IDS)[number];
 export function harnessOf(value: HarnessId | undefined): HarnessId {
   return value ?? "pi";
 }
+/** Subscription providers whose workers can be balanced across several accounts. */
+export const PROVIDER_ACCOUNT_PROVIDERS = ["claude", "codex"] as const;
+export type ProviderAccountProvider = (typeof PROVIDER_ACCOUNT_PROVIDERS)[number];
+/** Nonsecret account pin recorded on a task. Labels are canonical (Claude 1/Claude 2,
+ * GPT 1/GPT 2, else `Claude (id)` / `GPT (id)`), never the text a router or
+ * checkpoint supplied; `configDir` (Claude only) lets a pruned checkpoint find its
+ * own transcript. History belongs to the account, so a pin is never moved; only a
+ * task that hit a usage limit before producing anything is unpinned and restarts. */
+export interface ProviderAccountRef {
+  provider: ProviderAccountProvider;
+  id: string;
+  label: string;
+  configDir?: string;
+}
+/** Canonical names for the initial accounts; safe registered IDs may extend them. */
+export const PROVIDER_ACCOUNT_LABELS: Readonly<Record<ProviderAccountProvider, Readonly<Record<string, string>>>> = {
+  claude: { primary: "Claude 1", b: "Claude 2" },
+  codex: { primary: "GPT 1", fallback: "GPT 2" },
+};
+
+export function validProviderAccountId(id: unknown): id is string {
+  return typeof id === "string" && /^(?!-)(?!.*--)(?!.*-$)[a-z0-9-]{1,24}$/.test(id);
+}
+
+export function providerAccountLabel(provider: ProviderAccountProvider, id: string, supplied?: string): string {
+  const names = PROVIDER_ACCOUNT_LABELS[provider];
+  if (Object.hasOwn(names, id)) return names[id];
+  const family = provider === "claude" ? "Claude" : "GPT";
+  return supplied && new RegExp(`^${family} [1-9][0-9]*$`).test(supplied) ? supplied : `${family} (${id})`;
+}
+
+/** Untrusted checkpoint/progress data keeps only safe account metadata. */
+export function sanitizeProviderAccountRef(value: unknown): ProviderAccountRef | undefined {
+  const source = value && typeof value === "object" ? value as Partial<ProviderAccountRef> : undefined;
+  const provider = PROVIDER_ACCOUNT_PROVIDERS.find((candidate) => candidate === source?.provider);
+  if (!source || !provider) return undefined;
+  if (!validProviderAccountId(source.id)) return undefined;
+  const configDir = provider === "claude" && typeof source.configDir === "string" && source.configDir.startsWith("/")
+    && source.configDir.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(source.configDir) ? source.configDir : undefined;
+  return { provider, id: source.id, label: providerAccountLabel(provider, source.id, source.label), ...(configDir ? { configDir } : {}) };
+}
+
+/** A task parked behind provider account capacity never started inference, so a
+ * settlement that carries this text is not partial work. */
+export const ACCOUNT_QUEUE_ERROR = /waiting for (?:Claude|GPT) account capacity/i;
 export const MAX_TASKS = 8;
 export const MAX_ACTIVE_RUNS = 16;
 export const MAX_RETAINED_TERMINAL_RUNS = 50;
@@ -55,6 +100,7 @@ export const TURN_BUDGET_ERROR = /turn.limit|turn budget/i;
 
 /** Classify a settled task. Only a task that actually started can retain work. */
 export function partialReasonOf(state: TaskState, error: string | undefined, started: boolean): PartialReason | undefined {
+  if (ACCOUNT_QUEUE_ERROR.test(error ?? "")) return undefined;
   if (state === "timed_out") return started ? "time_budget" : undefined;
   if (state === "failed" && TURN_BUDGET_ERROR.test(error ?? "")) return "turn_budget";
   return undefined;
@@ -166,6 +212,9 @@ export interface TaskRecord extends NormalizedTask {
   sessionFile?: string;
   /** Claude Code worker session id (`--session-id`), resumable with `--resume`. */
   claudeSessionId?: string;
+  /** Provider account that owns this task's history. Set once; a resume or
+   * automatic continuation stays on it and is queued rather than moved. */
+  providerAccount?: ProviderAccountRef;
   /** Automatic resumes after transient failures, each `reason: error`. */
   autoResumes?: string[];
   /** Successful edit/write tool paths journaled for the final report. */
@@ -233,6 +282,8 @@ export interface WorkerProgress {
   sessionFile?: string;
   /** Claude Code session id once the CLI has been launched with it. */
   claudeSessionId?: string;
+  /** Account the worker reserved for this task; the first value recorded wins. */
+  providerAccount?: ProviderAccountRef;
 }
 
 export interface WorkerResult {
@@ -248,6 +299,16 @@ export interface WorkerResult {
   truncated?: boolean;
 }
 
+/** The launch slots a running task holds, lent to its worker for one purpose:
+ * a task parked behind provider account capacity runs nothing, so it gives
+ * them back instead of blocking launches that could use another account. */
+export interface WorkerSlots {
+  /** Give the slots back while the task only waits. */
+  yield(): void;
+  /** Take them again before any work starts; rejects once cancelled or the run budget is gone. */
+  reclaim(): Promise<void>;
+}
+
 export interface WorkerRunContext {
   run: RunRecord;
   task: TaskRecord;
@@ -255,6 +316,8 @@ export interface WorkerRunContext {
   onProgress: (progress: WorkerProgress) => void;
   /** Optional parent-supplied session directory used when creating a persisted session. */
   sessionDir?: string;
+  /** Present when the coordinator can lend this task's launch slots while it waits. */
+  slots?: WorkerSlots;
 }
 
 export type WorkerRunner = (context: WorkerRunContext) => Promise<WorkerResult>;

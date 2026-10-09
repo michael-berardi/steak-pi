@@ -3,6 +3,12 @@ import { MAX_CONCURRENCY } from "./types.ts";
 
 export type SchedulerLease = () => void;
 
+/** Handle a launch uses to lend its slot back while it only waits. */
+export interface SchedulerSlot {
+  yield(): void;
+  reclaim(signal?: AbortSignal): Promise<void>;
+}
+
 interface QueuedAcquire {
   provider: string;
   signal?: AbortSignal;
@@ -86,16 +92,21 @@ export class SessionScheduler {
    * before caller code runs.
    */
   async run<T>(
-    launch: () => T | PromiseLike<T>,
+    launch: (slot: SchedulerSlot) => T | PromiseLike<T>,
     signal?: AbortSignal,
     provider = "default",
   ): Promise<T> {
-    const release = await this.acquire(signal, provider);
+    let release: SchedulerLease | undefined = await this.acquire(signal, provider);
+    // A launch that only waits (no worker running) may lend the slot back.
+    const slot: SchedulerSlot = {
+      yield: () => { release?.(); release = undefined; },
+      reclaim: async (reclaimSignal = signal) => { release ??= await this.acquire(reclaimSignal, provider); },
+    };
     try {
       if (signal?.aborted) throw abortError(signal);
-      return await launch();
+      return await launch(slot);
     } finally {
-      release();
+      release?.();
     }
   }
 

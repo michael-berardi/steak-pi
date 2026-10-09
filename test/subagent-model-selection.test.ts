@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { BUILTIN_WORKER_PROFILES, loadWorkerProfiles, resolveWorkerSelection, RETIRED_ROUTE, retiredRouteError } from "../src/subagents/model-selection.ts";
+import { BUILTIN_WORKER_PROFILES, claudeCodeAccountOf, claudeCodeModelOf, loadWorkerProfiles, resolveWorkerSelection, RETIRED_ROUTE, retiredRouteError } from "../src/subagents/model-selection.ts";
 import { DEFAULT_TEXT_WORKER_CHAIN, type ChainOptions } from "../src/model-route-policy.ts";
 import type { DispatchInput } from "../src/subagents/types.ts";
 
@@ -301,5 +301,32 @@ describe("USAP 1.1 explicit model/profile contract", () => {
       writeFileSync(join(dir, "bad.json"), "not json");
       expect(() => loadWorkerProfiles(dir)).toThrow(/parse harness metadata/);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("Claude Code route account selectors", () => {
+  it("pins the vendor model and an explicit safe account ID from route@account, for any registered account", () => {
+    expect(claudeCodeModelOf("claude-code/claude-sonnet-5-5")).toBe("claude-sonnet-5-5");
+    expect(claudeCodeAccountOf("claude-code/claude-sonnet-5-5")).toBeUndefined();
+    for (const [route, model, account] of [
+      ["claude-code/claude-sonnet-5-5@b", "claude-sonnet-5-5", "b"],
+      ["claude-code/claude-opus-5-5@b", "claude-opus-5-5", "b"],
+      ["claude-code/claude-opus-5-5@primary", "claude-opus-5-5", "primary"],
+      ["claude-code/claude-sonnet-5-5@team-3", "claude-sonnet-5-5", "team-3"],
+      ["claude-code/claude-sonnet-5-5@" + "x".repeat(24), "claude-sonnet-5-5", "x".repeat(24)],
+    ] as const) {
+      expect(claudeCodeModelOf(route), route).toBe(model);
+      expect(claudeCodeAccountOf(route), route).toBe(account);
+    }
+  });
+
+  it("refuses anything that is not exactly a known route plus one safe account ID", () => {
+    for (const route of ["claude-code/claude-sonnet-5-5@", "claude-code/claude-sonnet-5-5@B", "claude-code/claude-sonnet-5-5@a--b", "claude-code/claude-sonnet-5-5@-b",
+      "claude-code/claude-sonnet-5-5@b-", "claude-code/claude-sonnet-5-5@b@c", "claude-code/claude-sonnet-5-5@../b", "claude-code/claude-sonnet-5-5@b/c",
+      "claude-code/claude-sonnet-5-5@" + "x".repeat(25), "claude-code/claude-haiku-5-5@b", "claude-code/claude-sonnet-5-5-extra@b", "anthropic/claude-sonnet-5-5@b", "@b", ""]) {
+      expect(claudeCodeModelOf(route), route).toBeUndefined();
+      expect(claudeCodeAccountOf(route), route).toBeUndefined();
+    }
+    expect(claudeCodeModelOf(undefined)).toBeUndefined();
   });
 });

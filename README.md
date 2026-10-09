@@ -110,6 +110,20 @@ parent
   A reply that Codex ends at its 15-minute limit is not resent unchanged (it
   would end the same way): Steak Pi names the failure, keeps the model and
   reasoning level, and continues once in smaller steps.
+- **Accounts:** with UltraTerm's `ut-provider-accounts` router installed, Claude
+  Code workers spread across **Claude 1 / Claude 2** (and any further registered
+  account; `claude-code/claude-sonnet-5-5@b` names one) and Codex workers across
+  **GPT 1 / GPT 2**, reserving an account per worker and releasing it when the
+  worker ends. Secondary account directories must be private, symlink-free and
+  below your home directory; otherwise the worker fails closed instead of using
+  another account. A worker that already has history (resume, automatic recovery)
+  stays on its own account and waits for it rather than switching. When no
+  account has verified capacity the worker waits (up to 30 minutes, cancellable,
+  without holding a launch slot) instead of failing, and a worker that hits an
+  account usage limit is relaunched the same way: fresh if it had produced
+  nothing, otherwise resumed on its own account once that account is available.
+  Without the router everything runs on the primary account as before. See
+  [provider accounts](./docs/ULTRATERM-SUBAGENT-PROTOCOL.md#provider-accounts).
 
 **Models.** Routine workers use MiMo V2.6 Flash on the Xiaomi Token Plan, and
 automatic reviewers use MiMo V2.6 Pro. Text runs fall back only to GPT-6.1 Sol
@@ -196,6 +210,7 @@ measurements, including an earlier live comparison with stock Pi, are in
 | `~/.pi/agent/ultracompress.json` | built-in | Compaction thresholds and recall budgets |
 | `STEAK_PI_DEFER_TOOLS=off` | on | Expose every tool from the first request |
 | `STEAK_PI_WORKER_SDK=unbundled` | host bundle | Workers load their own Pi SDK copy |
+| `ULTRATERM_ACCOUNT_ROUTER=/abs/path` | `~/.ultraterm/bin/ut-provider-accounts` | Provider-account router for workers; absent means the primary account only |
 | `STEAK_PI_SKILL_CATALOG_LITE=off` | on | Keep Pi's stock skill catalog |
 | `STEAK_PI_SKILL_CATALOG_BYTES` | `8192` | Byte budget for the skill catalog |
 

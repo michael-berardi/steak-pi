@@ -178,9 +178,17 @@ export const CLAUDE_CODE_ROUTES: readonly string[] = [CLAUDE_CODE_SONNET_ROUTE, 
 /** The pinned Claude model behind a `claude-code/…` route, or undefined for
  * anything else (never a prefix or fuzzy match). */
 export function claudeCodeModelOf(route: string | undefined): ClaudeCodeModel | undefined {
-  if (route === CLAUDE_CODE_OPUS_ROUTE) return CLAUDE_CODE_OPUS_MODEL;
-  if (route === CLAUDE_CODE_SONNET_ROUTE) return CLAUDE_CODE_SONNET_MODEL;
+  if (route === undefined) return undefined;
+  const [base, account, extra] = route.split("@");
+  if (extra !== undefined || (account !== undefined && !/^(?!-)(?!.*--)(?!.*-$)[a-z0-9-]{1,24}$/.test(account))) return undefined;
+  if (base === CLAUDE_CODE_OPUS_ROUTE) return CLAUDE_CODE_OPUS_MODEL;
+  if (base === CLAUDE_CODE_SONNET_ROUTE) return CLAUDE_CODE_SONNET_MODEL;
   return undefined;
+}
+
+/** An explicit subscription-account suffix, never part of the vendor model ID. */
+export function claudeCodeAccountOf(route: string | undefined): string | undefined {
+  return claudeCodeModelOf(route) ? route?.split("@")[1] : undefined;
 }
 
 /** Product name for messages: "Opus 5.5" / "Sonnet 5.5". */

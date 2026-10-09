@@ -3,7 +3,7 @@ import { closeSync, constants, existsSync, fchmodSync, fsyncSync, fstatSync, lst
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { removeClaudeWorkerSession } from "./claude-session.ts";
-import { MAX_ACTIVE_RUNS, MAX_RETAINED_TERMINAL_RUNS, MAX_TASKS, OUTPUT_LIMIT, TURN_BUDGET_ERROR, type RunRecord } from "./types.ts";
+import { ACCOUNT_QUEUE_ERROR, MAX_ACTIVE_RUNS, MAX_RETAINED_TERMINAL_RUNS, MAX_TASKS, OUTPUT_LIMIT, TURN_BUDGET_ERROR, sanitizeProviderAccountRef, type RunRecord } from "./types.ts";
 
 const MAX_BYTES = 2_000_000;
 const ID = /^run-[a-zA-Z0-9-]{1,120}$/;
@@ -152,7 +152,7 @@ export class CheckpointStore {
   private readonly ownerSessionFile: string;
   private readonly allowLegacy: boolean;
 
-  constructor(parentSession: string, root = join(homedir(), ".pi", "agent", "usap"), ownerSessionId?: string) {
+  constructor(parentSession: string, root = process.env.ULTRATERM_USAP_CHECKPOINT_ROOT || join(homedir(), ".pi", "agent", "usap"), ownerSessionId?: string) {
     privateDirectory(root);
     this.ownerSessionId = ownerSessionId;
     this.ownerSessionFile = canonicalSessionFile(parentSession);
@@ -231,7 +231,7 @@ export class CheckpointStore {
     if (this.closed) throw new Error("USAP checkpoint store is closed");
     if (!ID.test(run.id)) throw new Error("Invalid checkpoint run ID");
     const now = Date.now();
-    const state = run.state + ":" + run.tasks.map((task) => `${task.state}:${task.sessionFile ?? ""}:${task.claudeSessionId ?? ""}:${task.autoResumes?.length ?? 0}`).join("|");
+    const state = run.state + ":" + run.tasks.map((task) => `${task.state}:${task.sessionFile ?? ""}:${task.claudeSessionId ?? ""}:${task.providerAccount?.id ?? ""}:${task.autoResumes?.length ?? 0}`).join("|");
     const previous = this.writes.get(run.id);
     const copy = structuredClone(run);
     if (this.ownerSessionId) {
@@ -336,7 +336,7 @@ export class CheckpointStore {
       // A failed Claude worker kept its transcript for resume; once its run is pruned it is never resumed.
       for (const task of checkpoint.run.tasks) {
         if (!task.claudeSessionId || [...this.cache.values()].some((item) => item.run.tasks.some((other) => other.claudeSessionId === task.claudeSessionId))) continue;
-        try { removeClaudeWorkerSession(task.claudeSessionId); } catch { /* best effort */ }
+        try { removeClaudeWorkerSession(task.claudeSessionId, undefined, sanitizeProviderAccountRef(task.providerAccount)?.configDir); } catch { /* best effort */ }
       }
     }
   }
@@ -372,6 +372,7 @@ export function diagnoseRun(run: RunRecord, now = Date.now()) {
         : task.state === "timed_out" ? "deadline"
         : task.state === "aborted" ? "cancelled"
         : /Cannot find package|ERR_MODULE_NOT_FOUND|worker dependencies/i.test(error) ? "initialization_dependency"
+        : ACCOUNT_QUEUE_ERROR.test(error) ? "provider_account_queue"
         : /launch.slots|launch capacity|maximum.*active runs/i.test(error) ? "launch_capacity"
         : /429|rate.limit/i.test(error) ? "provider_rate_limit"
         : /usage.limit|quota.exhaust|insufficient.quota/i.test(error) ? "provider_quota"
@@ -388,6 +389,7 @@ export function diagnoseRun(run: RunRecord, now = Date.now()) {
         toolSuccesses: task.toolSuccesses ?? 0, toolErrors: task.toolErrors ?? 0,
         retryAttempt: task.retryAttempt ?? 0, retryDelayMs: task.retryDelayMs ?? 0, compactions: task.compactions ?? 0,
         lastProgressAgeMs: task.lastProgressAt === undefined ? null : Math.max(0, now - task.lastProgressAt),
+        ...(task.providerAccount ? { account: task.providerAccount.label } : {}),
         checkpoint: Boolean(task.sessionFile || task.claudeSessionId), autoResumes: task.autoResumes?.length ?? 0, truncated: task.truncated };
     }),
   };
