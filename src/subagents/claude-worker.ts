@@ -24,7 +24,8 @@
  * allow rule (Edit rules govern every file-editing tool) and any other write is
  * denied. `--restricted` still confines file tools to the run cwd. allowBash
  * grants the unscoped `Bash` rule: shell is operator-level and can bypass
- * ownedPaths, exactly as on the Pi harness.
+ * ownedPaths, exactly as on the Pi harness. Read-only reviewer leaves never
+ * receive Bash, even when requested; parents stage git evidence for them.
  */
 import { spawn as nodeSpawn, execFile, execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
@@ -38,6 +39,7 @@ import { truncatePiWorkerOutput } from "./pi-worker.ts";
 import { workerJournal } from "./coordinator.ts";
 import { turnBudgetPromptLine } from "./turn-budget.ts";
 import { attemptContext, claudeAccountConfigDir, resolveProviderAccountRouter, runWithProviderAccount, type AccountQueueOptions, type ProviderAccountRouter, type ReserveAccount } from "./provider-accounts.ts";
+import { assertClaudeReviewArgsShellFree, claudeShellPolicy } from "./claude-review-permissions.ts";
 
 /** Audit route recorded on the run and asserted by focused tests. */
 export { CLAUDE_CODE_ROUTE, CLAUDE_CODE_MODEL };
@@ -55,6 +57,7 @@ export const CLAUDE_CODE_EDIT_TOOLS = "Edit,Write,NotebookEdit";
 const PERMISSION_RULE_UNSAFE = /[*?[\]{}()!\\\n\r]/;
 
 export interface ClaudeWorkerPermissions {
+  role?: string;
   mayEdit?: boolean;
   allowBash?: boolean;
   ownedPaths?: readonly string[];
@@ -143,14 +146,15 @@ export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPer
   const ownedPaths = permissions.ownedPaths ?? [];
   if (permissions.mayEdit && ownedPaths.length === 0) throw new Error("claude-code mayEdit leaves require at least one owned path");
   if (!permissions.mayEdit && ownedPaths.length > 0) throw new Error("claude-code read-only leaves cannot own writable paths");
+  const shell = claudeShellPolicy(permissions);
   const tools = [CLAUDE_CODE_ALLOWED_TOOLS,
     ...(permissions.mayEdit ? [CLAUDE_CODE_EDIT_TOOLS] : []),
-    ...(permissions.allowBash ? ["Bash"] : [])].join(",");
+    ...(shell.allowBash ? ["Bash"] : [])].join(",");
   const allowRules = [
     ...(permissions.mayEdit ? claudeOwnedPathRules(ownedPaths, resolve) : []),
-    ...(permissions.allowBash ? ["Bash"] : []),
+    ...(shell.allowBash ? ["Bash"] : []),
   ];
-  return [
+  const args = [
     "--print",
     "--output-format", "stream-json",
     "--verbose",
@@ -168,16 +172,42 @@ export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPer
     "--tools", tools,
     ...(allowRules.length === 0 ? [] : ["--allowedTools", ...allowRules]),
   ];
+  assertClaudeReviewArgsShellFree(permissions, args);
+  return args;
+}
+
+/** Observed quota reset forms: `resets Oct 7 at 5pm (America/New_York)`,
+ * `resets 1pm (America/New_York)` and `resets 11pm`. A time followed by a
+ * parenthesised zone that is not a plain zone name is rejected outright. */
+const QUOTA_RESET = /\bresets ((?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2} at )?(?:1[0-2]|[1-9])(?::[0-5]\d)?(?:am|pm)\b(?: \((?:[A-Za-z0-9_+-]{1,32}\/[A-Za-z0-9_+-]{1,32}(?:\/[A-Za-z0-9_+-]{1,32})?|UTC|GMT)\)|(?! ?\()))/i;
+/** Structured `error` metadata token for an exhausted usage limit; matched as a
+ * whole token and never echoed. */
+const USAGE_LIMIT_MARKER = /(?:^|[^A-Za-z0-9_])usage_limit_reached(?:$|[^A-Za-z0-9_])/i;
+
+/** True when CLI error metadata (`error: "usage_limit_reached"` or a nested
+ * `{ type: "api_error", error: { type: "usage_limit_reached" } }`) names an
+ * exhausted usage limit. Only short fixed-key strings are inspected. */
+function hasUsageLimitMarker(value: unknown, depth = 0): boolean {
+  if (depth > 3) return false;
+  if (typeof value === "string") return value.length <= 256 && USAGE_LIMIT_MARKER.test(value);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return ["type", "code", "error", "reason", "subtype", "message"].some((key) => hasUsageLimitMarker(record[key], depth + 1));
 }
 
 /** Local CLI error messages are not model responses. Never echo arbitrary error
  * text (credentials, URLs, control characters); retain only a bounded quota
- * reset in the observed calendar/time/timezone format and fixed cause labels. */
-function syntheticClaudeCause(text: string): string {
+ * reset in the observed calendar/time/timezone format and fixed cause labels.
+ * `usageLimit` is the structured error marker for frames whose text lacks
+ * the limit words. */
+function syntheticClaudeCause(text: string, usageLimit = false, synthetic = true): string {
   const diagnostic = text.slice(0, 4096).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
-  if (/\b(?:hit your (?:weekly |usage )?limit|(?:weekly|usage|rate) limit|quota (?:exceeded|exhausted))\b/i.test(diagnostic)) {
-    const reset = diagnostic.match(/\bresets ((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2} at \d{1,2}(?::\d{2})?(?:am|pm) \([A-Za-z_]{1,32}\/[A-Za-z_]{1,32}(?:\/[A-Za-z_]{1,32})?\))/i)?.[1];
-    return `quota limit reached${reset ? `; resets ${reset}` : ""}`;
+  if (usageLimit || /\b(?:hit your (?:weekly |usage |session |5-hour )?limit|(?:weekly|usage|session|5-hour) limit|quota (?:exceeded|exhausted))\b/i.test(diagnostic)) {
+    const reset = diagnostic.match(QUOTA_RESET)?.[1];
+    return `quota limit reached${reset ? `; resets ${reset}` : ""}; check Claude usage and retry the same route only after reset`;
+  }
+  if (/\b(?:rate limit|too many requests)\b|\b429\b/i.test(diagnostic)) {
+    return "rate limit reached; retry with bounded backoff";
   }
   if (/\b(?:authentication (?:failed|error)|authentication_error|not logged in|invalid (?:api key|authentication (?:token|credentials))|(?:oauth|access) token (?:has )?expired|please (?:run \/login|log in))\b/i.test(diagnostic)) {
     return "authentication failed; subscription login requires attention";
@@ -185,17 +215,19 @@ function syntheticClaudeCause(text: string): string {
   if (/\b(?:connection (?:error|failed|refused|reset)|network (?:error|unreachable)|unable to connect to (?:the )?api|request timed out|fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT)\b/i.test(diagnostic)) {
     return "transport failure; connection or request did not complete";
   }
-  return "unrecognized synthetic error (fail closed)";
+  return `unrecognized ${synthetic ? "synthetic" : "CLI"} error (fail closed); check Claude usage before debugging`;
 }
 
 function permissionLine(task: TaskRecord): string {
-  if (!task.mayEdit && !task.allowBash) {
+  const shell = claudeShellPolicy(task);
+  if (shell.permissionLine) return shell.permissionLine;
+  if (!task.mayEdit && !shell.allowBash) {
     return "This is a read-only leaf: your tool allowlist is Read, Grep, Glob only. Do not attempt writes, edits, or shell commands.";
   }
   const parts = ["Read, Grep, Glob"];
   if (task.mayEdit) parts.push("Edit, Write, NotebookEdit (owned paths only)");
-  if (task.allowBash) parts.push("Bash");
-  return `Your tool allowlist is ${parts.join("; ")}. Implement the leaf directly. Write only inside your owned paths${task.allowBash ? ", including from the shell" : ""}; never touch paths owned by siblings.`;
+  if (shell.allowBash) parts.push("Bash");
+  return `Your tool allowlist is ${parts.join("; ")}. Implement the leaf directly. Write only inside your owned paths${shell.allowBash ? ", including from the shell" : ""}; never touch paths owned by siblings.`;
 }
 
 export interface ClaudeWorkerSession { id: string; resume: boolean }
@@ -206,7 +238,8 @@ export function buildClaudeWorkerContinuationPrompt(task: TaskRecord, maxTurns?:
   return [
     `Continue the exact assigned leaf "${task.label}" (task ${task.id}). Your previous run was cut off by a transient fault; this session was resumed from its history.`,
     "Treat earlier tool results as historical evidence only and never assume an interrupted edit, write, or command completed: re-check the current state of anything you depend on.",
-    "Your permissions are exactly those of the original assignment above; resuming neither widens nor narrows them.",
+    "Your permissions are exactly those of the original assignment, subject to the current enforced tool policy; resuming never grants new permissions.",
+    ...(claudeShellPolicy(task).permissionLine ? [permissionLine(task)] : []),
     ...(task.ownedPaths.length > 0 ? ["Owned paths:", ...task.ownedPaths.map((value) => `- ${value}`)] : []),
     "Finish the remaining work only, then return the required concise final report.",
     ...(maxTurns === undefined ? [] : [turnBudgetPromptLine(maxTurns)]),
@@ -223,6 +256,7 @@ export function buildClaudeWorkerPrompt(run: RunRecord, task: TaskRecord): strin
     "Work only on the exact leaf below. Do not broaden scope, perform unrelated cleanup, or settle parent-level integration decisions.",
     "Never delegate or launch another agent. The Agent/Task delegation tools are denied; do not attempt recursion through any other path.",
     permissionLine(task),
+    ...(run.selection?.images ? ["Image inspection uses native Read on image files staged under the run cwd; inline attachments and image relay are unsupported. Read every image you claim to have inspected."] : []),
     "There is no relay tool on this harness: peer messaging is unsupported. Report coordination needs in your final report instead.",
     "Do not run project-wide builds, linters, or test suites. Run only the focused checks needed for this leaf.",
     "You have no commit, push, or deploy permission; this prompt grants none. Before this leaf's work is committed, pushed, or deployed it needs exactly one bounded expert review, requested through the parent. If that review is unavailable, say so plainly in your final report and never claim, imply, or fabricate expert approval.",
@@ -243,7 +277,7 @@ export function buildClaudeWorkerPrompt(run: RunRecord, task: TaskRecord): strin
     task.task,
     "",
     "## Permissions",
-    `May edit: ${task.mayEdit ? "yes" : "no"}. May use bash: ${task.allowBash ? "yes (unsandboxed, operator trust domain)" : "no"}. Reads are restricted to the run cwd.`,
+    `May edit: ${task.mayEdit ? "yes" : "no"}. May use bash: ${claudeShellPolicy(task).bashStatus}. Reads are restricted to the run cwd.`,
     task.mayEdit
       ? `Owned writable paths (writes anywhere else are denied by the CLI):\n${task.ownedPaths.map((owned) => `- ${owned}`).join("\n")}`
       : "Nothing is writable.",
@@ -258,10 +292,10 @@ export function buildClaudeWorkerPrompt(run: RunRecord, task: TaskRecord): strin
 }
 
 export type ClaudeStreamEvent =
-  | { kind: "assistant"; text: string; toolUses: string[]; toolCalls: ClaudeToolCall[]; usage?: unknown; messageId?: string; model?: string; sidechain?: boolean }
+  | { kind: "assistant"; text: string; toolUses: string[]; toolCalls: ClaudeToolCall[]; usage?: unknown; messageId?: string; model?: string; sidechain?: boolean; usageLimit?: true }
   | { kind: "identity"; model: string }
   | { kind: "tool_result"; isError: boolean; results: Array<{ id: string; isError: boolean }> }
-  | { kind: "result"; subtype?: string; isError: boolean; result?: string; usage?: unknown; totalCostUsd?: number; numTurns?: number; models?: string[] }
+  | { kind: "result"; subtype?: string; isError: boolean; result?: string; usage?: unknown; totalCostUsd?: number; numTurns?: number; models?: string[]; usageLimit?: true }
   | { kind: "other" }
   | { kind: "malformed" };
 
@@ -303,16 +337,17 @@ export function parseClaudeStreamLine(line: string): ClaudeStreamEvent {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { kind: "malformed" };
   const event = parsed as { type?: unknown; subtype?: unknown; is_error?: unknown; result?: unknown;
     usage?: unknown; total_cost_usd?: unknown; num_turns?: unknown; message?: unknown; model?: unknown; modelUsage?: unknown;
-    parent_tool_use_id?: unknown };
+    parent_tool_use_id?: unknown; error?: unknown };
   if (event.type === "system" && event.subtype === "init" && typeof event.model === "string") return { kind: "identity", model: event.model };
   if (event.type === "assistant") {
     const { text, toolUses, toolCalls } = textBlocks((event.message as { content?: unknown } | undefined)?.content);
     const usage = (event.message as { usage?: unknown } | undefined)?.usage;
-    const message = event.message as { id?: unknown; model?: unknown } | undefined;
+    const message = event.message as { id?: unknown; model?: unknown; error?: unknown } | undefined;
     return { kind: "assistant", text, toolUses, toolCalls, ...(usage === undefined ? {} : { usage }),
       ...(typeof message?.id === "string" ? { messageId: message.id } : {}),
       ...(typeof message?.model === "string" ? { model: message.model } : {}),
-      ...(typeof event.parent_tool_use_id === "string" ? { sidechain: true } : {}) };
+      ...(typeof event.parent_tool_use_id === "string" ? { sidechain: true } : {}),
+      ...(hasUsageLimitMarker(event.error) || hasUsageLimitMarker(message?.error) ? { usageLimit: true as const } : {}) };
   }
   if (event.type === "user") {
     const content = (event.message as { content?: unknown } | undefined)?.content;
@@ -339,6 +374,7 @@ export function parseClaudeStreamLine(line: string): ClaudeStreamEvent {
       kind: "result",
       ...(typeof event.subtype === "string" ? { subtype: event.subtype } : {}),
       isError: event.is_error === true,
+      ...(hasUsageLimitMarker(event.error) ? { usageLimit: true as const } : {}),
       ...(typeof event.result === "string" ? { result: event.result } : {}),
       ...(event.usage === undefined ? {} : { usage: event.usage }),
       ...(typeof event.total_cost_usd === "number" ? { totalCostUsd: event.total_cost_usd } : {}),
@@ -622,15 +658,18 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     let syntheticFailed = false;
     child.onStdout((chunk) => {
       // A synthetic error is terminal even if later buffered frames claim success.
-      if (syntheticFailed) return;
+      if (syntheticFailed || state.failure !== undefined || state.turnLimitReached) return;
       rawBytes += Buffer.byteLength(chunk, "utf8");
       if (rawBytes > CLAUDE_CODE_STREAM_BYTES_LIMIT) {
         state.failure = "claude-code stream exceeded the 8 MiB bound; child terminated";
         killOnce(false);
         return;
       }
+      // The retained tail was already scanned and contains no newline. Do not
+      // rescan it on each small chunk of a bounded but long frame.
+      const searchFrom = stdoutBuffer.length;
       stdoutBuffer += chunk;
-      let newline = stdoutBuffer.indexOf("\n");
+      let newline = stdoutBuffer.indexOf("\n", searchFrom);
       while (newline >= 0) {
         const line = stdoutBuffer.slice(0, newline).trim();
         stdoutBuffer = stdoutBuffer.slice(newline + 1);
@@ -648,7 +687,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
           : event.kind === "result" ? event.models ?? [] : [];
         if (reportedModels.includes("<synthetic>")) {
           syntheticFailed = true;
-          state.failure ??= `Claude CLI synthetic error: ${syntheticClaudeCause(event.kind === "assistant" ? event.text : "")}; synthetic frame is not a model response or approval`;
+          state.failure ??= `Claude CLI synthetic error: ${event.kind === "assistant" ? syntheticClaudeCause(event.text, event.usageLimit === true) : syntheticClaudeCause("")}; synthetic frame is not a model response or approval`;
           // Do not count this frame as a turn, usage, output, or model evidence.
           killOnce(true);
           return;
@@ -726,6 +765,9 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
         if (event.kind === "result") {
           state.sawResult = true;
           state.result = event;
+          if ((event.isError || event.subtype !== "success") && event.subtype !== "error_max_turns") {
+            state.failure ??= `Claude CLI error result: ${syntheticClaudeCause(event.result ?? "", event.usageLimit === true, false)}; error result is not model approval`;
+          }
           if (event.numTurns !== undefined) {
             if (!Number.isSafeInteger(event.numTurns) || event.numTurns < 0) {
               state.failure = "Claude CLI reported an invalid turn count";
@@ -743,6 +785,10 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
           if (event.usage !== undefined) state.usage = claudeUsage(event.usage, event.totalCostUsd);
           else if (event.totalCostUsd !== undefined) state.usage.cost.total = claudeUsage({}, event.totalCostUsd).cost.total;
           onProgress({ state: "running", usage: sanitizeUsage(state.usage) });
+          if (state.failure !== undefined || state.turnLimitReached) {
+            killOnce(true);
+            return;
+          }
         }
       }
     });
@@ -778,7 +824,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     if (classification.state === "done" && !options.spawn) {
       try { removeClaudeWorkerSession(sessionId, options.accountHome, accountConfigDir); } catch { /* best effort; the report is unaffected */ }
     }
-    const bounded = truncatePiWorkerOutput(state.outputParts.join(""));
+    const bounded = truncatePiWorkerOutput([claudeShellPolicy(task).diagnostic, state.outputParts.join("")].filter(Boolean).join("\n"));
     return {
       ...classification,
       ...(!closed ? { cleanup: exitPromise } : {}),

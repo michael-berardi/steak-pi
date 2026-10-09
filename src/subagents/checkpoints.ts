@@ -374,11 +374,11 @@ export function diagnoseRun(run: RunRecord, now = Date.now()) {
         : /Cannot find package|ERR_MODULE_NOT_FOUND|worker dependencies/i.test(error) ? "initialization_dependency"
         : ACCOUNT_QUEUE_ERROR.test(error) ? "provider_account_queue"
         : /launch.slots|launch capacity|maximum.*active runs/i.test(error) ? "launch_capacity"
+        : /usage.limit|quota.(?:limit|exhaust|exceed)|insufficient.quota/i.test(error) ? "provider_quota"
         : /429|rate.limit/i.test(error) ? "provider_rate_limit"
-        : /usage.limit|quota.exhaust|insufficient.quota/i.test(error) ? "provider_quota"
         : /unsupported.*(?:model|account|organization)|model.*not.*(?:supported|available)/i.test(error) ? "provider_configuration"
         : /payload.*(?:large|budget)|context.*(?:length|window)|request.*too.large/i.test(error) ? "context_budget"
-        : /fetch failed|incomplete.stream|connection.*(?:reset|closed)|ECONNRESET/i.test(error) ? "transport"
+        : /fetch failed|incomplete.stream|connection.*(?:reset|closed)|ECONNRESET|transport failure; connection or request did not complete/i.test(error) ? "transport"
         : /auth|401|403|credential/i.test(error) ? "provider_auth"
         : task.toolErrors && !task.toolSuccesses ? "tool_failures"
         : task.state === "failed" ? "worker_failure" : task.state;
@@ -386,6 +386,8 @@ export function diagnoseRun(run: RunRecord, now = Date.now()) {
         ...(task.outcome ? { outcome: task.outcome, partialReason: task.partialReason ?? null, partialSummary: task.partialSummary ?? null } : {}),
         ...(task.resumedFrom ? { resumedFrom: task.resumedFrom } : {}),
         reason, turns: task.turns,
+        ...(reason === "provider_quota" && run.harness === "claude-code"
+          ? { recovery: "Check Claude usage before debugging; retry the same route only after the usage reset. No paid fallback or review approval." } : {}),
         toolSuccesses: task.toolSuccesses ?? 0, toolErrors: task.toolErrors ?? 0,
         retryAttempt: task.retryAttempt ?? 0, retryDelayMs: task.retryDelayMs ?? 0, compactions: task.compactions ?? 0,
         lastProgressAgeMs: task.lastProgressAt === undefined ? null : Math.max(0, now - task.lastProgressAt),
