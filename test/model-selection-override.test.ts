@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { createUltratermSubagentsExtension } from "../extensions/ultraterm-subagents.ts";
-import { assertWorkerSelectionOverride, resolveWorkerSelection, type WorkerProfile } from "../src/subagents/model-selection.ts";
+import { assertWorkerSelectionOverride, resolveClaudeCodeSelection, resolveWorkerSelection, type WorkerProfile } from "../src/subagents/model-selection.ts";
 import { emptyUsage, type DispatchInput, type ModelSelection } from "../src/subagents/types.ts";
 
 type Model = NonNullable<ExtensionContext["model"]>;
@@ -50,6 +50,16 @@ describe("run-level override invariants", () => {
     expect(() => assertWorkerSelectionOverride({ model: "opencode-go/deepseek-v4.1-flash" }, {
       provider: "opencode-go", modelId: "deepseek-v4.1-flash", source: "chain", images: false, tools: true,
     })).toThrow(/override/);
+  });
+
+  // Synthetic: selection records only, no CLI spawn and no image read.
+  it.each(["claude-sonnet-5-5", "claude-opus-5-5"] as const)("keeps image-admitted claude-code %s as an exact override, never a chain step", (model) => {
+    const selection = resolveClaudeCodeSelection(model);
+    expect(selection).toMatchObject({ provider: "claude-code", modelId: model, source: "override", harness: "claude-code", images: true });
+    expect(() => assertWorkerSelectionOverride({ model: `claude-code/${model}` }, selection)).not.toThrow();
+    for (const source of ["profile-default", "legacy-default", "chain"] as const) {
+      expect(() => assertWorkerSelectionOverride({ model: `claude-code/${model}` }, { ...selection, source })).toThrow(/model\/profile.*override/);
+    }
   });
 
   it("preserves the incident arguments through the registered handler without live Pi", async () => {
