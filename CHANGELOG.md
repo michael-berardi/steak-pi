@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Claude synthetic failures now direct the parent to check subscription usage
+  before debugging, and quota failures require retrying the same route after
+  reset. Diagnostics identify quota ahead of a concurrent rate-limit marker;
+  usage-limit errors cannot trigger immediate automatic retries.
+
 ## 0.9.10 (2026-10-06)
 
 - Checkpoint failures now name their safe error code, stop the affected run's

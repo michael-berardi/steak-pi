@@ -198,6 +198,10 @@ describe("durable USAP checkpoints", () => {
     ["Launch slots exhausted", "launch_capacity"],
     ["429 rate limit PRIVATE", "provider_rate_limit"],
     ["usage limit reached PRIVATE", "provider_quota"],
+    ["Claude CLI synthetic error: quota limit reached PRIVATE", "provider_quota"],
+    ["quota exhausted (429 rate limit) PRIVATE", "provider_quota"],
+    ["quota exceeded PRIVATE", "provider_quota"],
+    ["usage limit reached (429) PRIVATE", "provider_quota"],
     ["Unsupported model/account PRIVATE", "provider_configuration"],
     ["Request payload too large PRIVATE", "context_budget"],
     ["fetch failed PRIVATE", "transport"],
@@ -207,6 +211,22 @@ describe("durable USAP checkpoints", () => {
     const diagnostics = diagnoseRun(run);
     expect(diagnostics.tasks[0].reason).toBe(reason);
     expect(JSON.stringify(diagnostics)).not.toContain("PRIVATE");
+  });
+
+  it("preserves Claude quota reset in status and gives content-free recovery in diagnostics", () => {
+    const { root, store, run } = setup();
+    run.harness = "claude-code"; run.model = "claude-code/claude-opus-5-5";
+    run.state = "failed"; run.tasks[0].state = "failed";
+    const error = "Claude CLI synthetic error: quota limit reached; resets Oct 7 at 5pm (America/New_York); PRIVATE";
+    run.tasks[0].error = error; store.save(run, true); store.close();
+    const reopened = new CheckpointStore(join(root, "parent.jsonl"), join(root, "checkpoints")); stores.push(reopened);
+    const restored = reopened.get(run.id)!.run;
+    expect(restored.tasks[0].error).toBe(error);
+    const diagnostic = diagnoseRun(restored);
+    expect(diagnostic.tasks[0]).toMatchObject({ state: "failed", reason: "provider_quota", recovery: expect.stringContaining("retry the same route only after the usage reset") });
+    expect(JSON.stringify(diagnostic)).not.toMatch(/PRIVATE|Oct 7|America/);
+    restored.harness = "pi";
+    expect(diagnoseRun(restored).tasks[0]).not.toHaveProperty("recovery");
   });
 
   it("enforces the bounded-resume contract at the reservation: once, same budget, same route", () => {
