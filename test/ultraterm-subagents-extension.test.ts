@@ -166,6 +166,28 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     }
   });
 
+  it("synthetic: admits staged native Read-image on both exact Claude routes without consulting Pi", async () => {
+    const runner = vi.fn(async (_context: Parameters<WorkerRunner>[0]) => ({ state: "done" as const, output: "fixture review", turns: 1, usage: emptyUsage() }));
+    const h = harness(() => runner);
+    h.ctx.modelRegistry.find = () => { throw new Error("must not query Pi models"); };
+    h.ctx.modelRegistry.getAvailable = () => { throw new Error("must not query Pi models"); };
+    for (const model of ["claude-code/claude-sonnet-5-5", "claude-code/claude-opus-5-5"]) {
+      const result = await h.tools.get("ultraterm_subagents").execute("image", {
+        goal: "Inspect staged image", harness: "claude-code", model, requireImages: true,
+        tasks: [{ label: "image", task: "Read staged.png", role: "reviewer" }],
+      }, undefined, undefined, h.ctx);
+      expect(result.details.run.model).toBe(model);
+      expect(result.details.run.selection.images).toBe(true);
+      expect(runner.mock.calls.at(-1)?.[0].run.selection?.images).toBe(true);
+    }
+    await expect(h.tools.get("ultraterm_subagents").execute("wrong", {
+      goal: "Wrong route", harness: "claude-code", model: "claude-code/claude-sonnet-5-5-other", requireImages: true,
+      tasks: [{ label: "image", task: "Read staged.png" }],
+    }, undefined, undefined, h.ctx)).rejects.toThrow(/runs only/);
+    expect(runner).toHaveBeenCalledTimes(2);
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+
   it("routes explicit headless Claude and default reviewer waves through the same coordinator without the Pi registry", async () => {
     const runner = vi.fn(async (_context: Parameters<WorkerRunner>[0]) => ({ state: "done" as const, output: "reviewed", turns: 1, usage: emptyUsage() }));
     const h = harness(() => runner);

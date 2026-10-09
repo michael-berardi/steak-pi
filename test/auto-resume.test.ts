@@ -4,6 +4,8 @@ import { MAX_AUTO_RESUMES, transientFailure } from "../src/subagents/auto-resume
 describe("transient worker failures", () => {
   it.each([
     ["fetch failed", "network drop"],
+    ["Claude CLI synthetic error: transport failure; connection or request did not complete; synthetic frame is not a model response or approval", "network drop"],
+    ["Claude CLI error result: transport failure; connection or request did not complete; error result is not model approval", "network drop"],
     ["terminated", "provider stream cut"],
     ["Codex SSE response headers timed out after 300000ms", "provider stream cut"],
     ["Request timed out.", "provider stream cut"],

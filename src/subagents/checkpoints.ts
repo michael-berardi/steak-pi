@@ -391,7 +391,7 @@ export function diagnoseRun(run: RunRecord, now = Date.now()) {
         : /429|rate.limit/i.test(error) ? "provider_rate_limit"
         : /unsupported.*(?:model|account|organization)|model.*not.*(?:supported|available)/i.test(error) ? "provider_configuration"
         : /payload.*(?:large|budget)|context.*(?:length|window)|request.*too.large/i.test(error) ? "context_budget"
-        : /fetch failed|incomplete.stream|connection.*(?:reset|closed)|ECONNRESET/i.test(error) ? "transport"
+        : /fetch failed|incomplete.stream|connection.*(?:reset|closed)|ECONNRESET|transport failure; connection or request did not complete/i.test(error) ? "transport"
         : /auth|401|403|credential/i.test(error) ? "provider_auth"
         : task.toolErrors && !task.toolSuccesses ? "tool_failures"
         : task.state === "failed" ? "worker_failure" : task.state;
