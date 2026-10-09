@@ -170,9 +170,12 @@ export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPer
  * reset in the observed calendar/time/timezone format and fixed cause labels. */
 function syntheticClaudeCause(text: string): string {
   const diagnostic = text.slice(0, 4096).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
-  if (/\b(?:hit your (?:weekly |usage )?limit|(?:weekly|usage|rate) limit|quota (?:exceeded|exhausted))\b/i.test(diagnostic)) {
+  if (/\b(?:hit your (?:weekly |usage |session |5-hour )?limit|(?:weekly|usage|session|5-hour) limit|quota (?:exceeded|exhausted))\b/i.test(diagnostic)) {
     const reset = diagnostic.match(/\bresets ((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2} at \d{1,2}(?::\d{2})?(?:am|pm) \([A-Za-z_]{1,32}\/[A-Za-z_]{1,32}(?:\/[A-Za-z_]{1,32})?\))/i)?.[1];
-    return `quota limit reached${reset ? `; resets ${reset}` : ""}`;
+    return `quota limit reached${reset ? `; resets ${reset}` : ""}; check Claude usage and retry the same route only after reset`;
+  }
+  if (/\b(?:rate limit|too many requests)\b|\b429\b/i.test(diagnostic)) {
+    return "rate limit reached; retry with bounded backoff";
   }
   if (/\b(?:authentication (?:failed|error)|authentication_error|not logged in|invalid (?:api key|authentication (?:token|credentials))|(?:oauth|access) token (?:has )?expired|please (?:run \/login|log in))\b/i.test(diagnostic)) {
     return "authentication failed; subscription login requires attention";
@@ -180,7 +183,7 @@ function syntheticClaudeCause(text: string): string {
   if (/\b(?:connection (?:error|failed|refused|reset)|network (?:error|unreachable)|unable to connect to (?:the )?api|request timed out|fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT)\b/i.test(diagnostic)) {
     return "transport failure; connection or request did not complete";
   }
-  return "unrecognized synthetic error (fail closed)";
+  return "unrecognized synthetic error (fail closed); check Claude usage before debugging";
 }
 
 function permissionLine(task: TaskRecord): string {

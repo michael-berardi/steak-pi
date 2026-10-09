@@ -154,8 +154,8 @@ the Opus route for expert planning, review, or frontier work. Each route runs
 checked against the route. Authentication preflight must report an
 existing first-party Claude subscription login. API-key/provider override
 environment variables are not inherited, and there is no fallback to another
-model, route, or billing arrangement. Quota exhaustion is a failed review,
-not permission to buy credits or an expert approval.
+model, route, or billing arrangement. Quota exhaustion is a failed (blocked)
+review attempt, not permission to buy credits or an expert approval.
 
 CLI assistant frames with `model: "<synthetic>"` are local errors, not model
 identity evidence or inference turns. Recognized quota, authentication and
@@ -167,6 +167,20 @@ frames or a success result. Init metadata alone cannot attest served inference;
 init-only, synthetic-only and successful results without served-model evidence
 cannot approve a review. Real different-model frames remain identity mismatches;
 route pins and the no-fallback rule are unchanged.
+
+**Synthetic-error recovery.** Inspect hub `status` and `diagnose`, then check
+Claude subscription usage (UltraTerm's Claude usage dial or Claude Settings →
+Usage) before debugging model identity or the stream. Quota errors diagnose as
+`provider_quota`, ahead of a concurrent 429/rate-limit marker. Retain the
+sanitized reset time in the failed task's status; diagnosis remains metadata-only
+and provides a fixed recovery instruction, not raw error text. Exhausted usage
+blocks this attempt, not proof of a model defect or approval. Finish independent
+work and explicitly retry the same route after confirming the usage reset. If
+reset timing is unavailable, check the usage view rather than inventing a delay.
+Do not immediately auto-retry quota, buy credits, change billing, or fall back to
+another model. Temporary synthetic rate-limit errors remain separate and use
+bounded backoff, not a subscription-reset wait. OverSeer jobs schedule a later
+retry rather than sleeping an idle worker.
 
 | Capability | Pi | Claude Code first slice |
 | --- | --- | --- |

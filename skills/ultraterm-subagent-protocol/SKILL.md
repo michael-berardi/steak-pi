@@ -100,8 +100,8 @@ expert planning, review and sign-off, hard architecture or security reasoning,
 or a leaf Sonnet already failed. Select `model: "claude-code/claude-opus-5-5"`
 for that; all-reviewer waves with no explicit route (or `harness: "claude-code"`
 with only reviewer tasks) default to Opus 5.5. Existing first-party
-Claude subscription login is required; quota exhaustion is a failed review,
-never permission for credits or silent fallback. This replaces the Astra pass.
+Claude subscription login is required; quota exhaustion is a failed (blocked)
+review attempt, never model approval or permission for credits or silent fallback. This replaces the Astra pass.
 The same harness serves workers and scouts too: select it explicitly and grant
 `mayEdit` + `ownedPaths` and/or `allowBash` exactly as on Pi. Reads stay confined
 to cwd; each owned path becomes a CLI `Edit(...)` allow rule under `dontAsk`, so
@@ -112,6 +112,16 @@ after a transient fault, or through hub `resume`); its transcript is deleted
 once it finishes. Relay and image admission are unavailable on this harness and
 refused explicitly.
 Scheduling, bounded waits/cancel, usage and reports use the same USAP coordinator.
+
+If a Claude child returns a synthetic error, inspect hub `status` and `diagnose`,
+then check Claude subscription usage (UltraTerm's Claude usage dial or Claude
+Settings → Usage) before debugging the model or stream. Exhausted usage is a
+blocked attempt, not a failed model review: retain its sanitized reset time,
+finish independent work, and explicitly retry the same route after the usage
+reset is confirmed. No immediate quota auto-retry, credits, billing change,
+silent model fallback, or approval from a synthetic frame. If reset timing is
+missing, verify it in the usage view rather than guessing. In an OverSeer job,
+schedule the retry instead of keeping an idle worker asleep.
 
 ### Native Pi routes
 
