@@ -113,7 +113,7 @@ describe("router CLI contract", () => {
 
   it("sends release and limit with the documented flags", async () => {
     const calls: string[][] = [];
-    const router = createProviderAccountRouter({ command: "/bin/router", exec: exec("{}", calls) });
+    const router = createProviderAccountRouter({ command: "/bin/router", exec: exec('{"ok":true}', calls) });
     await router.release("L-9");
     await router.limit({ provider: "codex", account: "primary", resetAt: 1_900_000_000.9, reason: "usage limit" });
     await router.limit({ provider: "claude", account: "b", reason: "usage limit" });
@@ -144,7 +144,7 @@ describe("router CLI contract", () => {
     const router = createProviderAccountRouter({
       command: "/bin/router",
       env: { PATH: "/bin", HOME: "/h", ULTRATERM_STATE: "/s", ANTHROPIC_API_KEY: "secret", OPENAI_API_KEY: "secret" },
-      exec: async (_c, _a, options) => { seen = options.env; return { stdout: "{}" }; },
+      exec: async (_c, _a, options) => { seen = options.env; return { stdout: '{"ok":true}' }; },
     });
     await router.release("L");
     expect(seen).toEqual({ PATH: "/bin", HOME: "/h", ULTRATERM_STATE: "/s" });
@@ -701,13 +701,15 @@ describe("router JSON as the real ut-provider-accounts prints it", () => {
     await expect(down.renew("L")).rejects.toMatchObject({ operation: "renew", reason: "timed out" });
   });
 
-  it("reads release and limit acknowledgements; only a refusal or no answer is a failure", async () => {
-    for (const stdout of ['{"ok": true}', '{"ok": true, "released": true}', "{}"]) {
+  it("requires explicit release and limit acknowledgements", async () => {
+    for (const stdout of ['{"ok": true}', '{"ok": true, "released": true}']) {
       await expect(routerFor(stdout).release("L"), stdout).resolves.toBeUndefined();
       await expect(routerFor(stdout).limit({ provider: "claude", account: "b", reason: "usage limit" }), stdout).resolves.toBeUndefined();
     }
     await expect(routerFor(answers.badArguments).limit({ provider: "claude", account: "b", reason: "usage limit" })).rejects.toMatchObject({ operation: "limit" });
     await expect(routerFor("not json").release("L")).rejects.toMatchObject({ operation: "release" });
+    await expect(routerFor("{}").release("L")).rejects.toMatchObject({ operation: "release" });
+    await expect(routerFor("{}").limit({ provider: "claude", account: "b", reason: "usage limit" })).rejects.toMatchObject({ operation: "limit" });
   });
 });
 

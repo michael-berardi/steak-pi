@@ -547,9 +547,15 @@ describe("native in-process Pi worker runner", () => {
       abortGraceMs: 5,
       stallMs: 40,
     });
-    const result = await runner({ run: run(cwd, recordTask), task: recordTask, signal: new AbortController().signal, onProgress: vi.fn() });
-    expect(result.state).toBe("done");
-    expect(fake.abortCalls).toBe(0);
+    // Synthetic timing must not depend on host CPU contention during builds.
+    vi.useFakeTimers();
+    try {
+      const pending = runner({ run: run(cwd, recordTask), task: recordTask, signal: new AbortController().signal, onProgress: vi.fn() });
+      await vi.advanceTimersByTimeAsync(250);
+      const result = await pending;
+      expect(result.state).toBe("done");
+      expect(fake.abortCalls).toBe(0);
+    } finally { vi.useRealTimers(); }
   });
 
   it("enforces the run turn budget and gives one findings-and-remaining-work notice when two requests remain", async () => {
