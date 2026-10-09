@@ -206,10 +206,25 @@ export function resolveClaudeCodeSelection(model: ClaudeCodeModel = CLAUDE_CODE_
     modelId: model,
     source: "override",
     harness: "claude-code",
-    // No advertised image inspection in this slice: requireImages is refused.
-    images: false,
+    // Image review (P-0579) is the CLI's native Read tool on image files staged
+    // under the run cwd. It is not an inline attachment or relay capability and
+    // it never widens the Read/Grep/Glob allowlist, so it is advertised on both
+    // pinned routes and nowhere else.
+    images: true,
     tools: true,
   };
+}
+
+/** Admission for `requireImages: true` on the claude-code harness: only the exact
+ * pinned Sonnet 5.5 or Opus 5.5 route passes, and the caller keeps the route it
+ * asked for. There is no fallback, default or auth change; anything that is not
+ * an exact route (undefined, prefix, fuzzy, other provider) fails closed. */
+export function assertClaudeCodeImageAdmission(route: string | undefined): ClaudeCodeModel {
+  const model = claudeCodeModelOf(route);
+  if (model === undefined) {
+    throw new Error(`USAP claude-code image review admits only ${CLAUDE_CODE_SONNET_ROUTE} or ${CLAUDE_CODE_OPUS_ROUTE} (staged image files read natively under cwd); no fallback was selected.`);
+  }
+  return model;
 }
 
 function route(model: Model): string { return `${model.provider}/${model.id}`; }

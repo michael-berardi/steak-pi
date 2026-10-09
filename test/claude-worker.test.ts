@@ -16,6 +16,7 @@ import {
   parseClaudeStreamLine,
   type ClaudeSpawnHandle,
 } from "../src/subagents/claude-worker.ts";
+import { diagnoseRun } from "../src/subagents/checkpoints.ts";
 import { emptyUsage, USAP_VERSION, type RunRecord, type TaskRecord, type WorkerRunner } from "../src/subagents/types.ts";
 
 const OUTPUT_LIMIT = 20_000;
@@ -104,6 +105,58 @@ const runnerOptions = (spawn: unknown, abortGraceMs = 20) =>
   ({ spawn: spawn as NonNullable<Parameters<typeof createClaudeWorkerRunner>[0]>["spawn"], abortGraceMs }) as Parameters<typeof createClaudeWorkerRunner>[0];
 
 describe("claude-code worker CLI surface", () => {
+  it("synthetic: native image prompt names the staged Read contract, not inline attachments", () => {
+    const selected = run({ selection: { provider: "claude-code", modelId: CLAUDE_CODE_MODEL, source: "override", harness: "claude-code", images: true, tools: true } });
+    expect(buildClaudeWorkerPrompt(selected, task())).toContain("Image inspection uses native Read on image files staged under the run cwd");
+    expect(buildClaudeWorkerPrompt(selected, task())).toContain("inline attachments and image relay are unsupported");
+  });
+
+  it.each(["stdout", "stderr"])("synthetic: %s diagnostic bound terminates the owned child", async (stream) => {
+    const { spawn, calls } = fakeSpawn((child) => {
+      if (stream === "stdout") child.stdout("x".repeat(8 * 1024 * 1024 + 1));
+      else child.stderr("x".repeat(64_001));
+    });
+    const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run(), task: task(), signal: new AbortController().signal, onProgress() {} });
+    expect(result.state).toBe("failed");
+    expect(result.error).toMatch(stream === "stdout" ? /8 MiB bound/ : /bounded diagnostic limit/);
+    expect(calls[0].child.signals).toContain("SIGKILL");
+    expect(result.output).toBe("");
+  });
+
+  it.each([
+    ["You have hit your session limit; resets 11pm (America/Port-au-Prince) secret-token", undefined, /quota limit reached; resets 11pm \(America\/Port-au-Prince\)/],
+    ["resets 1pm (Etc/GMT+3) secret-token", "usage_limit_reached", /quota limit reached; resets 1pm \(Etc\/GMT\+3\)/],
+    ["fetch failed secret-token", undefined, /transport failure/],
+    ["unrecognized secret-token", undefined, /unrecognized CLI error/],
+  ])("synthetic: error results retain only bounded safe cause for %s", async (text, error, expected) => {
+    const { spawn } = fakeSpawn((child) => {
+      child.stdout(line({ type: "result", subtype: "error_during_execution", is_error: true, result: text, error, modelUsage: { [CLAUDE_CODE_MODEL]: {} } }));
+      child.exit();
+    });
+    const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run(), task: task(), signal: new AbortController().signal, onProgress() {} });
+    expect(result.state).toBe("failed"); expect(result.error).toMatch(expected);
+    expect(result.error).not.toContain("secret-token"); expect(result.output).toBe("");
+    const diagnosed = diagnoseRun(run({ tasks: [task({ state: "failed", error: result.error })] })).tasks[0];
+    expect(diagnosed.reason).toBe(text.includes("fetch failed") ? "transport" : text.includes("unrecognized") ? "worker_failure" : "provider_quota");
+  });
+
+  it("synthetic: read-only reviewers never get Bash even when requested, including resumed sessions", async () => {
+    const reviewer = task({ role: "reviewer", allowBash: true });
+    for (const resumed of [false, true]) {
+      const leaf = { ...reviewer, ...(resumed ? { claudeSessionId: "0b5e1c2a-1111-4222-8333-944455556666" } : {}) };
+      const { spawn, calls } = fakeSpawn((child) => { child.stdout(successResult("review complete", {})); child.exit(); });
+      const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run(), task: leaf, signal: new AbortController().signal, onProgress: () => {} });
+      expect(calls[0].args[calls[0].args.indexOf("--tools") + 1]).toBe("Read,Grep,Glob");
+      expect(calls[0].args).not.toContain("--allowedTools");
+      expect(calls[0].child.stdinChunks.join("")).toContain("claude-review-shell-suppressed");
+      expect(result.output).toContain("claude-review-shell-suppressed");
+      expect(result.output).toContain("review complete");
+      expect(result.state).toBe("done");
+    }
+    expect(claudeWorkerArgs(8, { role: "worker", allowBash: true })).toContain("Bash");
+    expect(claudeWorkerArgs(8, { role: "reviewer", mayEdit: true, ownedPaths: ["/repo/owned"], allowBash: true })).toContain("Bash");
+  });
+
   it("admits only an existing first-party subscription login", () => {
     const status = { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", subscriptionType: "pro" };
     expect(() => assertClaudeSubscriptionStatus(status)).not.toThrow();
@@ -213,8 +266,8 @@ describe("claude-code worker CLI surface", () => {
 describe("claude-code synthetic CLI failures (offline stream envelopes)", () => {
   const sonnet = "claude-sonnet-5-5";
   const sonnetRun = () => run({ model: `claude-code/${sonnet}` });
-  const synthetic = (text: string) => line({
-    type: "assistant", session_id: "fixture-session", parent_tool_use_id: null,
+  const synthetic = (text: string, extra: Record<string, unknown> = {}) => line({
+    type: "assistant", session_id: "fixture-session", parent_tool_use_id: null, ...extra,
     message: { id: "synthetic-message", type: "message", role: "assistant", model: "<synthetic>",
       content: [{ type: "text", text }], stop_reason: "end_turn",
       usage: { input_tokens: 0, output_tokens: 0 } },
@@ -224,6 +277,9 @@ describe("claude-code synthetic CLI failures (offline stream envelopes)", () => 
 
   it.each([
     ["You've hit your weekly limit · resets Oct 7 at 5pm (America/New_York)", /quota limit reached; resets Oct 7 at 5pm \(America\/New_York\)/],
+    ["You've hit your session limit · resets 1pm (America/New_York)", /quota limit reached; resets 1pm \(America\/New_York\); check Claude usage/],
+    ["You've hit your session limit · resets 11pm", /quota limit reached; resets 11pm; check Claude usage/],
+    ["Session limit reached · resets 11:30pm (Europe/London)", /quota limit reached; resets 11:30pm \(Europe\/London\); check Claude usage/],
     ["You've hit your 5-hour limit", /quota limit reached; check Claude usage and retry the same route only after reset/],
     ["Session limit reached", /quota limit reached; check Claude usage and retry the same route only after reset/],
     ["API Error: 429 rate limit https://private.invalid?token=secret", /rate limit reached; retry with bounded backoff/],
@@ -288,6 +344,98 @@ describe("claude-code synthetic CLI failures (offline stream envelopes)", () => 
     expect(result.output).toBe(""); expect(result.turns).toBe(0); expect(result.usage).toEqual(emptyUsage());
   });
 
+  const quotaError = (reset = "") =>
+    `Claude CLI synthetic error: quota limit reached${reset}; check Claude usage and retry the same route only after reset; synthetic frame is not a model response or approval`;
+  const apiErrorMarker = { error: { type: "api_error", error: { type: "usage_limit_reached", message: "sk-ant-secret https://private.invalid?token=secret" } } };
+  const failedSynthetic = async (frame: string, tail = "") => {
+    const { spawn } = fakeSpawn((child) => { child.stdout(frame + tail); child.exit(1); });
+    return createClaudeWorkerRunner(runnerOptions(spawn))({ run: sonnetRun(), task: task(), signal: new AbortController().signal, onProgress() {} });
+  };
+
+  it("parses usage-limit error metadata into a boolean marker without retaining raw error text", () => {
+    const assistant = (extra: object, message: object = {}) => parseClaudeStreamLine(line({ type: "assistant", ...extra, message: { content: [], ...message } }));
+    for (const marked of [
+      assistant({ error: "usage_limit_reached" }),
+      assistant({ error: "api_error usage_limit_reached" }),
+      assistant(apiErrorMarker),
+      assistant({}, { error: { type: "usage_limit_reached" } }),
+    ]) {
+      expect(marked).toMatchObject({ kind: "assistant", usageLimit: true });
+      expect(JSON.stringify(marked)).not.toMatch(/sk-ant-secret|private\.invalid/);
+    }
+    for (const unmarked of [assistant({}), assistant({ error: "rate_limit" }), assistant({ error: { type: "api_error" } }),
+      assistant({ error: "xusage_limit_reachedx" }), assistant({ error: ["usage_limit_reached"] }),
+      assistant({ error: { error: { error: { error: { error: "usage_limit_reached" } } } } }), assistant({ error: `${"x ".repeat(200)}usage_limit_reached` })]) {
+      expect(unmarked).not.toHaveProperty("usageLimit");
+    }
+  });
+
+  it.each([
+    ["string error", { error: "usage_limit_reached" }],
+    ["api_error token", { error: "api_error usage_limit_reached" }],
+    ["nested api_error object", apiErrorMarker],
+  ])("reports a fixed quota cause from %s metadata when the text lacks limit words", async (_shape, extra) => {
+    const result = await failedSynthetic(synthetic("Unexpected local failure sk-ant-secret https://private.invalid?token=secret", extra));
+    expect(result.state).toBe("failed"); expect(result.error).toBe(quotaError());
+    expect(result.error).not.toMatch(/secret|private\.invalid|unrecognized/);
+    expect(result.output).toBe(""); expect(result.turns).toBe(0); expect(result.usage).toEqual(emptyUsage());
+  });
+
+  it("combines marker-only quota cause with a bounded reset in time-only or dated text", async () => {
+    for (const [text, reset] of [
+      ["resets 1pm (America/New_York)", "; resets 1pm (America/New_York)"],
+      ["resets 11pm", "; resets 11pm"],
+      ["resets Oct 7 at 5pm (America/New_York)", "; resets Oct 7 at 5pm (America/New_York)"],
+    ]) {
+      const result = await failedSynthetic(synthetic(text, { error: "usage_limit_reached" }));
+      expect(result.state).toBe("failed"); expect(result.error).toBe(quotaError(reset));
+    }
+  });
+
+  it.each([
+    ["rate_limit", { error: "rate_limit" }],
+    ["api_error without a limit token", { error: { type: "api_error", message: "overloaded" } }],
+    ["near-miss token", { error: "xusage_limit_reachedx" }],
+    ["array-wrapped token", { error: ["usage_limit_reached"] }],
+  ])("does not claim quota exhaustion for unrelated %s metadata", async (_shape, extra) => {
+    const result = await failedSynthetic(synthetic("Unexpected local failure", extra));
+    expect(result.state).toBe("failed"); expect(result.error).toMatch(/unrecognized synthetic error \(fail closed\)/);
+    expect(result.error).not.toMatch(/quota|after reset/);
+  });
+
+  it.each([
+    ["trailing secrets after a zone", "resets 1pm (America/New_York) sk-ant-secret https://private.invalid?token=secret", "; resets 1pm (America/New_York)"],
+    ["trailing secrets after a bare time", "resets 11pm sk-ant-secret https://private.invalid?token=secret", "; resets 11pm"],
+    ["a non-zone parenthetical", "resets 11pm (Evil/Zone;curl https://private.invalid?token=secret)", ""],
+    ["a path-traversal zone", "resets Oct 7 at 5pm (America/New_York/../../etc/passwd)", ""],
+    ["a glued suffix", "resets 11pmsk-ant-secret", ""],
+    ["an impossible hour", "resets 25pm (America/New_York)", ""],
+    ["a control-character split", "resets\u001b[31m 1pm (America/New_York)", ""],
+  ])("never echoes malicious reset text: %s", async (_shape, suffix, reset) => {
+    const result = await failedSynthetic(synthetic(`You've hit your session limit · ${suffix}`));
+    expect(result.state).toBe("failed"); expect(result.error).toBe(quotaError(reset));
+    expect(result.error).not.toMatch(/secret|private\.invalid|token=|curl|passwd|\u001b/);
+    expect(result.output).toBe(""); expect(result.turns).toBe(0); expect(result.usage).toEqual(emptyUsage());
+  });
+
+  it.each([
+    ["marker-only", synthetic("Unexpected local failure", { error: "usage_limit_reached" }), ""],
+    ["time-only reset", synthetic("You've hit your session limit · resets 1pm (America/New_York)"), "; resets 1pm (America/New_York)"],
+    ["bare time reset", synthetic("You've hit your session limit · resets 11pm"), "; resets 11pm"],
+    ["marker with reset", synthetic("resets 11pm (America/New_York)", apiErrorMarker), "; resets 11pm (America/New_York)"],
+  ].flatMap(([name, frame, reset]) => ["same-chunk", "later-chunk"].map((delivery) => [`${name} ${delivery}`, delivery, frame, reset] as const)))(
+    "quota synthetic then genuine success remains terminal FAILED (%s)", async (_name, delivery, frame, reset) => {
+      const genuine = line({ type: "assistant", message: { id: "genuine-message", model: sonnet, content: [{ type: "text", text: "approved" }] } }) + final(sonnet);
+      const { spawn } = fakeSpawn((child) => {
+        if (delivery === "same-chunk") child.stdout(frame + genuine);
+        else { child.stdout(frame); child.stdout(genuine); }
+        child.exit(0);
+      });
+      const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: sonnetRun(), task: task(), signal: new AbortController().signal, onProgress() {} });
+      expect(result.state).toBe("failed"); expect(result.error).toBe(quotaError(reset));
+      expect(result.output).toBe(""); expect(result.turns).toBe(0); expect(result.usage).toEqual(emptyUsage());
+    });
+
   it.each(["init-only", "init-and-success", "no-model-success", "synthetic-usage"])("never approves %s", async (shape) => {
     const { spawn } = fakeSpawn((child) => {
       if (shape.startsWith("init")) child.stdout(line({ type: "system", subtype: "init", model: sonnet }));
@@ -312,6 +460,24 @@ describe("claude-code synthetic CLI failures (offline stream envelopes)", () => 
 });
 
 describe("claude-code worker automatic resume safety", () => {
+  it.each(["wrong model", "missing ID", "turn limit", "error result"])("synthetic: later complete lines/chunks cannot replace terminal %s cause", async (kind) => {
+    const { spawn } = fakeSpawn((child) => {
+      const first = kind === "wrong model" ? line({ type: "system", subtype: "init", model: "claude-fable-5-1" })
+        : kind === "missing ID" ? JSON.stringify({ type: "assistant", message: { model: CLAUDE_CODE_MODEL, content: [] } }) + "\n"
+        : kind === "turn limit" ? line({ type: "assistant", message: { content: [] } }) + line({ type: "assistant", message: { content: [] } })
+        : line({ type: "result", subtype: "error_during_execution", is_error: true, result: "fetch failed" });
+      // An early terminal return leaves complete lines in the buffered tail.
+      child.stdout(first + successResult("ignored-success-1", {}));
+      child.stdout(successResult("ignored-success-2", {}));
+      child.exit();
+    });
+    const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run({ maxTurns: 1 }), task: task(), signal: new AbortController().signal, onProgress() {} });
+    expect(result.state).toBe("failed");
+    expect(result.error).toMatch(kind === "wrong model" ? /not the pinned/ : kind === "missing ID" ? /stable message ID/ : kind === "turn limit" ? /exhausted the 1-turn limit/ : /transport failure/);
+    expect(result.error).not.toContain("malformed stream-json");
+    expect(result.output).not.toContain("ignored-success");
+  });
+
   it("gives the resumed CLI only remaining --max-turns and retains the original run budget", async () => {
     vi.useFakeTimers();
     try {
@@ -693,6 +859,8 @@ describe("claude-code stream-json parsing", () => {
     expect(parseClaudeStreamLine(line({ type: "stream_event" }))).toEqual({ kind: "other" });
     expect(parseClaudeStreamLine("}}{{")).toEqual({ kind: "malformed" });
     expect(parseClaudeStreamLine("[1,2]")).toEqual({ kind: "malformed" });
+    // Synthetic malformed shape: missing subtype never reaches classification.
+    expect(parseClaudeStreamLine(JSON.stringify({ type: "result", is_error: false, result: "unattested" }))).toEqual({ kind: "malformed" });
   });
 
   it("collapses unknown usage fields to zero instead of inventing numbers", () => {
