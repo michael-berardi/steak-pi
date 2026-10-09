@@ -1,6 +1,6 @@
 # Native worker profiles
 
-Steak Pi 0.8.0 candidate (USAP 1.3) selects one harness/model for the whole run.
+Steak Pi selects one harness/model for the whole run.
 Native Pi profile selection does not launch another terminal or inherit its
 extensions, skills, transcripts or permissions. The explicit `claude-code`
 harness uses the official headless CLI instead; see the [capability matrix](./ULTRATERM-SUBAGENT-PROTOCOL.md#harness-selection-13).
@@ -39,9 +39,12 @@ other Claude Code wave (`harness: "claude-code"` with worker or scout tasks, or
 default Claude worker, nearly Opus-level at far less quota. Select
 `claude-code/claude-opus-5-5` explicitly only for frontier work. Claude
 workers get `mayEdit` + `ownedPaths` (enforced by CLI `Edit(...)` allow rules
-under `dontAsk`) and `allowBash` exactly as Pi workers do. The harness refuses
-image admission, relay and worker resume.
-A failed or quota-blocked review is not expert approval.
+under `dontAsk`). `allowBash` is unsandboxed, but read-only Claude reviewers
+never receive Bash, even when requested; parents stage git evidence for
+Read/Grep/Glob. `requireImages: true` admits native Read-image of files staged
+under cwd, not inline attachments. Relay and native Pi-session resume remain
+unsupported; Claude workers can resume their own persisted CLI sessions.
+A failed task, including quota exhaustion, is not expert approval.
 
 Before commit/push/deploy, weaker implementers request one bounded Opus Pass
 through the parent. USAP never grants permission to release. Explicit native Pi
@@ -132,8 +135,8 @@ Advertised capability is checked before launch; actual image/tool behavior
 must also be verified against artifacts. Missing capability never causes a
 silent model substitution.
 
-These behaviors ship in this Steak Pi 0.8.0 candidate (checkpoint privacy dates
-to 0.6.0); they are not a promise of verified end-to-end recovery in every
+These behaviors describe this checkout (checkpoint privacy dates to 0.6.0);
+they are not a promise of verified end-to-end recovery in every
 environment. Persistent parent sessions keep run and
 worker checkpoints private to that session, and the 8-hour ceiling is a deadline
 setting rather than an endurance guarantee: host exit interrupts workers, and no
