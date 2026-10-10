@@ -6,7 +6,7 @@
   },
   "description": "Steak Pi — native subagents, deterministic compaction, verification, todo and a companion UI for Pi, in less memory than stock Pi.",
   "license": "MIT",
-  "author": "Implose Cybernetics",
+  "author": "Pareto Cybernetics",
   "repository": {
     "type": "git",
     "url": "https://github.com/michael-berardi/steak-pi.git"

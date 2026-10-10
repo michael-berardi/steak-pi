@@ -1,5 +1,5 @@
 #!/bin/sh
-# steak-pi — installer/updater for the Steak Pi pi-package (Implose Cybernetics).
+# steak-pi — installer/updater for the Steak Pi pi-package (Pareto Cybernetics).
 #
 #   steak-pi install   Install or re-point the Steak Pi package for the pi CLI.
 #   steak-pi update    First-class update: Homebrew upgrade + Pi re-pin (brew),
@@ -131,7 +131,7 @@ cmd_status() {
 }
 
 cmd_version() {
-  say "steak-pi $VERSION (Implose Cybernetics)"
+  say "steak-pi $VERSION (Pareto Cybernetics)"
 }
 
 cmd_remove() {
