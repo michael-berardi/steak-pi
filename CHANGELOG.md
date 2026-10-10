@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.11 (2026-10-10)
 
 - Claude session-limit diagnostics preserve bounded time-only resets and recognize
   structured `usage_limit_reached` errors without treating them as approval.
