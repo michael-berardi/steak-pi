@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Rebrand to Pareto Cybernetics: `steak-pi version` reports "(Pareto Cybernetics)" and the
+  Homebrew tap is `michael-berardi/pareto-software-distribution`
+  (`brew install michael-berardi/pareto-software-distribution/steak-pi`).
 - Claude session-limit diagnostics preserve bounded time-only resets and recognize
   structured `usage_limit_reached` errors without treating them as approval.
 - Read-only Claude reviewers never receive Bash, even when requested. Parents
