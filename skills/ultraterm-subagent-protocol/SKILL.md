@@ -195,6 +195,13 @@ Every run enforces finite time, child-turn, output, and relay-message budgets.
 `timeoutMs` defaults to 10 minutes (1 second–8 hours); per-child `maxTurns`
 defaults to 64 (1–2,048 assistant turns, including relay follow-ups). Native
 worker compaction is enabled and native retries are capped at one.
+Before launch, inspect `status`/`diagnose` for the queue reason, queue deadline and
+machine capacity holders. Reviewer tasks have a 60-second launch queue budget across
+run, session and machine waits, capped by the absolute run deadline. A zero-turn queue
+timeout is not a completed or partial review. Once launch capacity is acquired, the
+queue bound is removed; execution retains the original run deadline. Legacy owners
+may be unknown; never remove live or unreadable slots to obtain review capacity.
+
 Canonical ceilings include 8 concurrent children per run, 16 active runs,
 8 tasks per run, 50 retained terminal runs, 20,000 retained output characters per child,
 4,000 characters per relay body, 100 mailbox messages, and 500 messages per

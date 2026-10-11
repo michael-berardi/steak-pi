@@ -71,6 +71,52 @@ export interface MachineSlotsOptions {
   config?: CapacityConfig;
 }
 
+export interface SlotOwner {
+  index: number;
+  pid?: number;
+  born?: number;
+  runId?: string;
+  taskId?: string;
+  sessionId?: string;
+  kind: "lease" | "claim";
+  status: "live" | "dead" | "unknown";
+}
+
+export interface SlotBucketSnapshot {
+  cap: number;
+  /** Blocked indices, not the number of stamps (a claim and lease may coexist). */
+  held: number;
+  owners: SlotOwner[];
+}
+
+export interface MachineCapacitySnapshot {
+  provider: string;
+  providerBucket: SlotBucketSnapshot;
+  globalBucket: SlotBucketSnapshot;
+}
+
+export interface MachineSlotsAcquireOptions {
+  owner?: { runId: string; taskId: string; sessionId?: string };
+  onWait?: (snapshot: MachineCapacitySnapshot) => void;
+}
+
+type OwnerMetadata = NonNullable<MachineSlotsAcquireOptions["owner"]>;
+
+/** Only bounded identifiers are persisted, never arbitrary caller fields. */
+function validatedOwner(value: unknown): OwnerMetadata | undefined {
+  if (value === null || typeof value !== "object") return undefined;
+  const owner = value as Partial<OwnerMetadata>;
+  const validId = (id: unknown): id is string =>
+    typeof id === "string" && id.length <= 256 && /^[a-z0-9][a-z0-9._:-]*$/i.test(id);
+  if (!validId(owner.runId) || !validId(owner.taskId)) return undefined;
+  if (owner.sessionId !== undefined && !validId(owner.sessionId)) return undefined;
+  return {
+    runId: owner.runId,
+    taskId: owner.taskId,
+    ...(owner.sessionId !== undefined ? { sessionId: owner.sessionId } : {}),
+  };
+}
+
 const SLOT_SUFFIX = ".lock";
 const CLAIM_SUFFIX = ".claim";
 /** Private publish scratch files; never read as leases. */
@@ -81,13 +127,19 @@ export function defaultSlotDir(): string {
   return join(homedir(), ".local", "state", "steak-pi", "usap-slots");
 }
 
-function pidAlive(pid: number): boolean {
+function pidStatus(pid: number): SlotOwner["status"] {
   try {
     process.kill(pid, 0);
-    return true;
+    return "live";
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM"; // alive but guarded
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EPERM") return "live"; // alive but guarded
+    return code === "ESRCH" ? "dead" : "unknown";
   }
+}
+
+function pidAlive(pid: number): boolean {
+  return pidStatus(pid) !== "dead"; // Only ESRCH proves a holder is gone.
 }
 
 interface HolderStamp {
@@ -96,6 +148,7 @@ interface HolderStamp {
   born: number;
   /** Identity of this exact lease; release never deletes a foreign nonce. */
   nonce: string;
+  owner?: OwnerMetadata;
 }
 
 function isHolderStamp(value: unknown): value is HolderStamp {
@@ -107,8 +160,8 @@ function isHolderStamp(value: unknown): value is HolderStamp {
   );
 }
 
-function freshStamp(): HolderStamp {
-  return { pid: process.pid, born: Date.now(), nonce: randomUUID() };
+function freshStamp(owner?: OwnerMetadata): HolderStamp {
+  return { pid: process.pid, born: Date.now(), nonce: randomUUID(), ...(owner ? { owner } : {}) };
 }
 
 /**
@@ -121,7 +174,8 @@ function readStamp(path: string): { present: boolean; holder?: HolderStamp } {
   try {
     const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
     if (isHolderStamp(parsed)) {
-      return { present: true, holder: { pid: parsed.pid, born: parsed.born, nonce: parsed.nonce } };
+      const owner = validatedOwner(parsed.owner);
+      return { present: true, holder: { pid: parsed.pid, born: parsed.born, nonce: parsed.nonce, ...(owner ? { owner } : {}) } };
     }
     return { present: true };
   } catch (error) {
@@ -235,10 +289,13 @@ export class MachineSlots {
    * atomically into empty indices. Existing dead slots are reclaimed
    * only under the index's single-winner claim with a recheck of the stamp.
    */
-  private trySlot(dir: string, path: string, index: number): (() => void) | undefined {
+  private trySlot(dir: string, path: string, index: number, owner?: OwnerMetadata): (() => void) | undefined {
+    // An abandoned claim also parks an empty index: never publish into a
+    // foreign reclaim critical section, even if its lease is already gone.
+    if (readStamp(`${path}${CLAIM_SUFFIX}`).present) return undefined;
     const observed = readStamp(path);
     if (!observed.present) {
-      const stamp = freshStamp();
+      const stamp = freshStamp(owner);
       return publishStamp(dir, path, stamp) ? this.releaseLease(path, stamp) : undefined;
     }
     // Live holder, or an unreadable stamp we refuse to guess at: leave it alone.
@@ -255,7 +312,7 @@ export class MachineSlots {
         if (!sameHolder(current.holder, observed.holder)) return undefined;
         rmSync(path, { force: true });
       }
-      const mine = freshStamp();
+      const mine = freshStamp(owner);
       if (!publishStamp(dir, path, mine)) return undefined; // peer published while the path was free
       if (!sameHolder(readStamp(path).holder, mine)) return undefined; // never report a lease we cannot prove
       return this.releaseLease(path, mine);
@@ -265,37 +322,65 @@ export class MachineSlots {
   }
 
   /** Best-effort single-slot grab for one bucket. Returns a release or undefined. */
-  private tryBucket(bucket: string, cap: number, signal?: AbortSignal): (() => void) | undefined {
+  private tryBucket(bucket: string, cap: number, signal?: AbortSignal, owner?: OwnerMetadata): (() => void) | undefined {
     if (signal?.aborted) return undefined;
     const dir = this.bucketDir(bucket);
     mkdirSync(dir, { recursive: true });
     for (let i = 0; i < cap; i++) {
       if (signal?.aborted) return undefined;
-      const release = this.trySlot(dir, join(dir, `${i}${SLOT_SUFFIX}`), i);
+      const release = this.trySlot(dir, join(dir, `${i}${SLOT_SUFFIX}`), i, owner);
       if (release) return release;
     }
     return undefined;
   }
 
-  /** Count valid in-cap holders. Never deletes slots, regardless of index or cap. */
-  heldCount(bucket: string, cap: number): number {
-    let held = 0;
-    let entries: string[];
+  /** Read-only, best-effort observation; never mkdir, publish, reclaim or release. */
+  inspect(provider: string): MachineCapacitySnapshot {
+    const caps = this.caps(provider);
+    return {
+      provider,
+      providerBucket: this.inspectBucket(provider, caps.provider),
+      globalBucket: this.inspectBucket("global", caps.global),
+    };
+  }
+
+  private inspectBucket(bucket: string, cap: number): SlotBucketSnapshot {
+    const snapshot: SlotBucketSnapshot = { cap, held: 0, owners: [] };
+    const dir = this.bucketDir(bucket);
     try {
-      entries = readdirSync(this.bucketDir(bucket));
-    } catch {
-      return 0;
+      readdirSync(dir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return snapshot;
+      // Inaccessible storage is not evidence of free capacity. Represent every
+      // in-cap index as unknown rather than exposing paths or filesystem errors.
+      snapshot.held = cap;
+      for (let index = 0; index < cap; index++) {
+        snapshot.owners.push({ index, kind: "lease", status: "unknown" });
+      }
+      return snapshot;
     }
-    for (const entry of entries) {
-      if (!entry.endsWith(SLOT_SUFFIX)) continue;
-      const index = Number(entry.slice(0, -SLOT_SUFFIX.length));
-      if (!Number.isInteger(index) || index < 0 || index >= cap) continue; // foreign capacity view: leave it alone
-      const { present, holder } = readStamp(join(this.bucketDir(bucket), entry));
-      // Conservative: anything present that is not provably dead counts as
-      // held, including stamps we cannot read.
-      if (present && !(holder && !pidAlive(holder.pid))) held += 1;
+    for (let index = 0; index < cap; index++) {
+      let blocked = false;
+      for (const kind of ["lease", "claim"] as const) {
+        const path = join(dir, `${index}${SLOT_SUFFIX}${kind === "claim" ? CLAIM_SUFFIX : ""}`);
+        const { present, holder } = readStamp(path);
+        if (!present) continue;
+        const status = holder ? pidStatus(holder.pid) : "unknown";
+        snapshot.owners.push({
+          index, kind, status,
+          ...(holder ? { pid: holder.pid, born: holder.born, ...holder.owner } : {}),
+        });
+        // Claims park an index even when dead. Dead leases alone are reclaimable.
+        if (kind === "claim" || status !== "dead") blocked = true;
+      }
+      if (blocked) snapshot.held += 1;
     }
-    return held;
+    return snapshot;
+  }
+
+  /** Count blocked in-cap indices, including claims and unreadable storage. */
+  heldCount(bucket: string, cap: number): number {
+    return this.inspectBucket(bucket, cap).held;
   }
 
   /**
@@ -304,8 +389,13 @@ export class MachineSlots {
    * The returned release is idempotent and never throws.
    */
   async acquire(provider: string, signal?: AbortSignal): Promise<() => void>;
-  async acquire(provider: string, signal: AbortSignal | undefined, timeoutMs: number): Promise<() => void>;
-  async acquire(provider: string, signal?: AbortSignal, timeoutMs = 10 * 60_000): Promise<() => void> {
+  async acquire(provider: string, signal: AbortSignal | undefined, timeoutMs: number, options?: MachineSlotsAcquireOptions): Promise<() => void>;
+  async acquire(provider: string, signal?: AbortSignal, timeoutMs = 10 * 60_000, options: MachineSlotsAcquireOptions = {}): Promise<() => void> {
+    const owner = validatedOwner(options.owner);
+    const observeWait = (snapshot: MachineCapacitySnapshot) => {
+      // Diagnostics must not affect lease acquisition or cleanup.
+      try { options.onWait?.(snapshot); } catch { /* observer is best-effort */ }
+    };
     const deadline = Date.now() + Math.max(0, timeoutMs);
     const { provider: providerCap, global: globalCap } = this.caps(provider);
     let providerRelease: (() => void) | undefined;
@@ -332,9 +422,9 @@ export class MachineSlots {
       });
     try {
       while (!signal?.aborted) {
-        providerRelease = this.tryBucket(provider, providerCap, signal);
+        providerRelease = this.tryBucket(provider, providerCap, signal, owner);
         if (providerRelease) {
-          const globalRelease = this.tryBucket("global", globalCap, signal);
+          const globalRelease = this.tryBucket("global", globalCap, signal, owner);
           if (globalRelease) {
             const providerOnce = providerRelease;
             let done = false;
@@ -350,10 +440,13 @@ export class MachineSlots {
           providerRelease();
           providerRelease = undefined;
         }
-        if (Date.now() >= deadline) break;
-        const providerHeld = this.heldCount(provider, providerCap);
-        const globalHeld = this.heldCount("global", globalCap);
-        // Skip the sleep entirely when reclaimable slots were just purged.
+        // Report the first unsuccessful attempt immediately, including a
+        // zero-timeout attempt; report every retry, but never a successful grab.
+        const snapshot = this.inspect(provider);
+        const providerHeld = snapshot.providerBucket.held;
+        const globalHeld = snapshot.globalBucket.held;
+        observeWait(snapshot);
+        if (Date.now() >= deadline || signal?.aborted) break;
         const backoff = providerHeld < providerCap || globalHeld < globalCap ? 50 : 250;
         await sleep(backoff);
       }
@@ -367,8 +460,16 @@ export class MachineSlots {
 
 /** No-op implementation for tests and embedded embeds that must not touch disk. */
 export class NoopSlots {
-  async acquire(): Promise<() => void> {
+  async acquire(_provider?: string, _signal?: AbortSignal, _timeoutMs?: number, _options?: MachineSlotsAcquireOptions): Promise<() => void> {
     return () => undefined;
+  }
+  inspect(provider: string): MachineCapacitySnapshot {
+    const cap = Number.MAX_SAFE_INTEGER;
+    return {
+      provider,
+      providerBucket: { cap, held: 0, owners: [] },
+      globalBucket: { cap, held: 0, owners: [] },
+    };
   }
   caps(): { provider: number; global: number } {
     return { provider: Number.MAX_SAFE_INTEGER, global: Number.MAX_SAFE_INTEGER };

@@ -1,3 +1,17 @@
+import type { MachineCapacitySnapshot } from "./machine-slots.ts";
+
+/** Reviewer launch waits are bounded independently of the execution budget. */
+export const REVIEW_LAUNCH_TIMEOUT_MS = 60_000;
+
+export interface LaunchQueue {
+  tier: "session" | "machine";
+  provider: string;
+  reason: string;
+  since: number;
+  deadlineAt: number;
+  capacity?: MachineCapacitySnapshot;
+}
+
 export const USAP_VERSION = "1.3" as const;
 /** Execution harness that serves a run's leaves. `"pi"` is the native default;
  * `"claude-code"` is the official headless Claude CLI runner (read,
@@ -143,6 +157,10 @@ export interface RelayEnvelope {
 }
 
 export interface TaskRecord extends NormalizedTask {
+  /** Active pre-worker launch wait; absent once inference may start. */
+  launchQueue?: LaunchQueue;
+  /** Last capacity wait retained as evidence after settlement, not an active queue. */
+  lastLaunchQueue?: LaunchQueue;
   retryAttempt?: number;
   retryDelayMs?: number;
   compactions?: number;

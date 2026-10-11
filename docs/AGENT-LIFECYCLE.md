@@ -26,16 +26,22 @@ parent integrates results.
 | Resource | Bound |
 | --- | --- |
 | Tasks per run | 8 |
-| Concurrent children | 4 across the extension session |
+| Concurrent children | 8 per run; session defaults: Codex 6, others 8, global 14 |
 | Simultaneously active runs | 16 |
-| Run deadline | 10 minutes by default; 1 second–30 minutes accepted |
+| Run deadline | 10 minutes by default; 1 second–8 hours accepted |
+| Reviewer launch queue | 60 seconds across run/session/machine waits, capped by run deadline |
 | Retained terminal runs | 50; oldest terminal records are evicted |
-| Assistant turns per child | 12, with a report-now warning after turn 9 |
+| Assistant turns per child | 64 by default; 1–2,048 accepted, with a report-now warning when two remain |
 | Retained output per child | 20,000 characters, with truncation marker |
 | Relay body | 4,000 characters |
 | Relay mailbox | 100 messages per recipient |
 | Relay traffic | 500 accepted envelopes per run |
 | Hub wait | 30 seconds per call |
+
+Status and metadata-only diagnose show active launch queue reasons and machine
+capacity holders before inference starts. An expired review queue is an incomplete,
+zero-turn timeout, never a completed review. The last queue snapshot remains available
+for diagnosis. Unknown legacy holders are not guessed at or removed.
 
 Cancellation prevents queued launches and aborts active native Pi sessions.
 `session_shutdown` aborts every live child and clears runtime relay state.

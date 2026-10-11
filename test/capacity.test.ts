@@ -142,7 +142,7 @@ describe("MachineSlots", () => {
     const slots = new MachineSlots({ dir, config });
     const release = await slots.acquire("xiaomi");
     // Simulate a crashed holder: dead pid inside the held slot file.
-    writeFileSync(join(dir, "xiaomi", "0.lock"), JSON.stringify({ pid: 3_999_999_999, born: Date.now(), nonce: "crashed" }));
+    writeFileSync(join(dir, "xiaomi", "0.lock"), JSON.stringify({ pid: 2_147_483_646, born: Date.now(), nonce: "crashed" }));
     release(); // foreign or crashed holder: release must not delete
     expect(existsSync(join(dir, "xiaomi", "0.lock"))).toBe(true);
     const reclaimed = await slots.acquire("xiaomi", undefined, 5_000);

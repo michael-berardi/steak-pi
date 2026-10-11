@@ -88,6 +88,23 @@ afterEach(() => {
 });
 
 describe("UltraTerm Subagent Protocol Pi extension", () => {
+  it("exposes independent current and last launch queue snapshots in run/status views", () => {
+    const run = normalizeDispatch({ goal: "queue metadata", tasks: [{ label: "review", task: "bounded review", role: "reviewer" }] }, process.cwd(), "claude-code/claude-opus-5-5", "xhigh", 1_000, () => "queue-view");
+    expect(toRunView(run).tasks[0]).not.toHaveProperty("launchQueue");
+    expect(toRunView(run).tasks[0]).not.toHaveProperty("lastLaunchQueue");
+    run.tasks[0].state = "starting";
+    run.tasks[0].launchQueue = { tier: "machine", provider: "anthropic", reason: "provider_capacity", since: 1_000, deadlineAt: 5_000,
+      capacity: { provider: "anthropic", providerBucket: { cap: 1, held: 1, owners: [{ index: 0, pid: 123, kind: "lease", status: "live" }] }, globalBucket: { cap: 2, held: 0, owners: [] } } };
+    run.tasks[0].lastLaunchQueue = { tier: "session", provider: "anthropic", reason: "session_capacity", since: 500, deadlineAt: 4_500 };
+    const task = toRunView(run).tasks[0];
+    expect(task).toMatchObject({ launchQueue: run.tasks[0].launchQueue, lastLaunchQueue: run.tasks[0].lastLaunchQueue });
+    task.launchQueue!.capacity!.providerBucket.owners[0].pid = 999;
+    task.lastLaunchQueue!.reason = "changed";
+    expect(run.tasks[0].launchQueue.capacity!.providerBucket.owners[0].pid).toBe(123);
+    expect(run.tasks[0].lastLaunchQueue.reason).toBe("session_capacity");
+    expect(toRunView(run).tasks[0].launchQueue!.capacity!.providerBucket.owners[0].pid).toBe(123);
+  });
+
   it("refuses an initial checkpoint failure before worker execution and retries snapshots only", async () => {
     const root = mkdtempSync(join(tmpdir(), "usap-initial-health-")); dirs.push(root);
     const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "initial-health" };
