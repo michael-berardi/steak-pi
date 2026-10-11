@@ -285,6 +285,17 @@ queued → starting → running ↔ waiting → done | failed | aborted | timed_
 it is not permission to exceed the run deadline. Terminal states never return
 to a live state.
 
+**Launch capacity wait.** Hub `status` and `diagnose` expose `launchCapacityWait`
+metadata: whether machine-wide provider or global launch capacity is blocking,
+the selected provider, capacity caps and bucket, and queue duration through
+`since`, `endedAt`, and `elapsedMs`. The task remains `starting` for compatibility;
+an active launch capacity wait means the worker has not started, not that it is
+hung. Elapsed time starts at the first denied machine slot and stops on slot
+acquisition, cancellation, or deadline; `endedAt` records when the wait ends.
+Polling `status` neither changes scheduling nor consumes launches. Existing
+checkpoints without this metadata remain valid; no capacity wait reason is
+inferred for them.
+
 A run is `running` while work remains. It becomes:
 
 - `done` when all tasks complete successfully;

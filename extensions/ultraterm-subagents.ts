@@ -30,6 +30,7 @@ import {
   RELAY_MAILBOX_LIMIT,
   TURN_BUDGET_ERROR,
   harnessOf,
+  launchCapacityWaitView,
   type DispatchInput,
   type HarnessId,
   type PartialReason,
@@ -165,6 +166,7 @@ export interface SettledTaskView {
   startedAt?: number;
   endedAt?: number;
   lastProgressAt?: number;
+  launchCapacityWait?: ReturnType<typeof launchCapacityWaitView>;
   detail?: string;
 }
 
@@ -472,7 +474,7 @@ function boundedHubWait(value: number | undefined): number {
   return timeoutMs;
 }
 
-function taskView(task: TaskRecord): SettledTaskView {
+function taskView(task: TaskRecord, now = Date.now()): SettledTaskView {
   return {
     taskId: task.id,
     label: task.label,
@@ -491,6 +493,7 @@ function taskView(task: TaskRecord): SettledTaskView {
     startedAt: task.startedAt,
     endedAt: task.endedAt,
     lastProgressAt: task.lastProgressAt,
+    ...(task.launchCapacityWait ? { launchCapacityWait: launchCapacityWaitView(task, now) } : {}),
     ...(taskDetail(task) ? { detail: taskDetail(task) } : {}),
     toolErrors: task.toolErrors ?? 0,
     toolSuccesses: task.toolSuccesses ?? 0,
@@ -500,8 +503,9 @@ function taskView(task: TaskRecord): SettledTaskView {
 
 /** Create a stable, JSON-safe view without duplicating nested model usage. */
 export function toRunView(run: RunRecord, links: RunLinks = {}): RunView {
+  const observedAt = Date.now();
   return {
-    observedAt: Date.now(),
+    observedAt,
     runId: run.id,
     ...(run.ownerSessionId ? { ownerSessionId: run.ownerSessionId } : {}),
     ...(run.ownerSessionFile ? { ownerSessionFile: run.ownerSessionFile } : {}),
@@ -516,7 +520,7 @@ export function toRunView(run: RunRecord, links: RunLinks = {}): RunView {
     ...(run.endedAt === undefined ? {} : { endedAt: run.endedAt }),
     totalTokens: run.usage.totalTokens,
     totalCost: run.usage.cost.total,
-    tasks: run.tasks.map(taskView),
+    tasks: run.tasks.map((task) => taskView(task, observedAt)),
     ...(run.resumedFrom ? { resumedFrom: run.resumedFrom } : {}),
     ...(links.resumedAs ? { resumedAs: links.resumedAs } : {}),
     ...(links.supersededBy ? { supersededBy: links.supersededBy } : {}),
@@ -553,13 +557,16 @@ export function renderRunResult(run: RunRecord, limit = MAX_TOOL_CONTENT): strin
   if (!Number.isSafeInteger(limit) || limit < 0) throw new RangeError("render limit must be a non-negative integer");
   let text = `${renderRunProgress(run)}\nmodel ${run.model} · thinking ${run.thinkingLevel}${run.selection ? ` · ${run.selection.source}${run.selection.profile ? ` · ${run.selection.profile}` : ""}` : ""}`.slice(0, limit);
   let wasTruncated = false;
+  const observedAt = Date.now();
   for (const task of run.tasks) {
     // A budget stop is named explicitly (with its role) so it cannot be mistaken for a finished leaf.
     const partial = task.outcome ? ` · PARTIAL ${task.partialReason ?? "budget"} (${task.role}; not complete)` : "";
     const suffix = `${partial}${task.toolErrors ? ` · ${task.toolErrors} tool errors` : ""}${task.truncated ? " · worker output truncated" : ""}`;
     const error = task.error ? `\nerror: ${task.error}` : "";
     const retained = task.partialSummary ? `\nretained: ${task.partialSummary}` : "";
-    const block = `\n\n[${task.label}] ${task.state}${suffix}${error}${retained}\n${task.output || "(no output)"}`;
+    const wait = launchCapacityWaitView(task, observedAt);
+    const capacity = wait ? `\nlaunch capacity: ${wait.provider} · ${wait.bucket} slots unavailable (limit ${wait.bucket === "provider" ? wait.providerCap : wait.globalCap}) · queued ${wait.elapsedMs}ms${wait.endedAt === undefined ? " · waiting" : " · ended"}` : "";
+    const block = `\n\n[${task.label}] ${task.state}${suffix}${capacity}${error}${retained}\n${task.output || "(no output)"}`;
     const next = appendBounded(text, block, limit);
     text = next.text;
     if (next.truncated) {

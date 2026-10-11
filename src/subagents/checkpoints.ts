@@ -3,7 +3,7 @@ import { closeSync, constants, existsSync, fchmodSync, fsyncSync, fstatSync, lst
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { removeClaudeWorkerSession } from "./claude-session.ts";
-import { MAX_ACTIVE_RUNS, MAX_RETAINED_TERMINAL_RUNS, MAX_TASKS, OUTPUT_LIMIT, TURN_BUDGET_ERROR, type RunRecord } from "./types.ts";
+import { MAX_ACTIVE_RUNS, MAX_RETAINED_TERMINAL_RUNS, MAX_TASKS, OUTPUT_LIMIT, TURN_BUDGET_ERROR, launchCapacityWaitView, type RunRecord } from "./types.ts";
 
 const MAX_BYTES = 2_000_000;
 const ID = /^run-[a-zA-Z0-9-]{1,120}$/;
@@ -368,6 +368,9 @@ export function recoveredRun(checkpoint: Checkpoint): RunRecord {
           ? "Host interrupted; Claude CLI tasks have no persistent history. Inspect partial work before a new dispatch."
           : "Host interrupted; inspect checkpoint and explicitly resume unfinished work";
         task.endedAt = checkpoint.savedAt;
+        if (task.launchCapacityWait && task.launchCapacityWait.endedAt === undefined) {
+          task.launchCapacityWait.endedAt = checkpoint.savedAt;
+        }
         delete task.currentTool;
       }
     }
@@ -394,11 +397,13 @@ export function diagnoseRun(run: RunRecord, now = Date.now()) {
         : /fetch failed|incomplete.stream|connection.*(?:reset|closed)|ECONNRESET|transport failure; connection or request did not complete/i.test(error) ? "transport"
         : /auth|401|403|credential/i.test(error) ? "provider_auth"
         : task.toolErrors && !task.toolSuccesses ? "tool_failures"
+        : task.state === "starting" && task.launchCapacityWait && task.launchCapacityWait.endedAt === undefined ? "launch_capacity"
         : task.state === "failed" ? "worker_failure" : task.state;
       return { taskId: task.id, label: task.label, role: task.role, state: task.state,
         ...(task.outcome ? { outcome: task.outcome, partialReason: task.partialReason ?? null, partialSummary: task.partialSummary ?? null } : {}),
         ...(task.resumedFrom ? { resumedFrom: task.resumedFrom } : {}),
         reason, turns: task.turns,
+        ...(task.launchCapacityWait ? { launchCapacityWait: launchCapacityWaitView(task, now) } : {}),
         ...(reason === "provider_quota" && run.harness === "claude-code"
           ? { recovery: "Check Claude usage before debugging; retry the same route only after the usage reset. No paid fallback or review approval." } : {}),
         toolSuccesses: task.toolSuccesses ?? 0, toolErrors: task.toolErrors ?? 0,
