@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderRunResult, toRunView } from "../extensions/ultraterm-subagents.ts";
 import type { CapacityConfig } from "../src/subagents/capacity.ts";
-import { diagnoseRun, recoveredRun } from "../src/subagents/checkpoints.ts";
+import { CheckpointStore, diagnoseRun, recoveredRun } from "../src/subagents/checkpoints.ts";
 import { Coordinator } from "../src/subagents/coordinator.ts";
 import { MachineSlots, type MachineCapacityWait } from "../src/subagents/machine-slots.ts";
 import { Scheduler } from "../src/subagents/scheduler.ts";
@@ -330,6 +330,29 @@ describe("launch capacity lifecycle visibility", () => {
     expect(c.snapshot("run-capacity")!.tasks[0].launchCapacityWait).toEqual(second.tasks[0].launchCapacityWait);
     await vi.advanceTimersByTimeAsync(250);
     expect(second.tasks[0].launchCapacityWait?.since).toBe(10_000);
+  });
+
+  it("persists capacity transitions immediately while throttling unchanged wait observations", () => {
+    clock();
+    const f = fixture();
+    const input = run(f.dir, "run-persistence");
+    input.tasks[0].state = "starting";
+    const store = new CheckpointStore(join(f.dir, "parent.jsonl"), join(f.dir, "checkpoints"));
+    try {
+      expect(store.save(input)).toBe(true);
+      input.tasks[0].launchCapacityWait = { provider: "zai", bucket: "provider", providerCap: 1, globalCap: 2, since: 10_000 };
+      expect(store.save(input)).toBe(true);
+      expect(store.get(input.id)?.run.tasks[0].launchCapacityWait).toEqual(input.tasks[0].launchCapacityWait);
+      expect(store.save(input)).toBe(false);
+      input.tasks[0].launchCapacityWait.bucket = "global";
+      expect(store.save(input)).toBe(true);
+      input.tasks[0].launchCapacityWait.endedAt = 10_010;
+      expect(store.save(input)).toBe(true);
+      expect(store.save(input)).toBe(false);
+      expect(store.get(input.id)?.run.tasks[0].launchCapacityWait).toEqual(input.tasks[0].launchCapacityWait);
+    } finally {
+      store.close();
+    }
   });
 
   it("freezes an interrupted checkpoint's active wait at savedAt, without inventing metadata for legacy tasks", () => {
