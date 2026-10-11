@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.14 (2026-10-11)
+
+- Plain-text status includes launch queue tier/provider, reason and elapsed wait.
+  Structured metadata, `diagnose` and scheduling are unchanged.
+
 ## 0.9.13 (2026-10-11)
 
 - Launch queue checkpoints immediately retain the first wait, reason/capacity

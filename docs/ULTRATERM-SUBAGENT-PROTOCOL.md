@@ -281,8 +281,9 @@ Task lifecycle:
 queued → starting → running ↔ waiting → done | failed | aborted | timed_out
 ```
 
-Before a worker starts, `status` and `diagnose` expose its launch queue reason,
-queue deadline and elapsed wait. Machine-capacity waits include provider and global
+Before a worker starts, `status` includes concise plain-text launch queue
+tier/provider, reason and elapsed wait alongside the structured queue details
+exposed by `status` and `diagnose`, including the queue deadline. Machine-capacity waits include provider and global
 capacity counts and their lease/claim holders (PID and, for newly launched workers,
 parent session, run and task IDs). Legacy or unreadable holders are identified as
 unknown; diagnostics never reclaim slots or expose lease nonces or worker content.

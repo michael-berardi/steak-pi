@@ -567,7 +567,9 @@ export function renderRunResult(run: RunRecord, limit = MAX_TOOL_CONTENT): strin
     const suffix = `${partial}${task.toolErrors ? ` · ${task.toolErrors} tool errors` : ""}${task.truncated ? " · worker output truncated" : ""}`;
     const error = task.error ? `\nerror: ${task.error}` : "";
     const retained = task.partialSummary ? `\nretained: ${task.partialSummary}` : "";
-    const block = `\n\n[${task.label}] ${task.state}${suffix}${error}${retained}\n${task.output || "(no output)"}`;
+    const queue = task.launchQueue;
+    const queued = queue ? `\nlaunch queue: ${queue.tier}/${queue.provider} · ${queue.reason} · ${Math.max(0, (task.endedAt ?? Date.now()) - queue.since)}ms elapsed` : "";
+    const block = `\n\n[${task.label}] ${task.state}${suffix}${queued}${error}${retained}\n${task.output || "(no output)"}`;
     const next = appendBounded(text, block, limit);
     text = next.text;
     if (next.truncated) {

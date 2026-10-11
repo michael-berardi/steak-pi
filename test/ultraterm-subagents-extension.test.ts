@@ -105,6 +105,32 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     expect(toRunView(run).tasks[0].launchQueue!.capacity!.providerBucket.owners[0].pid).toBe(123);
   });
 
+  it("renders active launch queue status without worker output and preserves the aggregate bound", () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(2_000);
+    try {
+      const run = normalizeDispatch({ goal: "queue status", tasks: [{ label: "review", task: "bounded review", role: "reviewer" }] }, process.cwd(), "claude-code/claude-opus-5-5", "xhigh", 1_000, () => "queue-status");
+      const task = run.tasks[0];
+      task.state = "starting";
+      task.lastLaunchQueue = { tier: "session", provider: "anthropic", reason: "previous wait", since: 500, deadlineAt: 4_500 };
+      expect(renderRunResult(run)).not.toContain("launch queue:");
+
+      task.launchQueue = { tier: "machine", provider: "anthropic", reason: "provider slots unavailable", since: 1_000, deadlineAt: 5_000 };
+      const text = renderRunResult(run);
+      expect(text).toContain("launch queue: machine/anthropic · provider slots unavailable · 1000ms elapsed");
+      expect(text).toContain("(no output)");
+
+      task.launchQueue.since = 3_000;
+      expect(renderRunResult(run)).toContain("launch queue: machine/anthropic · provider slots unavailable · 0ms elapsed");
+      task.launchQueue.reason = "provider slots unavailable ".repeat(100);
+      for (const limit of [0, 1, 64, 256]) {
+        expect(renderRunResult(run, limit).length).toBeLessThanOrEqual(limit);
+      }
+      expect(renderRunResult(run, 256)).toContain("[Aggregate content truncated; complete bounded task outputs remain in details.]");
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("refuses an initial checkpoint failure before worker execution and retries snapshots only", async () => {
     const root = mkdtempSync(join(tmpdir(), "usap-initial-health-")); dirs.push(root);
     const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "initial-health" };
