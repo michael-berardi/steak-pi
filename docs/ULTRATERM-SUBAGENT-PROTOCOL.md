@@ -287,6 +287,9 @@ capacity counts and their lease/claim holders (PID and, for newly launched worke
 parent session, run and task IDs). Legacy or unreadable holders are identified as
 unknown; diagnostics never reclaim slots or expose lease nonces or worker content.
 The most recent queue snapshot is retained on a task that settles before launch.
+For persistent sessions, the first queue wait, reason/capacity or holder transitions,
+and queue end are checkpointed immediately for recovery, while read-time elapsed
+updates alone do not trigger checkpoint writes.
 
 Reviewer tasks have a **60-second launch queue budget**, including waits behind
 run concurrency, the session scheduler and machine slots. The shorter absolute run

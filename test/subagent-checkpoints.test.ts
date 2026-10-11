@@ -38,6 +38,36 @@ describe("durable USAP checkpoints", () => {
     expect(diagnoseRun(run, 6_000).tasks[0].launchQueue?.remainingMs).toBe(0);
   });
 
+  it("persists static queue transitions immediately without defeating unchanged-write throttling", () => {
+    const { root, store, run } = setup();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(2_000);
+    try {
+      const task = run.tasks[0];
+      task.state = "starting";
+      expect(store.save(run)).toBe(true);
+      task.launchQueue = queue();
+      expect(store.save(run)).toBe(true);
+      expect(store.get(run.id)!.run.tasks[0].launchQueue).toEqual(queue());
+      clock.mockReturnValue(2_100);
+      expect(diagnoseRun(run).tasks[0].launchQueue?.elapsedMs).toBe(1_100);
+      expect(store.save(run)).toBe(false);
+      task.launchQueue.capacity!.globalBucket.held = 2;
+      task.launchQueue.reason = "provider and global capacity unavailable";
+      expect(store.save(run)).toBe(true);
+      task.launchQueue.capacity!.providerBucket.owners[0].pid = 456;
+      expect(store.save(run)).toBe(true);
+      task.lastLaunchQueue = structuredClone(task.launchQueue);
+      delete task.launchQueue;
+      expect(store.save(run)).toBe(true);
+      expect(store.save(run)).toBe(false);
+      store.close();
+      const reopened = new CheckpointStore(join(root, "parent.jsonl"), join(root, "checkpoints")); stores.push(reopened);
+      expect(reopened.warnings).toEqual([]);
+      expect(reopened.get(run.id)!.run.tasks[0].launchQueue).toBeUndefined();
+      expect(reopened.get(run.id)!.run.tasks[0].lastLaunchQueue).toEqual(task.lastLaunchQueue);
+    } finally { clock.mockRestore(); }
+  });
+
   it("retains queue evidence through checkpoints and interruption without claiming an active queue", () => {
     const { root, store, run } = setup();
     run.tasks[0].state = "starting"; run.tasks[0].launchQueue = queue(); run.tasks[0].lastLaunchQueue = queue();

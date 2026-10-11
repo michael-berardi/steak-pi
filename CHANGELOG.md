@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.13 (2026-10-11)
+
+- Launch queue checkpoints immediately retain the first wait, reason/capacity
+  and holder transitions, and queue end for recovery. Unchanged queue reads,
+  including elapsed-only updates, remain write-throttled; scheduling is unchanged.
+
 ## 0.9.12 (2026-10-11)
 
 - Status and metadata-only diagnostics expose launch queue reasons, elapsed
