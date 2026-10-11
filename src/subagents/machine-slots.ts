@@ -71,6 +71,15 @@ export interface MachineSlotsOptions {
   config?: CapacityConfig;
 }
 
+/** Observed denied launch attempt; metadata only, never a scheduling decision. */
+export interface MachineCapacityWait {
+  provider: string;
+  bucket: "provider" | "global";
+  providerCap: number;
+  globalCap: number;
+}
+export type MachineCapacityObserver = (wait: MachineCapacityWait) => void;
+
 const SLOT_SUFFIX = ".lock";
 const CLAIM_SUFFIX = ".claim";
 /** Private publish scratch files; never read as leases. */
@@ -304,8 +313,8 @@ export class MachineSlots {
    * The returned release is idempotent and never throws.
    */
   async acquire(provider: string, signal?: AbortSignal): Promise<() => void>;
-  async acquire(provider: string, signal: AbortSignal | undefined, timeoutMs: number): Promise<() => void>;
-  async acquire(provider: string, signal?: AbortSignal, timeoutMs = 10 * 60_000): Promise<() => void> {
+  async acquire(provider: string, signal: AbortSignal | undefined, timeoutMs: number, onWait?: MachineCapacityObserver): Promise<() => void>;
+  async acquire(provider: string, signal?: AbortSignal, timeoutMs = 10 * 60_000, onWait?: MachineCapacityObserver): Promise<() => void> {
     const deadline = Date.now() + Math.max(0, timeoutMs);
     const { provider: providerCap, global: globalCap } = this.caps(provider);
     let providerRelease: (() => void) | undefined;
@@ -332,6 +341,7 @@ export class MachineSlots {
       });
     try {
       while (!signal?.aborted) {
+        let bucket: MachineCapacityWait["bucket"] = "provider";
         providerRelease = this.tryBucket(provider, providerCap, signal);
         if (providerRelease) {
           const globalRelease = this.tryBucket("global", globalCap, signal);
@@ -347,8 +357,13 @@ export class MachineSlots {
             };
           }
           // Global full: give back the provider slot and wait for room.
+          bucket = "global";
           providerRelease();
           providerRelease = undefined;
+        }
+        if (!signal?.aborted) {
+          try { onWait?.({ provider, bucket, providerCap, globalCap }); }
+          catch { /* Observation must not change lease acquisition or release. */ }
         }
         if (Date.now() >= deadline) break;
         const providerHeld = this.heldCount(provider, providerCap);

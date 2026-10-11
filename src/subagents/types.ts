@@ -1,3 +1,5 @@
+import type { MachineCapacityWait } from "./machine-slots.ts";
+
 export const USAP_VERSION = "1.3" as const;
 /** Execution harness that serves a run's leaves. `"pi"` is the native default;
  * `"claude-code"` is the official headless Claude CLI runner (read,
@@ -142,7 +144,23 @@ export interface RelayEnvelope {
   createdAt: number;
 }
 
+export interface LaunchCapacityWait extends MachineCapacityWait {
+  /** First denied machine launch attempt, in epoch milliseconds. */
+  since: number;
+  /** Acquisition exited; retained queue duration no longer grows. */
+  endedAt?: number;
+}
+
+/** Derive elapsed time at observation, without writes or live lease inspection. */
+export function launchCapacityWaitView(task: TaskRecord, now = Date.now()): (LaunchCapacityWait & { elapsedMs: number }) | undefined {
+  const wait = task.launchCapacityWait;
+  if (!wait) return undefined;
+  return { ...wait, elapsedMs: Math.max(0, (wait.endedAt ?? task.endedAt ?? now) - wait.since) };
+}
+
 export interface TaskRecord extends NormalizedTask {
+  /** Observed machine-tier capacity wait, independent of the compatible task state. */
+  launchCapacityWait?: LaunchCapacityWait;
   retryAttempt?: number;
   retryDelayMs?: number;
   compactions?: number;

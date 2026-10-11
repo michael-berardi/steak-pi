@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.12 (unreleased)
+
+- Hub status and diagnostics identify provider or global machine launch-capacity
+  waits and their elapsed queue time before a worker starts. Retained wait time
+  stops growing after acquisition or interruption. Scheduling is unchanged.
+
 ## 0.9.11 (2026-10-10)
 
 - Claude session-limit diagnostics preserve bounded time-only resets and recognize

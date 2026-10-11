@@ -23,7 +23,7 @@ import {
 } from "./types.ts";
 import { abortError, sessionScheduler, type SessionScheduler } from "./scheduler.ts";
 import { MIN_RESUME_BUDGET_MS, transientFailure } from "./auto-resume.ts";
-import { defaultMachineSlots, type MachineSlots, type NoopSlots } from "./machine-slots.ts";
+import { defaultMachineSlots, type MachineCapacityObserver, type MachineSlots, type NoopSlots } from "./machine-slots.ts";
 
 const TERMINAL_TASK_STATES = new Set<TaskState>([
   "done",
@@ -99,6 +99,7 @@ type MachineSlotAcquire = (
   provider: string,
   signal?: AbortSignal,
   timeoutMs?: number,
+  onWait?: MachineCapacityObserver,
 ) => Promise<() => void>;
 
 function cloneUsage(usage: UsageTotals): UsageTotals {
@@ -119,6 +120,7 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<boolean> {
 function cloneTask(task: TaskRecord): TaskRecord {
   return {
     ...task,
+    ...(task.launchCapacityWait ? { launchCapacityWait: { ...task.launchCapacityWait } } : {}),
     ownedPaths: [...task.ownedPaths],
     changedPaths: [...workerJournal(task).changedPaths],
     lastStep: workerJournal(task).lastStep,
@@ -465,11 +467,28 @@ export class SubagentCoordinator {
           this.stopTask(runtime, task, "timed_out", "Run deadline exceeded");
           throw abortError(taskRuntime.controller.signal);
         }
-        const releaseMachine = await (this.machineSlots.acquire as MachineSlotAcquire)(
-          provider,
-          taskRuntime.controller.signal,
-          remainingRunMs,
-        );
+        let releaseMachine: () => void;
+        try {
+          releaseMachine = await (this.machineSlots.acquire as MachineSlotAcquire)(
+            provider,
+            taskRuntime.controller.signal,
+            remainingRunMs,
+            (wait) => {
+              if (isTerminal(task.state) || taskRuntime.controller.signal.aborted) return;
+              const previous = task.launchCapacityWait;
+              // Publish transitions only; elapsed time is derived by status/diagnose.
+              if (previous?.bucket === wait.bucket && previous.provider === wait.provider
+                && previous.providerCap === wait.providerCap && previous.globalCap === wait.globalCap) return;
+              task.launchCapacityWait = { ...wait, since: previous?.since ?? this.now() };
+              this.observe(runtime);
+            },
+          );
+        } finally {
+          if (task.launchCapacityWait && task.launchCapacityWait.endedAt === undefined) {
+            task.launchCapacityWait.endedAt = task.endedAt ?? this.now();
+            this.observe(runtime);
+          }
+        }
         try {
           if (taskRuntime.controller.signal.aborted || isTerminal(task.state)) {
             throw abortError(taskRuntime.controller.signal);
