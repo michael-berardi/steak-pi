@@ -99,7 +99,7 @@ export const ultratermSubagentsSchema = Type.Object({
   contract: Type.Optional(Type.String({ minLength: 1, maxLength: 8_000 })),
   tasks: Type.Array(TaskSchema, { minItems: 1, maxItems: MAX_TASKS }),
   concurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_CONCURRENCY, description: "Defaults to min(8, task count)." })),
-  timeoutMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: MAX_TIMEOUT_MS, description: "Absolute run budget including queue time; default 10 minutes, maximum 8 hours." })),
+  timeoutMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: MAX_TIMEOUT_MS, description: "Absolute run budget including queue time; default 10 minutes, maximum 8 hours. Reviewer launch waits are additionally bounded to 60 seconds." })),
   maxTurns: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_WORKER_TURNS, description: "Per-worker request budget; default 64. Increase explicitly for long-horizon work." })),
   background: Type.Optional(Type.Boolean({ default: false })),
   thinking: Type.Optional(stringEnum(["medium", "high", "xhigh"] as const)),
@@ -165,6 +165,8 @@ export interface SettledTaskView {
   startedAt?: number;
   endedAt?: number;
   lastProgressAt?: number;
+  launchQueue?: NonNullable<TaskRecord["launchQueue"]> & { elapsedMs: number; remainingMs: number };
+  lastLaunchQueue?: NonNullable<TaskRecord["lastLaunchQueue"]> & { elapsedMs: number; remainingMs: number };
   detail?: string;
 }
 
@@ -491,6 +493,12 @@ function taskView(task: TaskRecord): SettledTaskView {
     startedAt: task.startedAt,
     endedAt: task.endedAt,
     lastProgressAt: task.lastProgressAt,
+    ...(task.launchQueue ? { launchQueue: { ...structuredClone(task.launchQueue),
+      elapsedMs: Math.max(0, (task.endedAt ?? Date.now()) - task.launchQueue.since),
+      remainingMs: Math.max(0, task.launchQueue.deadlineAt - (task.endedAt ?? Date.now())) } } : {}),
+    ...(task.lastLaunchQueue ? { lastLaunchQueue: { ...structuredClone(task.lastLaunchQueue),
+      elapsedMs: Math.max(0, (task.endedAt ?? Date.now()) - task.lastLaunchQueue.since),
+      remainingMs: Math.max(0, task.lastLaunchQueue.deadlineAt - (task.endedAt ?? Date.now())) } } : {}),
     ...(taskDetail(task) ? { detail: taskDetail(task) } : {}),
     toolErrors: task.toolErrors ?? 0,
     toolSuccesses: task.toolSuccesses ?? 0,

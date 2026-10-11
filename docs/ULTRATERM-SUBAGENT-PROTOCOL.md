@@ -281,6 +281,19 @@ Task lifecycle:
 queued → starting → running ↔ waiting → done | failed | aborted | timed_out
 ```
 
+Before a worker starts, `status` and `diagnose` expose its launch queue reason,
+queue deadline and elapsed wait. Machine-capacity waits include provider and global
+capacity counts and their lease/claim holders (PID and, for newly launched workers,
+parent session, run and task IDs). Legacy or unreadable holders are identified as
+unknown; diagnostics never reclaim slots or expose lease nonces or worker content.
+The most recent queue snapshot is retained on a task that settles before launch.
+
+Reviewer tasks have a **60-second launch queue budget**, including waits behind
+run concurrency, the session scheduler and machine slots. The shorter absolute run
+deadline still wins. Expiry is a `timed_out` review, not completed or partial review
+work, and does not silently retry or switch routes. Once launch capacity is acquired,
+the queue bound is removed; execution retains the original absolute run deadline.
+
 `waiting` means the child is awaiting a bounded dependency or relay response;
 it is not permission to exceed the run deadline. Terminal states never return
 to a live state.
@@ -409,6 +422,7 @@ The Steak Pi implementation profile uses these ceilings:
 | Simultaneously active runs | 16; further dispatch is rejected until a run settles |
 | Tasks accepted in one run | 8 hard maximum; excess tasks remain a parent planning problem |
 | Run wall clock | finite; default 10 minutes, accepted range 1 second–8 hours (`timeoutMs`) |
+| Reviewer launch queue | 60 seconds across run, session and machine waits; never beyond the run deadline |
 | Retained terminal runs | 50 per coordinator session; oldest terminal records are evicted while live runs remain |
 | Child turns | `maxTurns`: default 64, accepted range 1–2,048 assistant turns per task, including relay follow-ups; a child is told once when two remain; a resume reuses the same value, never a larger one |
 | Final output retained per child | 20,000 characters, with explicit truncation metadata |

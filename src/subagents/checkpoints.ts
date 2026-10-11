@@ -7,6 +7,53 @@ import { MAX_ACTIVE_RUNS, MAX_RETAINED_TERMINAL_RUNS, MAX_TASKS, OUTPUT_LIMIT, T
 
 const MAX_BYTES = 2_000_000;
 const ID = /^run-[a-zA-Z0-9-]{1,120}$/;
+const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+const time = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+const integer = (value: unknown): value is number => time(value) && Number.isSafeInteger(value);
+const metadataString = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 256 && !/[\u0000-\u001f\u007f-\u009f]/.test(value);
+const knownKeys = (value: Record<string, unknown>, keys: string[]) => Object.keys(value).every(key => keys.includes(key));
+function validQueue(value: unknown): boolean {
+  if (value === undefined) return true; // Legacy checkpoints carry no queue fields.
+  if (!object(value) || !["session", "machine"].includes(value.tier as string)
+    || !metadataString(value.provider) || !metadataString(value.reason)
+    || !time(value.since) || !time(value.deadlineAt) || value.deadlineAt < value.since
+    || !knownKeys(value, ["tier", "provider", "reason", "since", "deadlineAt", "capacity"])) return false;
+  if (value.capacity === undefined) return true;
+  const capacity = value.capacity;
+  if (!object(capacity) || !metadataString(capacity.provider)
+    || !knownKeys(capacity, ["provider", "providerBucket", "globalBucket"])) return false;
+  return [capacity.providerBucket, capacity.globalBucket].every((bucket) => {
+    if (!object(bucket) || !integer(bucket.cap) || bucket.cap < 1 || bucket.cap > 128
+      || !integer(bucket.held) || bucket.held > bucket.cap || !Array.isArray(bucket.owners)
+      || bucket.owners.length > bucket.cap * 2 || !knownKeys(bucket, ["cap", "held", "owners"])) return false;
+    return bucket.owners.every((owner) => object(owner) && integer(owner.index) && owner.index < (bucket.cap as number)
+      && knownKeys(owner, ["index", "pid", "born", "runId", "taskId", "sessionId", "kind", "status"])
+      && (owner.pid === undefined || (integer(owner.pid) && owner.pid > 0))
+      && (owner.born === undefined || time(owner.born))
+      && ["runId", "taskId", "sessionId"].every((key) => owner[key] === undefined || metadataString(owner[key]))
+      && ["lease", "claim"].includes(owner.kind as string)
+      && ["live", "dead", "unknown"].includes(owner.status as string));
+  });
+}
+
+/** Copy only queue metadata: never provider payloads, task text or slot paths. */
+function queueDiagnostic(queue: NonNullable<RunRecord["tasks"][number]["launchQueue"]>, now: number) {
+  const capacity = queue.capacity;
+  const bucket = (value: NonNullable<typeof capacity>["providerBucket"]) => ({
+    cap: value.cap, held: value.held,
+    owners: value.owners.map((owner) => ({ index: owner.index, kind: owner.kind, status: owner.status,
+      ...(owner.pid === undefined ? {} : { pid: owner.pid }),
+      ...(owner.born === undefined ? {} : { born: owner.born }),
+      ...(owner.runId === undefined ? {} : { runId: owner.runId }),
+      ...(owner.taskId === undefined ? {} : { taskId: owner.taskId }),
+      ...(owner.sessionId === undefined ? {} : { sessionId: owner.sessionId }),
+    })),
+  });
+  return { tier: queue.tier, provider: queue.provider, reason: queue.reason, since: queue.since, deadlineAt: queue.deadlineAt,
+    elapsedMs: Math.max(0, now - queue.since), remainingMs: Math.max(0, queue.deadlineAt - now),
+    ...(capacity ? { capacity: { provider: capacity.provider, providerBucket: bucket(capacity.providerBucket), globalBucket: bucket(capacity.globalBucket) } } : {}),
+  };
+}
 export interface Checkpoint { version: 1; run: RunRecord; delivered: boolean; savedAt: number; resumedAs?: string; pendingResume?: string }
 
 /** Why a contender refused to take over a checkpoint lock it does not own. */
@@ -207,6 +254,7 @@ export class CheckpointStore {
           const checkpoint = JSON.parse(readPrivate(join(this.directory, file))) as Checkpoint;
           const run = checkpoint.run;
           if (checkpoint.version !== 1 || !run || !ID.test(run.id) || `${run.id}.json` !== file || !Array.isArray(run.tasks) || run.tasks.length < 1 || run.tasks.length > MAX_TASKS || typeof run.cwd !== "string" || typeof run.model !== "string") throw new Error("Invalid checkpoint shape");
+          if (run.tasks.some((task) => !object(task) || !validQueue(task.launchQueue) || !validQueue(task.lastLaunchQueue))) throw new Error("Invalid checkpoint queue metadata");
           if (this.ownerSessionId && ((run.ownerSessionId && run.ownerSessionId !== this.ownerSessionId)
             || (!run.ownerSessionId && !this.allowLegacy)
             || (run.ownerSessionFile && canonicalSessionFile(run.ownerSessionFile) !== this.ownerSessionFile))) throw new Error("Foreign-session checkpoint");
@@ -369,6 +417,7 @@ export function recoveredRun(checkpoint: Checkpoint): RunRecord {
           : "Host interrupted; inspect checkpoint and explicitly resume unfinished work";
         task.endedAt = checkpoint.savedAt;
         delete task.currentTool;
+        if (task.launchQueue) { task.lastLaunchQueue = task.launchQueue; delete task.launchQueue; }
       }
     }
   }
@@ -381,7 +430,10 @@ export function diagnoseRun(run: RunRecord, now = Date.now()) {
     usageCoverage: "observed assistant events; auxiliary provider billing may not be included",
     tasks: run.tasks.map((task) => {
       const error = task.error ?? "";
+      const activeQueue = ["queued", "starting", "running", "waiting"].includes(task.state) ? task.launchQueue : undefined;
       const reason = /Host interrupted|Coordinator shut down/i.test(error) ? "host_interrupted"
+        : activeQueue ? (activeQueue.tier === "machine" ? "launch_capacity" : "session_capacity")
+        : /launch.queue.*(?:budget|deadline|exceed|exhaust)|(?:budget|deadline).*launch.queue/i.test(error) ? "launch_capacity"
         : TURN_BUDGET_ERROR.test(error) ? "turn_budget"
         : task.state === "timed_out" ? "deadline"
         : task.state === "aborted" ? "cancelled"
@@ -399,6 +451,8 @@ export function diagnoseRun(run: RunRecord, now = Date.now()) {
         ...(task.outcome ? { outcome: task.outcome, partialReason: task.partialReason ?? null, partialSummary: task.partialSummary ?? null } : {}),
         ...(task.resumedFrom ? { resumedFrom: task.resumedFrom } : {}),
         reason, turns: task.turns,
+        ...(task.launchQueue ? { launchQueue: queueDiagnostic(task.launchQueue, Math.min(now, task.endedAt ?? now)) } : {}),
+        ...(task.lastLaunchQueue ? { lastLaunchQueue: queueDiagnostic(task.lastLaunchQueue, Math.min(now, task.endedAt ?? now)) } : {}),
         ...(reason === "provider_quota" && run.harness === "claude-code"
           ? { recovery: "Check Claude usage before debugging; retry the same route only after the usage reset. No paid fallback or review approval." } : {}),
         toolSuccesses: task.toolSuccesses ?? 0, toolErrors: task.toolErrors ?? 0,

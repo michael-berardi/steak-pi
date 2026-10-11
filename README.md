@@ -21,7 +21,7 @@ serious sessions need: parallel subagents with hard limits, compaction that
 costs no model calls, checks that run after every edit, and a status line that
 tells you what the agent is doing.
 
-Current release: **0.9.10**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
+Current release: **0.9.12**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
 [UltraTerm](https://implosecybernetics.com/software/).
 
 ## Install
@@ -97,6 +97,11 @@ parent
   `outcome: "partial"` (with its role, label and a retained-work summary) in the
   result, the completion receipt and the `ultraterm-usap-telemetry` record: it is
   never a finished leaf.
+- **Launch queue:** `status` and `diagnose` show why a task is queued, the
+  available capacity and its holders. Reviewers wait at most 60 seconds for
+  run, session or machine launch capacity, within the original run deadline.
+  A queue timeout is not a completed review. Execution keeps the original
+  deadline once launch capacity is acquired.
 - **Control:** runs have stable IDs with `list`, `status`, `wait`, `send`,
   `inbox`, `cancel`, `diagnose` and `resume`. Checkpoints let you inspect and
   resume unfinished work after a restart. A resume is bounded: each task resumes

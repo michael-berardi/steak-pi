@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.12 (2026-10-11)
+
+- Status and metadata-only diagnostics expose launch queue reasons, elapsed
+  wait, deadline, machine provider/global counts and bounded holder identities.
+  Legacy or unreadable ownership remains unknown; observation never deletes slots.
+- Reviewers have a separate 60-second launch queue budget across run, session
+  and machine capacity. The absolute run deadline still applies during execution.
+  Zero-turn launch timeouts retain queue evidence, not a partial review claim.
+- Machine leases record parent session/run/task identifiers without prompts,
+  command lines or lease nonces in diagnostics. Unknown process-probe failures
+  fail closed instead of being mistaken for dead holders.
+
 ## 0.9.11 (2026-10-10)
 
 - Claude session-limit diagnostics preserve bounded time-only resets and recognize
