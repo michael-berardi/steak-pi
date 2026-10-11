@@ -231,7 +231,7 @@ export class CheckpointStore {
     if (this.closed) throw new Error("USAP checkpoint store is closed");
     if (!ID.test(run.id)) throw new Error("Invalid checkpoint run ID");
     const now = Date.now();
-    const state = run.state + ":" + run.tasks.map((task) => `${task.state}:${task.sessionFile ?? ""}:${task.claudeSessionId ?? ""}:${task.autoResumes?.length ?? 0}`).join("|");
+    const state = run.state + ":" + run.tasks.map((task) => `${task.state}:${task.sessionFile ?? ""}:${task.claudeSessionId ?? ""}:${task.autoResumes?.length ?? 0}:${JSON.stringify(task.launchCapacityWait ?? null)}`).join("|");
     const previous = this.writes.get(run.id);
     const copy = structuredClone(run);
     if (this.ownerSessionId) {
