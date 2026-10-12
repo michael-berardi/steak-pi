@@ -115,6 +115,16 @@ Image review is admitted only as staged files read by the CLI's native Read tool
 (see below).
 Scheduling, bounded waits/cancel, usage and reports use the same USAP coordinator.
 
+Unsupported Claude `ownedPaths` fail at dispatch before the wave is registered,
+checkpointed, or started. Forbidden permission-rule characters are `*`, `?`,
+`[`, `]`, `{`, `}`, `(`, `)`, `!`, backslash (`\`), LF, and CR in either the
+normalized lexical path or its physical projection (including missing children
+beneath symlinks). Astro `src/pages/[slug].astro` and
+`src/pages/[...slug].astro` are therefore rejected. No automatic widening or
+harness fallback occurs: the parent may explicitly choose Pi exact-path guarded
+writes or revise ownership within approved scope, never silently broaden it to
+the parent directory.
+
 If a Claude child returns a synthetic error, inspect hub `status` and `diagnose`,
 then check Claude subscription usage (UltraTerm's Claude usage dial or Claude
 Settings → Usage) before debugging the model or stream. Exhausted usage is a

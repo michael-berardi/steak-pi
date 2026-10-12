@@ -88,6 +88,36 @@ afterEach(() => {
 });
 
 describe("UltraTerm Subagent Protocol Pi extension", () => {
+  it.each([false, true])("synthetic: rejects a later Claude bracket path before any startup (background=%s)", async (background) => {
+    const root = mkdtempSync(join(tmpdir(), "usap-owned-path-preflight-")); dirs.push(root);
+    const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "owned-path-preflight" };
+    const runner = vi.fn(async () => ({ state: "done" as const, output: "unexpected", turns: 1, usage: emptyUsage() }));
+    const h = harness(() => runner, durable);
+    const save = vi.spyOn(CheckpointStore.prototype, "save");
+    try {
+      const result = await h.tools.get("ultraterm_subagents").execute("invalid", {
+        goal: "Validate the whole wave", harness: "claude-code", background,
+        tasks: [
+          { label: "Safe leaf", task: "Edit safe file", mayEdit: true, ownedPaths: ["safe.ts"] },
+          { label: "Astro leaf", task: "Edit route", mayEdit: true, ownedPaths: ["src/pages/[slug].astro"] },
+        ],
+      }, undefined, undefined, h.ctx);
+      expect(result.isError).toBe(true);
+      const text = result.content[0].text;
+      expect(text).toContain("Dispatch validation failed");
+      expect(text).toContain("tasks[1].ownedPaths[0]");
+      expect(text).toContain("Astro leaf");
+      expect(text).toContain('metacharacter "["');
+      expect(text).not.toContain("Started USAP run");
+      expect(runner).not.toHaveBeenCalled();
+      expect(save).not.toHaveBeenCalled();
+      const listed = await h.tools.get("ultraterm_hub").execute("list", { action: "list" }, undefined, undefined, h.ctx);
+      expect(listed.details.runs).toEqual([]);
+      expect(h.messages).toEqual([]);
+      expect(h.entries).toEqual([]);
+    } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); save.mockRestore(); }
+  });
+
   it("exposes independent current and last launch queue snapshots in run/status views", () => {
     const run = normalizeDispatch({ goal: "queue metadata", tasks: [{ label: "review", task: "bounded review", role: "reviewer" }] }, process.cwd(), "claude-code/claude-opus-5-5", "xhigh", 1_000, () => "queue-view");
     expect(toRunView(run).tasks[0]).not.toHaveProperty("launchQueue");
