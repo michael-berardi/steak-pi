@@ -212,6 +212,17 @@ outside-cwd file is a failed review attempt, never something to infer. Pi
 unchanged. Unit checks for this contract are synthetic and prove admission logic
 only; the capability is accepted after a real native CLI staged-image smoke.
 
+**Claude owned-path admission.** Unsupported `ownedPaths` for `claude-code`
+fail at dispatch, before the wave is registered, checkpointed, or started.
+Permission-rule metacharacters `*`, `?`, `[`, `]`, `{`, `}`, `(`, `)`, `!`,
+backslash (`\`), LF, and CR are forbidden in either the normalized lexical
+path or its physical projection, including missing children beneath symlinks.
+Thus Astro paths such as `src/pages/[slug].astro` and
+`src/pages/[...slug].astro` are rejected. There is no automatic ownership
+widening or harness fallback. The parent may explicitly choose Pi exact-path
+guarded writes or revise ownership within approved scope; never silently
+broaden ownership to the parent directory.
+
 **Reviewer shell denial.** A Claude leaf with role `reviewer` and no `mayEdit`
 never receives Bash, even if `allowBash: true` or task text requests a shell.
 The CLI argv enforces Read/Grep/Glob only. Setting `allowBash: true` produces the
