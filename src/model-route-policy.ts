@@ -281,17 +281,12 @@ export function selectWorkerThinking(
 
 export interface WorkerRouteStep { provider: string; id: string }
 
-/** Automatic worker routing (operator scope, 2026-10-03). Ordered selection priority
- * plus one pre-output runtime hop inside the same order: the first authenticated route
- * serves the run, and a before-output transient failure may hop to the next eligible
- * route. The hop stops permanently at the first content/tool event and each event
- * keeps its real provider/model. The default worker route is MiMo V2.6 Flash on the
- * reviewed Singapore Token Plan endpoint (prepaid subscription); the only automatic
- * text fallback is GPT-6.1 Sol on Codex OAuth (subscription). GLM 5.3 and the Z.ai
- * plan were retired on 2026-10-03. No Go, Inco, OpenRouter or metered PAYG step is
- * reachable automatically. */
+/** Operator default (2026-10-13): canonical Go DeepSeek V4.1 Flash, then
+ * authenticated GPT-6.1 Sol if Go is absent at selection. Go child runtime
+ * failures stay account-bound and fail honestly; no ambient-auth stream hop.
+ * Explicit identities and legacy profile-specific MiMo chains remain exact. */
 export const DEFAULT_TEXT_WORKER_CHAIN: readonly WorkerRouteStep[] = [
-  { provider: "xiaomi", id: "mimo-v2.6-flash" },
+  { provider: "opencode-go", id: "deepseek-v4.1-flash" },
   { provider: "openai-codex", id: "gpt-6.1-sol" },
 ];
 /** Image runs stay on MiMo V2.6 Flash alone: Sol is the non-visual fallback, so an
@@ -310,7 +305,7 @@ const sameStep = (a: WorkerRouteStep, b: WorkerRouteStep) => a.provider === b.pr
 export function workerChainFor(head: WorkerRouteStep | undefined, requireImages: boolean): readonly WorkerRouteStep[] {
   const base = requireImages ? DEFAULT_MULTIMODAL_WORKER_CHAIN : DEFAULT_TEXT_WORKER_CHAIN;
   if (!head || !TOKEN_PLAN_CHAIN_HEADS.some((step) => sameStep(step, head)) || sameStep(base[0], head)) return base;
-  return [head, ...base.filter((step) => step.provider !== head.provider)];
+  return requireImages ? [head] : [head, { provider: "openai-codex", id: "gpt-6.1-sol" }];
 }
 /** Rebuild a run's recorded chain (`selection.chainRoutes`) only when it is exactly a
  * chain this policy can produce; anything else falls back to the default chain. */

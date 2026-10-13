@@ -1,4 +1,9 @@
+import { registryForSolSelection, type CreateIsolatedModelRuntime } from "../src/subagents/codex-selection.ts";
+import { noEligibleClaudeAccount, type AccountCommand } from "../src/subagents/provider-accounts.ts";
+import { canFallbackReview, recordReviewFallback } from "../src/subagents/reviewer-fallback.ts";
+import { SOL_MODEL_ROUTE } from "../src/retired-model-selection.ts";
 import { statSync } from "node:fs";
+import { PersistenceHealth } from "../src/subagents/persistence-health.ts";
 import { deferredToolsEnabled, setToolActive } from "../src/deferred-tools.ts";
 import { setPinnedPanel } from "../src/tui/pinned-panels.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -17,9 +22,10 @@ import {
 import { SessionScheduler } from "../src/subagents/scheduler.ts";
 import { canonicalSessionFile, CheckpointStore, diagnoseRun, isInProcessCheckpointCollision, recoveredRun, type Checkpoint } from "../src/subagents/checkpoints.ts";
 import { renderSubagentCall, renderSubagentResult, renderSubagentLive } from "../src/subagents/render.ts";
-import type { PiWorkerRuntime, PiWorkerRunnerOptions } from "../src/subagents/pi-worker.ts";
+import type { PiWorkerRuntime, PiWorkerRunnerOptions, PiWorkerSessionFactory } from "../src/subagents/pi-worker.ts";
 import type { ClaudeSpawn, ClaudeWorkerRunnerOptions } from "../src/subagents/claude-worker.ts";
 import {
+  addUsage,
   USAP_VERSION,
   MAX_CONCURRENCY,
   MAX_TASKS,
@@ -98,7 +104,7 @@ export const ultratermSubagentsSchema = Type.Object({
   contract: Type.Optional(Type.String({ minLength: 1, maxLength: 8_000 })),
   tasks: Type.Array(TaskSchema, { minItems: 1, maxItems: MAX_TASKS }),
   concurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_CONCURRENCY, description: "Defaults to min(8, task count)." })),
-  timeoutMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: MAX_TIMEOUT_MS, description: "Absolute run budget including queue time; default 10 minutes, maximum 8 hours." })),
+  timeoutMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: MAX_TIMEOUT_MS, description: "Absolute run budget including queue time; default 10 minutes, maximum 8 hours. Reviewer launch waits are additionally bounded to 60 seconds." })),
   maxTurns: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_WORKER_TURNS, description: "Per-worker request budget; default 64. Increase explicitly for long-horizon work." })),
   background: Type.Optional(Type.Boolean({ default: false })),
   thinking: Type.Optional(stringEnum(["medium", "high", "xhigh"] as const)),
@@ -164,6 +170,8 @@ export interface SettledTaskView {
   startedAt?: number;
   endedAt?: number;
   lastProgressAt?: number;
+  launchQueue?: NonNullable<TaskRecord["launchQueue"]> & { elapsedMs: number; remainingMs: number };
+  lastLaunchQueue?: NonNullable<TaskRecord["lastLaunchQueue"]> & { elapsedMs: number; remainingMs: number };
   detail?: string;
 }
 
@@ -238,6 +246,7 @@ export interface HubDetails {
   /** True when the run data came from a lease this session may not write. */
   readOnly?: boolean;
   checkpointError?: string | null;
+  checkpointHealth?: ReturnType<PersistenceHealth["diagnose"]>;
   shutdownWarning?: string | null;
 }
 
@@ -256,6 +265,8 @@ export interface UltratermSubagentsDependencies {
   /** Test seam injected into the default claude-code runner; production spawns
    * the real official CLI once per task. Never used for harness "pi" runs. */
   claudeSpawn?: ClaudeSpawn;
+  accountCommand?: AccountCommand;
+  createModelRuntime?: CreateIsolatedModelRuntime;
   now?: () => number;
   idFactory?: () => string;
   checkpointRoot?: string;
@@ -281,6 +292,14 @@ async function resolvePiSelection(
     await registry.refresh();
     return resolve();
   }
+}
+
+async function resolveNativeSelection(ctx: ExtensionContext, input: Parameters<typeof resolveWorkerSelection>[2], dependencies: UltratermSubagentsDependencies) {
+  const registry = await registryForSolSelection(ctx.model!, input, ctx.modelRegistry,
+    dependencies.accountCommand, dependencies.createModelRuntime, dependencies.profiles);
+  const resolved = await resolvePiSelection(() => resolveWorkerSelection(ctx.model!, ctx.thinkingLevel, input,
+    registry, dependencies.profiles, undefined, automaticChainOptions(dependencies)), registry);
+  return { ...resolved, registry };
 }
 
 function automaticChainOptions(dependencies: UltratermSubagentsDependencies): ChainOptions {
@@ -321,6 +340,11 @@ interface SessionRuntime {
   deliveryRetries: number;
   store?: CheckpointStore;
   checkpointError?: string;
+  checkpointHealth: PersistenceHealth;
+  checkpointPending: Map<string, RunRecord>;
+  /** Native receipts observed but not yet committed to the durable snapshot. */
+  checkpointReceipts: Set<string>;
+  checkpointStopping: Set<string>;
   /** Set when a duplicate owner in this process holds the namespace. */
   checkpointCollision?: string;
   /** A durable namespace exists but this runtime cannot claim it: never launch
@@ -415,6 +439,8 @@ export function usapTelemetrySnapshot(run: RunRecord, links: RunLinks = {}) {
       ...(Number.isFinite(task.startedAt) && task.startedAt! >= 0 ? { startedAt: task.startedAt } : {}),
       ...(Number.isFinite(task.endedAt) && task.endedAt! >= 0 ? { endedAt: task.endedAt } : {}),
       ...(task.currentTool ? { currentTool: task.currentTool.slice(0, 80) } : {}),
+      ...(task.providerAccount ? { providerAccount: { ...task.providerAccount } } : {}),
+      ...(task.reviewFallback ? { reviewFallback: { ...task.reviewFallback } } : {}),
       // Real per-request provenance: each pre-output hop names both routes.
       ...(task.routeFallbacks?.length
         ? { routeFallbacks: task.routeFallbacks.slice(-8).map((hop) => hop.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 96)) }
@@ -484,6 +510,12 @@ function taskView(task: TaskRecord): SettledTaskView {
     startedAt: task.startedAt,
     endedAt: task.endedAt,
     lastProgressAt: task.lastProgressAt,
+    ...(task.launchQueue ? { launchQueue: { ...structuredClone(task.launchQueue),
+      elapsedMs: Math.max(0, (task.endedAt ?? Date.now()) - task.launchQueue.since),
+      remainingMs: Math.max(0, task.launchQueue.deadlineAt - (task.endedAt ?? Date.now())) } } : {}),
+    ...(task.lastLaunchQueue ? { lastLaunchQueue: { ...structuredClone(task.lastLaunchQueue),
+      elapsedMs: Math.max(0, (task.endedAt ?? Date.now()) - task.lastLaunchQueue.since),
+      remainingMs: Math.max(0, task.lastLaunchQueue.deadlineAt - (task.endedAt ?? Date.now())) } } : {}),
     ...(taskDetail(task) ? { detail: taskDetail(task) } : {}),
     toolErrors: task.toolErrors ?? 0,
     toolSuccesses: task.toolSuccesses ?? 0,
@@ -542,6 +574,12 @@ function appendBounded(target: string, addition: string, limit: number): { text:
 }
 
 /** Pure ordered all-settled renderer with a hard context bound. */
+export function reviewFallbackReceipt(run: RunRecord, directory?: string): string {
+  if (!directory) return "";
+  return run.tasks.filter(task => task.state === "done" && task.role === "reviewer" && task.reviewFallback?.to === SOL_MODEL_ROUTE)
+    .map(task => `Sol fallback review: USAP ${run.id} receipt=${directory}/${run.id}.json report=${task.id}`).join("\n");
+}
+
 export function renderRunResult(run: RunRecord, limit = MAX_TOOL_CONTENT): string {
   if (!Number.isSafeInteger(limit) || limit < 0) throw new RangeError("render limit must be a non-negative integer");
   let text = `${renderRunProgress(run)}\nmodel ${run.model} · thinking ${run.thinkingLevel}${run.selection ? ` · ${run.selection.source}${run.selection.profile ? ` · ${run.selection.profile}` : ""}` : ""}`.slice(0, limit);
@@ -551,8 +589,12 @@ export function renderRunResult(run: RunRecord, limit = MAX_TOOL_CONTENT): strin
     const partial = task.outcome ? ` · PARTIAL ${task.partialReason ?? "budget"} (${task.role}; not complete)` : "";
     const suffix = `${partial}${task.toolErrors ? ` · ${task.toolErrors} tool errors` : ""}${task.truncated ? " · worker output truncated" : ""}`;
     const error = task.error ? `\nerror: ${task.error}` : "";
+    const routeReceipt = task.reviewFallback ? `\nactual review route: ${task.reviewFallback.to} (automatic fallback: ${task.reviewFallback.reason}; not Opus approval)` : "";
+    const accountReceipt = task.providerAccount ? `\naccount: ${task.providerAccount.label} (${task.providerAccount.provider}/${task.providerAccount.id}); lease=${task.providerAccount.lease}` : "";
     const retained = task.partialSummary ? `\nretained: ${task.partialSummary}` : "";
-    const block = `\n\n[${task.label}] ${task.state}${suffix}${error}${retained}\n${task.output || "(no output)"}`;
+    const queue = task.launchQueue;
+    const queued = queue ? `\nlaunch queue: ${queue.tier}/${queue.provider} · ${queue.reason} · ${Math.max(0, (task.endedAt ?? Date.now()) - queue.since)}ms elapsed` : "";
+    const block = `\n\n[${task.label}] ${task.state}${suffix}${queued}${error}${retained}${routeReceipt}${accountReceipt}\n${task.output || "(no output)"}`;
     const next = appendBounded(text, block, limit);
     text = next.text;
     if (next.truncated) {
@@ -628,10 +670,12 @@ interface ClaudeWorkerModule {
  * Pi lifecycle or the headless claude-code CLI lifecycle. Neither branch is an
  * alternate launcher: both settle through the same coordinator, checkpoint,
  * relay-namespace and telemetry boundaries. */
-function defaultWorkerRunner(
+export function defaultWorkerRunner(
   relay: RelayBroker,
   workerRuntimes: Map<string, PiWorkerRuntime>,
   claudeSpawn?: ClaudeSpawn,
+  accountCommand?: AccountCommand,
+  sessionFactory?: PiWorkerSessionFactory,
 ): WorkerRunner {
   let piRunner: Promise<WorkerRunner> | undefined;
   let claudeRunner: Promise<WorkerRunner> | undefined;
@@ -645,7 +689,27 @@ function defaultWorkerRunner(
           }
           return factory(claudeSpawn ? { spawn: claudeSpawn } : {});
         });
-      return (await claudeRunner)(context);
+      const result = await (await claudeRunner)(context);
+      if (!canFallbackReview(context.run, result, context.signal)) return result;
+      const fallback = workerRuntimes.get(`${context.run.id}:review-fallback`);
+      if (!fallback) return result;
+      recordReviewFallback(context.task, result.reviewFallbackReason!);
+      // A per-task view keeps sibling Claude routes and parent environment exact.
+      const fallbackRun = { ...context.run, harness: "pi" as const,
+        model: SOL_MODEL_ROUTE, thinkingLevel: String(fallback.thinkingLevel),
+        selection: { provider: "openai-codex", modelId: "gpt-6.1-sol", source: "override" as const, harness: "pi" as const, images: false, tools: true } };
+      context.task.claudeSessionId = undefined;
+      if (!context.task.mayEdit) context.task.allowBash = false;
+      context.onProgress({ currentTool: `model-fallback:${SOL_MODEL_ROUTE}` });
+      const solResult = await runPi({ ...context, run: fallbackRun }, fallback);
+      return { ...solResult, usage: addUsage(result.usage, solResult.usage), turns: result.turns + solResult.turns };
+    }
+    return runPi(context);
+  };
+  async function runPi(context: Parameters<WorkerRunner>[0], fallback?: PiWorkerRuntime) {
+    if (fallback) {
+      const module = await import(new URL("../src/subagents/pi-worker.ts", import.meta.url).href);
+      return module.createPiWorkerRunner({ relay, accountCommand, sessionFactory, resolveRuntime: () => fallback })(context);
     }
     piRunner ??= import(new URL("../src/subagents/pi-worker.ts", import.meta.url).href)
       .then((module) => {
@@ -655,6 +719,8 @@ function defaultWorkerRunner(
         }
         return factory({
           relay,
+          accountCommand,
+          sessionFactory,
           resolveRuntime: (runId) => {
             const resolved = workerRuntimes.get(runId);
             if (!resolved) throw new Error(`No frozen Pi worker runtime for ${runId}`);
@@ -663,7 +729,7 @@ function defaultWorkerRunner(
         });
       });
     return (await piRunner)(context);
-  };
+  }
 }
 
 export function createUltratermSubagentsExtension(
@@ -747,6 +813,7 @@ export function createUltratermSubagentsExtension(
         current.relay.cleanupRun(runId);
         current.bindings.delete(runId);
         current.workerRuntimes.delete(runId);
+        current.workerRuntimes.delete(`${runId}:review-fallback`);
         current.telemetrySignatures.delete(runId);
       }
     };
@@ -779,7 +846,7 @@ export function createUltratermSubagentsExtension(
         for (const task of run.tasks) {
           if (task.state === "aborted" && /Coordinator shut down/.test(task.error ?? "")) task.error = "Host interrupted; inspect checkpoint and explicitly resume unfinished work";
         }
-        try { current.store?.save(run, true); } catch { current.checkpointError = "Final shutdown checkpoint failed"; }
+        saveCheckpoint(current, run, true, "final-shutdown");
       }
     };
 
@@ -833,7 +900,7 @@ export function createUltratermSubagentsExtension(
       clearTimeout(current.deliveryRetry);
       // Snapshot before shutdown changes active tasks into ordinary cancellations.
       for (const run of current.coordinator.list()) {
-        try { current.store?.save(run, true); } catch { current.checkpointError = "Checkpoint write failed during host shutdown"; }
+        saveCheckpoint(current, run, true, "host-shutdown");
       }
       // Keep one authoritative shutdown promise. Calling shutdown again could
       // observe a different task set and is not evidence that the first settled.
@@ -909,11 +976,64 @@ export function createUltratermSubagentsExtension(
     const readOnlyCheckpointsFor = (owner: string): Checkpoint[] | undefined =>
       retainedTeardowns.find((entry) => entry.owner === owner)?.runtime.store?.list();
 
+    const checkpointFailed = (current: SessionRuntime, run: RunRecord, error: unknown, stage: string): void => {
+      const cause = current.checkpointHealth.failed(run.id, error, stage);
+      if (stage === "initial") {
+        // No producer was admitted: a later snapshot-only retry must not invent live work.
+        run.state = "aborted";
+        run.endedAt = Date.now();
+        for (const task of run.tasks) {
+          task.state = "aborted";
+          task.endedAt = run.endedAt;
+          task.error = "Initial checkpoint failed; worker was never launched";
+        }
+      }
+      current.checkpointPending.set(run.id, run);
+      current.checkpointError = `Checkpoint ${stage} failed (${cause.code}${cause.syscall ? `/${cause.syscall}` : ""}); recovery is not guaranteed — hub diagnose`;
+      try { if (ownsContext(current, current.statusContext)) current.statusContext?.ui.setStatus("usap-checkpoint", current.checkpointError); } catch { /* Observation only. */ }
+      // Reuse per-run cancellation: retain done siblings and wait for native disposal.
+      // Recursive lifecycle observations must not repeatedly cancel the same run.
+      if (current.coordinator.has(run.id) && run.state === "running" && !current.checkpointStopping.has(run.id)) {
+        current.checkpointStopping.add(run.id);
+        current.coordinator.cancel(run.id, undefined, current.checkpointError);
+      }
+    };
+    const saveCheckpoint = (current: SessionRuntime, run: RunRecord, force: boolean, stage: string, propagate = false): void => {
+      if (!current.store) return;
+      let failureStage = stage;
+      try {
+        const written = current.store.save(run, force || current.checkpointHealth.needsSave(run.id));
+        if (written) {
+          if (current.checkpointReceipts.has(run.id)) {
+            failureStage = "receipt";
+            current.store.markDelivered(run.id);
+            current.checkpointReceipts.delete(run.id);
+          }
+          // A saved snapshot alone cannot validate a failed receipt commit.
+          current.checkpointHealth.saved(run.id);
+          current.checkpointPending.delete(run.id);
+          if (!current.checkpointHealth.blocked) {
+            current.checkpointError = undefined;
+            try { current.statusContext?.ui.setStatus("usap-checkpoint", undefined); } catch { /* Observation only. */ }
+          }
+        }
+      } catch (error) {
+        checkpointFailed(current, run, error, failureStage);
+        if (propagate) throw new Error(current.checkpointError);
+      }
+    };
+
     /** A degraded runtime must never launch work that only exists in memory: the
      * operator would have no durable recovery path. Chat, list and diagnose stay
      * available read-only until the live owner releases the lease. */
     const assertDurableForNewWork = (current: SessionRuntime, action = "New dispatch"): void => {
-      if (current.store || !current.checkpointDegraded) return;
+      if (current.store && current.checkpointHealth.blocked) {
+        // Retry pending snapshots and receipts only, never worker execution.
+        for (const [id, pending] of current.checkpointPending) {
+          saveCheckpoint(current, current.coordinator.snapshot(id) ?? pending, true, "retry", true);
+        }
+      }
+      if (!current.checkpointHealth.blocked && (current.store || !current.checkpointDegraded)) return;
       throw new Error(`${action} is refused: ${current.checkpointError ?? "this session cannot own its durable checkpoint store"}. A run started now could not be resumed; hub list and hub diagnose stay read-only.`);
     };
 
@@ -949,17 +1069,15 @@ export function createUltratermSubagentsExtension(
       const workerRuntimes = new Map<string, PiWorkerRuntime>();
       let created!: SessionRuntime;
       const runner = dependencies.createRunner?.(pi, relay)
-        ?? defaultWorkerRunner(relay, workerRuntimes, dependencies.claudeSpawn);
+        ?? defaultWorkerRunner(relay, workerRuntimes, dependencies.claudeSpawn, dependencies.accountCommand);
       const coordinator = new SubagentCoordinator(runner, {
         scheduler,
         now: dependencies.now,
         sessionDir: () => store?.sessionsDirectory,
         onChange: (run) => {
           if (!created || created.closed) return;
-          try { store?.save(run, run.state !== "running"); } catch {
-            created.checkpointError = "Checkpoint write failed; recovery is not guaranteed. Inspect disk space and private directory permissions.";
-            try { if (ownsContext(created, created.statusContext)) created.statusContext?.ui.setStatus("usap-checkpoint", "USAP checkpoint error — hub diagnose"); } catch { /* Observation only. */ }
-          }
+          saveCheckpoint(created, run, run.state !== "running", "lifecycle");
+          if (run.state !== "running") created.checkpointStopping.delete(run.id);
           persistTelemetry(created, run);
           setStatus(created);
         },
@@ -1012,6 +1130,10 @@ export function createUltratermSubagentsExtension(
         awaitingReceipt: new Set(),
         deliveryRetries: 0,
         store,
+        checkpointHealth: new PersistenceHealth(),
+        checkpointPending: new Map(),
+        checkpointReceipts: new Set(),
+        checkpointStopping: new Set(),
         checkpointDegraded: claim.degraded,
         checkpointCollision: claim.collision,
         checkpointError: claim.error,
@@ -1036,6 +1158,7 @@ export function createUltratermSubagentsExtension(
         if (current.closed) return;
         const binding = current.bindings.get(runId);
         current.workerRuntimes.delete(runId);
+        current.workerRuntimes.delete(`${runId}:review-fallback`);
         persistTelemetry(current, run);
         // A successful resume explicitly supersedes the partial attempt it continued.
         if (run.resumedFrom) {
@@ -1055,12 +1178,13 @@ export function createUltratermSubagentsExtension(
         }
         binding.onUpdate = undefined;
         if (binding.background) {
-          current.completionBuffer.push({ runId: run.id, text: renderCompletionMessage(run) });
+          current.completionBuffer.push({ runId: run.id, text: [renderCompletionMessage(run), reviewFallbackReceipt(run, current.store?.directory)].filter(Boolean).join("\n") });
           flushCompletions(current);
         }
       }).catch((error: unknown) => {
         if (current.closed) return;
         current.workerRuntimes.delete(runId);
+        current.workerRuntimes.delete(`${runId}:review-fallback`);
         setStatus(current);
         reconcileRetainedBindings(current);
         current.completionBuffer.push({ runId, text:
@@ -1100,7 +1224,18 @@ export function createUltratermSubagentsExtension(
         current.completionBuffer = current.completionBuffer.filter((item) => {
           if (!ids.has(item.runId)) return true;
           current.awaitingReceipt.delete(item.runId);
-          try { current.store?.markDelivered(item.runId); } catch { current.checkpointError = "Completion receipt checkpoint failed"; }
+          if (current.store) {
+            current.checkpointReceipts.add(item.runId);
+            try {
+              current.store.markDelivered(item.runId);
+              current.checkpointReceipts.delete(item.runId);
+            } catch (error) {
+              const run = readRun(current, item.runId);
+              if (run) checkpointFailed(current, run, error, "receipt");
+            }
+          }
+          // The native host observed this completion: never submit it again,
+          // even if its durable receipt must be retried on a later save.
           return false;
         });
       };
@@ -1208,11 +1343,11 @@ export function createUltratermSubagentsExtension(
       description: "Dispatch 1-8 bounded tasks through Pi or the official headless Claude Code CLI. All-reviewer waves default to Opus 5.5 xhigh; other claude-code waves run Sonnet 5.5 xhigh. Explicit routes win. Foreground default; ownedPaths grants guarded writes on either harness; allowBash is unsandboxed shell except Claude read-only reviewers get no Bash. Claude image review uses native Read on staged files under cwd.",
       promptSnippet: "Dispatch bounded independent child tasks with explicit permissions and path ownership",
       promptGuidelines: [
-        "Fan out by default: independent leaves (disjoint files, modules, screens, angles) dispatch in ONE parallel wave — width defaults to min(8, task count); automatic MiMo/Sol chain lanes fill 8, explicit Luna lanes stay at 6 or fewer.",
+        "Fan out by default: independent leaves (disjoint files, modules, screens, angles) dispatch in ONE parallel wave — width defaults to min(8, task count); automatic Go/Sol chain lanes fill 8, explicit Luna lanes stay at 6 or fewer.",
         "Delegation must buy completion speed; modest token premiums for real throughput are correct. Trivial or tightly coupled edits and direct answers stay in the parent.",
         "Parent owns decomposition, integration, verification; workers own leaves end to end. With exact disjoint paths and acceptance contracts in hand, dispatch in the first tool turn without pre-reading child-owned files; do not duplicate child discovery in the parent.",
-        "model or profile picks an explicit authenticated route (mutually exclusive, overrides roles). Every GPT choice requires paid openai-codex OAuth — never OpenRouter, API-key, or batch GPT. Astra workers default to medium reasoning; high/xhigh needs a concrete thinkingReason. requireImages=true for visual critics or render inspection.",
-        "Claude work defaults to Sonnet 5.5: harness claude-code (or model claude-code/claude-sonnet-5-5) runs Sonnet 5.5 xhigh, nearly Opus-level at far less quota. Escalate to Opus 5.5 (model claude-code/claude-opus-5-5) only for frontier needs: expert review and sign-off (all-reviewer waves default to it), hard architecture or security reasoning, or a leaf Sonnet already failed. mayEdit+ownedPaths are CLI-enforced; allowBash is unsandboxed except read-only reviewers get no shell, even when requested. Stage git evidence for review. requireImages=true admits native Read-image of files staged under cwd, not inline attachments. No fallback between the two; relay and native Pi resume are unavailable on this harness.",
+        "model or profile picks an explicit authenticated route (mutually exclusive, overrides roles). Every GPT choice requires paid openai-codex OAuth — never OpenRouter, API-key, or batch GPT. Do not select GPT-6 Astra; use GPT-6.1 Sol instead. requireImages=true for visual critics or render inspection.",
+        "Claude work defaults to Sonnet 5.5: harness claude-code (or model claude-code/claude-sonnet-5-5) runs Sonnet 5.5 xhigh, nearly Opus-level at far less quota. Escalate to Opus 5.5 (model claude-code/claude-opus-5-5) only for frontier needs: expert review and sign-off (all-reviewer waves default to it), hard architecture or security reasoning, or a leaf Sonnet already failed. mayEdit+ownedPaths are CLI-enforced; allowBash is unsandboxed except read-only reviewers get no shell, even when requested. Stage git evidence for review. requireImages=true admits native Read-image of files staged under cwd, not inline attachments. Explicit routes never fall back; implicit automatic text review may use GPT-6.1 Sol only on proven Claude quota/auth unavailability before output. Relay and native Pi resume are unavailable on this harness.",
         "Background only when the parent can integrate while children run, then one bounded ultraterm_hub wait. Never start a background run merely to wait immediately.",
         "For read-only tasks omit ownedPaths and state the read scope in task text; mayEdit requires ownedPaths. allowBash bypasses ownedPaths — grant only when operator-level shell access is necessary.",
       ],
@@ -1233,9 +1368,13 @@ export function createUltratermSubagentsExtension(
         // Explicit Pi/model/profile selections win; only implicit all-reviewer
         // waves select the official Opus Pass CLI route automatically.
         const opusReviewDefault = implicitRoute && allReviewers;
+        if (opusReviewDefault && requested.thinking !== undefined && requested.thinking !== "xhigh") throw new Error("Automatic Opus review requires xhigh effort; a different explicit effort is not silently overridden.");
+        const claudeUnavailable = opusReviewDefault && requested.requireImages !== true &&
+          await noEligibleClaudeAccount(dependencies.accountCommand);
         const params: UltratermSubagentsParams = {
           ...requested,
-          ...((opusReviewDefault || (requested.harness === undefined && CLAUDE_CODE_ROUTES.includes(requested.model ?? ""))) ? { harness: "claude-code" as const } : {}),
+          ...(claudeUnavailable ? { harness: "pi" as const, model: SOL_MODEL_ROUTE, thinking: "high" as const, thinkingReason: "Automatic expert text review fallback after proven Claude unavailability." } : {}),
+          ...((!claudeUnavailable && opusReviewDefault || (requested.harness === undefined && CLAUDE_CODE_ROUTES.includes(requested.model ?? ""))) ? { harness: "claude-code" as const } : {}),
         };
         if (!ctx.model) throw new Error("ultraterm_subagents requires a resolved current model");
         const current = ensureRuntime(ctx);
@@ -1261,7 +1400,15 @@ export function createUltratermSubagentsExtension(
         if (foreignHarness && params.requireImages === true) assertClaudeCodeImageAdmission(claudeRoute);
         const piResolved = foreignHarness
           ? undefined
-          : await resolvePiSelection(() => resolveWorkerSelection(ctx.model!, ctx.thinkingLevel, params, ctx.modelRegistry, dependencies.profiles, undefined, automaticChainOptions(dependencies)), ctx.modelRegistry);
+          : await resolveNativeSelection(ctx, params, dependencies);
+        let reviewFallbackRuntime: PiWorkerRuntime | undefined;
+        if (opusReviewDefault && !claudeUnavailable && requested.requireImages !== true) {
+          try {
+            const sol = await resolveNativeSelection(ctx,
+              { ...requested, harness: "pi", model: SOL_MODEL_ROUTE, profile: undefined, thinking: "high", thinkingReason: "Automatic expert text review fallback after proven Claude unavailability." }, dependencies);
+            reviewFallbackRuntime = { model: sol.model, thinkingLevel: sol.thinkingLevel };
+          } catch { /* Claude may still succeed; unavailable Sol is not a route substitute. */ }
+        }
         const resolvedSelection = piResolved ? piResolved.selection : resolveClaudeCodeSelection(claudeModel);
         const resolvedThinking = piResolved ? String(piResolved.thinkingLevel) : "xhigh";
         const model = foreignHarness ? claudeRoute! : `${piResolved!.model.provider}/${piResolved!.model.id}`;
@@ -1299,11 +1446,13 @@ export function createUltratermSubagentsExtension(
           };
         }
 
-        run.selection = { ...resolvedSelection };
+        run.selection = { ...resolvedSelection, ...(opusReviewDefault ? { automaticReview: true, reviewRequiresImages: requested.requireImages === true } : {}) };
+        if (claudeUnavailable) for (const task of run.tasks) recordReviewFallback(task, "no-eligible-claude");
+        if (reviewFallbackRuntime) current.workerRuntimes.set(`${run.id}:review-fallback`, Object.freeze(reviewFallbackRuntime));
         run.ownerSessionId = current.ownerSessionId;
         run.ownerSessionFile = current.ownerSessionFile;
         // Never launch a supposedly durable run whose initial checkpoint failed.
-        current.store?.save(run, true);
+        saveCheckpoint(current, run, true, "initial", true);
         // Foreign-harness runs have no frozen Pi runtime: their runner branches on
         // run.harness and never consults the Pi registry or the relay workers.
         if (!foreignHarness) {
@@ -1314,7 +1463,7 @@ export function createUltratermSubagentsExtension(
         }
         // Foreign children cannot bind relay peers: create only the parent peer so
         // hub send/inbox can honestly refuse instead of silently buffering.
-        current.relay.createRun(run.id, foreignHarness
+        current.relay.createRun(run.id, foreignHarness && !reviewFallbackRuntime
           ? [PARENT_RELAY_ID]
           : [PARENT_RELAY_ID, ...run.tasks.map((task) => task.id)]);
         const parent = current.relay.bindSender(run.id, PARENT_RELAY_ID);
@@ -1324,7 +1473,7 @@ export function createUltratermSubagentsExtension(
         } catch (error) {
           parent.close();
           current.relay.cleanupRun(run.id);
-          current.workerRuntimes.delete(run.id);
+          current.workerRuntimes.delete(run.id); current.workerRuntimes.delete(`${run.id}:review-fallback`);
           throw error;
         }
 
@@ -1359,7 +1508,7 @@ export function createUltratermSubagentsExtension(
           assertOwner(current, ctx);
           binding.usageClaimed = true;
           return {
-            content: [{ type: "text" as const, text: `${persistenceNote}Dispatch summary: ${JSON.stringify(dispatchDetails(settled, persistence).summary)}\n${renderRunResult(settled)}` }],
+            content: [{ type: "text" as const, text: `${persistenceNote}Dispatch summary: ${JSON.stringify(dispatchDetails(settled, persistence).summary)}\n${renderRunResult(settled)}\n${reviewFallbackReceipt(settled, current.store?.directory)}` }],
             details: dispatchDetails(settled, persistence),
             // Nested worker usage belongs only here, never under details/results.
             usage: usageCopy(settled.usage),
@@ -1403,7 +1552,7 @@ export function createUltratermSubagentsExtension(
                 ? `No USAP runs in this session.${warning ? `\n${warning}` : ""}`
                 : runs.map((run) => renderRunProgress(run)).join("\n").slice(0, MAX_TOOL_CONTENT),
             }],
-            details: { action: "list" as const, runs: runs.map((run) => toRunView(run, linksFor(current, run))), persistence: persistenceOf(current), readOnly: !current.store && current.checkpointDegraded, checkpointError: current.checkpointError ?? null, shutdownWarning: warning ?? null },
+            details: { action: "list" as const, runs: runs.map((run) => toRunView(run, linksFor(current, run))), persistence: persistenceOf(current), readOnly: !current.store && current.checkpointDegraded, checkpointError: current.checkpointError ?? null, checkpointHealth: current.checkpointHealth.diagnose(), shutdownWarning: warning ?? null },
           };
         }
 
@@ -1420,7 +1569,7 @@ export function createUltratermSubagentsExtension(
               persistence: persistenceOf(current),
               readOnly: true,
               reason: "run-unreadable",
-              checkpointError: current.checkpointError ?? null,
+              checkpointError: current.checkpointError ?? null, checkpointHealth: current.checkpointHealth.diagnose(),
               checkpointCollision: current.checkpointCollision ?? null,
               shutdownWarning: sessionWarning(current) ?? null,
               note: "This session cannot read its durable checkpoint namespace, so no run data is available for this id.",
@@ -1437,7 +1586,7 @@ export function createUltratermSubagentsExtension(
             persistence: persistenceOf(current),
             // True when this view came from a lease this session may not write.
             readOnly: !current.store && current.checkpointDegraded,
-            checkpointError: current.checkpointError ?? null,
+            checkpointError: current.checkpointError ?? null, checkpointHealth: current.checkpointHealth.diagnose(),
             checkpointCollision: current.checkpointCollision ?? null,
             shutdownWarning: warning ?? null,
             warnings: current.store?.warnings ?? [],
@@ -1491,7 +1640,7 @@ export function createUltratermSubagentsExtension(
           const claudeResume = snapshot.harness === "claude-code";
           const resolved = claudeResume
             ? undefined
-            : await resolvePiSelection(() => resolveWorkerSelection(ctx.model!, ctx.thinkingLevel, input, ctx.modelRegistry, dependencies.profiles, undefined, automaticChainOptions(dependencies)), ctx.modelRegistry);
+            : await resolveNativeSelection(ctx, input, dependencies);
           const resumeSelection = resolved ? resolved.selection : resolveClaudeCodeSelection(claudeCodeModelOf(snapshot.model));
           // Same subscription route as the original, or no resume: a changed or
           // paid route is refused before the one resume is spent.
@@ -1503,7 +1652,7 @@ export function createUltratermSubagentsExtension(
           if (originalRoute !== snapshot.model || resumedRoute !== snapshot.model) refuseRoute(`the route changed (checkpoint ${originalRoute}, run ${snapshot.model}, now ${resumedRoute})`);
           if (resolved) {
             if (String(resolved.thinkingLevel) !== snapshot.thinkingLevel) refuseRoute(`the reasoning level changed (${snapshot.thinkingLevel} → ${String(resolved.thinkingLevel)})`);
-            if (!isSubscriptionOrLocalRoute(resolved.model, ctx.modelRegistry.isUsingOAuth(resolved.model))) refuseRoute(`${resumedRoute} is no longer a subscription route (paid or API-key billing)`);
+            if (!isSubscriptionOrLocalRoute(resolved.model, resolved.registry.isUsingOAuth(resolved.model))) refuseRoute(`${resumedRoute} is no longer a subscription route (paid or API-key billing)`);
           } else if (snapshot.thinkingLevel !== "xhigh") {
             refuseRoute(`Claude Code runs only at xhigh, not ${snapshot.thinkingLevel}`);
           }
@@ -1517,12 +1666,16 @@ export function createUltratermSubagentsExtension(
           run.ownerSessionFile = current.ownerSessionFile;
           run.tasks.forEach((task, index) => {
             task.sessionFile = unfinished[index].sessionFile;
+            task.providerAccount = unfinished[index].providerAccount ? { ...unfinished[index].providerAccount } : undefined;
             task.claudeSessionId = unfinished[index].claudeSessionId;
             task.changedPaths = unfinished[index].changedPaths;
             task.lastStep = unfinished[index].lastStep;
             task.resumedFrom = unfinished[index].id;
           });
-          current.store.prepareResume(runId, run);
+          try { current.store.prepareResume(runId, run); } catch (error) {
+            checkpointFailed(current, snapshot, error, "resume-reservation");
+            throw new Error(current.checkpointError);
+          }
           // The predecessor's latest telemetry record now names its successor.
           persistTelemetry(current, snapshot);
           if (!claudeResume) {
@@ -1537,7 +1690,7 @@ export function createUltratermSubagentsExtension(
             resumed.completion = attachCompletion(current, run.id);
             setStatus(current, ctx);
             return { content: [{ type: "text" as const, text: `Resumed ${unfinished.length} unfinished tasks as ${run.id} (the one bounded resume; no second resume is possible). Completed tasks were not replayed. The same budget applies again — maxTurns ${run.maxTurns}, timeoutMs ${run.timeoutMs}, never raised — on the same route ${snapshot.model}; inspect prior side effects.` }], details: dispatchDetails(started, persistenceOf(current)) };
-          } catch (error) { parent.close(); current.relay.cleanupRun(run.id); current.workerRuntimes.delete(run.id); throw error; }
+          } catch (error) { parent.close(); current.relay.cleanupRun(run.id); current.workerRuntimes.delete(run.id); current.workerRuntimes.delete(`${run.id}:review-fallback`); throw error; }
         }
 
         if (params.action === "status") {
@@ -1549,7 +1702,7 @@ export function createUltratermSubagentsExtension(
         }
 
         if (params.action === "wait" && !binding) {
-          return { content: [{ type: "text" as const, text: renderRunResult(snapshot) }], details: { action: "wait", run: toRunView(snapshot), timedOut: false } };
+          return { content: [{ type: "text" as const, text: [renderRunResult(snapshot), reviewFallbackReceipt(snapshot, current.store?.directory)].filter(Boolean).join("\n") }], details: { action: "wait", run: toRunView(snapshot), timedOut: false } };
         }
         if (!binding) throw new Error("Archived run: use status, diagnose, or explicitly resume unfinished work");
 
@@ -1563,7 +1716,7 @@ export function createUltratermSubagentsExtension(
               details: HubDetails;
               usage?: UsageTotals;
             } = {
-              content: [{ type: "text", text: renderRunResult(waited) }],
+              content: [{ type: "text", text: [renderRunResult(waited), reviewFallbackReceipt(waited, current.store?.directory)].filter(Boolean).join("\n") }],
               details: { action: "wait", run: toRunView(waited), timedOut: false },
             };
             if (waited.state !== "running" && snapshot.background && !binding.usageClaimed) {

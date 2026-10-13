@@ -2,10 +2,11 @@ import { mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from "no
 import { RetiredModelSelectionError } from "../src/retired-model-selection.ts";
 import { CheckpointStore } from "../src/subagents/checkpoints.ts";
 import { normalizeDispatch } from "../src/subagents/policy.ts";
-import { resolveClaudeCodeSelection, retiredRouteError } from "../src/subagents/model-selection.ts";
+import { BUILTIN_WORKER_PROFILES, resolveClaudeCodeSelection, retiredRouteError } from "../src/subagents/model-selection.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { isolatedCodexAgentDir, isolatedAgentPaths } from "../src/subagents/provider-accounts.ts";
+import type { ExtensionAPI, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createUltratermSubagentsExtension,
@@ -15,9 +16,10 @@ import {
   toRunView,
   ultratermSubagentsSchema,
   usapTelemetrySnapshot,
+  type UltratermSubagentsDependencies,
 } from "../extensions/ultraterm-subagents.ts";
 import type { RelayBroker } from "../src/subagents/relay.ts";
-import { emptyUsage, type UsageTotals, type WorkerRunner } from "../src/subagents/types.ts";
+import { emptyUsage, type UsageTotals, type WorkerRunner, type TaskRecord } from "../src/subagents/types.ts";
 
 const dirs: string[] = [];
 
@@ -38,7 +40,7 @@ function usage(seed: number): UsageTotals {
   };
 }
 
-function harness(runnerFactory: (relay: RelayBroker) => WorkerRunner, durable?: { root: string; parent: string; prefix: string }, shutdownGraceMs?: number) {
+function harness(runnerFactory: (relay: RelayBroker) => WorkerRunner, durable?: { root: string; parent: string; prefix: string }, shutdownGraceMs?: number, overrides: Partial<UltratermSubagentsDependencies> = {}) {
   const tools = new Map<string, any>();
   const handlers = new Map<string, (...args: any[]) => unknown>();
   const messages: any[] = [];
@@ -57,6 +59,7 @@ function harness(runnerFactory: (relay: RelayBroker) => WorkerRunner, durable?: 
     profiles: [],
     checkpointRoot: durable?.root,
     shutdownGraceMs,
+    ...overrides,
   })(pi);
   const cwd = mkdtempSync(join(tmpdir(), "steak-usap-extension-"));
   dirs.push(cwd);
@@ -88,6 +91,157 @@ afterEach(() => {
 });
 
 describe("UltraTerm Subagent Protocol Pi extension", () => {
+  it.each([false, true])("synthetic: rejects a later Claude bracket path before any startup (background=%s)", async (background) => {
+    const root = mkdtempSync(join(tmpdir(), "usap-owned-path-preflight-")); dirs.push(root);
+    const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "owned-path-preflight" };
+    const runner = vi.fn(async () => ({ state: "done" as const, output: "unexpected", turns: 1, usage: emptyUsage() }));
+    const h = harness(() => runner, durable);
+    const save = vi.spyOn(CheckpointStore.prototype, "save");
+    try {
+      const result = await h.tools.get("ultraterm_subagents").execute("invalid", {
+        goal: "Validate the whole wave", harness: "claude-code", background,
+        tasks: [
+          { label: "Safe leaf", task: "Edit safe file", mayEdit: true, ownedPaths: ["safe.ts"] },
+          { label: "Astro leaf", task: "Edit route", mayEdit: true, ownedPaths: ["src/pages/[slug].astro"] },
+        ],
+      }, undefined, undefined, h.ctx);
+      expect(result.isError).toBe(true);
+      const text = result.content[0].text;
+      expect(text).toContain("Dispatch validation failed");
+      expect(text).toContain("tasks[1].ownedPaths[0]");
+      expect(text).toContain("Astro leaf");
+      expect(text).toContain('metacharacter "["');
+      expect(text).not.toContain("Started USAP run");
+      expect(runner).not.toHaveBeenCalled();
+      expect(save).not.toHaveBeenCalled();
+      const listed = await h.tools.get("ultraterm_hub").execute("list", { action: "list" }, undefined, undefined, h.ctx);
+      expect(listed.details.runs).toEqual([]);
+      expect(h.messages).toEqual([]);
+      expect(h.entries).toEqual([]);
+    } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); save.mockRestore(); }
+  });
+
+  it("exposes independent current and last launch queue snapshots in run/status views", () => {
+    const run = normalizeDispatch({ goal: "queue metadata", tasks: [{ label: "review", task: "bounded review", role: "reviewer" }] }, process.cwd(), "claude-code/claude-opus-5-5", "xhigh", 1_000, () => "queue-view");
+    expect(toRunView(run).tasks[0]).not.toHaveProperty("launchQueue");
+    expect(toRunView(run).tasks[0]).not.toHaveProperty("lastLaunchQueue");
+    run.tasks[0].state = "starting";
+    run.tasks[0].launchQueue = { tier: "machine", provider: "anthropic", reason: "provider_capacity", since: 1_000, deadlineAt: 5_000,
+      capacity: { provider: "anthropic", providerBucket: { cap: 1, held: 1, owners: [{ index: 0, pid: 123, kind: "lease", status: "live" }] }, globalBucket: { cap: 2, held: 0, owners: [] } } };
+    run.tasks[0].lastLaunchQueue = { tier: "session", provider: "anthropic", reason: "session_capacity", since: 500, deadlineAt: 4_500 };
+    const task = toRunView(run).tasks[0];
+    expect(task).toMatchObject({ launchQueue: run.tasks[0].launchQueue, lastLaunchQueue: run.tasks[0].lastLaunchQueue });
+    task.launchQueue!.capacity!.providerBucket.owners[0].pid = 999;
+    task.lastLaunchQueue!.reason = "changed";
+    expect(run.tasks[0].launchQueue.capacity!.providerBucket.owners[0].pid).toBe(123);
+    expect(run.tasks[0].lastLaunchQueue.reason).toBe("session_capacity");
+    expect(toRunView(run).tasks[0].launchQueue!.capacity!.providerBucket.owners[0].pid).toBe(123);
+  });
+
+  it("renders active launch queue status without worker output and preserves the aggregate bound", () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(2_000);
+    try {
+      const run = normalizeDispatch({ goal: "queue status", tasks: [{ label: "review", task: "bounded review", role: "reviewer" }] }, process.cwd(), "claude-code/claude-opus-5-5", "xhigh", 1_000, () => "queue-status");
+      const task = run.tasks[0];
+      task.state = "starting";
+      task.lastLaunchQueue = { tier: "session", provider: "anthropic", reason: "previous wait", since: 500, deadlineAt: 4_500 };
+      expect(renderRunResult(run)).not.toContain("launch queue:");
+
+      task.launchQueue = { tier: "machine", provider: "anthropic", reason: "provider slots unavailable", since: 1_000, deadlineAt: 5_000 };
+      const text = renderRunResult(run);
+      expect(text).toContain("launch queue: machine/anthropic · provider slots unavailable · 1000ms elapsed");
+      expect(text).toContain("(no output)");
+
+      task.launchQueue.since = 3_000;
+      expect(renderRunResult(run)).toContain("launch queue: machine/anthropic · provider slots unavailable · 0ms elapsed");
+      task.launchQueue.reason = "provider slots unavailable ".repeat(100);
+      for (const limit of [0, 1, 64, 256]) {
+        expect(renderRunResult(run, limit).length).toBeLessThanOrEqual(limit);
+      }
+      expect(renderRunResult(run, 256)).toContain("[Aggregate content truncated; complete bounded task outputs remain in details.]");
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("refuses an initial checkpoint failure before worker execution and retries snapshots only", async () => {
+    const root = mkdtempSync(join(tmpdir(), "usap-initial-health-")); dirs.push(root);
+    const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "initial-health" };
+    const runner = vi.fn(async () => ({ state: "done" as const, output: "fresh", turns: 1, usage: emptyUsage() }));
+    const h = harness(() => runner, durable);
+    const spy = vi.spyOn(CheckpointStore.prototype, "save").mockImplementationOnce(() => { throw Object.assign(new Error("private payload"), { code: "ENOSPC", syscall: "open" }); });
+    const dispatch = () => h.tools.get("ultraterm_subagents").execute("d", { goal: "bounded", tasks: [{ label: "fresh", task: "bounded" }] }, undefined, undefined, h.ctx);
+    try {
+      await expect(dispatch()).rejects.toThrow(/Checkpoint initial failed \(ENOSPC\/open\)/);
+      expect(runner).not.toHaveBeenCalled();
+      await dispatch();
+      const list = await h.tools.get("ultraterm_hub").execute("l", { action: "list" }, undefined, undefined, h.ctx);
+      expect(list.details.runs[0].tasks[0]).toMatchObject({ state: "aborted" });
+      expect(list.details.checkpointHealth.retainedFailure.first.code).toBe("ENOSPC");
+      expect(runner).toHaveBeenCalledTimes(1);
+    } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); spy.mockRestore(); }
+  });
+
+  it.each(["ENOSPC", "EACCES", "UNKNOWN"])("stops producers on %s, retains done evidence, and validates recovery without replay", async (code) => {
+    const root = mkdtempSync(join(tmpdir(), "usap-persistence-health-")); dirs.push(root);
+    const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: `health-${code}` };
+    const originalSave = CheckpointStore.prototype.save;
+    let failing = false;
+    let directory = "";
+    const save = vi.spyOn(CheckpointStore.prototype, "save").mockImplementation(function (this: CheckpointStore, run, force) {
+      directory = this.directory;
+      if (failing) throw Object.assign(new Error("private-session-payload /secret/token"), { code, syscall: "write" });
+      return originalSave.call(this, run, force);
+    });
+    const runner = vi.fn(async ({ task, onProgress, signal }: Parameters<WorkerRunner>[0]) => {
+      if (task.label === "loss") {
+        failing = true;
+        onProgress({ turns: 1 });
+        expect(signal.aborted).toBe(true);
+        return { state: "aborted" as const, output: "retained partial", turns: 1, usage: emptyUsage() };
+      }
+      return { state: "done" as const, output: "retained success", turns: 1, usage: emptyUsage() };
+    });
+    const h = harness(() => runner, durable);
+    const dispatch = (tasks: any[]) => h.tools.get("ultraterm_subagents").execute("d", {
+      goal: "checkpoint loss", concurrency: 1, tasks,
+    }, undefined, undefined, h.ctx);
+    try {
+      const result = await dispatch(["done", "loss", "never"].map(label => ({ label, task: "bounded" })));
+      const id = result.details.run.runId;
+      expect(result.details.run.tasks.map((task: any) => task.state)).toEqual(["done", "aborted", "aborted"]);
+      expect(runner.mock.calls.map(([context]) => context.task.label)).toEqual(["done", "loss"]);
+      const diagnose = async () => (await h.tools.get("ultraterm_hub").execute("diag", { action: "diagnose", runId: id }, undefined, undefined, h.ctx)).details.diagnostics;
+      const failed = await diagnose();
+      expect(failed.checkpointHealth.state).toBe("failed");
+      expect(failed.checkpointHealth.retainedFailure.first).toMatchObject({ code, syscall: "write", stage: "lifecycle", name: "Error" });
+      expect(JSON.stringify(failed.checkpointHealth)).not.toMatch(/private-session-payload|secret|token/);
+      await expect(dispatch([{ label: "refused", task: "not launched" }])).rejects.toThrow(/Checkpoint retry failed/);
+      expect(runner).toHaveBeenCalledTimes(2);
+      failing = false;
+      await dispatch([{ label: "fresh", task: "new exact leaf" }]);
+      const repaired = await diagnose();
+      expect(repaired.checkpointError).toBeNull();
+      expect(repaired.checkpointHealth.state).toBe("validated-save");
+      expect(repaired.checkpointHealth.retainedFailure.first.code).toBe(code);
+      const terminal = JSON.parse(readFileSync(join(directory, `${id}.json`), "utf8"));
+      expect(terminal.run.state).toBe("aborted");
+      expect(terminal.run.tasks[0]).toMatchObject({ state: "done" });
+      expect(terminal.run.tasks[0].output).toContain("retained success");
+      for (const stopped of terminal.run.tasks.slice(1)) {
+        expect(stopped.error).toContain(`Checkpoint lifecycle failed (${code}/write)`);
+        expect(stopped.error).not.toMatch(/private-session-payload|secret|token/);
+      }
+      expect(runner.mock.calls.map(([context]) => context.task.label)).toEqual(["done", "loss", "fresh"]);
+      await expect(h.tools.get("ultraterm_hub").execute("resume", { action: "resume", runId: id }, undefined, undefined, h.ctx)).rejects.toThrow(/No native checkpoint/);
+      expect(runner).toHaveBeenCalledTimes(3);
+    } finally {
+      failing = false;
+      await h.handlers.get("session_shutdown")!({}, h.ctx);
+      save.mockRestore();
+    }
+  });
+
   it("synthetic: admits staged native Read-image on both exact Claude routes without consulting Pi", async () => {
     const runner = vi.fn(async (_context: Parameters<WorkerRunner>[0]) => ({ state: "done" as const, output: "fixture review", turns: 1, usage: emptyUsage() }));
     const h = harness(() => runner);
@@ -572,6 +726,77 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it.each(["admission", "shutdown"])("retains failed durable receipts until both commits recover via %s, without replay", async (recovery) => {
+    const root = mkdtempSync(join(tmpdir(), "usap-receipt-health-")); dirs.push(root);
+    const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: `receipt-${recovery}` };
+    const runner = vi.fn<WorkerRunner>(async () => ({ state: "done" as const, output: "retained completion", turns: 1, usage: emptyUsage() }));
+    const h = harness(() => runner, durable);
+    const originalMark = CheckpointStore.prototype.markDelivered;
+    let failing = true;
+    let directory = "";
+    const mark = vi.spyOn(CheckpointStore.prototype, "markDelivered").mockImplementation(function (this: CheckpointStore, id) {
+      directory = this.directory;
+      if (failing) throw Object.assign(new Error("private-session-payload /secret/token"), { code: "ENOSPC", syscall: "write" });
+      return originalMark.call(this, id);
+    });
+    const dispatch = (label: string, background = false) => h.tools.get("ultraterm_subagents").execute("d", {
+      goal: "receipt persistence", background, tasks: [{ label, task: "bounded" }],
+    }, undefined, undefined, h.ctx);
+    let next: ReturnType<typeof harness> | undefined;
+    try {
+      const result = await dispatch("completed", true);
+      const id = result.details.run.runId;
+      await flush();
+      const diagnose = async () => (await h.tools.get("ultraterm_hub").execute("diag", { action: "diagnose", runId: id }, undefined, undefined, h.ctx)).details.diagnostics;
+      const disk = () => JSON.parse(readFileSync(join(directory, `${id}.json`), "utf8"));
+      expect(h.messages).toHaveLength(1);
+      expect(runner).toHaveBeenCalledTimes(1);
+      expect(disk()).toMatchObject({ delivered: false, run: { state: "done" } });
+      const failed = await diagnose();
+      expect(failed.checkpointHealth).toMatchObject({ state: "failed", pendingRuns: 1, retainedFailure: {
+        first: { code: "ENOSPC", syscall: "write", stage: "receipt" }, count: 1,
+      } });
+      expect(JSON.stringify(failed.checkpointHealth)).not.toMatch(/private-session-payload|secret|token/);
+      await expect(dispatch("refused")).rejects.toThrow(/Checkpoint receipt failed/);
+      expect(mark).toHaveBeenCalledTimes(2);
+      expect(runner).toHaveBeenCalledTimes(1);
+      expect(h.messages).toHaveLength(1);
+      const stillFailed = await diagnose();
+      expect(stillFailed.checkpointHealth).toMatchObject({ state: "failed", pendingRuns: 1, retainedFailure: { count: 2, latest: { stage: "receipt" } } });
+      expect(stillFailed.checkpointError).toMatch(/ENOSPC/);
+      expect(disk().delivered).toBe(false);
+      failing = false;
+      if (recovery === "admission") {
+        await dispatch("fresh");
+        const repaired = await diagnose();
+        expect(repaired.checkpointError).toBeNull();
+        expect(repaired.checkpointHealth).toMatchObject({ state: "validated-save", pendingRuns: 0, retainedFailure: {
+          first: { code: "ENOSPC", stage: "receipt" }, latest: { code: "ENOSPC", stage: "receipt" }, count: 2,
+        } });
+        expect(runner.mock.calls.map(([context]) => context.task.label)).toEqual(["completed", "fresh"]);
+      }
+      await h.handlers.get("session_shutdown")!({}, h.ctx);
+      expect(disk()).toMatchObject({ delivered: true, run: { state: "done" } });
+      expect(mark).toHaveBeenCalledTimes(3);
+      const reopenRunner = vi.fn(async () => ({ state: "done" as const, output: "must not run", turns: 1, usage: emptyUsage() }));
+      next = harness(() => reopenRunner, { ...durable, prefix: "reopened" });
+      // No old native receipt is supplied: only the committed delivered bit prevents redelivery.
+      await next.handlers.get("session_start")!({}, next.ctx);
+      await next.handlers.get("agent_settled")!({}, next.ctx);
+      await flush();
+      expect(next.messages).toHaveLength(0);
+      expect(reopenRunner).not.toHaveBeenCalled();
+      const status = await next.tools.get("ultraterm_hub").execute("s", { action: "status", runId: id }, undefined, undefined, next.ctx);
+      expect(status.details.run.tasks[0]).toMatchObject({ state: "done" });
+    } finally {
+      failing = false;
+      try {
+        await h.handlers.get("session_shutdown")!({}, h.ctx);
+        if (next) await next.handlers.get("session_shutdown")!({}, next.ctx);
+      } finally { mark.mockRestore(); }
+    }
+  });
+
   it("does not resend a submission while its native receipt is delayed", async () => {
     vi.useFakeTimers();
     const h = harness(() => async () => ({ state: "done", output: "ready", turns: 1, usage: emptyUsage() }));
@@ -870,12 +1095,13 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       h.entries.filter((entry) => entry.type === "ultraterm-usap-telemetry" && entry.data.runId === runId).map((entry) => entry.data);
 
     /** A settled checkpoint whose reviewer stopped on its turn budget with a resumable native session. */
-    function partialCheckpoint(name: string, overrides: { model?: string; thinkingLevel?: string; selection?: any; claude?: boolean } = {}) {
+    function partialCheckpoint(name: string, overrides: { model?: string; thinkingLevel?: string; selection?: any; claude?: boolean; account?: TaskRecord["providerAccount"] } = {}) {
       const root = mkdtempSync(join(tmpdir(), `usap-${name}-`)); dirs.push(root);
       const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: name };
       const store = new CheckpointStore(durable.parent, durable.root, durable.parent);
       const run = normalizeDispatch({ goal: "review", background: true, maxTurns: 12, tasks: [{ label: "Metadata signoff", task: "Review the metadata", role: "reviewer" }, { label: "Impl", task: "Done already", role: "worker" }] }, root, overrides.model ?? "openai-codex/gpt-6.1-sol", overrides.thinkingLevel ?? "medium", Date.now(), () => `${name}-origin`);
       if (overrides.selection) run.selection = overrides.selection;
+      if (overrides.account) run.tasks[0].providerAccount = overrides.account;
       if (overrides.claude) { run.harness = "claude-code"; run.selection = { ...resolveClaudeCodeSelection("claude-opus-5-5") }; }
       run.tasks[1].state = "done";
       Object.assign(run.tasks[0], { state: "failed", startedAt: Date.now(), turns: 12, error: turnLimit(12), outcome: "partial", partialReason: "turn_budget", partialSummary: "Turn budget reached after 12/12 turns" });
@@ -922,6 +1148,23 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       expect(latest.tasks[1]).toMatchObject({ role: "worker", state: "timed_out", outcome: "partial", partialReason: "time_budget" });
       expect(latest.tasks[2].outcome).toBeUndefined();
       expect(JSON.stringify(latest)).not.toContain("findings so far");
+      await h.handlers.get("session_shutdown")!({}, h.ctx);
+    });
+
+    it("copies the prior Go account identity into a resumed task with a new run id", async () => {
+      const account = { provider: "opencode-go" as const, id: "b" as const, label: "Go 2", lease: "prior-lease" };
+      const checkpoint = partialCheckpoint("go-resume-account", { model: "opencode-go/deepseek-v4.1-flash", thinkingLevel: "high", account });
+      const seen: TaskRecord[] = [];
+      const h = harness(() => async ({ task }) => { seen.push(task); return { state: "done", output: "continued", turns: 1, usage: emptyUsage() }; }, checkpoint.durable);
+      const go = { provider: "opencode-go", id: "deepseek-v4.1-flash", baseUrl: "https://opencode.ai/zen/go/v1", input: ["text"] };
+      h.ctx.model = go;
+      h.ctx.modelRegistry = { find: () => go, getAll: () => [go], getAvailable: () => [go], hasConfiguredAuth: () => true, isUsingOAuth: () => false, getProvider: () => ({ streamSimple() {} }) };
+      await h.handlers.get("session_start")!({}, h.ctx);
+      await resume(h, checkpoint.run.id);
+      await vi.waitFor(() => expect(seen).toHaveLength(1));
+      expect(seen[0].providerAccount).toEqual(account);
+      expect(seen[0].sessionFile).toBe(checkpoint.sessionFile);
+      expect(seen[0].id).not.toBe(checkpoint.run.tasks[0].id);
       await h.handlers.get("session_shutdown")!({}, h.ctx);
     });
 
@@ -1045,5 +1288,35 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       await vi.waitFor(() => expect(launches).toHaveLength(1));
       await g.handlers.get("session_shutdown")!({}, g.ctx);
     });
+  });
+});
+
+
+describe("fresh Go parent dispatch to isolated authenticated Sol", () => {
+  it.each(["explicit-model", "explicit-profile", "claude-unavailable", "opus-first"])("bridges %s without registering Codex auth into the Go registry", async kind => {
+    const sol = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text"] } as any;
+    const isolatedRuntime = { getModel: () => sol, getModels: () => [sol], getAvailableSnapshot: () => [sol], hasConfiguredAuth: () => true,
+      isUsingOAuth: () => true, getProvider: () => ({ streamSimple() {} }) } as unknown as ModelRuntime;
+    const createRuntime = vi.fn(async () => isolatedRuntime);
+    const accountCommand = vi.fn(async (args: string[]) => args[0] === "status"
+      ? { providers: { claude: { accounts: [{ eligible: kind !== "claude-unavailable" }] } } }
+      : { ok: true, account: { id: "fallback", agentDir: isolatedCodexAgentDir("fallback") } });
+    const runner = vi.fn(async () => ({ state: "done" as const, output: "review evidence", turns: 1, usage: emptyUsage() }));
+    const h = harness(() => runner, undefined, undefined, { createModelRuntime: createRuntime, accountCommand, profiles: BUILTIN_WORKER_PROFILES });
+    const go = { provider: "opencode-go", id: "deepseek-v4.1-flash", api: "openai-completions", baseUrl: "https://opencode.ai/zen/go/v1", input: ["text"] };
+    h.ctx.model = go;
+    const registry = { find: (provider: string) => provider === "opencode-go" ? go : undefined,
+      getAll: () => [go], getAvailable: () => [go], hasConfiguredAuth: (model: any) => model.provider === "opencode-go",
+      isUsingOAuth: () => false, getProvider: () => ({ streamSimple() {} }) };
+    h.ctx.modelRegistry = registry;
+    const selector = kind === "explicit-model" ? { model: "openai-codex/gpt-6.1-sol" }
+      : kind === "explicit-profile" ? { profile: "steak-pi/gpt-6-1-sol" } : {};
+    const result = await h.tools.get("ultraterm_subagents").execute("go-sol", { goal: "bounded review", ...selector,
+      tasks: [{ label: "Review", task: "Inspect only", role: "reviewer" }] }, undefined, undefined, h.ctx);
+    expect(result.details.run.model).toBe(kind === "opus-first" ? "claude-code/claude-opus-5-5" : "openai-codex/gpt-6.1-sol");
+    expect(createRuntime).toHaveBeenCalledWith(isolatedAgentPaths(isolatedCodexAgentDir("fallback")));
+    expect(registry.getAll()).toEqual([go]);
+    expect(registry.isUsingOAuth()).toBe(false);
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
   });
 });

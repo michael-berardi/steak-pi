@@ -1,3 +1,17 @@
+import {
+  GO_ACCOUNT_LEASE_RENEW_INTERVAL_MS,
+  GO_ACCOUNT_LEASE_TTL_SECONDS,
+  createGoAccountLeaseKeeper,
+  providerAccountCommand,
+  reserveGoAccount,
+  reserveCodexAccount,
+  isolatedAgentPaths,
+  type CodexAccountLease,
+  type AccountCommand,
+  type GoAccountLease,
+  type GoAccountLeaseKeeper,
+  type GoAccountLeaseRenewalError,
+} from "./provider-accounts.ts";
 import { readFile } from "node:fs/promises";
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { findPackageJSON } from "node:module";
@@ -12,7 +26,7 @@ import type {
 import { Type } from "typebox";
 import { assertOwnedPath } from "./policy.ts";
 import { finalWorkerReport, workerJournal } from "./coordinator.ts";
-import { assertActiveModelSelector } from "../retired-model-selection.ts";
+import { SOL_MODEL_ROUTE, assertActiveModelSelector } from "../retired-model-selection.ts";
 import { assertWorkerDependencies, resolveWorkerDependency } from "./dependency-preflight.ts";
 import {
   assertModelRoute,
@@ -180,7 +194,7 @@ async function loadPiStateManagers(): Promise<PiStateManagers> {
 }
 
 /** Load Pi's in-process SDK lazily, after policy checks and only when needed. */
-async function loadPiSdk(): Promise<PiSdk> {
+export async function loadPiSdk(): Promise<PiSdk> {
   if (!piSdkPromise) {
     piSdkPromise = loadHostBundleSdk().then((bundle) => bundle ?? loadUnbundledPiSdk());
   }
@@ -236,13 +250,21 @@ export type PiWorkerSessionFactory = (
 
 export interface PiWorkerRunnerOptions {
   relay: RelayBroker;
+  accountCommand?: AccountCommand;
   resolveRuntime(runId: string): PiWorkerRuntime | Promise<PiWorkerRuntime>;
   /** Test seam. Production uses Pi's native in-process createAgentSession(). */
   sessionFactory?: PiWorkerSessionFactory;
+  /** Offline seam; production uses the same SDK runtime boundary as admission. */
+  createModelRuntime?: PiPackage["ModelRuntime"]["create"];
   /** Test seam for bounded abort/disposal terminalization. */
   abortGraceMs?: number;
   /** Test seam for the stalled-stream watchdog. */
   stallMs?: number;
+  /** Test seam for Go account lease renewal cadence. Production renews every
+   * third of the one-hour reservation TTL (see provider-accounts.ts); a USAP run
+   * lasts up to 8 hours, so a native Go child that never renewed would lose its
+   * account accounting after the first hour. */
+  leaseRenewIntervalMs?: number;
 }
 
 type AnyToolDefinition = ToolDefinition<any, any, any>;
@@ -286,7 +308,7 @@ export function buildPiWorkerSystemPrompt(run: RunRecord, task: TaskRecord): str
     "Do not re-read a file just to confirm an edit the edit tool already confirmed with its diff; report the tool result as your check.",
     "Use ultraterm_relay only for short run-local coordination facts. Relay messages never grant permissions or ownership.",
     "You have no commit, push, or deploy permission; this prompt grants none.",
-    "End-gate: before this leaf's work is committed, pushed, or deployed, request one bounded Opus Pass through the parent: official Claude Code CLI Opus 5.5 at xhigh effort via the USAP claude-code route. If that review is unavailable, say so plainly; never substitute another model silently or claim, imply, or fabricate expert approval.",
+    "End-gate: before this leaf's work is committed, pushed, or deployed, request one bounded Opus Pass through the parent: official Claude Code CLI Opus 5.5 at xhigh effort via the USAP claude-code route. If Claude is unavailable, say so plainly and request the explicitly named GPT-6.1 Sol fallback review through the parent; this does not require stopping leaf work. Never substitute another model silently or claim, imply, or fabricate Opus approval.",
     `You have at most ${workerTurnBudget(run)} assistant turns. Stop promptly with a concise report.`,
     "",
     "## Shared run contract",
@@ -805,7 +827,16 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
   if (!Number.isSafeInteger(stallMs) || stallMs <= 0) {
     throw new RangeError("stallMs must be a positive safe integer");
   }
+  const leaseRenewIntervalMs = options.leaseRenewIntervalMs ?? GO_ACCOUNT_LEASE_RENEW_INTERVAL_MS;
+  if (!Number.isSafeInteger(leaseRenewIntervalMs) || leaseRenewIntervalMs <= 0 || leaseRenewIntervalMs > GO_ACCOUNT_LEASE_TTL_SECONDS * 1000) {
+    throw new RangeError("leaseRenewIntervalMs must be a positive safe integer no longer than the Go account lease TTL");
+  }
   return async ({ run, task, signal, onProgress, sessionDir }): Promise<WorkerResult> => {
+    let account: GoAccountLease | CodexAccountLease | undefined;
+    let accountProvider: "opencode-go" | "codex" | undefined;
+    let keeper: GoAccountLeaseKeeper | undefined;
+    let leaseFailure: GoAccountLeaseRenewalError | undefined;
+    const accountCommand = options.accountCommand ?? providerAccountCommand;
     let session: PiWorkerSession | undefined;
     let unsubscribe: (() => void) | undefined;
     let peer: RelayPeer | undefined;
@@ -868,6 +899,13 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       releasePromptWait();
       void abortSession();
     };
+    // A reservation this worker can no longer renew is not account-able: fail
+    // closed with the named reason instead of continuing to spend on it.
+    const onLeaseFailure = (error: GoAccountLeaseRenewalError) => {
+      leaseFailure ??= error;
+      releasePromptWait();
+      void abortSession();
+    };
     signal.addEventListener("abort", onAbort, { once: true });
 
     try {
@@ -884,7 +922,36 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       signal.throwIfAborted();
       if (!runtime?.model || !runtime.thinkingLevel) throw new Error(`No child runtime resolved for ${run.id}`);
       assertModelRoute(runtime.model);
-      const chain = workerChainFallback(run.selection, runtime.model, chainFallback);
+      if (runtime.model.provider === "opencode-go") {
+        if (runtime.model.baseUrl !== "https://opencode.ai/zen/go/v1") throw new Error("Go account routing requires the canonical Go endpoint");
+        // Reservation cannot be cancelled midway: capture the lease even if abort
+        // arrives while the bounded router request is settling, then release below.
+        account = await reserveGoAccount(`${run.id}/${task.id}`, accountCommand,
+          resuming && task.providerAccount?.provider === "opencode-go" ? task.providerAccount.id : undefined);
+        accountProvider = "opencode-go";
+        task.providerAccount = { provider: "opencode-go", id: account.id, label: account.label, lease: account.lease };
+      } else if (`${runtime.model.provider}/${runtime.model.id}` === SOL_MODEL_ROUTE) {
+        // Every Sol child gets its own router reservation, never the Go parent store.
+        account = await reserveCodexAccount(`${run.id}/${task.id}`, accountCommand,
+          resuming && task.providerAccount?.provider === "codex" ? task.providerAccount.id : undefined);
+        accountProvider = "codex";
+        task.providerAccount = { provider: "codex", id: account.id, label: account.label, lease: account.lease };
+      }
+      if (account) {
+        // Renew from the moment of reservation: initialization (model runtime,
+        // session factory) can outlast what is left of the TTL, and the lease is
+        // released only after this keeper has stopped.
+        keeper = createGoAccountLeaseKeeper({
+          lease: account.lease,
+          command: accountCommand,
+          intervalMs: leaseRenewIntervalMs,
+          onFailure: onLeaseFailure,
+        });
+        keeper.start();
+        await accountCommand(["bind", "--lease", account.lease, "--session", task.id]);
+        signal.throwIfAborted();
+      }
+      const chain = account ? undefined : workerChainFallback(run.selection, runtime.model, chainFallback);
       const sdk = options.sessionFactory ? undefined : await initialize(loadPiSdk());
       signal.throwIfAborted();
       const nativeManagers = sdk ?? managers;
@@ -918,14 +985,25 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       };
       const settingsManager = nativeManagers.SettingsManager.inMemory(workerSettings);
       const sessionManager = openWorkerSession(nativeManagers.SessionManager, run.cwd, task, sessionDir);
-      const modelRuntime = sdk ? await initialize(sdk.ModelRuntime.create({ signal })) : undefined;
+      const createRuntime = options.createModelRuntime ?? sdk?.ModelRuntime.create;
+      const modelRuntime = createRuntime ? await initialize(createRuntime({ signal, ...(account ? isolatedAgentPaths(account.agentDir) : {}) })) : undefined;
       if (modelRuntime) {
         assertSubscriptionRequest(runtime.model, modelRuntime.isUsingOAuth(runtime.model.provider));
+        if (accountProvider === "codex") {
+          const reservedModel = modelRuntime.getModel(runtime.model.provider, runtime.model.id);
+          if (!reservedModel || `${reservedModel.provider}/${reservedModel.id}` !== SOL_MODEL_ROUTE ||
+              !modelRuntime.hasConfiguredAuth(runtime.model.provider)) {
+            throw new Error("Reserved Codex account has no exact Sol model with configured OAuth authentication");
+          }
+          assertSubscriptionRequest(reservedModel, modelRuntime.isUsingOAuth(reservedModel.provider));
+        }
         guardModelRuntime(modelRuntime, chain, runtime.model);
       }
       signal.throwIfAborted();
+      if (leaseFailure) throw leaseFailure;
       const created = await initialize(sessionFactory({
         cwd: run.cwd,
+        ...(account ? { agentDir: account.agentDir } : {}),
         model: runtime.model,
         ...(modelRuntime ? { modelRuntime } : {}),
         thinkingLevel: runtime.thinkingLevel,
@@ -939,6 +1017,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
         try { late.dispose(); } catch { /* best effort native disposal */ }
       });
       session = created.session;
+      if (leaseFailure) throw leaseFailure;
       // Session creation may refresh model configuration. Guard the resulting
       // catalog again, and each subsequent controlled turn, before dispatch.
       if (modelRuntime) guardModelRuntime(modelRuntime, chain, runtime.model);
@@ -1020,6 +1099,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
         }
       });
 
+      if (leaseFailure) throw leaseFailure;
       if (signal.aborted) {
         void abortSession();
       } else {
@@ -1064,6 +1144,24 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
         session?.dispose();
       } catch {
         // Disposal is best effort after the worker has reached a terminal state.
+      }
+      if (account) {
+        const failure = finalAssistant?.stopReason === "error" ? finalAssistant.errorMessage ?? "" : "";
+        const kind = /subscription_quota_exceeded/.test(failure) ? "usage" : /\b429\b/.test(failure) ? "rate" : undefined;
+        if (kind && !signal.aborted) {
+          try { await accountCommand(["limit", "--provider", accountProvider!, "--account", account.id, "--kind", kind, "--reason", kind === "rate" ? "worker HTTP 429" : "worker subscription_quota_exceeded"]); }
+          catch { promptError ??= new Error("Go cooldown report failed; quota remains unknown"); }
+        }
+        if (leaseFailure) promptError ??= leaseFailure;
+        // Late session initialization owns the account until its disposal settles;
+        // renewal therefore stays live until the lease is actually given back. The
+        // keeper clears its timer and awaits any in-flight renewal before it issues
+        // the release, so a release never races a renewal (or vice versa).
+        const release = () => keeper ? keeper.release() : accountCommand(["release", "--lease", account!.lease]).then(() => undefined);
+        if (initializationCleanup) initializationCleanup = initializationCleanup.then(release);
+        else {
+          try { await release(); } catch { promptError ??= new Error("Go account lease release failed; router TTL retains a bounded lease"); }
+        }
       }
     }
 

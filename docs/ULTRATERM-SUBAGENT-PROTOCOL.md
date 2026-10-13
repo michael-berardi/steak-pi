@@ -142,7 +142,7 @@ Ownership: exclusive files or mutable boundaries
 USAP uses one coordinator, hub, capacity limiter, checkpoint store and telemetry
 surface for both Pi workers and the official headless Claude Code CLI. An absent
 `harness` means Pi except for an all-reviewer wave with no explicit route: that
-wave defaults to the **Opus Pass**, Claude Code Opus 5.5 at `xhigh` effort.
+wave defaults to the **Opus Pass**, Claude Code Opus 5.5 at `xhigh` effort. The [automatic text-review exception](./MODEL-ROUTING.md#automatic-review-exception) alone permits actual GPT-6.1 Sol fallback evidence when Claude is proven unavailable; it is not Opus approval.
 Explicit Pi/model/profile selections still win.
 
 `harness: "claude-code"` runs **Sonnet 5.5** (`claude-code/claude-sonnet-5-5`)
@@ -212,6 +212,17 @@ outside-cwd file is a failed review attempt, never something to infer. Pi
 unchanged. Unit checks for this contract are synthetic and prove admission logic
 only; the capability is accepted after a real native CLI staged-image smoke.
 
+**Claude owned-path admission.** Unsupported `ownedPaths` for `claude-code`
+fail at dispatch, before the wave is registered, checkpointed, or started.
+Permission-rule metacharacters `*`, `?`, `[`, `]`, `{`, `}`, `(`, `)`, `!`,
+backslash (`\`), LF, and CR are forbidden in either the normalized lexical
+path or its physical projection, including missing children beneath symlinks.
+Thus Astro paths such as `src/pages/[slug].astro` and
+`src/pages/[...slug].astro` are rejected. There is no automatic ownership
+widening or harness fallback. The parent may explicitly choose Pi exact-path
+guarded writes or revise ownership within approved scope; never silently
+broaden ownership to the parent directory.
+
 **Reviewer shell denial.** A Claude leaf with role `reviewer` and no `mayEdit`
 never receives Bash, even if `allowBash: true` or task text requests a shell.
 The CLI argv enforces Read/Grep/Glob only. Setting `allowBash: true` produces the
@@ -280,6 +291,23 @@ Task lifecycle:
 ```text
 queued → starting → running ↔ waiting → done | failed | aborted | timed_out
 ```
+
+Before a worker starts, `status` includes concise plain-text launch queue
+tier/provider, reason and elapsed wait alongside the structured queue details
+exposed by `status` and `diagnose`, including the queue deadline. Machine-capacity waits include provider and global
+capacity counts and their lease/claim holders (PID and, for newly launched workers,
+parent session, run and task IDs). Legacy or unreadable holders are identified as
+unknown; diagnostics never reclaim slots or expose lease nonces or worker content.
+The most recent queue snapshot is retained on a task that settles before launch.
+For persistent sessions, the first queue wait, reason/capacity or holder transitions,
+and queue end are checkpointed immediately for recovery, while read-time elapsed
+updates alone do not trigger checkpoint writes.
+
+Reviewer tasks have a **60-second launch queue budget**, including waits behind
+run concurrency, the session scheduler and machine slots. The shorter absolute run
+deadline still wins. Expiry is a `timed_out` review, not completed or partial review
+work, and does not silently retry or switch routes. Once launch capacity is acquired,
+the queue bound is removed; execution retains the original absolute run deadline.
 
 `waiting` means the child is awaiting a bounded dependency or relay response;
 it is not permission to exceed the run deadline. Terminal states never return
@@ -409,6 +437,7 @@ The Steak Pi implementation profile uses these ceilings:
 | Simultaneously active runs | 16; further dispatch is rejected until a run settles |
 | Tasks accepted in one run | 8 hard maximum; excess tasks remain a parent planning problem |
 | Run wall clock | finite; default 10 minutes, accepted range 1 second–8 hours (`timeoutMs`) |
+| Reviewer launch queue | 60 seconds across run, session and machine waits; never beyond the run deadline |
 | Retained terminal runs | 50 per coordinator session; oldest terminal records are evicted while live runs remain |
 | Child turns | `maxTurns`: default 64, accepted range 1–2,048 assistant turns per task, including relay follow-ups; a child is told once when two remain; a resume reuses the same value, never a larger one |
 | Final output retained per child | 20,000 characters, with explicit truncation metadata |
@@ -439,8 +468,8 @@ turn.
 ## 8. Model guidance
 
 Routine bounded scouting and implementation use the configured parent profile
-defaults: built-in routine workers resolve MiMo V2.6 Flash → GPT-6.1
-Sol (text; images MiMo only), and explicitly native-Pi reviewer chains resolve MiMo V2.6 Pro →
+defaults: built-in routine workers resolve canonical Go DeepSeek V4.1 Flash → GPT-6.1
+Sol at selection (text; images MiMo only), and explicitly native-Pi reviewer chains resolve MiMo V2.6 Pro →
 GPT-6.1 Sol — the legacy "expert review chain" name is a native-Pi routing label, not
 expert sign-off. All-reviewer waves with no explicit route use the official Claude Code
 Opus 5.5/xhigh pass. Existing explicitly selected Pi profiles keep their native
@@ -454,7 +483,7 @@ provider/model on the run so results are auditable.
 **Expert-review end-gate.** USAP instructions never grant commit, push, or
 deploy permission. Before a weaker implementer's work is committed, pushed, or
 deployed, the leaf requests one bounded Opus 5.5/xhigh review through the parent.
-If the CLI route or its subscription allowance is unavailable, report that
+Implicit automatic text review may use the bounded, receipted GPT-6.1 Sol fallback described in [Model routing](./MODEL-ROUTING.md#automatic-review-exception). Explicit Claude routes and image reviews never silently fall back. If both eligible review routes are unavailable, report that
 honestly. No worker may claim, imply, or fabricate expert approval. A missing
 Opus Pass is a parent decision, not a silent pass.
 
@@ -511,7 +540,13 @@ public artifacts, project memory, or a cross-session relay queue.
   process, or recovery daemon. Recovered live tasks are marked aborted with a
   host-interruption reason; completed tasks retain their terminal evidence.
 - Use hub `status` and metadata-only `diagnose` before explicit `resume`.
-  Persistence errors mean recovery is not guaranteed.
+  Persistence errors mean recovery is not guaranteed. A checkpoint write failure
+  stops that run's unfinished producers and names the safe error code in their
+  cancellation evidence; completed tasks are retained. New dispatch/resume is
+  refused until pending snapshots can actually be saved. That retry writes
+  snapshots only, never replays workers. Diagnose distinguishes an active failure
+  from a validated save and retains bounded first/latest failure facts for the
+  current host lifetime. Unknown historical errors are not labelled ENOSPC.
 - Resume creates a new run for tasks not marked `done`, once per task, with the
   same time/turn budgets (the budget applies again; it is never raised) and
   revalidated original model/reasoning selection on the same subscription route.

@@ -111,9 +111,12 @@ parent
   would end the same way): Steak Pi names the failure, keeps the model and
   reasoning level, and continues once in smaller steps.
 
-**Models.** Routine workers use MiMo V2.6 Flash on the Xiaomi Token Plan, and
-automatic reviewers use MiMo V2.6 Pro. Text runs fall back only to GPT-6.1 Sol
-on Codex OAuth; image runs have no fallback. GLM 5.3 and the Z.ai plan were
+**Models.** Routine workers default to OpenCode Go DeepSeek V4.1 Flash, with
+isolated, balanced Go accounts. Implicit reviewers prefer Opus 5.5; when Claude
+is provably unavailable before output, text reviews use GPT-6.1 Sol on Codex
+OAuth. Go-only parents resolve Sol through separate Codex account stores,
+without copying credentials or changing the parent environment. Explicit routes
+remain exact, and image reviews never silently downgrade to text-only Sol. GLM 5.3 and the Z.ai plan were
 retired on 2026-10-03, and selecting them is refused. GPT-6.0 Sol was retired on
 2026-10-05: Sol means GPT-6.1 Sol only, and selecting the old model is refused
 with an error that names the replacement. An explicit `model`, `profile` or `harness`

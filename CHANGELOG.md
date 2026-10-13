@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.15 (2026-10-13, local candidate)
+
+- Default routine workers to OpenCode Go DeepSeek V4.1 Flash; balance isolated accounts with sticky resumptions, renewed reservations and bounded cleanup.
+- Use GPT-6.1 Sol on Codex OAuth for automatic text review when Claude is unavailable. Preserve explicit routes and record actual fallback evidence.
+- Let Go-only parents admit Sol reviews through separate Codex stores without copying credentials or changing parent environment.
+- Preserve the installed 0.9.14 checkpoint, queue visibility and Claude owned-path protections.
+
 ## Unreleased
 
 - Rebrand to Pareto Cybernetics: `steak-pi version` reports "(Pareto Cybernetics)" and the

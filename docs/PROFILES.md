@@ -29,11 +29,11 @@ conflicting selectors and unavailable routes fail before launch.
 
 ## Per-parent defaults
 
-Routine workers on every built-in parent profile default to **MiMo V2.6 Flash** on the Xiaomi Token Plan, with **GPT-6.1 Sol on Codex OAuth** as the only automatic text fallback (image runs have no fallback). GLM 5.3, GLM 5.3 Flash and the Z.ai plan were retired on 2026-10-03; GLM or `zai/` selectors are refused. The main app's launch model is unchanged (MiMo V2.6 Pro). Explicitly native-Pi reviewer runs (`harness: "pi"` or an explicit native model/profile) resolve the automatic MiMo V2.6 Pro → GPT-6.1 Sol chain: no expert model is ever selected automatically in the native review chain, and the shipped "expert review chain" label is a legacy native-Pi routing flag, not expert sign-off.
+Routine workers on every built-in parent profile default to canonical **Go DeepSeek V4.1 Flash** (`opencode-go/deepseek-v4.1-flash`), with **GPT-6.1 Sol on Codex OAuth** as the only automatic text fallback (image runs have no fallback). GLM 5.3, GLM 5.3 Flash and the Z.ai plan were retired on 2026-10-03; GLM or `zai/` selectors are refused. The main app's launch model is unchanged (MiMo V2.6 Pro). Explicitly native-Pi reviewer runs (`harness: "pi"` or an explicit native model/profile) resolve the automatic MiMo V2.6 Pro → GPT-6.1 Sol chain: no expert model is ever selected automatically in the native review chain, and the shipped "expert review chain" label is a legacy native-Pi routing flag, not expert sign-off.
 
 All-reviewer waves with no explicit harness/model/profile use the **Opus Pass**:
 `claude-code/claude-opus-5-5`, official Claude Code CLI, `xhigh` effort and
-existing subscription authentication. No silent fallback is allowed. Any
+existing subscription authentication. Only the [bounded automatic review exception](./MODEL-ROUTING.md#automatic-review-exception) may use GPT-6.1 Sol when Claude is proven unavailable; explicit Claude routes remain exact. Any
 other Claude Code wave (`harness: "claude-code"` with worker or scout tasks, or
 `model: "claude-code/claude-sonnet-5-5"`) runs **Sonnet 5.5** at `xhigh`: the
 default Claude worker, nearly Opus-level at far less quota. Select
@@ -51,7 +51,9 @@ through the parent. USAP never grants permission to release. Explicit native Pi
 model/profile selections remain exact, including image-capable routes selected
 with `requireImages: true`. Pi's subscription fallback applies only to eligible
 failures before content or tool activity, never authentication/permission/region
-errors and never to the CLI route.
+errors. The separate automatic CLI review exception is quota/auth-before-output only.
+
+Validated role selectors in `~/.config/ultraterm/routing.json` override parent-profile defaults (explicit model/profile still wins). Automatic image review cannot use text-only Sol.
 
 Native profiles are read from the existing JSON harness manifests under
 `~/.config/ultraterm/harnesses/`. A profile with one explicit

@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { BUILTIN_WORKER_PROFILES, CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_SONNET_ROUTE, assertClaudeCodeImageAdmission, loadWorkerProfiles,
+import { BUILTIN_WORKER_PROFILES, CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_SONNET_ROUTE, assertClaudeCodeImageAdmission, loadWorkerProfiles, loadRoleDefaults,
   resolveClaudeCodeSelection, resolveWorkerSelection, RETIRED_ROUTE, retiredRouteError } from "../src/subagents/model-selection.ts";
 import { DEFAULT_TEXT_WORKER_CHAIN, type ChainOptions } from "../src/model-route-policy.ts";
 import type { DispatchInput } from "../src/subagents/types.ts";
@@ -88,8 +88,8 @@ describe("USAP 1.1 explicit model/profile contract", () => {
   it("keeps automatic native-Pi roles on MiMo→Sol chains without retired routes", () => {
     // Both roles use subscription chains with their own MiMo head, never Z.ai.
     const worker = choose(other, { tasks: [{ label: "leaf", task: "test", role: "worker" }] });
-    expect(worker.model).toBe(mimoFlash);
-    expect(worker.selection).toMatchObject({ source: "chain", chainRoutes: ["xiaomi/mimo-v2.6-flash", "openai-codex/gpt-6.1-sol"] });
+    expect(worker.model).toBe(go);
+    expect(worker.selection).toMatchObject({ source: "chain", chainRoutes: ["opencode-go/deepseek-v4.1-flash", "openai-codex/gpt-6.1-sol"] });
     // Reviewers keep their MiMo V2.6 Pro head; only routine workers moved to Flash.
     const reviewer = choose(other, { tasks: [{ label: "leaf", task: "test", role: "reviewer" }] });
     expect(reviewer.model).toBe(mimoPro);
@@ -104,11 +104,11 @@ describe("USAP 1.1 explicit model/profile contract", () => {
     expect(choose(astra, { profile: "steak-pi/mimo-v2-6-flash", tasks: [{ label: "review", task: "review", role: "reviewer" }] }).model).toBe(mimoFlash);
   });
   it("preserves omitted default routes and configured per-profile overrides", () => {
-    expect(choose(astra).model).toBe(mimoFlash);
+    expect(choose(astra).model).toBe(go);
     expect(choose(astra).selection.source).toBe("chain");
     expect(choose(astra).selection.chainRoutes?.some(route => RETIRED_ROUTE.test(route))).toBe(false);
     expect(choose(astra, { tasks: [{ label: "r", task: "review", role: "reviewer" }] }).model).toBe(mimoPro);
-    expect(choose(sol).model).toBe(mimoFlash);
+    expect(choose(sol).model).toBe(go);
     const profiles = BUILTIN_WORKER_PROFILES.map(profile => profile.model === "openai-codex/gpt-6-astra"
       ? { ...profile, workerDefault: { model: "openai-codex/gpt-6.1-sol" } } : profile);
     const configured = choose(astra, {}, registry(), profiles);
@@ -119,22 +119,22 @@ describe("USAP 1.1 explicit model/profile contract", () => {
   it("routes automatic defaults through the final MiMo→Sol chain with chain provenance", () => {
     // Luna and Astra never enter the automatic worker chain; only Sol is a fallback.
     const result = choose(astra);
-    expect(result.model).toBe(mimoFlash);
-    expect(result.selection).toMatchObject({ provider: "xiaomi", modelId: "mimo-v2.6-flash", source: "chain",
-      chainRoutes: ["xiaomi/mimo-v2.6-flash", "openai-codex/gpt-6.1-sol"] });
+    expect(result.model).toBe(go);
+    expect(result.selection).toMatchObject({ provider: "opencode-go", modelId: "deepseek-v4.1-flash", source: "chain",
+      chainRoutes: ["opencode-go/deepseek-v4.1-flash", "openai-codex/gpt-6.1-sol"] });
     // MiMo unavailable: the Codex OAuth coding subscription route is the only automatic fallback.
     expect(choose(astra, {}, registry([sol])).model).toBe(sol);
     // Subscription-first regression: the reviewed Token Plan step is selected with
     // no paid allowlist grant at all (revoked or absent), never spend-gated.
-    const tokenPlan = registry([astra, sol, mimoFlash]);
-    expect(choose(astra, {}, tokenPlan, BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => false }).model).toBe(mimoFlash);
+    const tokenPlan = registry([astra, sol, go]);
+    expect(choose(astra, {}, tokenPlan, BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => false }).model).toBe(go);
     // A non-plan Xiaomi endpoint (general PAYG) is a different billing target: the
     // chain skips it rather than approving it in, and falls through to Codex OAuth.
     expect(choose(astra, {}, registry([{ ...mimoFlash, baseUrl: "https://api.xiaomimimo.com/v1" } as Model, sol])).model).toBe(sol);
     // Unmapped parents use the same chain through the legacy default path.
-    expect(choose(astra, {}, tokenPlan, [], { approvePaidRoute: () => false }).model).toBe(mimoFlash);
+    expect(choose(astra, {}, tokenPlan, [], { approvePaidRoute: () => false }).model).toBe(go);
     // Go routes are no automatic chain step: with neither subscription step present, fail closed.
-    expect(() => choose(astra, {}, registry([go]), BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => true })).toThrow(/no fallback was selected/);
+    expect(choose(astra, {}, registry([go]), BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => true }).model).toBe(go);
   });
   it("keeps automatic native-Pi reviewer defaults on the routine chain, never another expert", () => {
     const review = choose(astra, { tasks: [{ label: "r", task: "review", role: "reviewer" }] });
@@ -194,7 +194,7 @@ describe("USAP 1.1 explicit model/profile contract", () => {
     expect(added.map((profile) => profile.id)).toEqual(["steak-pi/gpt-6-1-sol", "steak-pi/gpt-6-luna"]);
     for (const profile of added) {
       // Never an automatic worker default: routine workers stay on the chain.
-      expect(profile.workerDefault).toEqual({ profile: "steak-pi/mimo-v2-6-flash" });
+      expect(profile.workerDefault).toEqual({ profile: "steak-pi/opencode-go" });
       expect(DEFAULT_TEXT_WORKER_CHAIN.some((step) => step.id === profile.model.split("/")[1] && step.id !== "gpt-6.1-sol")).toBe(false);
     }
     // Explicit selection is exact, with the profile's high thinking preference.
@@ -208,8 +208,8 @@ describe("USAP 1.1 explicit model/profile contract", () => {
     expect(() => choose(astra, { profile: "steak-pi/gpt-6-sol" }, registry([astra, sol, retired, mimoFlash]))).toThrow(/RetiredModelSelectionError/);
     // A Sol parent keeps workers and reviewers on the routine chain — Sol and
     // Astra are never automatic defaults in any role.
-    const solParent = choose(sol, {}, registry([astra, sol, mimoFlash]));
-    expect(solParent.model).toBe(mimoFlash);
+    const solParent = choose(sol, {}, registry([astra, sol, go, mimoFlash]));
+    expect(solParent.model).toBe(go);
     expect(solParent.selection).toMatchObject({ source: "chain", parentProfile: "steak-pi/gpt-6-1-sol" });
     const solReview = choose(sol, { tasks: [{ label: "r", task: "review", role: "reviewer" }] }, registry([astra, sol, mimoPro, mimoFlash]));
     expect(solReview.model).toBe(mimoPro);
@@ -217,18 +217,18 @@ describe("USAP 1.1 explicit model/profile contract", () => {
   it("requires the authenticated available catalog before operator selection includes a route", () => {
     const approved = { approvePaidRoute: () => true };
     // Approved Token Plan route, absent from the authenticated available catalog.
-    const hidden = registry([astra, mimoFlash]);
+    const hidden = registry([astra, go]);
     hidden.getAvailable.mockReturnValue([astra]);
     expect(() => choose(astra, {}, hidden, BUILTIN_WORKER_PROFILES, approved)).toThrow(/no fallback was selected/);
-    const unauthenticated = registry([astra, mimoFlash]);
-    unauthenticated.hasConfiguredAuth.mockImplementation((model: Model) => model.provider !== "xiaomi");
+    const unauthenticated = registry([astra, go]);
+    unauthenticated.hasConfiguredAuth.mockImplementation((model: Model) => model.provider !== "opencode-go");
     expect(() => choose(astra, {}, unauthenticated, BUILTIN_WORKER_PROFILES, approved)).toThrow(/no fallback was selected/);
     // Authenticated and available subscription route: selected with NO paid grant.
-    expect(choose(astra, {}, registry([astra, mimoFlash]), BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => false }).selection)
-      .toMatchObject({ source: "chain", provider: "xiaomi", modelId: "mimo-v2.6-flash" });
+    expect(choose(astra, {}, registry([astra, go]), BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => false }).selection)
+      .toMatchObject({ source: "chain", provider: "opencode-go", modelId: "deepseek-v4.1-flash" });
     // A present/absent grant is equally irrelevant: the Token Plan step is prepaid.
-    expect(choose(astra, {}, registry([astra, mimoFlash]), BUILTIN_WORKER_PROFILES, approved).selection)
-      .toMatchObject({ source: "chain", provider: "xiaomi", modelId: "mimo-v2.6-flash" });
+    expect(choose(astra, {}, registry([astra, go]), BUILTIN_WORKER_PROFILES, approved).selection)
+      .toMatchObject({ source: "chain", provider: "opencode-go", modelId: "deepseek-v4.1-flash" });
   });
   it("routes automatic multimodal defaults through MiMo Flash only, with no fallback", () => {
     const tokenPlan = registry([astra, sol, mimoFlash]);
@@ -254,7 +254,7 @@ describe("USAP 1.1 explicit model/profile contract", () => {
   it("does not inherit a stale launch profile after /model changes", () => {
     const r = registry();
     const result = resolveWorkerSelection(sol, "high", input(), r as never, BUILTIN_WORKER_PROFILES, "gpt-6-astra");
-    expect(result.model).toBe(mimoFlash);
+    expect(result.model).toBe(go);
   });
   it.each([
     { model: "openai-codex/gpt-6.1-sol", profile: "steak-pi/mimo-v2-6-flash" },
@@ -347,5 +347,27 @@ describe("P-0579 claude-code staged native Read-image admission (synthetic)", ()
     const text = { ...sol, input: ["text"] } as Model;
     expect(() => choose(astra, { model: "openai-codex/gpt-6.1-sol", requireImages: true }, registry([text]))).toThrow(/image input/);
     expect(() => choose(sol, { requireImages: true }, registry([sol]))).toThrow();
+  });
+});
+
+describe("operator role routing precedence", () => {
+  it("prefers role metadata over stale profile defaults but never explicit selection", () => {
+    const defaults = { workerDefault: { model: "opencode-go/deepseek-v4.1-flash" }, reviewerDefault: { profile: "steak-pi/gpt-6-1-sol" } };
+    const resolve = (extra: Partial<DispatchInput>) => resolveWorkerSelection(astra, "high", input(extra), registry() as never, BUILTIN_WORKER_PROFILES, "", {}, defaults);
+    expect(resolve({}).model).toBe(go);
+    expect(resolve({ model: "openai-codex/gpt-6-astra" }).selection.source).toBe("override");
+    expect(resolve({ model: "openai-codex/gpt-6-astra" }).model).toBe(astra);
+    expect(resolve({ tasks: [{ label: "review", task: "review", role: "reviewer" }] }).model).toBe(sol);
+    expect(() => resolve({ requireImages: true })).toThrow(/image/);
+  });
+  it("loads only validated selectors, preserves annotations and fails malformed defaults", () => {
+    const dir = mkdtempSync(join(tmpdir(), "usap-role-defaults-"));
+    try {
+      const file = join(dir, "routing.json");
+      writeFileSync(file, JSON.stringify({ workerDefault: { profile: "steak-pi/opencode-go" }, note: "operator annotation" }));
+      expect(loadRoleDefaults(file)).toEqual({ workerDefault: { profile: "steak-pi/opencode-go" } });
+      writeFileSync(file, JSON.stringify({ workerDefault: { model: "one/two", profile: "one/three" } }));
+      expect(() => loadRoleDefaults(file)).toThrow(/conflict/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

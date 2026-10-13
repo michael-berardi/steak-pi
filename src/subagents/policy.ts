@@ -1,4 +1,5 @@
 import { assertActiveModelSelector } from "../retired-model-selection.ts";
+import { claudeOwnedPathRules } from "./claude-owned-paths.ts";
 import { lstatSync, realpathSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
@@ -277,7 +278,18 @@ export function normalizeDispatch(
     }
 
     const ownedPaths = suppliedPaths.map((ownedPath, ownedIndex) => {
-      const normalized = pathUnderCwd(root, ownedPath, `${field}.ownedPaths[${ownedIndex}]`);
+      const ownedField = `${field}.ownedPaths[${ownedIndex}]`;
+      const normalized = pathUnderCwd(root, ownedPath, ownedField);
+      if (harness === "claude-code") {
+        // Validate the entire wave before any checkpoint, registration or worker
+        // launch. Use the projection even if the final path does not yet exist.
+        try {
+          claudeOwnedPathRules([normalized.lexical], () => normalized.physical);
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : "claude-code owned path cannot be enforced exactly";
+          fail(`${ownedField} (task ${JSON.stringify(label.slice(0, 40))}): ${reason}`);
+        }
+      }
       for (const existing of ownership) {
         const lexicalOverlap =
           isWithin(existing.lexical, normalized.lexical) || isWithin(normalized.lexical, existing.lexical);

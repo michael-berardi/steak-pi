@@ -7,6 +7,7 @@ import {
   MAX_WORKER_TURNS,
   MIN_TIMEOUT_MS,
   PARTIAL_SUMMARY_LIMIT,
+  REVIEW_LAUNCH_TIMEOUT_MS,
   TURN_BUDGET_ERROR,
   addUsage,
   emptyUsage,
@@ -23,7 +24,7 @@ import {
 } from "./types.ts";
 import { abortError, sessionScheduler, type SessionScheduler } from "./scheduler.ts";
 import { MIN_RESUME_BUDGET_MS, transientFailure } from "./auto-resume.ts";
-import { defaultMachineSlots, type MachineSlots, type NoopSlots } from "./machine-slots.ts";
+import { defaultMachineSlots, type MachineCapacitySnapshot, type MachineSlots, type NoopSlots } from "./machine-slots.ts";
 
 const TERMINAL_TASK_STATES = new Set<TaskState>([
   "done",
@@ -77,6 +78,7 @@ interface TaskRuntime {
   accounted: boolean;
   stopState?: Extract<TerminalTaskState, "aborted" | "timed_out">;
   stopMessage?: string;
+  launchDeadline?: ReturnType<typeof setTimeout>;
 }
 
 interface RunRuntime {
@@ -91,14 +93,15 @@ interface RunRuntime {
   deadlineAt: number;
 }
 
-/**
- * `NoopSlots.acquire` takes no parameters, so the union of the two limiter
- * implementations cannot be invoked with an explicit deadline directly.
- */
+/** Shared acquisition contract, including test limiters injected by the host. */
 type MachineSlotAcquire = (
   provider: string,
   signal?: AbortSignal,
   timeoutMs?: number,
+  options?: {
+    owner: { runId: string; taskId: string; sessionId?: string };
+    onWait: (snapshot: MachineCapacitySnapshot) => void;
+  },
 ) => Promise<() => void>;
 
 function cloneUsage(usage: UsageTotals): UsageTotals {
@@ -124,6 +127,8 @@ function cloneTask(task: TaskRecord): TaskRecord {
     lastStep: workerJournal(task).lastStep,
     usage: cloneUsage(task.usage),
     ...(task.autoResumes ? { autoResumes: [...task.autoResumes] } : {}),
+    ...(task.launchQueue ? { launchQueue: structuredClone(task.launchQueue) } : {}),
+    ...(task.lastLaunchQueue ? { lastLaunchQueue: structuredClone(task.lastLaunchQueue) } : {}),
   };
 }
 
@@ -280,6 +285,25 @@ export class SubagentCoordinator {
     }
 
     this.runs.set(record.id, runtime);
+    const provider = record.model.includes("/") ? record.model.split("/")[0] : "default";
+    for (const task of record.tasks) {
+      // The launch bound includes run-width, session and machine waits. It
+      // never replenishes the absolute run budget and never applies to inference.
+      const since = this.now();
+      task.launchQueue = {
+        tier: "session", provider, reason: "Waiting for run/session launch capacity",
+        since, deadlineAt: Math.min(runtime.deadlineAt,
+          task.role === "reviewer" ? since + REVIEW_LAUNCH_TIMEOUT_MS : runtime.deadlineAt),
+      };
+      delete task.lastLaunchQueue;
+      if (task.role === "reviewer" && task.launchQueue.deadlineAt < runtime.deadlineAt) {
+        runtime.tasks.get(task.id)!.launchDeadline = setTimeout(() => {
+          if (!task.launchQueue || isTerminal(task.state)) return;
+          this.stopTask(runtime, task, "timed_out", `Reviewer launch queue budget exceeded (${REVIEW_LAUNCH_TIMEOUT_MS}ms); ${task.launchQueue.reason}`);
+          this.pump(runtime);
+        }, Math.max(0, task.launchQueue.deadlineAt - this.now()));
+      }
+    }
     this.observe(runtime);
     runtime.deadline = setTimeout(() => this.expire(runtime), record.timeoutMs);
     this.pump(runtime);
@@ -370,14 +394,14 @@ export class SubagentCoordinator {
   }
 
   /** Cancel one task, or the entire run when taskId is omitted. */
-  cancel(runId: string, taskId?: string): boolean {
+  cancel(runId: string, taskId?: string, reason?: string): boolean {
     const runtime = this.runs.get(runId);
     if (!runtime) return false;
 
     if (taskId !== undefined) {
       const task = runtime.record.tasks.find((candidate) => candidate.id === taskId);
       if (!task || isTerminal(task.state)) return false;
-      this.stopTask(runtime, task, "aborted", "Task cancelled");
+      this.stopTask(runtime, task, "aborted", reason ?? "Task cancelled");
       this.pump(runtime);
       return true;
     }
@@ -385,7 +409,7 @@ export class SubagentCoordinator {
     if (runtime.record.state !== "running") return false;
     runtime.accepting = false;
     for (const task of runtime.record.tasks) {
-      if (!isTerminal(task.state)) this.stopTask(runtime, task, "aborted", "Run cancelled");
+      if (!isTerminal(task.state)) this.stopTask(runtime, task, "aborted", reason ?? "Run cancelled");
     }
     return true;
   }
@@ -448,15 +472,14 @@ export class SubagentCoordinator {
         }
 
         task.state = "starting";
-        task.startedAt = this.now();
         this.observe(runtime);
         if (taskRuntime.controller.signal.aborted) throw abortError(taskRuntime.controller.signal);
 
         // Machine tier: one launch slot per worker across every local session,
         // bucketed by provider. Released when the task settles or aborts. The
-        // wait is bounded by this run's remaining budget only: the implicit
-        // ten-minute slot default is never a floor, so a dispatch queued behind
-        // machine capacity cannot outlive the run that requested it.
+        // wait respects both the absolute run budget and the review launch
+        // deadline. Poll snapshots name the limiting bucket and its holders
+        // before any worker starts, not only after cancellation.
         const remainingRunMs = this.remainingRunBudgetMs(runtime);
         if (remainingRunMs <= 0) {
           // The run deadline has passed but its timer has not fired yet.
@@ -468,12 +491,43 @@ export class SubagentCoordinator {
         const releaseMachine = await (this.machineSlots.acquire as MachineSlotAcquire)(
           provider,
           taskRuntime.controller.signal,
-          remainingRunMs,
+          Math.min(remainingRunMs, Math.max(0, (task.launchQueue?.deadlineAt ?? runtime.deadlineAt) - this.now())),
+          {
+            owner: { runId: runtime.record.id, taskId: task.id, sessionId: runtime.record.ownerSessionId },
+            onWait: (capacity) => {
+              if (taskRuntime.controller.signal.aborted || isTerminal(task.state) || !task.launchQueue) return;
+              const buckets = [
+                ...(capacity.providerBucket.held >= capacity.providerBucket.cap ? [`provider ${provider} ${capacity.providerBucket.held}/${capacity.providerBucket.cap}`] : []),
+                ...(capacity.globalBucket.held >= capacity.globalBucket.cap ? [`global ${capacity.globalBucket.held}/${capacity.globalBucket.cap}`] : []),
+              ];
+              const reason = `Waiting for machine launch slots: ${buckets.join(", ") || "lease/claim contention"}`;
+              // Persist transitions, not identical polling snapshots. Elapsed
+              // time is computed by status/diagnose without a disk heartbeat.
+              if (task.launchQueue.tier === "machine" && task.launchQueue.reason === reason
+                && JSON.stringify(task.launchQueue.capacity) === JSON.stringify(capacity)) return;
+              task.launchQueue = { ...task.launchQueue, tier: "machine", capacity, reason };
+              this.observe(runtime);
+            },
+          },
         );
         try {
           if (taskRuntime.controller.signal.aborted || isTerminal(task.state)) {
             throw abortError(taskRuntime.controller.signal);
           }
+          // A timer may be delayed behind synchronous acquisition. Recheck
+          // the exact deadline before calling the runner to avoid a late launch.
+          if (this.remainingRunBudgetMs(runtime) <= 0) {
+            this.stopTask(runtime, task, "timed_out", "Run deadline exceeded");
+            throw abortError(taskRuntime.controller.signal);
+          }
+          if (task.role === "reviewer" && task.launchQueue && this.now() >= task.launchQueue.deadlineAt) {
+            this.stopTask(runtime, task, "timed_out", `Reviewer launch queue budget exceeded (${REVIEW_LAUNCH_TIMEOUT_MS}ms); ${task.launchQueue.reason}`);
+            throw abortError(taskRuntime.controller.signal);
+          }
+          if (taskRuntime.launchDeadline) clearTimeout(taskRuntime.launchDeadline);
+          taskRuntime.launchDeadline = undefined;
+          delete task.launchQueue;
+          task.startedAt = this.now();
           task.state = "running";
           this.observe(runtime);
           if (taskRuntime.controller.signal.aborted) throw abortError(taskRuntime.controller.signal);
@@ -552,10 +606,19 @@ export class SubagentCoordinator {
       }, taskRuntime.controller.signal, provider);
     } catch (error) {
       if (isTerminal(task.state)) return;
+      // Acquisition may reject at the absolute deadline before the run timer
+      // gets its turn. Classify that pre-launch expiry consistently for all roles.
+      if (!taskRuntime.stopState && task.launchQueue && this.remainingRunBudgetMs(runtime) <= 0) {
+        this.stopTask(runtime, task, "timed_out", "Run deadline exceeded");
+      }
+      if (!taskRuntime.stopState && task.role === "reviewer" && task.launchQueue
+        && this.now() >= task.launchQueue.deadlineAt && task.launchQueue.deadlineAt < runtime.deadlineAt) {
+        this.stopTask(runtime, task, "timed_out", `Reviewer launch queue budget exceeded (${REVIEW_LAUNCH_TIMEOUT_MS}ms); ${task.launchQueue.reason}`);
+      }
       if (taskRuntime.stopState || taskRuntime.controller.signal.aborted) {
         this.finishTask(runtime, task, taskRuntime.stopState ?? "aborted", {
           output: task.output,
-          error: errorMessage(error),
+          error: taskRuntime.stopMessage ?? errorMessage(error),
           turns: task.turns,
           usage: task.usage,
         });
@@ -640,6 +703,11 @@ export class SubagentCoordinator {
 
     const safeUsage = sanitizeUsage(result.usage);
     task.state = state;
+    if (task.launchQueue) task.lastLaunchQueue = structuredClone(task.launchQueue);
+    delete task.launchQueue;
+    const launchTimer = runtime.tasks.get(task.id)!.launchDeadline;
+    if (launchTimer) clearTimeout(launchTimer);
+    runtime.tasks.get(task.id)!.launchDeadline = undefined;
     task.output = result.output.startsWith("FINAL REPORT\n")
       ? result.output
       : finalWorkerReport(task, state, result.output, result.error);

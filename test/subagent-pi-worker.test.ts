@@ -1,10 +1,12 @@
+import { homedir } from "node:os";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
   AgentSessionEvent,
   CreateAgentSessionOptions,
+  ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -28,6 +30,7 @@ import {
   DEFAULT_MULTIMODAL_WORKER_CHAIN,
   DEFAULT_TEXT_WORKER_CHAIN,
 } from "../src/model-route-policy.ts";
+import { isolatedCodexAgentDir, isolatedAgentPaths } from "../src/subagents/provider-accounts.ts";
 import { RelayBroker } from "../src/subagents/relay.ts";
 import { TURN_BUDGET_NOTICE_REMAINING, turnBudgetNotice } from "../src/subagents/turn-budget.ts";
 import {
@@ -846,7 +849,7 @@ const chainStep = (provider: string, id: string) => ({ provider, id } as never);
 
 describe("worker automatic-chain selection gate", () => {
   it("installs the pre-output hop only for an automatic chain selection", () => {
-    const hop = workerChainFallback({ source: "chain", images: false }, chainStep("xiaomi", "mimo-v2.6-flash"));
+    const hop = workerChainFallback({ source: "chain", images: false }, chainStep("opencode-go", "deepseek-v4.1-flash"));
     expect(hop).toMatchObject({ chain: DEFAULT_TEXT_WORKER_CHAIN, requireImages: false });
     expect(hop!.approvePaidRoute).toBe(AUTOMATIC_CHAIN_APPROVAL);
     expect(workerChainFallback({ source: "chain", images: true }, chainStep("xiaomi", "mimo-v2.6-flash")))
@@ -879,5 +882,240 @@ describe("worker automatic-chain selection gate", () => {
     expect(progress.map((update) => update.currentTool))
       .toEqual(["model-fallback:xiaomi/mimo-v2.6-flash", "model-fallback:zai/glm-5.3-flash"]);
     expect(progress.every((update) => update.state === "running")).toBe(true);
+  });
+});
+
+describe("Go account-isolated worker lifecycle", () => {
+  const model = { provider: "opencode-go", id: "deepseek-v4.1-flash", baseUrl: "https://opencode.ai/zen/go/v1" } as never;
+  const agentDir = (id: string) => join(homedir(), ".ultraterm/provider-accounts/opencode-go", id, "agent");
+  it("balances concurrent children into isolated SDK dirs and releases both leases", async () => {
+    const records = [task(), task("run-test", { id: "run-test-task-2" })];
+    let next = 0;
+    const command = vi.fn(async (args: string[]) => {
+      if (args[0] !== "select") return { ok: true };
+      const id = next++ === 0 ? "primary" : "b";
+      return { ok: true, account: { id, agentDir: agentDir(id) }, lease: `lease-${id}` };
+    });
+    const captured: CreateAgentSessionOptions[] = [];
+    const runner = createPiWorkerRunner({ relay: setupBroker(records.map(record => record.id)), accountCommand: command,
+      resolveRuntime: () => ({ model, thinkingLevel: "off" }), sessionFactory: async options => {
+        captured.push(options);
+        const fake = new FakeSession();
+        fake.onPrompt = async () => { fake.emit({ type: "message_end", message: assistant("done") } as AgentSessionEvent); };
+        return { session: fake };
+      } });
+    const original = process.env.PI_CODING_AGENT_DIR;
+    const results = await Promise.all(records.map(record => runner({ run: run("/tmp", record), task: record, signal: new AbortController().signal, onProgress: vi.fn() })));
+    expect(results.map(result => result.state)).toEqual(["done", "done"]);
+    expect(captured.map(options => options.agentDir).sort()).toEqual([agentDir("primary"), agentDir("b")].sort());
+    expect(command.mock.calls.filter(([args]) => args[0] === "release")).toHaveLength(2);
+    expect(records.map(record => record.providerAccount?.label)).toEqual(["Go 1", "Go 2"]);
+    expect(process.env.PI_CODING_AGENT_DIR).toBe(original);
+  });
+  it.each(["factory-failure", "late-abort"])("releases after %s without leaking an initializing session", async stage => {
+    const record = task(); const controller = new AbortController();
+    let enter!: () => void, finish!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    const fake = new FakeSession();
+    const command = vi.fn(async (args: string[]) => args[0] === "select" ? { ok: true, account: { id: "b", agentDir: agentDir("b") }, lease: "lease-b" } : { ok: true });
+    const runner = createPiWorkerRunner({ relay: setupBroker(), accountCommand: command, resolveRuntime: () => ({ model, thinkingLevel: "off" }), sessionFactory: async () => {
+      if (stage === "factory-failure") throw new Error("fixture failure");
+      enter(); await gate; return { session: fake };
+    } });
+    const pending = runner({ run: run("/tmp", record), task: record, signal: controller.signal, onProgress: vi.fn() });
+    if (stage === "late-abort") {
+      await entered; controller.abort();
+      const result = await pending;
+      expect(command.mock.calls.filter(([args]) => args[0] === "release")).toHaveLength(0);
+      finish(); await result.cleanup;
+      expect(fake.disposed).toBe(true);
+      expect(result.state).toBe("aborted");
+    } else expect((await pending).state).toBe("failed");
+    expect(command).toHaveBeenLastCalledWith(["release", "--lease", "lease-b"]);
+  });
+});
+
+describe("Go account lease renewal in the native worker", () => {
+  const model = { provider: "opencode-go", id: "deepseek-v4.1-flash", baseUrl: "https://opencode.ai/zen/go/v1" } as never;
+  const goAgentDir = (id: string) => join(homedir(), ".ultraterm/provider-accounts/opencode-go", id, "agent");
+  const wait = (ms: number) => new Promise((resolve) => { setTimeout(resolve, ms); });
+  const until = async (predicate: () => boolean, deadlineMs = 3_000): Promise<void> => {
+    const deadline = Date.now() + deadlineMs;
+    while (!predicate() && Date.now() < deadline) await wait(5);
+  };
+  const calls = (command: { mock: { calls: unknown[][] } }, verb: string) =>
+    command.mock.calls.map(([args]) => args as string[]).filter((args) => args[0] === verb);
+  const goCommand = (onRenew: () => any) => vi.fn(async (args: string[]) => {
+    if (args[0] === "select") return { ok: true, account: { id: "b", agentDir: goAgentDir("b") }, lease: "lease-b" };
+    if (args[0] === "renew") return onRenew();
+    return { ok: true };
+  });
+  const runnerFor = (command: ReturnType<typeof goCommand>, fake: FakeSession, leaseRenewIntervalMs: number) =>
+    createPiWorkerRunner({
+      relay: setupBroker(), accountCommand: command, leaseRenewIntervalMs,
+      resolveRuntime: () => ({ model, thinkingLevel: "off" }),
+      sessionFactory: async () => ({ session: fake }),
+    });
+
+  it("keeps a long ownership renewed every cadence and releases exactly once at the end", async () => {
+    let renews = 0;
+    const command = goCommand(() => { renews += 1; return { ok: true, renewed: true, leaseExpiresAt: 1 }; });
+    const record = task();
+    const fake = new FakeSession();
+    const runner = runnerFor(command, fake, 5);
+    fake.onPrompt = async () => {
+      // A long leaf: the child outlives the one-hour reservation TTL many times over.
+      await until(() => renews >= 3);
+      fake.emit({ type: "message_end", message: assistant("done") } as AgentSessionEvent);
+    };
+    const result = await runner({ run: run("/tmp", record), task: record, signal: new AbortController().signal, onProgress: vi.fn() });
+    expect(result.state).toBe("done");
+    expect(renews).toBeGreaterThanOrEqual(3);
+    expect(calls(command, "renew").every((args) => args.join(" ") === "renew --lease lease-b --ttl 3600")).toBe(true);
+    expect(calls(command, "release")).toEqual([["release", "--lease", "lease-b"]]);
+    expect(command.mock.calls.at(-1)![0]).toEqual(["release", "--lease", "lease-b"]);
+    const settled = command.mock.calls.length;
+    await wait(40);
+    expect(command.mock.calls.length).toBe(settled); // the timer stopped before the release
+    expect(record.providerAccount?.lease).toBe("lease-b");
+  });
+
+  it("aborts and fails closed with a named reason once the lease is gone", async () => {
+    const command = goCommand(() => ({ ok: true, renewed: false }));
+    const record = task();
+    let finish!: () => void;
+    const fake = new FakeSession();
+    fake.onPrompt = () => new Promise<void>((resolve) => { finish = resolve; });
+    const runner = runnerFor(command, fake, 5);
+    const result = await runner({ run: run("/tmp", record), task: record, signal: new AbortController().signal, onProgress: vi.fn() });
+    expect(result.state).toBe("failed");
+    expect(result.error).toMatch(/Go account lease renewal failed \(lease-lost\)/);
+    expect(fake.abortCalls).toBeGreaterThanOrEqual(1);
+    expect(calls(command, "renew")).toHaveLength(1); // fail closed, no renewal retry storm
+    expect(command.mock.calls.at(-1)![0]).toEqual(["release", "--lease", "lease-b"]);
+    finish();
+    await flush();
+  });
+
+  it("cancellation releases once, disposes the session, and never renews after release", async () => {
+    let renews = 0;
+    const command = goCommand(() => { renews += 1; return { ok: true, renewed: true, leaseExpiresAt: 1 }; });
+    const record = task();
+    const controller = new AbortController();
+    const fake = new FakeSession();
+    fake.onPrompt = async () => { await until(() => renews >= 1); controller.abort(); };
+    const runner = runnerFor(command, fake, 5);
+    const result = await runner({ run: run("/tmp", record), task: record, signal: controller.signal, onProgress: vi.fn() });
+    expect(result.state).toBe("aborted");
+    expect(renews).toBeGreaterThanOrEqual(1);
+    expect(fake.disposed).toBe(true);
+    expect(calls(command, "release")).toHaveLength(1);
+    expect(command.mock.calls.at(-1)![0]).toEqual(["release", "--lease", "lease-b"]);
+    const settled = command.mock.calls.length;
+    await wait(40);
+    expect(command.mock.calls.length).toBe(settled);
+  });
+
+  it("rejects a renewal cadence that cannot keep the reservation TTL alive", () => {
+    expect(() => createPiWorkerRunner({ relay: setupBroker(), leaseRenewIntervalMs: 3_600_001, resolveRuntime: () => ({ model, thinkingLevel: "off" }) }))
+      .toThrow(/leaseRenewIntervalMs/);
+    expect(() => createPiWorkerRunner({ relay: setupBroker(), leaseRenewIntervalMs: 0, resolveRuntime: () => ({ model, thinkingLevel: "off" }) }))
+      .toThrow(/leaseRenewIntervalMs/);
+  });
+});
+
+
+describe("sticky Go continuation and pre-prompt lease failure", () => {
+  const model = { provider: "opencode-go", id: "deepseek-v4.1-flash", baseUrl: "https://opencode.ai/zen/go/v1" } as never;
+  const agentDir = join(homedir(), ".ultraterm/provider-accounts/opencode-go/b/agent");
+  it("pins prior task account on resume rather than remapping the new run", async () => {
+    await mkdir(join(process.cwd(), ".leaf-check"), { recursive: true });
+    const root = await mkdtemp(join(process.cwd(), ".leaf-check", "go-resume-"));
+    try {
+      const sessionFile = join(root, "prior.jsonl");
+      await writeFile(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "prior", timestamp: new Date().toISOString(), cwd: root })}\n`);
+      const record = task("run-test", { sessionFile, providerAccount: { provider: "opencode-go", id: "b", label: "Go 2", lease: "old-lease" } });
+      const command = vi.fn(async (args: string[]) => args[0] === "select" ? { ok: true, account: { id: "b", agentDir }, lease: "new-lease" } : { ok: true });
+      const fake = new FakeSession();
+      const runner = createPiWorkerRunner({ relay: setupBroker(), accountCommand: command,
+        resolveRuntime: () => ({ model, thinkingLevel: "off" }), sessionFactory: async () => ({ session: fake }) });
+      await runner({ run: run(root, record), task: record, signal: new AbortController().signal, onProgress: vi.fn() });
+      expect(command.mock.calls[0][0]).toContain("--account");
+      expect(command.mock.calls[0][0].at(-1)).toBe("b");
+      expect(record.providerAccount?.id).toBe("b");
+      expect(command).toHaveBeenLastCalledWith(["release", "--lease", "new-lease"]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it("never starts inference when renewal fails during slow session initialization", async () => {
+    const record = task();
+    const command = vi.fn(async (args: string[]) => args[0] === "select" ? { ok: true, account: { id: "b", agentDir }, lease: "lease-b" }
+      : args[0] === "renew" ? { ok: true, renewed: false } : { ok: true });
+    const fake = new FakeSession();
+    const prompt = vi.spyOn(fake, "prompt");
+    const runner = createPiWorkerRunner({ relay: setupBroker(), accountCommand: command, leaseRenewIntervalMs: 5,
+      resolveRuntime: () => ({ model, thinkingLevel: "off" }), sessionFactory: async () => {
+        await new Promise(resolve => setTimeout(resolve, 30)); return { session: fake };
+      } });
+    const result = await runner({ run: run("/tmp", record), task: record, signal: new AbortController().signal, onProgress: vi.fn() });
+    expect(result.state).toBe("failed");
+    expect(result.error).toMatch(/lease-lost/);
+    expect(prompt).not.toHaveBeenCalled();
+    expect(fake.disposed).toBe(true);
+    expect(command).toHaveBeenLastCalledWith(["release", "--lease", "lease-b"]);
+  });
+});
+
+
+describe("Sol account-isolated SDK lifecycle", () => {
+  const model = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text"] } as any;
+  const fixtureRuntime = () => ({ isUsingOAuth: () => true, hasConfiguredAuth: () => true,
+    getModels: () => [model], getModel: () => model, getProvider: () => undefined, getRegisteredNativeProvider: () => undefined } as unknown as ModelRuntime);
+  it("reserves both accounts concurrently and supplies the reserved agent paths/runtime without environment races", async () => {
+    const environment = { ...process.env };
+    const records = [task(), task("run-test", { id: "run-test-task-2" })];
+    let next = 0;
+    const command = vi.fn(async (args: string[]) => {
+      if (args[0] !== "select") return { ok: true };
+      const id = next++ === 0 ? "primary" : "fallback";
+      return { ok: true, account: { id, agentDir: isolatedCodexAgentDir(id) }, lease: `sol-${id}` };
+    });
+    const createdRuntimes: ModelRuntime[] = [];
+    const createRuntime = vi.fn(async (_options: any) => { const runtime = fixtureRuntime(); createdRuntimes.push(runtime); return runtime; });
+    const captured: CreateAgentSessionOptions[] = [];
+    const runner = createPiWorkerRunner({ relay: setupBroker(records.map(record => record.id)), accountCommand: command,
+      resolveRuntime: () => ({ model, thinkingLevel: "high" }), createModelRuntime: createRuntime,
+      sessionFactory: async options => {
+        captured.push(options); const fake = new FakeSession();
+        fake.onPrompt = async () => fake.emit({ type: "message_end", message: assistant("Sol review") } as AgentSessionEvent);
+        return { session: fake };
+      } });
+    const results = await Promise.all(records.map(record => runner({ run: run("/tmp", record), task: record, signal: new AbortController().signal, onProgress: vi.fn() })));
+    expect(results.map(result => result.state)).toEqual(["done", "done"]);
+    expect(records.map(record => record.providerAccount?.label)).toEqual(["GPT1", "GPT2"]);
+    expect(captured.map(options => options.agentDir).sort()).toEqual([isolatedCodexAgentDir("primary"), isolatedCodexAgentDir("fallback")].sort());
+    expect(captured.map(options => options.modelRuntime)).toEqual(createdRuntimes);
+    for (const id of ["primary", "fallback"] as const) {
+      expect(createRuntime.mock.calls.some(([options]) => options.authPath === isolatedAgentPaths(isolatedCodexAgentDir(id)).authPath && options.modelsPath === isolatedAgentPaths(isolatedCodexAgentDir(id)).modelsPath)).toBe(true);
+      expect(command).toHaveBeenCalledWith(["release", "--lease", `sol-${id}`]);
+    }
+    expect(command.mock.calls.filter(([args]) => args[0] === "bind")).toHaveLength(2);
+    expect(process.env).toEqual(environment);
+  });
+  it.each(["cancel", "factory-failure", "oauth-unconfigured"])("releases the actual Codex lease on %s", async stage => {
+    const record = task(); const controller = new AbortController(); const fake = new FakeSession();
+    const command = vi.fn(async (args: string[]) => args[0] === "select" ? { ok: true, account: { id: "fallback", agentDir: isolatedCodexAgentDir("fallback") }, lease: "sol-fallback" } : { ok: true });
+    const runner = createPiWorkerRunner({ relay: setupBroker(), accountCommand: command,
+      resolveRuntime: () => ({ model, thinkingLevel: "high" }), createModelRuntime: async () => {
+        const runtime = fixtureRuntime(); if (stage === "oauth-unconfigured") runtime.hasConfiguredAuth = () => false; return runtime;
+      }, sessionFactory: async () => {
+        if (stage === "factory-failure") throw new Error("fixture initialization failure");
+        fake.onPrompt = async () => { controller.abort(); }; return { session: fake };
+      } });
+    const result = await runner({ run: run("/tmp", record), task: record, signal: controller.signal, onProgress: vi.fn() });
+    expect(result.state).toBe(stage === "cancel" ? "aborted" : "failed");
+    expect(record.providerAccount?.id).toBe("fallback");
+    expect(command).toHaveBeenLastCalledWith(["release", "--lease", "sol-fallback"]);
+    expect(command.mock.calls.filter(([args]) => args[0] === "release")).toHaveLength(1);
   });
 });

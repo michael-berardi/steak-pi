@@ -93,7 +93,7 @@ async function fixture() {
     return { runtime, transitions, get current() { return captures.at(-1)!; }, captures };
   }
   async function dispatch(capture: Capture, goal: string) {
-    const result = await invoke(capture, "dispatch", { goal, background: true, timeoutMs: 10000, tasks: [{ label: goal, task: "Return deterministic local evidence." }] });
+    const result = await invoke(capture, "dispatch", { goal, model: `${model.provider}/${model.id}`, background: true, timeoutMs: 10000, tasks: [{ label: goal, task: "Return deterministic local evidence." }] });
     const run = (result.details as { run: RunView }).run;
     await vi.waitFor(() => expect(workers.has(run.runId)).toBe(true), { timeout: 2000 });
     return run;
