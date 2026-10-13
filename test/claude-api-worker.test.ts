@@ -244,7 +244,7 @@ describe("API runner", () => {
   it("tells an API-route worker that bare mode may omit Grep and Glob, and leaves the subscription prompt unchanged", () => {
     const api = buildClaudeWorkerPrompt(run(), task());
     const sub = buildClaudeWorkerPrompt(run("claude-code/claude-sonnet-5-5"), task());
-    expect(api).toContain("minimal bare mode: Grep and Glob may not be provided");
+    expect(api).toContain("minimal bare mode: Grep, Glob, Write and NotebookEdit may not be provided");
     expect(sub).not.toContain("bare mode");
     expect(api.replace(/\nThis session runs in the CLI's minimal bare mode[^\n]*/, "")).toBe(sub);
     for (const canary of [CANARY_KEY, CANARY_WORKSPACE, "apiKeyHelper", "--settings", "ANTHROPIC"]) expect(api).not.toContain(canary);
@@ -278,6 +278,22 @@ describe("admission at launch (fail closed, no fallback)", () => {
     expect(calls[0].args).not.toContain("--settings");
     expect(calls[0].args).not.toContain("--max-budget-usd");
     expect(subscription.apiReceipt).toBeUndefined();
+  });
+
+  it("a role outside the approval scope never launches, and an in-scope leaf records the approval provenance", async () => {
+    const f = fresh();
+    f.writeConfig({ roles: ["reviewer"] });
+    const { spawn, calls } = fakeSpawn((child) => ok(child, "verified"));
+    const runner = createClaudeWorkerRunner(options(f, spawn));
+    const refused = await runner(ctx(run(), task({ role: "worker" })));
+    expect(refused.state).toBe("failed");
+    expect(refused.error).toMatch(/ClaudeApiAdmissionError\[role-not-approved\]/);
+    expect(refused.error).toMatch(/no subscription, Sol or other fallback was selected/);
+    expect(calls).toHaveLength(0);
+    const verified = await runner(ctx(run(), task({ role: "reviewer" })));
+    expect(verified.state).toBe("done");
+    expect(verified.apiReceipt?.approval).toMatchObject({ approvedBy: "operator", source: "phase-A brief", task: "sonnet-usap-api-test", roles: ["reviewer"] });
+    expect(calls).toHaveLength(1);
   });
 
   it("expiry and revocation between dispatch and launch stop the launch", async () => {

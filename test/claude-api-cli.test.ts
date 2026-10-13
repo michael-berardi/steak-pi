@@ -109,6 +109,8 @@ describe("runClaudeApiWave (native coordinator)", () => {
     await expect(runClaudeApiWave(t.spec, missing)).rejects.toThrow(/approval-missing/);
     t.f.writeConfig({ routes: ["claude-code-api/claude-opus-5-5"] });
     await expect(runClaudeApiWave(t.spec, t.deps)).rejects.toThrow(/route-not-approved/);
+    t.f.writeConfig({ roles: ["reviewer"] });
+    await expect(runClaudeApiWave(t.spec, t.deps)).rejects.toThrow(/role-not-approved/);
     expect(t.calls).toHaveLength(0);
     expect(readdirSync(t.root)).toEqual([]);
   });

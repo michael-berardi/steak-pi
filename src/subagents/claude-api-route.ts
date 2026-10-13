@@ -34,6 +34,8 @@ export const CLAUDE_API_PROVIDER = "claude-code-api" as const;
 export const CLAUDE_API_SONNET_ROUTE = `${CLAUDE_API_PROVIDER}/${CLAUDE_CODE_SONNET_MODEL}` as const;
 export const CLAUDE_API_OPUS_ROUTE = `${CLAUDE_API_PROVIDER}/${CLAUDE_CODE_OPUS_MODEL}` as const;
 export const CLAUDE_API_ROUTES: readonly string[] = [CLAUDE_API_SONNET_ROUTE, CLAUDE_API_OPUS_ROUTE];
+/** Task roles an approval can scope to (verification is the reviewer role). */
+export const CLAUDE_API_ROLES: readonly string[] = ["scout", "worker", "reviewer"];
 export const CLAUDE_API_CONFIG_ENV = "USAP_CLAUDE_API_CONFIG";
 export const CLAUDE_API_DEFAULT_CONFIG_PATH = join(homedir(), ".config", "ultraterm", "usap-claude-api.json");
 export const CLAUDE_API_OFFICIAL_SOURCE = "https://support.claude.com/en/articles/17154008-monthly-api-credits-for-max-and-team-plans";
@@ -55,7 +57,7 @@ const WORKSPACE_HEADER = /^anthropic-workspace-id: wrkspc_[A-Za-z0-9]{8,64}$/;
 const HELPER_PATH = /^\/(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+$/;
 
 export type ClaudeApiAdmissionCode =
-  | "route-not-api" | "approval-missing" | "approval-invalid" | "approval-expired" | "route-not-approved"
+  | "route-not-api" | "approval-missing" | "approval-invalid" | "approval-expired" | "route-not-approved" | "role-not-approved"
   | "settings-invalid" | "budget-invalid" | "budget-exhausted" | "unsupported-feature";
 
 /** Named, value-free failure. The message is safe to show, log and persist. */
@@ -91,6 +93,8 @@ export interface ClaudeApiConfig {
   approvalId: string;
   approval: { approvedBy: string; source: string; task: string; approvedAt: string; expiresAt: string };
   routes: readonly string[];
+  /** Task roles the operator approved for this route; any other role is refused. */
+  roles: readonly string[];
   settingsPath: string;
   /** First 12 hex of the settings file's SHA-256 (structure fingerprint, not a secret). */
   settingsDigest: string;
@@ -217,7 +221,7 @@ export function loadClaudeApiConfig(options: ClaudeApiConfigOptions = {}): Claud
     throw error;
   }
   const record = parseObject(bytes, "API route approval record", "approval-invalid");
-  strictKeys(record, ["version", "approval", "routes", "settingsPath", "budget"], "approval record", "approval-invalid");
+  strictKeys(record, ["version", "approval", "routes", "roles", "settingsPath", "budget"], "approval record", "approval-invalid");
   if (record.version !== 1) fail("approval-invalid", "approval record version must be 1");
   if (!isRecord(record.approval)) fail("approval-invalid", "approval record needs an approval object");
   strictKeys(record.approval, ["approvedBy", "source", "task", "approvedAt", "expiresAt"], "approval", "approval-invalid");
@@ -238,6 +242,10 @@ export function loadClaudeApiConfig(options: ClaudeApiConfigOptions = {}): Claud
     || !record.routes.every((route) => typeof route === "string" && CLAUDE_API_ROUTES.includes(route)) || new Set(record.routes).size !== record.routes.length) {
     fail("approval-invalid", `routes must list each approved route once from: ${CLAUDE_API_ROUTES.join(", ")}`);
   }
+  if (!Array.isArray(record.roles) || record.roles.length < 1 || record.roles.length > CLAUDE_API_ROLES.length
+    || !record.roles.every((role) => typeof role === "string" && CLAUDE_API_ROLES.includes(role)) || new Set(record.roles).size !== record.roles.length) {
+    fail("approval-invalid", `roles must list each approved task role once from: ${CLAUDE_API_ROLES.join(", ")}`);
+  }
   if (!isRecord(record.budget)) fail("budget-invalid", "approval record needs a budget object");
   strictKeys(record.budget, ["maxLeafUsd", "maxRunUsd"], "budget", "budget-invalid");
   const maxLeafUsd = usd(record.budget.maxLeafUsd, "budget.maxLeafUsd", CLAUDE_API_MAX_LEAF_USD);
@@ -245,7 +253,7 @@ export function loadClaudeApiConfig(options: ClaudeApiConfigOptions = {}): Claud
   if (maxLeafUsd > maxRunUsd) fail("budget-invalid", "budget.maxLeafUsd cannot exceed budget.maxRunUsd");
   const settingsDigest = validateSettings(record.settingsPath as string, uid);
   return {
-    path, approvalId: digest(bytes), approval, routes: [...record.routes as string[]],
+    path, approvalId: digest(bytes), approval, routes: [...record.routes as string[]], roles: [...record.roles as string[]],
     settingsPath: record.settingsPath as string, settingsDigest, budget: { maxLeafUsd, maxRunUsd },
   };
 }
@@ -255,6 +263,8 @@ export interface ClaudeApiAdmissionInput {
   taskCount: number;
   /** Spend already booked against this leaf (automatic or bounded explicit resume). */
   priorSpendUsd?: number;
+  /** Role of every task in the wave; each must be one the operator approved. */
+  roles?: readonly string[];
   /** Ceiling fixed at the ORIGINAL dispatch; a resume can lower but never raise it. */
   leafCapLimitUsd?: number;
   requireImages?: boolean;
@@ -264,7 +274,7 @@ export interface ClaudeApiAdmission {
   model: ClaudeCodeModel;
   settingsPath: string;
   settingsDigest: string;
-  approval: { id: string; task: string; expiresAt: string };
+  approval: { id: string; task: string; approvedBy: string; source: string; roles: string[]; expiresAt: string };
   /** `--max-budget-usd` for ONE leaf session, after prior spend. */
   leafBudgetUsd: number;
   leafCapUsd: number;
@@ -294,6 +304,9 @@ export function admitClaudeApiRoute(input: ClaudeApiAdmissionInput, options: Cla
   if (input.requireImages === true) fail("unsupported-feature", "image review is not enabled on the Claude API route; use the subscription route for image review");
   const config = loadClaudeApiConfig(options);
   if (!config.routes.includes(input.route!)) fail("route-not-approved", `${input.route} is not listed in the approval record (approved: ${config.routes.join(", ")})`);
+  for (const role of new Set(input.roles ?? [])) {
+    if (!config.roles.includes(role)) fail("role-not-approved", `task role ${JSON.stringify(String(role).slice(0, 20))} is not approved for this route (approved roles: ${config.roles.join(", ")}); the approval is scoped to its stated work, not a blanket paid-route grant`);
+  }
   const prior = typeof input.priorSpendUsd === "number" && Number.isFinite(input.priorSpendUsd) && input.priorSpendUsd > 0 ? input.priorSpendUsd : 0;
   const limit = typeof input.leafCapLimitUsd === "number" && Number.isFinite(input.leafCapLimitUsd) && input.leafCapLimitUsd > 0 ? input.leafCapLimitUsd : Number.POSITIVE_INFINITY;
   const leafCapUsd = Math.min(claudeApiLeafCapUsd(config, input.taskCount), limit);
@@ -301,7 +314,7 @@ export function admitClaudeApiRoute(input: ClaudeApiAdmissionInput, options: Cla
   if (remaining < CLAUDE_API_MIN_LEAF_USD) fail("budget-exhausted", `this leaf already spent ${prior.toFixed(2)} of its ${leafCapUsd.toFixed(2)} USD ceiling`);
   return {
     route: input.route!, model, settingsPath: config.settingsPath, settingsDigest: config.settingsDigest,
-    approval: { id: config.approvalId, task: config.approval.task, expiresAt: config.approval.expiresAt },
+    approval: { id: config.approvalId, task: config.approval.task, approvedBy: config.approval.approvedBy, source: config.approval.source, roles: [...config.roles], expiresAt: config.approval.expiresAt },
     leafBudgetUsd: remaining, leafCapUsd, runCapUsd: config.budget.maxRunUsd, priorSpendUsd: prior,
   };
 }
@@ -341,7 +354,7 @@ export function claudeApiReceipt(input: {
     servedModels: [...new Set(input.servedModels.map(receiptText).filter((value): value is string => value !== undefined))].slice(0, 4),
     ...(version ? { cliVersion: version } : {}),
     settingsDigest: input.admission.settingsDigest,
-    approval: { id: input.admission.approval.id, task: input.admission.approval.task, expiresAt: input.admission.approval.expiresAt },
+    approval: { ...input.admission.approval, roles: [...input.admission.approval.roles] },
     budget: { leafCapUsd: input.admission.leafCapUsd, runCapUsd: input.admission.runCapUsd, priorSpendUsd: input.admission.priorSpendUsd, ...(spent === undefined ? {} : { spentUsd: spent }) },
     sessionId: input.sessionId,
   };
@@ -349,5 +362,5 @@ export function claudeApiReceipt(input: {
 
 export function formatClaudeApiReceipt(receipt: ClaudeApiReceipt): string {
   const spend = receipt.budget.spentUsd === undefined ? "spend unreported" : `spent $${receipt.budget.spentUsd.toFixed(4)}`;
-  return `api receipt: auth=${receipt.auth.method} (${receipt.auth.provider}, key source ${receipt.auth.keySource}); model ${receipt.servedModels.join(",") || "unattested"}; ${spend} of $${receipt.budget.leafCapUsd.toFixed(2)} leaf cap; approval ${receipt.approval.id} (${receipt.approval.task}, expires ${receipt.approval.expiresAt}); attested preflight=${receipt.attested.preflight} init=${receipt.attested.init}`;
+  return `api receipt: auth=${receipt.auth.method} (${receipt.auth.provider}, key source ${receipt.auth.keySource}); model ${receipt.servedModels.join(",") || "unattested"}; ${spend} of $${receipt.budget.leafCapUsd.toFixed(2)} leaf cap; approval ${receipt.approval.id} (${receipt.approval.task}; by ${receipt.approval.approvedBy}; source ${receipt.approval.source}; roles ${receipt.approval.roles.join("+")}; expires ${receipt.approval.expiresAt}); attested preflight=${receipt.attested.preflight} init=${receipt.attested.init}`;
 }

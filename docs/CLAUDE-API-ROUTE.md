@@ -37,6 +37,7 @@ The route is admitted only while a private JSON record approves it. Default path
     "expiresAt": "2026-10-20T00:00:00Z"
   },
   "routes": ["claude-code-api/claude-sonnet-5-5"],
+  "roles": ["reviewer"],
   "settingsPath": "/absolute/path/to/approved-settings.json",
   "budget": { "maxLeafUsd": 1, "maxRunUsd": 2 }
 }
@@ -46,6 +47,7 @@ Checks, re-run at dispatch and again at every CLI launch (including automatic an
 
 - The record and the settings file are regular, non-symlink, owned by the current user, mode 600, and small, in directories nobody else can write; unknown keys are errors.
 - The record is not expired or future-dated, lasts at most 31 days, and lists the exact route requested.
+- The record lists the task roles it covers (`scout`, `worker`, `reviewer`; verification is `reviewer`). A wave containing any other role is refused with `role-not-approved`, so an approval for verification never becomes approval for implementation workers or a blanket paid-route grant.
 - The settings file holds only `apiKeyHelper` and `env.ANTHROPIC_CUSTOM_HEADERS`. `apiKeyHelper` is an absolute path (no arguments) to a regular, non-symlink, user-owned, executable file, in a directory that nobody else can write. The header is exactly one `anthropic-workspace-id: wrkspc_…` header. Base URLs, keys, tokens, provider switches, hooks and permissions are rejected.
 - Budget: `maxLeafUsd` ≤ 10, `maxRunUsd` ≤ 25, leaf ≤ run. Each leaf's CLI session gets `--max-budget-usd = min(maxLeafUsd, maxRunUsd ÷ tasks)` minus spend already booked against that leaf, so a wave cannot exceed the run ceiling. A resume keeps the original per-leaf ceiling and the spend already booked. A leaf with under $0.05 left is refused.
 - API waves run at most 3 wide.
@@ -61,20 +63,20 @@ Before launch the CLI itself must report `claude auth status --json` as `loggedI
 
 ## Receipt
 
-Each leaf records a sanitized `apiReceipt` (route, pinned and served model, the CLI-reported auth method, which attestations were observed, CLI version, 12-hex digests of the approval record and settings file, budget caps, spend reported by the CLI, session id). It proves the CLI reported API-key-helper authentication and served the pinned model for this leaf. It does not prove a balance, a billing outcome or which Console organization was charged.
+Each leaf records a sanitized `apiReceipt` (route, pinned and served model, the CLI-reported auth method, which attestations were observed, CLI version, 12-hex digests of the approval record and settings file, the approval provenance — approver, source, task, approved roles and expiry — budget caps, spend reported by the CLI, session id). It proves the CLI reported API-key-helper authentication and served the pinned model for this leaf. It does not prove a balance, a billing outcome or which Console organization was charged.
 
 ## Running API waves
 
 A running parent keeps the tool schema it loaded at start. New sessions accept `model: "claude-code-api/claude-sonnet-5-5"` in `ultraterm_subagents`. To run API waves from a parent that cannot restart, use the standalone entry point, which drives the same coordinator in a separate process (installed copies expose it as `steak-pi usap-api <admit|dispatch|resume>`):
 
 ```bash
-node scripts/usap-claude-api.ts admit --tasks 2
+node scripts/usap-claude-api.ts admit --tasks 2 --role reviewer
 node scripts/usap-claude-api.ts dispatch wave.json --checkpoint-root ~/.cache/agent-scratch/<task>/usap --out result.json
 node scripts/usap-claude-api.ts resume <run-id> --checkpoint-root ~/.cache/agent-scratch/<task>/usap
 ```
 
 `wave.json` is `{ "goal", "route", "cwd", "constraints", "contract", "tasks": [{ "label", "task", "role", "mayEdit", "ownedPaths", "allowBash" }], "concurrency", "timeoutMs", "maxTurns" }`; unknown keys are errors. SIGINT or SIGTERM cancels the run and only that run's child process. Exit codes: 0 done, 1 failed or partial, 2 admission or usage error, 130 cancelled.
 
-Observed in the phase A smoke (run `run-a98c77f0-6294-40da-933c-7089e7f82544`, CLI 2.1.296): `--bare` offered a read-only leaf only `Read`; `Grep` and `Glob` were not provided although `--tools` names them, so the API-route prompt says so. Edit and shell tool availability under `--bare` has not been verified yet. Owned-path edit rules, the read-only reviewer's shell denial and the one bounded resume use the subscription route's code, so their arguments are identical.
+Observed with CLI 2.1.296: `--bare` offers only a minimal tool set. The phase A smoke leaf (run `run-a98c77f0-6294-40da-933c-7089e7f82544`) held `Read` only; `Grep` and `Glob` were not provided although `--tools` names them. The bare-mode worker that built this route listed `Bash`, `Edit` and `Read`, with no `Write`, `Grep` or `Glob`. The API-route prompt therefore says which tools may be missing. An editing leaf that must create a new file may not be able to on this route; verify file creation with a real write leaf before relying on it. Owned-path edit rules, the read-only reviewer's shell denial and the one bounded resume use the subscription route's code, so their arguments are identical.
 
 Spend limits: the CLI reports cost only in a session's final result. A session that is cancelled or cut before it reports leaves its spend unknown to USAP, so a resume or automatic resume gets the leaf's remaining ceiling computed from the spend that was reported, and each launch still carries its own `--max-budget-usd`. Monthly credit balance and expiry are not tracked by USAP.

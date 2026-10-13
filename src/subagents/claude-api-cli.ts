@@ -150,7 +150,7 @@ async function settle(coordinator: SubagentCoordinator, store: CheckpointStore, 
 export async function runClaudeApiWave(spec: ClaudeApiWaveSpec, deps: ClaudeApiWaveDeps = {}): Promise<ClaudeApiWaveOutcome> {
   if (!statSync(spec.cwd).isDirectory()) throw new Error("wave cwd is not a directory");
   // Operator approval, settings contract and budget are decided before any checkpoint or child exists.
-  const admission = admitClaudeApiRoute({ route: spec.route, taskCount: spec.tasks.length }, deps.api);
+  const admission = admitClaudeApiRoute({ route: spec.route, taskCount: spec.tasks.length, roles: spec.tasks.map((task) => task.role ?? "worker") }, deps.api);
   const model = claudeApiModelOf(spec.route)!;
   const now = deps.now?.() ?? Date.now();
   const run = normalizeDispatch({
@@ -201,7 +201,7 @@ export async function resumeClaudeApiRun(runId: string, deps: ClaudeApiWaveDeps 
     // Approval, settings and each leaf's remaining budget are admitted again BEFORE the one resume is spent.
     let admission: ClaudeApiAdmission | undefined;
     for (const task of unfinished) {
-      admission = admitClaudeApiRoute({ route: snapshot.model, taskCount: snapshot.tasks.length,
+      admission = admitClaudeApiRoute({ route: snapshot.model, taskCount: snapshot.tasks.length, roles: [task.role],
         priorSpendUsd: task.usage.cost.total + (task.priorSpendUsd ?? 0), ...(task.apiLeafCapUsd === undefined ? {} : { leafCapLimitUsd: task.apiLeafCapUsd }) }, deps.api);
     }
     const run = normalizeDispatch({
