@@ -649,6 +649,7 @@ export class SubagentCoordinator {
     }
     if (progress.sessionFile !== undefined) task.sessionFile = progress.sessionFile;
     if (progress.claudeSessionId !== undefined) task.claudeSessionId = progress.claudeSessionId;
+    if (progress.apiReceipt !== undefined) task.apiReceipt = structuredClone(progress.apiReceipt);
     task.lastProgressAt = this.now();
     this.observe(runtime);
 
@@ -697,7 +698,7 @@ export class SubagentCoordinator {
     runtime: RunRuntime,
     task: TaskRecord,
     state: TerminalTaskState,
-    result: Pick<WorkerResult, "output" | "error" | "turns" | "usage" | "truncated" | "toolErrors" | "toolSuccesses">,
+    result: Pick<WorkerResult, "output" | "error" | "turns" | "usage" | "truncated" | "toolErrors" | "toolSuccesses" | "apiReceipt">,
   ): void {
     if (isTerminal(task.state)) return;
 
@@ -715,6 +716,7 @@ export class SubagentCoordinator {
     task.toolErrors = safeTurns(result.toolErrors, task.toolErrors ?? 0);
     task.toolSuccesses = safeTurns(result.toolSuccesses, task.toolSuccesses ?? 0);
     task.usage = safeUsage;
+    if (result.apiReceipt !== undefined) task.apiReceipt = structuredClone(result.apiReceipt);
     task.truncated = result.truncated ?? task.truncated;
     if (result.error !== undefined) task.error = result.error;
     else delete task.error;

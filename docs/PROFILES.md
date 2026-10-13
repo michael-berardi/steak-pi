@@ -45,6 +45,10 @@ Read/Grep/Glob. `requireImages: true` admits native Read-image of files staged
 under cwd, not inline attachments. Relay and native Pi-session resume remain
 unsupported; Claude workers can resume their own persisted CLI sessions.
 A failed task, including quota exhaustion, is not expert approval.
+The explicit `claude-code-api/claude-sonnet-5-5` and `claude-code-api/claude-opus-5-5`
+routes are separate: the same headless worker on approved API credits, never a
+default or fallback, and never offered as an interactive profile (promotional API
+credits do not cover interactive Claude Code). See [CLAUDE-API-ROUTE.md](./CLAUDE-API-ROUTE.md).
 
 Before commit/push/deploy, weaker implementers request one bounded Opus Pass
 through the parent. USAP never grants permission to release. Explicit native Pi

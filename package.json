@@ -24,6 +24,7 @@
     "benchmarks/usap/results/glm53-live-mirror-2026-09-09.md",
     "benchmarks/overhead/README.md",
     "extensions",
+    "scripts/usap-claude-api.ts",
     "src",
     "themes",
     "skills",
@@ -33,6 +34,7 @@
     "docs/PROFILES.md",
     "docs/THEME-PASS.md",
     "docs/ULTRATERM-SUBAGENT-PROTOCOL.md",
+    "docs/CLAUDE-API-ROUTE.md",
     "docs/OPUS-5-5.md",
     "docs/opus-5-5.models.json"
   ],
@@ -51,6 +53,7 @@
   },
   "scripts": {
     "test": "vitest run",
+    "usap:claude-api": "node scripts/usap-claude-api.ts",
     "test:tui": "./scripts/test-pi-tui-smoke.sh",
     "typecheck": "tsc --noEmit",
     "ui:simulate": "node --experimental-strip-types src/tui/simulator.ts",

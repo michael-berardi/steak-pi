@@ -157,6 +157,18 @@ environment variables are not inherited, and there is no fallback to another
 model, route, or billing arrangement. Quota exhaustion is a failed task due to
 quota, not permission to buy credits or an expert approval.
 
+**Explicit Claude API route.** A separate, distinct route family,
+`claude-code-api/claude-sonnet-5-5` or `claude-code-api/claude-opus-5-5`, runs
+the same headless CLI worker on an API key (behind an approved `apiKeyHelper`,
+`--bare`) instead of the subscription login. It is reachable only by naming the
+exact model, only while a task-scoped operator approval record admits it, with
+hard per-session budget ceilings, a sanitized CLI-attested receipt and no
+fallback to the subscription, Sol or any other route; the subscription route's
+checks are unchanged. Monthly promotional API credits cover headless `claude -p`
+and the Agent SDK, not interactive Claude Code. See
+[CLAUDE-API-ROUTE.md](./CLAUDE-API-ROUTE.md) for the contract, the official
+source and the supported `scripts/usap-claude-api.ts` entry point.
+
 CLI assistant frames with `model: "<synthetic>"` are local errors, not model
 identity evidence or inference turns. Recognized quota, authentication and
 transport failures report a bounded sanitized cause (quota reset timing is
@@ -365,7 +377,8 @@ are part of the up-front prompt instead.
   bounded: a task continues its checkpointed session at most once, with the same
   `maxTurns` and `timeoutMs` (never larger), on the same subscription route and
   reasoning level (a changed, paid or API-key route is refused before the resume
-  is spent), pinned to that route (a recorded automatic chain is not carried over,
+  is spent; an explicit `claude-code-api/…` run resumes only on itself, after its
+  approval and remaining budget are admitted again), pinned to that route (a recorded automatic chain is not carried over,
   so no fallback hop). The successor records `resumedFrom`, the predecessor
   `resumedAs`; when the successor finishes every unfinished task the predecessor's
   telemetry also records `supersededBy`, and the successor's done task records
