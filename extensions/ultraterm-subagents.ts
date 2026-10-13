@@ -12,6 +12,7 @@ import { SubagentCoordinator, CoordinatorWaitTimeoutError } from "../src/subagen
 import { normalizeDispatch, SubagentPolicyError } from "../src/subagents/policy.ts";
 import { assertActiveModelSelector } from "../src/retired-model-selection.ts";
 import { resolveWorkerSelection, resolveClaudeCodeSelection, assertClaudeCodeImageAdmission, claudeCodeModelOf, claudeCodeModelName, defaultClaudeCodeRoute, CLAUDE_CODE_ROUTES, type WorkerProfile } from "../src/subagents/model-selection.ts";
+import { admitClaudeApiRoute, anyClaudeRouteModelOf, claudeApiConcurrency, claudeApiModelOf, CLAUDE_API_ROUTES, formatClaudeApiReceipt, isClaudeApiRoute, resolveClaudeApiSelection, stampClaudeApiRun } from "../src/subagents/claude-api-route.ts";
 import { AUTOMATIC_CHAIN_APPROVAL, type ChainOptions } from "../src/model-route-policy.ts";
 import { isSubscriptionOrLocalRoute } from "../src/subscription-first-routing.ts";
 import {
@@ -589,12 +590,13 @@ export function renderRunResult(run: RunRecord, limit = MAX_TOOL_CONTENT): strin
     const partial = task.outcome ? ` · PARTIAL ${task.partialReason ?? "budget"} (${task.role}; not complete)` : "";
     const suffix = `${partial}${task.toolErrors ? ` · ${task.toolErrors} tool errors` : ""}${task.truncated ? " · worker output truncated" : ""}`;
     const error = task.error ? `\nerror: ${task.error}` : "";
+    const apiReceipt = task.apiReceipt ? `\n${formatClaudeApiReceipt(task.apiReceipt)}` : "";
     const routeReceipt = task.reviewFallback ? `\nactual review route: ${task.reviewFallback.to} (automatic fallback: ${task.reviewFallback.reason}; not Opus approval)` : "";
     const accountReceipt = task.providerAccount ? `\naccount: ${task.providerAccount.label} (${task.providerAccount.provider}/${task.providerAccount.id}); lease=${task.providerAccount.lease}` : "";
     const retained = task.partialSummary ? `\nretained: ${task.partialSummary}` : "";
     const queue = task.launchQueue;
     const queued = queue ? `\nlaunch queue: ${queue.tier}/${queue.provider} · ${queue.reason} · ${Math.max(0, (task.endedAt ?? Date.now()) - queue.since)}ms elapsed` : "";
-    const block = `\n\n[${task.label}] ${task.state}${suffix}${queued}${error}${retained}${routeReceipt}${accountReceipt}\n${task.output || "(no output)"}`;
+    const block = `\n\n[${task.label}] ${task.state}${suffix}${queued}${error}${retained}${routeReceipt}${apiReceipt}${accountReceipt}\n${task.output || "(no output)"}`;
     const next = appendBounded(text, block, limit);
     text = next.text;
     if (next.truncated) {
@@ -1347,7 +1349,7 @@ export function createUltratermSubagentsExtension(
         "Delegation must buy completion speed; modest token premiums for real throughput are correct. Trivial or tightly coupled edits and direct answers stay in the parent.",
         "Parent owns decomposition, integration, verification; workers own leaves end to end. With exact disjoint paths and acceptance contracts in hand, dispatch in the first tool turn without pre-reading child-owned files; do not duplicate child discovery in the parent.",
         "model or profile picks an explicit authenticated route (mutually exclusive, overrides roles). Every GPT choice requires paid openai-codex OAuth — never OpenRouter, API-key, or batch GPT. Do not select GPT-6 Astra; use GPT-6.1 Sol instead. requireImages=true for visual critics or render inspection.",
-        "Claude work defaults to Sonnet 5.5: harness claude-code (or model claude-code/claude-sonnet-5-5) runs Sonnet 5.5 xhigh, nearly Opus-level at far less quota. Escalate to Opus 5.5 (model claude-code/claude-opus-5-5) only for frontier needs: expert review and sign-off (all-reviewer waves default to it), hard architecture or security reasoning, or a leaf Sonnet already failed. mayEdit+ownedPaths are CLI-enforced; allowBash is unsandboxed except read-only reviewers get no shell, even when requested. Stage git evidence for review. requireImages=true admits native Read-image of files staged under cwd, not inline attachments. Explicit routes never fall back; implicit automatic text review may use GPT-6.1 Sol only on proven Claude quota/auth unavailability before output. Relay and native Pi resume are unavailable on this harness.",
+        "Claude work defaults to Sonnet 5.5: harness claude-code (or model claude-code/claude-sonnet-5-5) runs Sonnet 5.5 xhigh, nearly Opus-level at far less quota. Escalate to Opus 5.5 (model claude-code/claude-opus-5-5) only for frontier needs: expert review and sign-off (all-reviewer waves default to it), hard architecture or security reasoning, or a leaf Sonnet already failed. mayEdit+ownedPaths are CLI-enforced; allowBash is unsandboxed except read-only reviewers get no shell, even when requested. Stage git evidence for review. requireImages=true admits native Read-image of files staged under cwd, not inline attachments. Explicit routes never fall back; implicit automatic text review may use GPT-6.1 Sol only on proven Claude quota/auth unavailability before output. Relay and native Pi resume are unavailable on this harness. The exact model claude-code-api/claude-sonnet-5-5 (or claude-code-api/claude-opus-5-5) runs this same headless CLI on approved Claude API credits: explicit only, never a default or fallback, admitted per dispatch and launch by the operator's task-scoped approval record with hard per-session budget ceilings, and a failure never falls back to the subscription or Sol. Promotional API credits cover headless runs only, never interactive Claude Code.",
         "Background only when the parent can integrate while children run, then one bounded ultraterm_hub wait. Never start a background run merely to wait immediately.",
         "For read-only tasks omit ownedPaths and state the read scope in task text; mayEdit requires ownedPaths. allowBash bypasses ownedPaths — grant only when operator-level shell access is necessary.",
       ],
@@ -1374,7 +1376,7 @@ export function createUltratermSubagentsExtension(
         const params: UltratermSubagentsParams = {
           ...requested,
           ...(claudeUnavailable ? { harness: "pi" as const, model: SOL_MODEL_ROUTE, thinking: "high" as const, thinkingReason: "Automatic expert text review fallback after proven Claude unavailability." } : {}),
-          ...((!claudeUnavailable && opusReviewDefault || (requested.harness === undefined && CLAUDE_CODE_ROUTES.includes(requested.model ?? ""))) ? { harness: "claude-code" as const } : {}),
+          ...((!claudeUnavailable && opusReviewDefault || (requested.harness === undefined && (CLAUDE_CODE_ROUTES.includes(requested.model ?? "") || CLAUDE_API_ROUTES.includes(requested.model ?? "")))) ? { harness: "claude-code" as const } : {}),
         };
         if (!ctx.model) throw new Error("ultraterm_subagents requires a resolved current model");
         const current = ensureRuntime(ctx);
@@ -1388,16 +1390,24 @@ export function createUltratermSubagentsExtension(
         // CLI route is explicit and fixed, and the native Pi registry is never
         // consulted for it (it cannot resolve, and must not appear to).
         const foreignHarness = params.harness === "claude-code";
-        if (foreignHarness && ((params.model !== undefined && !CLAUDE_CODE_ROUTES.includes(params.model)) || params.profile !== undefined)) {
-          throw new Error("USAP harness claude-code runs only claude-code/claude-sonnet-5-5 or claude-code/claude-opus-5-5 at xhigh; other model/profile selectors are refused.");
+        if (foreignHarness && ((params.model !== undefined && !CLAUDE_CODE_ROUTES.includes(params.model) && !CLAUDE_API_ROUTES.includes(params.model)) || params.profile !== undefined)) {
+          throw new Error("USAP harness claude-code runs only claude-code/claude-sonnet-5-5 or claude-code/claude-opus-5-5 at xhigh (subscription), or the explicitly approved claude-code-api/claude-sonnet-5-5 or claude-code-api/claude-opus-5-5; other model/profile selectors are refused.");
         }
         // Sonnet 5.5 is the default Claude worker; all-reviewer waves keep the Opus Pass.
+        // The API route is never a default: only an exact, explicit model names it.
         const claudeRoute = foreignHarness ? params.model ?? defaultClaudeCodeRoute(params.tasks) : undefined;
-        const claudeModel = claudeCodeModelOf(claudeRoute);
+        const claudeModel = anyClaudeRouteModelOf(claudeRoute);
+        const apiRoute = foreignHarness && isClaudeApiRoute(claudeRoute);
+        // Operator approval, settings contract and budget are checked before any
+        // checkpoint, relay peer or worker exists; the runner re-checks at every launch.
+        const apiAdmission = apiRoute
+          ? admitClaudeApiRoute({ route: claudeRoute, taskCount: params.tasks.length, requireImages: params.requireImages === true }, dependencies.now ? { now: dependencies.now } : {})
+          : undefined;
+        if (apiRoute) params.concurrency = claudeApiConcurrency(params.concurrency, params.tasks.length);
         if (foreignHarness && params.thinking !== undefined && params.thinking !== "xhigh") {
           throw new Error(`USAP claude-code ${claudeCodeModelName(claudeModel!)} requires xhigh effort; a different explicit effort is not silently overridden.`);
         }
-        if (foreignHarness && params.requireImages === true) assertClaudeCodeImageAdmission(claudeRoute);
+        if (foreignHarness && params.requireImages === true && !apiRoute) assertClaudeCodeImageAdmission(claudeRoute);
         const piResolved = foreignHarness
           ? undefined
           : await resolveNativeSelection(ctx, params, dependencies);
@@ -1409,7 +1419,7 @@ export function createUltratermSubagentsExtension(
             reviewFallbackRuntime = { model: sol.model, thinkingLevel: sol.thinkingLevel };
           } catch { /* Claude may still succeed; unavailable Sol is not a route substitute. */ }
         }
-        const resolvedSelection = piResolved ? piResolved.selection : resolveClaudeCodeSelection(claudeModel);
+        const resolvedSelection = piResolved ? piResolved.selection : apiRoute ? resolveClaudeApiSelection(claudeModel!) : resolveClaudeCodeSelection(claudeModel);
         const resolvedThinking = piResolved ? String(piResolved.thinkingLevel) : "xhigh";
         const model = foreignHarness ? claudeRoute! : `${piResolved!.model.provider}/${piResolved!.model.id}`;
         const thinking = resolvedThinking;
@@ -1446,6 +1456,7 @@ export function createUltratermSubagentsExtension(
           };
         }
 
+        if (apiAdmission) stampClaudeApiRun(run, apiAdmission);
         run.selection = { ...resolvedSelection, ...(opusReviewDefault ? { automaticReview: true, reviewRequiresImages: requested.requireImages === true } : {}) };
         if (claudeUnavailable) for (const task of run.tasks) recordReviewFallback(task, "no-eligible-claude");
         if (reviewFallbackRuntime) current.workerRuntimes.set(`${run.id}:review-fallback`, Object.freeze(reviewFallbackRuntime));
@@ -1641,13 +1652,24 @@ export function createUltratermSubagentsExtension(
           const resolved = claudeResume
             ? undefined
             : await resolveNativeSelection(ctx, input, dependencies);
-          const resumeSelection = resolved ? resolved.selection : resolveClaudeCodeSelection(claudeCodeModelOf(snapshot.model));
+          // The explicit API route resumes only on itself, after the operator approval,
+          // settings contract and the leaf's remaining budget are admitted again.
+          const resumeApi = claudeResume && isClaudeApiRoute(snapshot.model);
+          const resumeSelection = resolved ? resolved.selection
+            : resumeApi ? resolveClaudeApiSelection(claudeApiModelOf(snapshot.model)!)
+            : resolveClaudeCodeSelection(claudeCodeModelOf(snapshot.model));
           // Same subscription route as the original, or no resume: a changed or
           // paid route is refused before the one resume is spent.
           const originalRoute = snapshot.selection ? `${snapshot.selection.provider}/${snapshot.selection.modelId}` : snapshot.model;
           const refuseRoute = (why: string): never => {
-            throw new Error(`Resume refused: ${why}. A resume continues only on the original subscription route (${originalRoute}, ${snapshot.thinkingLevel}); dispatch a new task to change it.`);
+            throw new Error(`Resume refused: ${why}. A resume continues only on the original ${resumeApi ? "explicit API" : "subscription"} route (${originalRoute}, ${snapshot.thinkingLevel}); dispatch a new task to change it.`);
           };
+          if (resumeApi) {
+            for (const task of unfinished) {
+              admitClaudeApiRoute({ route: snapshot.model, taskCount: snapshot.tasks.length,
+                priorSpendUsd: task.usage.cost.total + (task.priorSpendUsd ?? 0), ...(task.apiLeafCapUsd === undefined ? {} : { leafCapLimitUsd: task.apiLeafCapUsd }) }, dependencies.now ? { now: dependencies.now } : {});
+            }
+          }
           const resumedRoute = resolved ? `${resolved.model.provider}/${resolved.model.id}` : `${resumeSelection.provider}/${resumeSelection.modelId}`;
           if (originalRoute !== snapshot.model || resumedRoute !== snapshot.model) refuseRoute(`the route changed (checkpoint ${originalRoute}, run ${snapshot.model}, now ${resumedRoute})`);
           if (resolved) {
@@ -1668,6 +1690,11 @@ export function createUltratermSubagentsExtension(
             task.sessionFile = unfinished[index].sessionFile;
             task.providerAccount = unfinished[index].providerAccount ? { ...unfinished[index].providerAccount } : undefined;
             task.claudeSessionId = unfinished[index].claudeSessionId;
+            if (resumeApi) {
+              // The ceiling and the spend booked so far carry over; the resume cannot widen either.
+              if (unfinished[index].apiLeafCapUsd !== undefined) task.apiLeafCapUsd = unfinished[index].apiLeafCapUsd;
+              task.priorSpendUsd = unfinished[index].usage.cost.total + (unfinished[index].priorSpendUsd ?? 0);
+            }
             task.changedPaths = unfinished[index].changedPaths;
             task.lastStep = unfinished[index].lastStep;
             task.resumedFrom = unfinished[index].id;

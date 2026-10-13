@@ -98,6 +98,25 @@ export interface SubagentTaskInput {
   allowBash?: boolean;
 }
 
+/** Sanitized proof that a leaf ran on the explicit Claude API route. Every field
+ * is a bounded identifier or number: no key, helper output, header, path or
+ * prompt text ever enters it. */
+export interface ClaudeApiReceipt {
+  kind: "claude-code-api";
+  route: string;
+  model: string;
+  /** CLI-reported authentication, never wrapper-asserted. */
+  auth: { method: "api_key_helper"; provider: "firstParty"; keySource: "apiKeyHelper" };
+  /** Which independent CLI attestations were observed for this leaf. */
+  attested: { preflight: boolean; init: boolean };
+  servedModels: string[];
+  cliVersion?: string;
+  settingsDigest: string;
+  approval: { id: string; task: string; expiresAt: string };
+  budget: { leafCapUsd: number; runCapUsd: number; priorSpendUsd: number; spentUsd?: number };
+  sessionId: string;
+}
+
 export interface ModelSelection {
   provider: string;
   modelId: string;
@@ -186,6 +205,12 @@ export interface TaskRecord extends NormalizedTask {
   sessionFile?: string;
   /** Claude Code worker session id (`--session-id`), resumable with `--resume`. */
   claudeSessionId?: string;
+  /** Explicit Claude API route only: sanitized auth/model/budget receipt. */
+  apiReceipt?: ClaudeApiReceipt;
+  /** Explicit Claude API route only: spend already booked by the predecessor of a bounded resume. */
+  priorSpendUsd?: number;
+  /** Explicit Claude API route only: the per-leaf ceiling fixed at the original dispatch. */
+  apiLeafCapUsd?: number;
   /** Automatic resumes after transient failures, each `reason: error`. */
   autoResumes?: string[];
   /** Successful edit/write tool paths journaled for the final report. */
@@ -256,6 +281,8 @@ export interface WorkerProgress {
   sessionFile?: string;
   /** Claude Code session id once the CLI has been launched with it. */
   claudeSessionId?: string;
+  /** Explicit Claude API route: receipt recorded as soon as the CLI attests API auth. */
+  apiReceipt?: ClaudeApiReceipt;
 }
 
 export interface WorkerResult {
@@ -263,6 +290,8 @@ export interface WorkerResult {
   reviewFallbackReason?: "quota" | "auth";
   /** Cancelled initialization may settle later; retain the launch lease until disposed. */
   cleanup?: Promise<void>;
+  /** Explicit Claude API route: final sanitized receipt, also on failure after attestation. */
+  apiReceipt?: ClaudeApiReceipt;
   state: Extract<TaskState, "done" | "failed" | "aborted" | "timed_out">;
   output: string;
   error?: string;

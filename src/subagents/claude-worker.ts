@@ -26,6 +26,14 @@
  * grants the unscoped `Bash` rule: shell is operator-level and can bypass
  * ownedPaths, exactly as on the Pi harness. Read-only reviewer leaves never
  * receive Bash, even when requested; parents stage git evidence for them.
+ *
+ * Explicit API route (`claude-code-api/<model>`, claude-api-route.ts): the SAME
+ * runner, coordinator and permission/ownership arguments, with only the auth
+ * boundary swapped. `--bare` makes the CLI read Anthropic auth strictly from the
+ * approved `--settings` apiKeyHelper (OAuth and keychain are never read), an
+ * operator approval record gates every launch, `--max-budget-usd` caps each
+ * session, and the CLI's own `auth status` and init frames attest API auth. The
+ * subscription route below never changes.
  */
 import { spawn as nodeSpawn, execFile, execFileSync } from "node:child_process";
 import { claudeOwnedPathRules } from "./claude-owned-paths.ts";
@@ -34,12 +42,16 @@ import { randomUUID } from "node:crypto";
 import { CLAUDE_SESSION_ID, removeClaudeWorkerSession } from "./claude-session.ts";
 import type { ChildProcess } from "node:child_process";
 import { OUTPUT_LIMIT, addUsage, emptyUsage, harnessOf, sanitizeUsage, type RunRecord, type TaskRecord,
-  type UsageTotals, type WorkerProgress, type WorkerResult, type WorkerRunner } from "./types.ts";
+  type ClaudeApiReceipt, type UsageTotals, type WorkerProgress, type WorkerResult, type WorkerRunner } from "./types.ts";
 import { CLAUDE_CODE_EFFORT, CLAUDE_CODE_MODEL, CLAUDE_CODE_ROUTE, claudeCodeModelName, claudeCodeModelOf, type ClaudeCodeModel } from "./model-selection.ts";
 import { truncatePiWorkerOutput } from "./pi-worker.ts";
 import { workerJournal } from "./coordinator.ts";
 import { turnBudgetPromptLine } from "./turn-budget.ts";
 import { assertClaudeReviewArgsShellFree, claudeShellPolicy } from "./claude-review-permissions.ts";
+import {
+  admitClaudeApiRoute, assertClaudeApiStatus, claudeApiModelOf, claudeApiReceipt, receiptText,
+  type ClaudeApiAdmission, type ClaudeApiConfigOptions,
+} from "./claude-api-route.ts";
 
 /** Audit route recorded on the run and asserted by focused tests. */
 export { CLAUDE_CODE_ROUTE, CLAUDE_CODE_MODEL };
@@ -144,6 +156,54 @@ export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPer
   return args;
 }
 
+export interface ClaudeApiLaunch {
+  /** Approved settings file (apiKeyHelper + workspace header); passed by path, never inline. */
+  settingsPath: string;
+  /** `--max-budget-usd` for this one CLI session. */
+  maxBudgetUsd: number;
+}
+
+/** Credential-bearing flags or inline settings JSON must never reach the argv. */
+const CLAUDE_API_FORBIDDEN_ARG = /^--(?:api-key|auth-token|oauth|betas|add-dir|mcp-config|plugin-dir|system-prompt|append-system-prompt|dangerously-skip-permissions|allow-dangerously-skip-permissions)(?:=|$)/;
+
+/** Argv for the explicit API route: exactly the subscription argv (so tool
+ * allowlist, owned-path rules, read-only reviewer shell denial, session and turn
+ * handling cannot drift) behind `--bare`, plus the approved settings file and the
+ * session budget ceiling. */
+export function claudeApiWorkerArgs(maxTurns: number | undefined, permissions: ClaudeWorkerPermissions, resolve: ((value: string) => string | undefined) | undefined,
+  model: ClaudeCodeModel, session: ClaudeWorkerSession | undefined, api: ClaudeApiLaunch): string[] {
+  if (typeof api.settingsPath !== "string" || !api.settingsPath.startsWith("/") || /[\u0000-\u001f\u007f]/.test(api.settingsPath) || api.settingsPath.startsWith("{")) {
+    throw new Error("claude-code API settings must be an absolute file path, never inline settings");
+  }
+  if (!Number.isFinite(api.maxBudgetUsd) || api.maxBudgetUsd <= 0 || api.maxBudgetUsd > 25) throw new Error("claude-code API session budget must be a positive USD amount of at most 25");
+  const args = [
+    "--bare",
+    ...claudeWorkerArgs(maxTurns, permissions, resolve, model, session),
+    "--settings", api.settingsPath,
+    "--max-budget-usd", String(Math.round(api.maxBudgetUsd * 100) / 100),
+  ];
+  const bad = args.find((arg) => CLAUDE_API_FORBIDDEN_ARG.test(arg));
+  if (bad !== undefined) throw new Error(`claude-code API argv rejected ${JSON.stringify(bad.slice(0, 40))}`);
+  assertClaudeReviewArgsShellFree(permissions, args);
+  return args;
+}
+
+/** CLI-reported authentication for the API route (never derived by this wrapper). */
+async function verifyClaudeApiAuth(executable: string, env: NodeJS.ProcessEnv, cwd: string, signal: AbortSignal, timeout: number, settingsPath: string,
+  inject?: (settingsPath: string) => Promise<unknown>): Promise<void> {
+  let status: unknown;
+  if (inject) status = await inject(settingsPath);
+  else {
+    const output = await new Promise<string>((resolve, reject) => {
+      execFile(executable, ["--bare", "--safe-mode", "--restricted", "--setting-sources", "", "--settings", settingsPath, "auth", "status", "--json"],
+        { cwd, env, signal, timeout: Math.max(1, Math.min(15_000, timeout)), maxBuffer: 64 * 1024, encoding: "utf8" },
+        (error, stdout) => error ? reject(new Error("Claude Code API authentication preflight failed; no inference started")) : resolve(stdout));
+    });
+    try { status = JSON.parse(output); } catch { throw new Error("Claude Code API authentication status was invalid; no inference started"); }
+  }
+  assertClaudeApiStatus(status);
+}
+
 /** Observed quota reset forms: `resets Oct 7 at 5pm (America/New_York)`,
  * `resets 1pm (America/New_York)` and `resets 11pm`. A time followed by a
  * parenthesised zone that is not a plain zone name is rejected outright. */
@@ -173,6 +233,9 @@ function syntheticClaudeCause(text: string, usageLimit = false, synthetic = true
   if (usageLimit || /\b(?:hit your (?:weekly |usage |session |5-hour )?limit|(?:weekly|usage|session|5-hour) limit|quota (?:exceeded|exhausted))\b/i.test(diagnostic)) {
     const reset = diagnostic.match(QUOTA_RESET)?.[1];
     return `quota limit reached${reset ? `; resets ${reset}` : ""}; check Claude usage and retry the same route only after reset`;
+  }
+  if (/\bcredit balance (?:is )?too low\b|\binsufficient (?:credits?|funds)\b/i.test(diagnostic)) {
+    return "quota limit reached (API credit balance exhausted); no fallback, purchase or top-up was attempted; check Console billing";
   }
   if (/\b(?:rate limit|too many requests)\b|\b429\b/i.test(diagnostic)) {
     return "rate limit reached; retry with bounded backoff";
@@ -224,6 +287,8 @@ export function buildClaudeWorkerPrompt(run: RunRecord, task: TaskRecord): strin
     "Work only on the exact leaf below. Do not broaden scope, perform unrelated cleanup, or settle parent-level integration decisions.",
     "Never delegate or launch another agent. The Agent/Task delegation tools are denied; do not attempt recursion through any other path.",
     permissionLine(task),
+    // Observed on CLI 2.1.296: `--bare` offers a read-only leaf only Read. Say so rather than promise tools the session lacks.
+    ...(claudeApiModelOf(run.model) ? ["This session runs in the CLI's minimal bare mode: Grep and Glob may not be provided, so read files with Read. The tools you actually hold are the ones available."] : []),
     ...(run.selection?.images ? ["Image inspection uses native Read on image files staged under the run cwd; inline attachments and image relay are unsupported. Read every image you claim to have inspected."] : []),
     "There is no relay tool on this harness: peer messaging is unsupported. Report coordination needs in your final report instead.",
     "Do not run project-wide builds, linters, or test suites. Run only the focused checks needed for this leaf.",
@@ -261,7 +326,7 @@ export function buildClaudeWorkerPrompt(run: RunRecord, task: TaskRecord): strin
 
 export type ClaudeStreamEvent =
   | { kind: "assistant"; text: string; toolUses: string[]; toolCalls: ClaudeToolCall[]; usage?: unknown; messageId?: string; model?: string; sidechain?: boolean; usageLimit?: true }
-  | { kind: "identity"; model: string }
+  | { kind: "identity"; model: string; apiKeySource?: string; cliVersion?: string }
   | { kind: "tool_result"; isError: boolean; results: Array<{ id: string; isError: boolean }> }
   | { kind: "result"; subtype?: string; isError: boolean; result?: string; usage?: unknown; totalCostUsd?: number; numTurns?: number; models?: string[]; usageLimit?: true }
   | { kind: "other" }
@@ -305,8 +370,12 @@ export function parseClaudeStreamLine(line: string): ClaudeStreamEvent {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { kind: "malformed" };
   const event = parsed as { type?: unknown; subtype?: unknown; is_error?: unknown; result?: unknown;
     usage?: unknown; total_cost_usd?: unknown; num_turns?: unknown; message?: unknown; model?: unknown; modelUsage?: unknown;
-    parent_tool_use_id?: unknown; error?: unknown };
-  if (event.type === "system" && event.subtype === "init" && typeof event.model === "string") return { kind: "identity", model: event.model };
+    parent_tool_use_id?: unknown; error?: unknown; apiKeySource?: unknown; claude_code_version?: unknown };
+  if (event.type === "system" && event.subtype === "init" && typeof event.model === "string") {
+    return { kind: "identity", model: event.model,
+      ...(typeof event.apiKeySource === "string" ? { apiKeySource: event.apiKeySource.slice(0, 40) } : {}),
+      ...(typeof event.claude_code_version === "string" ? { cliVersion: event.claude_code_version.slice(0, 40) } : {}) };
+  }
   if (event.type === "assistant") {
     const { text, toolUses, toolCalls } = textBlocks((event.message as { content?: unknown } | undefined)?.content);
     const usage = (event.message as { usage?: unknown } | undefined)?.usage;
@@ -426,6 +495,10 @@ export interface ClaudeWorkerRunnerOptions {
   spawn?: ClaudeSpawn;
   /** Bounded wait between SIGTERM and SIGKILL on cancel/timeout. */
   abortGraceMs?: number;
+  /** Explicit API route only: approval-record location/clock seams (tests). */
+  api?: ClaudeApiConfigOptions;
+  /** Explicit API route only: replaces the CLI `auth status` probe (tests). */
+  apiAuthStatus?: (settingsPath: string) => Promise<unknown>;
 }
 
 interface RunState {
@@ -478,6 +551,9 @@ export function classifyClaudeWorkerState(input: {
   exitCode: number | null;
   exitSignal: string | null;
   spawnError?: Error;
+  /** Explicit API route: a result without CLI-attested API auth is never "done". */
+  apiRequired?: boolean;
+  apiAttested?: boolean;
 }): Pick<WorkerResult, "state" | "error"> {
   const { signal, state, maxTurns, exitCode, exitSignal, spawnError } = input;
   if (spawnError !== undefined) return { state: "failed", error: `claude-code CLI could not start: ${spawnError.message}` };
@@ -501,6 +577,7 @@ export function classifyClaudeWorkerState(input: {
       return { state: "failed", error: `claude-code CLI reported ${result.subtype ?? "an error"} result` };
     }
     if (!state.modelVerified) return { state: "failed", error: "Claude CLI did not attest the pinned route model" };
+    if (input.apiRequired && !input.apiAttested) return { state: "failed", error: "Claude CLI did not attest apiKeyHelper API authentication for this leaf" };
     return { state: "done" };
   }
   if (exitCode !== null && exitCode !== 0) {
@@ -528,17 +605,43 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     if (task.sessionFile) {
       return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "harness claude-code cannot resume a native Pi worker session" };
     }
-    const pinnedModel = claudeCodeModelOf(run.model);
+    // Two disjoint route families share this runner: the subscription route
+    // (`claude-code/<model>`) and the explicit, separately approved API route
+    // (`claude-code-api/<model>`). Neither ever resolves to the other.
+    const apiModel = claudeApiModelOf(run.model);
+    const pinnedModel = claudeCodeModelOf(run.model) ?? apiModel;
     if (pinnedModel === undefined || run.thinkingLevel !== CLAUDE_CODE_EFFORT) {
       return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "Claude Code requires the exact Sonnet 5.5 or Opus 5.5 xhigh route" };
     }
     const resuming = typeof task.claudeSessionId === "string" && CLAUDE_SESSION_ID.test(task.claudeSessionId);
     const sessionId = resuming ? task.claudeSessionId! : randomUUID();
+    // The approval record is re-read at EVERY launch (including automatic and
+    // explicit resumes) so expiry, revocation and spent budget always apply.
+    let admission: ClaudeApiAdmission | undefined;
+    if (apiModel !== undefined) {
+      try {
+        admission = admitClaudeApiRoute({ route: run.model, taskCount: Math.max(1, run.tasks.length),
+          priorSpendUsd: (task.priorSpendUsd ?? 0) + task.usage.cost.total, ...(task.apiLeafCapUsd === undefined ? {} : { leafCapLimitUsd: task.apiLeafCapUsd }) }, options.api);
+      } catch (error) { return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
+    }
     let args: string[];
-    try { args = claudeWorkerArgs(Math.max(1, Math.min(run.maxTurns, 2048)), task, undefined, pinnedModel, { id: sessionId, resume: resuming }); }
+    try {
+      const turns = Math.max(1, Math.min(run.maxTurns, 2048));
+      args = admission
+        ? claudeApiWorkerArgs(turns, task, undefined, pinnedModel, { id: sessionId, resume: resuming }, { settingsPath: admission.settingsPath, maxBudgetUsd: admission.leafBudgetUsd })
+        : claudeWorkerArgs(turns, task, undefined, pinnedModel, { id: sessionId, resume: resuming });
+    }
     catch (error) { return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
     if (signal.aborted) return { state: isTimeoutSignal(signal) ? "timed_out" : "aborted", output: "", turns: 0, usage: emptyUsage(), error: "Cancelled before CLI launch" };
-    if (!options.spawn) {
+    let apiPreflight = false;
+    if (admission) {
+      // A production launch always asks the real CLI. Only a test-injected spawn
+      // may skip the probe, and it can still inject a status to exercise failures.
+      if (!options.spawn || options.apiAuthStatus) {
+        try { await verifyClaudeApiAuth(executable, claudeWorkerEnv(), run.cwd, signal, run.timeoutMs, admission.settingsPath, options.apiAuthStatus); apiPreflight = true; }
+        catch (error) { return { state: isTimeoutSignal(signal) ? "timed_out" : signal.aborted ? "aborted" : "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
+      }
+    } else if (!options.spawn) {
       try { await verifyClaudeSubscription(executable, claudeWorkerEnv(), run.cwd, signal, run.timeoutMs); }
       catch (error) { return { state: isTimeoutSignal(signal) ? "timed_out" : signal.aborted ? "aborted" : "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error), ...(!signal.aborted && errorText(error).startsWith("Claude Code workers require an existing first-party") ? { reviewFallbackReason: "auth" as const } : {}) }; }
     }
@@ -609,6 +712,13 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     let syntheticFailed = false;
     let sawModelOutput = false;
     let reviewFallbackReason: "quota" | "auth" | undefined;
+    // Explicit API route: what the CLI itself attested for this leaf.
+    let apiInitAttested = false;
+    let apiCliVersion: string | undefined;
+    const servedModels: string[] = [];
+    const buildApiReceipt = (spentUsd?: number): ClaudeApiReceipt | undefined => admission && apiInitAttested
+      ? claudeApiReceipt({ admission, sessionId, servedModels, cliVersion: apiCliVersion, preflight: apiPreflight, init: true, spentUsd })
+      : undefined;
     child.onStdout((chunk) => {
       // A synthetic error is terminal even if later buffered frames claim success.
       if (syntheticFailed || state.failure !== undefined || state.turnLimitReached) return;
@@ -641,7 +751,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
         if (reportedModels.includes("<synthetic>")) {
           syntheticFailed = true;
           const cause = syntheticClaudeCause(event.kind === "assistant" ? event.text : "", event.kind === "assistant" && event.usageLimit === true);
-          if (!sawModelOutput) reviewFallbackReason = cause.startsWith("quota limit") || cause.startsWith("rate limit") ? "quota" : cause.startsWith("authentication failed") ? "auth" : undefined;
+          if (!sawModelOutput && !admission) reviewFallbackReason = cause.startsWith("quota limit") || cause.startsWith("rate limit") ? "quota" : cause.startsWith("authentication failed") ? "auth" : undefined;
           state.failure ??= `Claude CLI synthetic error: ${event.kind === "assistant" ? syntheticClaudeCause(event.text, event.usageLimit === true) : syntheticClaudeCause("")}; synthetic frame is not a model response or approval`;
           // Do not count this frame as a turn, usage, output, or model evidence.
           killOnce(true);
@@ -659,6 +769,22 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
             : `Claude CLI usage shows no turn on the pinned ${claudeCodeModelName(pinnedModel)} route`;
           killOnce(true);
           return;
+        }
+        if (admission && event.kind === "identity") {
+          // The init frame is the CLI's own statement of where its credential came from.
+          if (event.apiKeySource !== "apiKeyHelper") {
+            state.failure = `Claude CLI did not attest apiKeyHelper API authentication (reported ${receiptText(event.apiKeySource) ?? "no key source"}); this output is not API-route evidence`;
+            killOnce(true);
+            return;
+          }
+          apiInitAttested = true;
+          apiCliVersion = event.cliVersion;
+          const receipt = buildApiReceipt();
+          if (receipt) onProgress({ apiReceipt: receipt });
+        }
+        if (admission && event.kind !== "identity") {
+          // Init only names the requested model; served-model evidence comes from response and result frames.
+          for (const reported of reportedModels) if (reported === pinnedModel && !servedModels.includes(reported)) servedModels.push(reported);
         }
         // Init identifies requested configuration, not served inference; helpers
         // likewise cannot attest the worker's pinned model.
@@ -722,9 +848,12 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
         if (event.kind === "result") {
           state.sawResult = true;
           state.result = event;
-          if ((event.isError || event.subtype !== "success") && event.subtype !== "error_max_turns") {
+          if (admission && event.subtype === "error_max_budget_usd") {
+            // The CLI stopped itself at the per-session ceiling: partial evidence, never acceptance, never a top-up.
+            state.failure ??= `Claude API session budget ceiling reached (cap $${admission.leafBudgetUsd.toFixed(2)} for this session); the partial report is evidence, not acceptance; no top-up or fallback was attempted`;
+          } else if ((event.isError || event.subtype !== "success") && event.subtype !== "error_max_turns") {
             const cause = syntheticClaudeCause(event.result ?? "", event.usageLimit === true, false);
-            if (!sawModelOutput) reviewFallbackReason = cause.startsWith("quota limit") || cause.startsWith("rate limit") ? "quota" : cause.startsWith("authentication failed") ? "auth" : undefined;
+            if (!sawModelOutput && !admission) reviewFallbackReason = cause.startsWith("quota limit") || cause.startsWith("rate limit") ? "quota" : cause.startsWith("authentication failed") ? "auth" : undefined;
             state.failure ??= `Claude CLI error result: ${syntheticClaudeCause(event.result ?? "", event.usageLimit === true, false)}; error result is not model approval`;
           }
           if (event.numTurns !== undefined) {
@@ -778,7 +907,8 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     }
     if (!closed) state.failure ??= "claude-code process exit could not be verified; cleanup lease retained";
 
-    const classification = classifyClaudeWorkerState({ signal, state, maxTurns, exitCode, exitSignal, ...(spawnError !== undefined ? { spawnError } : {}) });
+    const classification = classifyClaudeWorkerState({ signal, state, maxTurns, exitCode, exitSignal, ...(spawnError !== undefined ? { spawnError } : {}),
+      ...(admission ? { apiRequired: true, apiAttested: apiInitAttested } : {}) });
     // Keep the transcript only while it may still be resumed.
     if (classification.state === "done" && !options.spawn) {
       try { removeClaudeWorkerSession(sessionId); } catch { /* best effort; the report is unaffected */ }
@@ -786,7 +916,8 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     const bounded = truncatePiWorkerOutput([claudeShellPolicy(task).diagnostic, state.outputParts.join("")].filter(Boolean).join("\n"));
     return {
       ...classification,
-      ...(closed && !sawModelOutput && !state.modelVerified && !signal.aborted && classification.state === "failed" && reviewFallbackReason ? { reviewFallbackReason } : {}),
+      ...(closed && !sawModelOutput && !state.modelVerified && !signal.aborted && classification.state === "failed" && reviewFallbackReason && !admission ? { reviewFallbackReason } : {}),
+      ...(buildApiReceipt(state.result?.totalCostUsd) ? { apiReceipt: buildApiReceipt(state.result?.totalCostUsd)! } : {}),
       ...(!closed ? { cleanup: exitPromise } : {}),
       output: bounded.output,
       toolErrors: state.toolErrors,

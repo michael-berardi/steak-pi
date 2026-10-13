@@ -9,6 +9,18 @@
 
 ## Unreleased
 
+- Run the test suite under a private empty HOME so an operator's live `~/.config/ultraterm`,
+  `~/.pi` and `~/.claude` cannot change results (49 tests failed on a machine with a live Go
+  `routing.json`; the same suite now passes everywhere).
+- Add the explicit Claude API route `claude-code-api/claude-sonnet-5-5|claude-opus-5-5` to the
+  official headless Claude Code runner: distinct from the subscription route, admitted per
+  dispatch and launch by a task-scoped operator approval record and a strict settings contract,
+  `--bare` apiKeyHelper auth, per-session budget ceilings, a CLI-attested sanitized receipt, no
+  fallback in either direction, and a standalone `scripts/usap-claude-api.ts` (also
+  `steak-pi usap-api`) for dispatch and the one bounded resume. Subscription defaults,
+  arguments and environment stripping are unchanged. See `docs/CLAUDE-API-ROUTE.md`, which
+  records that promotional API credits cover headless `claude -p` and the Agent SDK, not
+  interactive Claude Code.
 - Rebrand to Pareto Cybernetics: `steak-pi version` reports "(Pareto Cybernetics)" and the
   Homebrew tap is `michael-berardi/pareto-software-distribution`
   (`brew install michael-berardi/pareto-software-distribution/steak-pi`).
