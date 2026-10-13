@@ -104,7 +104,7 @@ quota, never model approval or permission for credits or silent fallback. This
 replaces the Astra pass.
 API credits are a separate explicit route: `model: "claude-code-api/claude-sonnet-5-5"`
 (or `…-opus-5-5`) runs the same headless worker on the operator-approved API key.
-It needs the task-scoped approval record (`USAP_CLAUDE_API_CONFIG`), has hard
+It needs the task- and role-scoped approval record (`USAP_CLAUDE_API_CONFIG`), has hard
 per-session budgets, is at most 3 wide, never falls back to the subscription or
 Sol, and is headless only: promotional API credits do not cover interactive
 Claude Code. A running parent cannot load the new route without a restart; run

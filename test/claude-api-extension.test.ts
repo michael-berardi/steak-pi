@@ -90,6 +90,7 @@ describe("ultraterm_subagents explicit Claude API route", () => {
 
   it.each([
     ["an unapproved model", () => fixture.writeConfig({ routes: [OPUS] }), SONNET, /route-not-approved/],
+    ["a role the approval does not cover", () => fixture.writeConfig({ roles: ["reviewer"] }), SONNET, /role-not-approved/],
     ["an expired approval", () => fixture.writeConfig({ approval: { approvedBy: "operator", source: "brief", task: "t", approvedAt: "2026-09-01T00:00:00Z", expiresAt: "2026-09-02T00:00:00Z" } }), SONNET, /approval-expired/],
     ["a settings file that carries a base URL", () => fixture.writeSettings({ apiKeyHelper: fixture.helperPath, env: { ANTHROPIC_CUSTOM_HEADERS: `anthropic-workspace-id: ${CANARY_WORKSPACE}`, ANTHROPIC_BASE_URL: "https://example.invalid" } }), SONNET, /settings-invalid/],
   ])("rejects %s with a named error", async (_name, arrange, model, pattern) => {

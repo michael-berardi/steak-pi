@@ -104,6 +104,11 @@ describe("approval record contract", () => {
     ["no routes", { routes: [] }, /routes must list/],
     ["unknown route", { routes: ["claude-code/claude-sonnet-5-5"] }, /routes must list/],
     ["duplicate route", { routes: [SONNET, SONNET] }, /routes must list/],
+    ["missing roles", { roles: undefined }, /roles must list/],
+    ["empty roles", { roles: [] }, /roles must list/],
+    ["unknown role", { roles: ["implementer"] }, /roles must list/],
+    ["duplicate role", { roles: ["reviewer", "reviewer"] }, /roles must list/],
+    ["string roles", { roles: "reviewer" }, /roles must list/],
     ["leaf above run", { budget: { maxLeafUsd: 2, maxRunUsd: 1 } }, /cannot exceed/],
     ["leaf above hard ceiling", { budget: { maxLeafUsd: 11, maxRunUsd: 12 } }, /maxLeafUsd must be a number/],
     ["run above hard ceiling", { budget: { maxLeafUsd: 1, maxRunUsd: 26 } }, /maxRunUsd must be a number/],
@@ -141,6 +146,20 @@ describe("approval record contract", () => {
     expect(failure(() => admitClaudeApiRoute({ route: SONNET, taskCount: 1 }, f.options)).code).toBe("route-not-approved");
     expect(admitClaudeApiRoute({ route: OPUS, taskCount: 1 }, f.options).model).toBe("claude-opus-5-5");
     expect(failure(() => admitClaudeApiRoute({ route: OPUS, taskCount: 1 }, { ...f.options, now: () => NOW + 30 * 86_400_000 })).code).toBe("approval-expired");
+  });
+
+  it("scopes the approval to its stated roles: a verification-only approval never admits implementation workers", () => {
+    const f = fresh();
+    f.writeConfig({ roles: ["reviewer"] });
+    expect(admitClaudeApiRoute({ route: SONNET, taskCount: 2, roles: ["reviewer", "reviewer"] }, f.options).approval).toMatchObject({ roles: ["reviewer"], approvedBy: "operator", source: "phase-A brief", task: "sonnet-usap-api-test" });
+    for (const roles of [["worker"], ["scout"], ["reviewer", "worker"]]) {
+      const error = failure(() => admitClaudeApiRoute({ route: SONNET, taskCount: 1, roles }, f.options));
+      expect(error.code).toBe("role-not-approved");
+      expect(error.message).toMatch(/not a blanket paid-route grant/);
+      expect(error.message).toMatch(/no subscription, Sol or other fallback was selected/);
+    }
+    // No roles supplied by a caller means nothing to check, never an implicit grant to widen later.
+    expect(admitClaudeApiRoute({ route: SONNET, taskCount: 1 }, f.options).route).toBe(SONNET);
   });
 
   it("refuses image review on the API route", () => {
@@ -290,6 +309,7 @@ describe("CLI-reported authentication and receipts", () => {
     const admission = admitClaudeApiRoute({ route: SONNET, taskCount: 1 }, f.options);
     const receipt = claudeApiReceipt({ admission, sessionId: "11111111-2222-4333-8444-555555555555", servedModels: ["claude-sonnet-5-5", "claude-sonnet-5-5", `bad ${CANARY_KEY}`, "x".repeat(200)],
       cliVersion: "2.1.296 (Claude Code) secret", preflight: true, init: true, spentUsd: 0.123456789 });
+    expect(receipt.approval).toEqual({ id: admission.approval.id, task: "sonnet-usap-api-test", approvedBy: "operator", source: "phase-A brief", roles: ["scout", "worker", "reviewer"], expiresAt: "2026-10-20T00:00:00Z" });
     expect(receipt).toMatchObject({ kind: "claude-code-api", route: SONNET, model: "claude-sonnet-5-5", auth: { method: "api_key_helper", provider: "firstParty", keySource: "apiKeyHelper" },
       attested: { preflight: true, init: true }, servedModels: ["claude-sonnet-5-5"], budget: { leafCapUsd: 1, runCapUsd: 2, priorSpendUsd: 0, spentUsd: 0.123457 } });
     expect(receipt.cliVersion).toBeUndefined();
@@ -317,4 +337,5 @@ it("example record in the docs matches the contract", () => {
   f.writeConfig({ ...example, settingsPath: f.settingsPath, approval: { ...example.approval, approvedAt: "2026-10-13T00:00:00Z", expiresAt: "2026-10-20T00:00:00Z" } });
   expect(loadClaudeApiConfig(f.options).routes.length).toBeGreaterThan(0);
   expect(Object.keys(approvalRecord("/x")).sort()).toEqual(Object.keys(example).sort());
+  expect(example.roles).toBeDefined();
 });

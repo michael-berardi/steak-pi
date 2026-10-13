@@ -2,7 +2,7 @@
 /**
  * Supported entry point for explicit Claude API USAP waves (see docs/CLAUDE-API-ROUTE.md).
  *
- *   node scripts/usap-claude-api.ts admit [--tasks N] [--route R]
+ *   node scripts/usap-claude-api.ts admit [--tasks N] [--route R] [--role scout|worker|reviewer]
  *   node scripts/usap-claude-api.ts dispatch <wave.json> [--checkpoint-root DIR] [--out FILE]
  *   node scripts/usap-claude-api.ts resume <run-id> [--checkpoint-root DIR] [--out FILE]
  *
@@ -32,7 +32,8 @@ async function main(): Promise<number> {
   const deps = { ...(checkpointRoot ? { checkpointRoot } : {}), signal: controller.signal };
   if (command === "admit") {
     const route = flag(rest, "--route") ?? CLAUDE_API_SONNET_ROUTE;
-    const admission = admitClaudeApiRoute({ route, taskCount: Number(flag(rest, "--tasks") ?? 1) });
+    const role = flag(rest, "--role");
+    const admission = admitClaudeApiRoute({ route, taskCount: Number(flag(rest, "--tasks") ?? 1), ...(role ? { roles: [role] } : {}) });
     // Structure only: no settings path, helper path or header value.
     const { settingsPath: _settingsPath, ...safe } = admission;
     console.log(JSON.stringify({ admitted: true, ...safe }, null, 2));

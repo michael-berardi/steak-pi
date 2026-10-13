@@ -25,6 +25,7 @@ export function approvalRecord(settingsPath: string, overrides: Record<string, u
     version: 1,
     approval: { approvedBy: "operator", source: "phase-A brief", task: "sonnet-usap-api-test", approvedAt: "2026-10-13T00:00:00Z", expiresAt: "2026-10-20T00:00:00Z" },
     routes: ["claude-code-api/claude-sonnet-5-5", "claude-code-api/claude-opus-5-5"],
+    roles: ["scout", "worker", "reviewer"],
     settingsPath,
     budget: { maxLeafUsd: 1, maxRunUsd: 2 },
     ...overrides,

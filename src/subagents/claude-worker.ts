@@ -287,8 +287,8 @@ export function buildClaudeWorkerPrompt(run: RunRecord, task: TaskRecord): strin
     "Work only on the exact leaf below. Do not broaden scope, perform unrelated cleanup, or settle parent-level integration decisions.",
     "Never delegate or launch another agent. The Agent/Task delegation tools are denied; do not attempt recursion through any other path.",
     permissionLine(task),
-    // Observed on CLI 2.1.296: `--bare` offers a read-only leaf only Read. Say so rather than promise tools the session lacks.
-    ...(claudeApiModelOf(run.model) ? ["This session runs in the CLI's minimal bare mode: Grep and Glob may not be provided, so read files with Read. The tools you actually hold are the ones available."] : []),
+    // Observed on CLI 2.1.296: `--bare` offers only Read (plus Edit and Bash when granted); Grep, Glob and Write were absent. Say so rather than promise tools the session lacks.
+    ...(claudeApiModelOf(run.model) ? ["This session runs in the CLI's minimal bare mode: Grep, Glob, Write and NotebookEdit may not be provided, so read files with Read and change files with Edit. The tools you actually hold are the ones available."] : []),
     ...(run.selection?.images ? ["Image inspection uses native Read on image files staged under the run cwd; inline attachments and image relay are unsupported. Read every image you claim to have inspected."] : []),
     "There is no relay tool on this harness: peer messaging is unsupported. Report coordination needs in your final report instead.",
     "Do not run project-wide builds, linters, or test suites. Run only the focused checks needed for this leaf.",
@@ -620,7 +620,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     let admission: ClaudeApiAdmission | undefined;
     if (apiModel !== undefined) {
       try {
-        admission = admitClaudeApiRoute({ route: run.model, taskCount: Math.max(1, run.tasks.length),
+        admission = admitClaudeApiRoute({ route: run.model, taskCount: Math.max(1, run.tasks.length), roles: [task.role],
           priorSpendUsd: (task.priorSpendUsd ?? 0) + task.usage.cost.total, ...(task.apiLeafCapUsd === undefined ? {} : { leafCapLimitUsd: task.apiLeafCapUsd }) }, options.api);
       } catch (error) { return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
     }

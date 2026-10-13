@@ -1401,7 +1401,7 @@ export function createUltratermSubagentsExtension(
         // Operator approval, settings contract and budget are checked before any
         // checkpoint, relay peer or worker exists; the runner re-checks at every launch.
         const apiAdmission = apiRoute
-          ? admitClaudeApiRoute({ route: claudeRoute, taskCount: params.tasks.length, requireImages: params.requireImages === true }, dependencies.now ? { now: dependencies.now } : {})
+          ? admitClaudeApiRoute({ route: claudeRoute, taskCount: params.tasks.length, roles: params.tasks.map((task) => task.role ?? "worker"), requireImages: params.requireImages === true }, dependencies.now ? { now: dependencies.now } : {})
           : undefined;
         if (apiRoute) params.concurrency = claudeApiConcurrency(params.concurrency, params.tasks.length);
         if (foreignHarness && params.thinking !== undefined && params.thinking !== "xhigh") {
@@ -1666,7 +1666,7 @@ export function createUltratermSubagentsExtension(
           };
           if (resumeApi) {
             for (const task of unfinished) {
-              admitClaudeApiRoute({ route: snapshot.model, taskCount: snapshot.tasks.length,
+              admitClaudeApiRoute({ route: snapshot.model, taskCount: snapshot.tasks.length, roles: [task.role],
                 priorSpendUsd: task.usage.cost.total + (task.priorSpendUsd ?? 0), ...(task.apiLeafCapUsd === undefined ? {} : { leafCapLimitUsd: task.apiLeafCapUsd }) }, dependencies.now ? { now: dependencies.now } : {});
             }
           }

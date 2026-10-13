@@ -161,7 +161,7 @@ quota, not permission to buy credits or an expert approval.
 `claude-code-api/claude-sonnet-5-5` or `claude-code-api/claude-opus-5-5`, runs
 the same headless CLI worker on an API key (behind an approved `apiKeyHelper`,
 `--bare`) instead of the subscription login. It is reachable only by naming the
-exact model, only while a task-scoped operator approval record admits it, with
+exact model, only while a task- and role-scoped operator approval record admits it, with
 hard per-session budget ceilings, a sanitized CLI-attested receipt and no
 fallback to the subscription, Sol or any other route; the subscription route's
 checks are unchanged. Monthly promotional API credits cover headless `claude -p`

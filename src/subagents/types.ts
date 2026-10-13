@@ -112,7 +112,8 @@ export interface ClaudeApiReceipt {
   servedModels: string[];
   cliVersion?: string;
   settingsDigest: string;
-  approval: { id: string; task: string; expiresAt: string };
+  /** Approval provenance: which operator record admitted this leaf, for what scope. */
+  approval: { id: string; task: string; approvedBy: string; source: string; roles: string[]; expiresAt: string };
   budget: { leafCapUsd: number; runCapUsd: number; priorSpendUsd: number; spentUsd?: number };
   sessionId: string;
 }
