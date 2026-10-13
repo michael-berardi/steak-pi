@@ -1,9 +1,14 @@
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CheckpointStore, diagnoseRun, recoveredRun } from "../src/subagents/checkpoints.ts";
 import { normalizeDispatch } from "../src/subagents/policy.ts";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  return { ...fs, writeFileSync: vi.fn(fs.writeFileSync), fsyncSync: vi.fn(fs.fsyncSync), closeSync: vi.fn(fs.closeSync) };
+});
 
 const dirs: string[] = [];
 const stores: CheckpointStore[] = [];
@@ -16,6 +21,146 @@ function setup() {
 afterEach(() => { for (const store of stores.splice(0)) store.close(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 describe("durable USAP checkpoints", () => {
+  const queue = () => ({ tier: "machine" as const, provider: "anthropic", reason: "provider_capacity", since: 1_000, deadlineAt: 5_000,
+    capacity: { provider: "anthropic", providerBucket: { cap: 1, held: 1, owners: [{ index: 0, pid: 123, born: 500, runId: "run-peer", taskId: "task-peer", sessionId: "session-peer", kind: "lease" as const, status: "live" as const }] },
+      globalBucket: { cap: 2, held: 1, owners: [{ index: 1, kind: "claim" as const, status: "unknown" as const }] } } });
+
+  it.each(["machine", "session"] as const)("diagnoses an active %s queue immediately without worker content", (tier) => {
+    const { run } = setup();
+    run.tasks[0].state = "starting";
+    run.tasks[0].launchQueue = { ...queue(), tier };
+    run.tasks[0].task = "PRIVATE instruction"; run.tasks[0].output = "PRIVATE output";
+    const diagnostic = diagnoseRun(run, 2_000).tasks[0];
+    expect(diagnostic).toMatchObject({ reason: tier === "machine" ? "launch_capacity" : "session_capacity",
+      launchQueue: { tier, elapsedMs: 1_000, remainingMs: 3_000, capacity: queue().capacity } });
+    expect(JSON.stringify(diagnostic)).not.toContain("PRIVATE");
+    expect(diagnoseRun(run, 500).tasks[0].launchQueue?.elapsedMs).toBe(0);
+    expect(diagnoseRun(run, 6_000).tasks[0].launchQueue?.remainingMs).toBe(0);
+  });
+
+  it("persists static queue transitions immediately without defeating unchanged-write throttling", () => {
+    const { root, store, run } = setup();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(2_000);
+    try {
+      const task = run.tasks[0];
+      task.state = "starting";
+      expect(store.save(run)).toBe(true);
+      task.launchQueue = queue();
+      expect(store.save(run)).toBe(true);
+      expect(store.get(run.id)!.run.tasks[0].launchQueue).toEqual(queue());
+      clock.mockReturnValue(2_100);
+      expect(diagnoseRun(run).tasks[0].launchQueue?.elapsedMs).toBe(1_100);
+      expect(store.save(run)).toBe(false);
+      task.launchQueue.capacity!.globalBucket.held = 2;
+      task.launchQueue.reason = "provider and global capacity unavailable";
+      expect(store.save(run)).toBe(true);
+      task.launchQueue.capacity!.providerBucket.owners[0].pid = 456;
+      expect(store.save(run)).toBe(true);
+      task.lastLaunchQueue = structuredClone(task.launchQueue);
+      delete task.launchQueue;
+      expect(store.save(run)).toBe(true);
+      expect(store.save(run)).toBe(false);
+      store.close();
+      const reopened = new CheckpointStore(join(root, "parent.jsonl"), join(root, "checkpoints")); stores.push(reopened);
+      expect(reopened.warnings).toEqual([]);
+      expect(reopened.get(run.id)!.run.tasks[0].launchQueue).toBeUndefined();
+      expect(reopened.get(run.id)!.run.tasks[0].lastLaunchQueue).toEqual(task.lastLaunchQueue);
+    } finally { clock.mockRestore(); }
+  });
+
+  it("retains queue evidence through checkpoints and interruption without claiming an active queue", () => {
+    const { root, store, run } = setup();
+    run.tasks[0].state = "starting"; run.tasks[0].launchQueue = queue(); run.tasks[0].lastLaunchQueue = queue();
+    store.save(run, true); store.close();
+    const next = new CheckpointStore(join(root, "parent.jsonl"), join(root, "checkpoints")); stores.push(next);
+    expect(next.warnings).toEqual([]);
+    expect(next.get(run.id)!.run.tasks[0].launchQueue).toEqual(queue());
+    const recovered = recoveredRun(next.get(run.id)!);
+    expect(recovered.tasks[0].launchQueue).toBeUndefined();
+    expect(diagnoseRun(recovered).tasks[0]).toMatchObject({ reason: "host_interrupted", lastLaunchQueue: { tier: "machine" } });
+  });
+
+  it.each([null, {}, { ...queue(), tier: "other" }, { ...queue(), since: -1 }, { ...queue(), deadlineAt: 999 },
+    { ...queue(), capacity: { ...queue().capacity, providerBucket: { cap: 1, held: 1, owners: [{ index: 0, kind: "lease", status: "guess" }] } } },
+    { ...queue(), nonce: "PRIVATE" },
+    { ...queue(), capacity: { ...queue().capacity, providerBucket: { cap: 1, held: 1, owners: [{ index: 0, kind: "lease", status: "live", nonce: "PRIVATE" }] } } },
+    { ...queue(), capacity: { ...queue().capacity, providerBucket: { cap: 129, held: 0, owners: [] } } },
+  ])("quarantines invalid optional queue metadata %#", (invalid) => {
+    const { root, store, run } = setup(); store.save(run, true);
+    const path = join(store.directory, `${run.id}.json`);
+    const checkpoint = JSON.parse(readFileSync(path, "utf8"));
+    checkpoint.run.tasks[0].lastLaunchQueue = invalid;
+    writeFileSync(path, JSON.stringify(checkpoint), { mode: 0o600 }); store.close();
+    const next = new CheckpointStore(join(root, "parent.jsonl"), join(root, "checkpoints")); stores.push(next);
+    expect(next.get(run.id)).toBeUndefined(); expect(next.warnings).toHaveLength(1);
+  });
+
+  it("classifies reviewer launch queue budget exhaustion before timeout or worker failure", () => {
+    const { run } = setup(); run.tasks[0].role = "reviewer"; run.tasks[0].state = "timed_out";
+    run.tasks[0].lastLaunchQueue = queue(); run.tasks[0].error = "Reviewer launch queue budget exceeded PRIVATE";
+    const diagnostic = diagnoseRun(run, 6_000).tasks[0];
+    expect(diagnostic).toMatchObject({ reason: "launch_capacity", lastLaunchQueue: { remainingMs: 0 } });
+    expect(JSON.stringify(diagnostic)).not.toContain("PRIVATE");
+  });
+
+  it.each(["write", "fsync", "close"])("preserves the first %s failure and prior evidence when close fails", async (stage) => {
+    const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const { root, store, run } = setup();
+    store.save(run, true);
+    const file = join(store.directory, `${run.id}.json`);
+    const before = readFileSync(file, "utf8");
+    const foreignTemp = join(store.directory, ".another-owner.tmp");
+    writeFileSync(foreignTemp, "untouched");
+    run.state = "done";
+    run.tasks[0].state = "done";
+    const primary = Object.assign(new Error("injected first failure"), { code: stage === "close" ? "EIO" : "ENOSPC", syscall: stage });
+    const write = vi.spyOn(await import("node:fs"), "writeFileSync");
+    const sync = vi.spyOn(await import("node:fs"), "fsyncSync");
+    const close = vi.spyOn(await import("node:fs"), "closeSync").mockClear().mockImplementationOnce((fd) => {
+      fs.closeSync(fd); // Release the real fixture descriptor before simulating EIO.
+      throw stage === "close" ? primary : Object.assign(new Error("secondary close failure"), { code: "EIO", syscall: "close" });
+    });
+    if (stage === "write") write.mockImplementationOnce(() => { throw primary; });
+    if (stage === "fsync") sync.mockImplementationOnce(() => { throw primary; });
+    try {
+      let caught: unknown;
+      try { store.save(run, true); } catch (error) { caught = error; }
+      expect(caught).toBe(primary);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(readFileSync(file, "utf8")).toBe(before);
+      expect(store.get(run.id)!.run.state).toBe("running");
+      expect(readdirSync(store.directory).filter((name) => name.endsWith(".tmp"))).toEqual([".another-owner.tmp"]);
+      expect(readFileSync(foreignTemp, "utf8")).toBe("untouched");
+    } finally { write.mockRestore(); sync.mockRestore(); close.mockRestore(); }
+    expect(store.save(run, true)).toBe(true);
+    store.close();
+    const reopened = new CheckpointStore(join(root, "parent.jsonl"), join(root, "checkpoints")); stores.push(reopened);
+    expect(reopened.get(run.id)!.run.tasks[0].state).toBe("done");
+  });
+
+  it("retains the prior validated snapshot after a failed terminal write and commits a later retry", () => {
+    const { store, run } = setup();
+    store.save(run, true);
+    const file = join(store.directory, `${run.id}.json`);
+    const before = readFileSync(file, "utf8");
+    run.state = "done";
+    run.tasks[0].state = "done";
+    run.tasks[0].output = "terminal evidence";
+    const atomic = vi.spyOn(store as any, "atomic").mockImplementationOnce(() => { throw Object.assign(new Error("ENOSPC /secret"), { code: "ENOSPC" }); });
+    try {
+      expect(() => store.save(run, true)).toThrow(/ENOSPC/);
+      expect(store.get(run.id)!.run.state).toBe("running");
+      expect(readFileSync(file, "utf8")).toBe(before);
+      expect(store.save(run, true)).toBe(true);
+      expect(store.get(run.id)!.run.tasks[0]).toMatchObject({ state: "done", output: "terminal evidence" });
+      const terminal = readFileSync(file, "utf8");
+      store.close();
+      const recovered = new CheckpointStore(join(run.cwd, "parent.jsonl"), join(run.cwd, "checkpoints")); stores.push(recovered);
+      expect(recoveredRun(recovered.get(run.id)!).tasks[0].state).toBe("done");
+      expect(readFileSync(file, "utf8")).toBe(terminal);
+    } finally { atomic.mockRestore(); }
+  });
+
   it("does not promise native resume for an interrupted Claude CLI task", () => {
     const { store, run } = setup();
     run.harness = "claude-code";

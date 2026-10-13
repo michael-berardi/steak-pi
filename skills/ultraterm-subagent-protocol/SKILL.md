@@ -115,6 +115,16 @@ Image review is admitted only as staged files read by the CLI's native Read tool
 (see below).
 Scheduling, bounded waits/cancel, usage and reports use the same USAP coordinator.
 
+Unsupported Claude `ownedPaths` fail at dispatch before the wave is registered,
+checkpointed, or started. Forbidden permission-rule characters are `*`, `?`,
+`[`, `]`, `{`, `}`, `(`, `)`, `!`, backslash (`\`), LF, and CR in either the
+normalized lexical path or its physical projection (including missing children
+beneath symlinks). Astro `src/pages/[slug].astro` and
+`src/pages/[...slug].astro` are therefore rejected. No automatic widening or
+harness fallback occurs: the parent may explicitly choose Pi exact-path guarded
+writes or revise ownership within approved scope, never silently broaden it to
+the parent directory.
+
 If a Claude child returns a synthetic error, inspect hub `status` and `diagnose`,
 then check Claude subscription usage (UltraTerm's Claude usage dial or Claude
 Settings → Usage) before debugging the model or stream. Exhausted usage is a
@@ -165,11 +175,15 @@ restart. Never reinterpret a retired selector as 6.1 or convert Astra, Luna,
 Sonnet, Opus, MiMo or DeepSeek to Sol. Preserve checkpoints and ownership;
 inspect and use a supported explicit model-change/handoff, never kill a run.
 
-Without a selector, all-reviewer waves use the Opus Pass above. Other waves use
-the matching parent profile's worker defaults; routine automatic workers follow
-the MiMo V2.6 Flash → GPT-6.1 Sol subscription chain (automatic reviewers:
-MiMo V2.6 Pro → GPT-6.1 Sol; image runs: MiMo V2.6 Flash only). Explicit native Pi
-model/profile selections remain exact.
+Without a selector, all-reviewer waves prefer the Opus Pass. When the account
+router proves Claude unavailable, or the official CLI returns a recognized
+pre-output quota/auth failure, automatic text review uses GPT-6.1 Sol on Codex
+OAuth and records the actual fallback. Explicit routes remain exact, and image
+reviews never silently downgrade to text-only Sol. Routine native workers default
+to OpenCode Go DeepSeek V4.1 Flash, with isolated Go 1/Go 2 accounts. Native Pi
+role defaults follow explicit run selection, then global role defaults, then
+parent-profile defaults; the implicit Opus admission boundary precedes native
+Pi role defaults.
 Every GPT request must use paid-route openai-codex OAuth, non-batch, never
 OpenRouter or API-key GPT. Unavailable auth/models fail closed without fallback.
 
@@ -195,13 +209,20 @@ Every run enforces finite time, child-turn, output, and relay-message budgets.
 `timeoutMs` defaults to 10 minutes (1 second–8 hours); per-child `maxTurns`
 defaults to 64 (1–2,048 assistant turns, including relay follow-ups). Native
 worker compaction is enabled and native retries are capped at one.
+Before launch, inspect `status`/`diagnose` for the queue reason, queue deadline and
+machine capacity holders. Reviewer tasks have a 60-second launch queue budget across
+run, session and machine waits, capped by the absolute run deadline. A zero-turn queue
+timeout is not a completed or partial review. Once launch capacity is acquired, the
+queue bound is removed; execution retains the original run deadline. Legacy owners
+may be unknown; never remove live or unreadable slots to obtain review capacity.
+
 Canonical ceilings include 8 concurrent children per run, 16 active runs,
 8 tasks per run, 50 retained terminal runs, 20,000 retained output characters per child,
 4,000 characters per relay body, 100 mailbox messages, and 500 messages per
 run. Treat truncation, timeout, budget exhaustion, failure, and cancellation
 as evidence to inspect—not reasons to silently fan out or retry.
 
-Routine bounded scouting and implementation use the configured MiMo→Sol
+Routine bounded scouting and implementation use the configured Go→Sol
 subscription chain. An explicit Go selection is not retried on another model. For visual
 work, explicitly select an authenticated image-capable route and require images.
 Escalate when ambiguity, blast radius, or failed attempts rise. The

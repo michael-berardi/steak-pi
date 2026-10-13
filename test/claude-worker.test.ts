@@ -294,6 +294,7 @@ describe("claude-code synthetic CLI failures (offline stream envelopes)", () => 
     const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: sonnetRun(), task: task(), signal: new AbortController().signal, onProgress() {} });
     expect(result.state).toBe("failed"); expect(result.error).toMatch(cause);
     expect(result.error).toContain("synthetic frame is not a model response or approval");
+    expect(result.reviewFallbackReason).toBe(/quota limit|rate limit/.test(result.error!) ? "quota" : /authentication failed/.test(result.error!) ? "auth" : undefined);
     expect(result.error).not.toMatch(/sk-ant-secret|private\.invalid|token=secret|not the pinned/);
     expect(result.error!.length).toBeLessThan(400);
     expect(result.output).toBe(""); expect(result.turns).toBe(0);
@@ -342,6 +343,14 @@ describe("claude-code synthetic CLI failures (offline stream envelopes)", () => 
     const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: sonnetRun(), task: task(), signal: new AbortController().signal, onProgress() {} });
     expect(result.state).toBe("failed"); expect(result.error).toContain("quota limit reached");
     expect(result.output).toBe(""); expect(result.turns).toBe(0); expect(result.usage).toEqual(emptyUsage());
+  });
+
+  it("never authorizes fallback after a genuine model frame or malformed protocol", async () => {
+    for (const prefix of [line({ type: "assistant", message: { id: "genuine", model: sonnet, content: [{ type: "thinking", thinking: "working" }] } }), "not-json\n"]) {
+      const { spawn } = fakeSpawn(child => { child.stdout(prefix + synthetic("You've hit your weekly limit")); child.exit(1); });
+      const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: sonnetRun(), task: task(), signal: new AbortController().signal, onProgress() {} });
+      expect(result.state).toBe("failed"); expect(result.reviewFallbackReason).toBeUndefined();
+    }
   });
 
   const quotaError = (reset = "") =>

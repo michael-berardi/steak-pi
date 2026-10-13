@@ -11,7 +11,7 @@ ordered automatic chain (below); every other selection is exact.
 
 **Sol means GPT-6.1 Sol only:** model `openai-codex/gpt-6.1-sol`, profile
 `steak-pi/gpt-6-1-sol`. The built-in profile for explicit Sol selection is the
-6.1 route, and the Sol step of the automatic MiMo → Sol chain below is 6.1.
+6.1 route, and the Sol step of the automatic Go → Sol selection chain below is 6.1.
 Unavailable 6.1 fails closed, never selecting another model. Other model routes
 and their defaults are unchanged; Astra is not retired Sol.
 
@@ -29,8 +29,7 @@ rechecks the saved model and profile before reserving or launching a successor;
 a retired selection fails with the same error. Provider guards recheck streaming,
 deferred operations, restored sessions, compaction and controlled child turns.
 Event-hook validation alone is not an execution boundary: the provider guards
-remain authoritative. This package has no automatic Sol provider/text-error
-fallback.
+remain authoritative. Explicit routes have no automatic Sol fallback; only the bounded automatic review exception below may change a Claude route.
 
 ## Explicit paid Inco profile
 
@@ -74,15 +73,59 @@ available Codex model; explicitly selecting
 `opencode-go/deepseek-v4.1-flash` keeps that route with only OpenCode Go's own
 same-plan retry. No CLI is launched to resolve a profile.
 
-Omitting both selectors uses the matching parent profile's `workerDefault`, or
-`reviewerDefault` for runs containing reviewers. Profiles that resolve the
-built-in `steak-pi/mimo-v2-6-flash` worker default or `steak-pi/mimo-v2-6-pro`
-reviewer default resolve an **automatic chain** headed by that Token Plan model
-and record it as provenance:
+Omitting both selectors consults `~/.config/ultraterm/routing.json` role
+selectors (`workerDefault` / `reviewerDefault`) first, then the matching parent
+profile metadata. Explicit model/profile selection always wins. Custom selectors
+are preserved; the operator's routine default is `steak-pi/opencode-go`.
 
-- Routine text workers: `xiaomi/mimo-v2.6-flash` → `openai-codex/gpt-6.1-sol`.
-- Routine image workers: `xiaomi/mimo-v2.6-flash` only (Sol is the non-visual fallback).
-- Default reviewer role: `xiaomi/mimo-v2.6-pro` → `openai-codex/gpt-6.1-sol`.
+- Routine text workers/scouts: canonical `opencode-go/deepseek-v4.1-flash`.
+  If that registry route is unavailable at selection, authenticated
+  `openai-codex/gpt-6.1-sol` is the only text selection fallback.
+- Image workers stay capability-aware on the existing MiMo image chain; Sol is
+  never a text-only substitute for an image request.
+- Legacy native-Pi MiMo profiles retain their explicit identities and per-profile
+  chains. Astra and Luna explicit identities are unchanged.
+
+### Go account isolation
+
+Parent/native integration must run `~/.ultraterm/bin/ut-provider-go-materialize`
+before dispatch: that separate secure helper projects existing primary Go and
+UTP-stored secondary credentials into private account dirs. Steak and the router
+never read credentials. Router command is `~/.ultraterm/bin/ut-provider-accounts`
+(or `ULTRATERM_ACCOUNT_ROUTER`); `select --provider opencode-go --reserve` returns
+account + lease. Primary/B labels are **Go 1 / Go 2**, together mode, balanced by
+active leases with rotating ties; unknown quota remains unknown.
+
+Each canonical Go child binds its lease, creates the SDK session with isolated
+`agentDir` and explicit runtime auth/model paths under
+`~/.ultraterm/provider-accounts/opencode-go/{primary,b}/agent`, then releases in
+finally. Cancelled late initialization retains the lease until session disposal.
+No parent environment mutation, active-session migration, primary credential
+replacement, quota purchase, or paid Zen overage is performed. Keep Go **Use
+balance** disabled. Endpoint must be exactly `https://opencode.ai/zen/go/v1`;
+the native guard adds User-Agent and stable session headers. Real HTTP 429 and
+`subscription_quota_exceeded` report account cooldowns, never invented percentages.
+Go runtime failures stay on their isolated account (no ambient-credential Sol hop).
+An authenticated explicit canonical Go model, including parent-verified
+`longcat-2.5-preview-free`, uses the same account binding; it does not replace
+DeepSeek as a routine default. No Step model/profile is added here.
+
+### Automatic review exception
+
+Implicit all-reviewer waves prefer official Claude Code **Opus 5.5 xhigh**.
+Only a router status proving every Claude account ineligible, or an official
+Claude child with a recognized quota/auth failure **before model output**, may
+use exact **GPT-6.1 Sol on Codex OAuth**. Unknown router state, unavailable Sol,
+transport/protocol/model mismatch, partial output, cancellation, and explicit
+Claude selection do not authorize fallback. Mixed implicit waves are rejected;
+image review never downgrades to text-only Sol.
+
+A task records `reviewFallback: {from,to,reason}` and `routeFallbacks`; successful
+Sol review emits `Sol fallback review: USAP <run-id> receipt=<checkpoint.json>
+report=<task-id>`. A failed Sol attempt is not approval. The original requested
+Claude run identity remains in runtime-fallback receipts; the task's actual
+answering route is Sol. Parents gate on successful task/checkpoint evidence,
+not a prose claim of Opus approval. No commit/push/deploy permission is granted.
 
 GLM 5.3, GLM 5.3 Flash and the Z.ai plan were retired on 2026-10-03. A `zai/`,
 `z-ai/` or `glm-` model or profile selector is refused with a message naming the
@@ -97,15 +140,9 @@ The main app's own launch model is unchanged (MiMo V2.6 Pro). Explicitly chosen 
 
 `openai-codex/gpt-6-astra` is the scarce expert for hard planning/debugging and
 review/validation — never routine implementation or orchestration. USAP 1.3
-removed the automatic Astra-first reviewer default: a run whose tasks include a
-reviewer role resolves the same routine MiMo → Sol subscription chain as
-workers when no explicit selector is given. Expert review is instead the **Opus
-Pass** — the official Claude Code CLI on `claude-code/claude-opus-5-5` at
-`xhigh` effort with an existing first-party Claude subscription login — chosen
-explicitly or implied by an all-reviewer wave with no explicit route (routine
-Claude Code work runs `claude-code/claude-sonnet-5-5` instead, see PROFILES.md).
-A failed CLI task, including quota exhaustion, is reported honestly, never
-silently downgraded, and never substituted with another model or billing route.
+removed the automatic Astra-first reviewer default. Implicit all-reviewer waves
+prefer the official Opus Pass; only the automatic review exception above may
+use Sol. Explicit native reviewer choices remain exact.
 Astra itself is reachable only through an exact explicit selector on the paid Codex OAuth coding
 plan; eligibility is the exact subscription identity (OAuth, Codex Responses
 API, official `chatgpt.com/backend-api`), so a batch id, API-key endpoint, or
@@ -116,21 +153,18 @@ claim expert approval that did not happen. Astra keeps its medium
 reasoning default; reviewer role alone does not raise effort. Astra is never a
 routine worker default: parent-added `steak-pi/gpt-6-1-sol` and
 `steak-pi/gpt-6-luna` profiles are explicit-selection routes only, whose own
-`workerDefault` keeps workers on the MiMo → Sol chain.
+`workerDefault` keeps routine workers on Go → Sol selection.
 
 The first step that is authenticated, present in the operator's available
 catalog, capability-matching, has a native streaming adapter, and is spendable
 serves the run. MiMo must use the exact Singapore Token Plan host, with `/v1` or `/anthropic`; Sol must use Codex OAuth on `chatgpt.com/backend-api`. Lookalike hosts and general paid API endpoints do not qualify. No INCO, OpenRouter or metered/PAYG route is part of this default chain; GPT-6.1 Sol on Codex OAuth is its only GPT step.
 
-A run frozen as an automatic chain may hop to the next eligible chain route at
+A legacy MiMo run frozen as an automatic chain may hop to the next eligible chain route at
 runtime — this is real routing, not a selection shortcut. The hop happens only
 when the attempt fails **before** any content or tool event (a `start` event is
 metadata only), the failure is the transient class Go already retries (429,
 5xx, rate limit, overloaded, temporary) or a proven exhausted subscription plan
-(`subscription_quota_exceeded`), and the caller has not aborted. Same-plan Go
-retry deliberately refuses the exhaustion signal, because retrying an exhausted
-plan cannot succeed; the chain is the only path that may leave that plan, and
-only for the next separately approved subscription route. Auth, permission,
+(`subscription_quota_exceeded`), and the caller has not aborted. Go child runtimes do not install this cross-provider hop. Auth, permission,
 region, context and 400-class failures never hop, whatever transient wording
 they carry. The hop stops permanently at the first content/tool event, never
 revisits a route (the chain order is monotonic and the failing attempt's own

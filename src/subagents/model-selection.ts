@@ -26,51 +26,22 @@ export interface WorkerProfile {
    * sign-off; reviews still need the explicit Opus Pass or override route. */
   autoReviewChain?: boolean;
 }
+/** Explicit model identities are unchanged. Routine role defaults use Go;
+ * legacy native-review profiles keep their exact Pro/image chain. The dispatch
+ * boundary handles automatic Opus -> Sol separately, never as a worker chain. */
 export const BUILTIN_WORKER_PROFILES: readonly WorkerProfile[] = [
   { id: "steak-pi/gpt-6-astra", model: "openai-codex/gpt-6-astra", thinking: "medium", autoReviewChain: true,
-    workerDefault: { profile: "steak-pi/mimo-v2-6-flash" },
-    // Reviewers keep the same automatic MiMo→Sol subscription chain as every
-    // other profile. Astra stays scarce — it is never an automatic route in any
-    // role, and an explicit selector stays exact.
-    reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
-  // Parent-added GPT-6 routes (2026-09-23): exact explicit-selection profiles only.
-  // Their workerDefault keeps routine workers on the MiMo→Sol automatic chain, so
-  // launching or selecting them never makes Sol or Luna an automatic worker, and
-  // reviewer runs resolve the same routine subscription chain. High
-  // reasoning applies to explicit runs of these profiles. GPT-6.0 Sol was
-  // retired on 2026-10-05: Sol is GPT-6.1 only (see retired-model-selection.ts).
+    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: SOL_PROFILE, model: SOL_MODEL_ROUTE, thinking: "high",
-    workerDefault: { profile: "steak-pi/mimo-v2-6-flash" },
-    reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: "steak-pi/gpt-6-luna", model: "openai-codex/gpt-6-luna", thinking: "high",
-    workerDefault: { profile: "steak-pi/mimo-v2-6-flash" },
-    reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
-  // Operator default for every routine worker: MiMo V2.6 Flash on the reviewed
-  // Singapore Token Plan endpoint, resolved through the ordered automatic chain
-  // (MiMo V2.6 Flash, then GPT-6.1 Sol on Codex OAuth) instead of this
-  // profile's head model. Reviewer selectors keep their existing exact defaults.
-  { id: "steak-pi/mimo-v2-6-flash", model: "xiaomi/mimo-v2.6-flash", thinking: "high",
-    workerDefault: { profile: "steak-pi/mimo-v2-6-flash" },
-    reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" }, autoChain: true },
-  // Legacy operator default (2026-09-23) for every routine worker: MiMo V2.6 Pro on the
-  // reviewed Singapore Token Plan endpoint, resolved through the ordered automatic
-  // chain (MiMo V2.6 Pro, then GPT-6.1 Sol on Codex OAuth) instead of this
-  // profile's head model. Reviewer runs resolve the same automatic routine
-  // chain (xiaomi/mimo-v2.6-pro first, then GPT-6.1 Sol). Profiles whose
-  // reviewerDefault names an exact model — or a profile without an automatic
-  // chain flag — stay exact and never gain a chain they did not declare.
-  // Note: reviewerDefault applies only once a wave is routed to native Pi. The
-  // extension sends an implicit all-reviewer wave to the official Claude Code
-  // Opus route first, so reviewerDefault governs explicitly native reviewer waves.
-  { id: "steak-pi/mimo-v2-6-pro", model: "xiaomi/mimo-v2.6-pro", thinking: "high",
-    workerDefault: { profile: "steak-pi/mimo-v2-6-flash" },
-    reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" }, autoChain: true },
-  // Legacy Go profile, kept for exact explicit selection and for owner manifests that
-  // still declare `workerDefault: steak-pi/opencode-go`: it carries the same automatic
-  // chain, so an unmigrated owner default never falls back to a Go automatic route.
-  { id: "steak-pi/opencode-go", model: "opencode-go/deepseek-v4.1-flash", thinking: "high",
-    workerDefault: { profile: "steak-pi/mimo-v2-6-flash" },
-    reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" }, autoChain: true },
+    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+  { id: "steak-pi/mimo-v2-6-flash", model: "xiaomi/mimo-v2.6-flash", thinking: "high", autoChain: true,
+    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+  { id: "steak-pi/mimo-v2-6-pro", model: "xiaomi/mimo-v2.6-pro", thinking: "high", autoChain: true,
+    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+  { id: "steak-pi/opencode-go", model: "opencode-go/deepseek-v4.1-flash", thinking: "high", autoChain: true,
+    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
 ];
 const PI_FAMILY_HARNESSES = new Set(["pi", "steak-pi"]);
 const thinkingLevels = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
@@ -95,6 +66,17 @@ function selector(value: WorkerSelector, label: string): WorkerSelector {
   }
   if (!value.model && !value.profile) throw new Error(`${label} requires model or profile.`);
   return value;
+}
+
+export interface RoleDefaults { workerDefault?: WorkerSelector; reviewerDefault?: WorkerSelector }
+/** Role metadata only; no launch args, credentials, or paid-route grants. */
+export function loadRoleDefaults(path = join(homedir(), ".config", "ultraterm", "routing.json")): RoleDefaults {
+  let config: any;
+  try { config = JSON.parse(readFileSync(path, "utf8")); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {}; throw new Error("USAP routing.json cannot be read or parsed"); }
+  if (!config || typeof config !== "object" || Array.isArray(config)) throw new Error("USAP routing.json requires an object");
+  return Object.fromEntries(["workerDefault", "reviewerDefault"].filter(key => config[key] !== undefined)
+    .map(key => [key, selector(config[key], `USAP routing.json ${key}`)]));
 }
 
 /** Read route metadata only. Never execute profile args, commands, or credentials. */
@@ -253,6 +235,7 @@ export function resolveWorkerSelection(
   profiles: readonly WorkerProfile[] = loadWorkerProfiles(),
   parentProfileId = process.env.ULTRATERM_HARNESS_PROFILE,
   options: ChainOptions = {},
+  roleDefaults?: RoleDefaults,
 ): { model: Model; thinkingLevel: Thinking; selection: ModelSelection } {
   // The native Pi registry stream adapters cannot serve foreign harnesses.
   // Claude Code dispatch must branch to its explicit CLI route before selection;
@@ -288,25 +271,21 @@ export function resolveWorkerSelection(
   // A /model change must not inherit defaults belonging to a stale launch profile.
   const parentProfile = namedParent && namedParent.model === parentKey ? namedParent : parents.length === 1 ? parents[0] : undefined;
   const review = input.tasks.some((task) => task.role === "reviewer");
-  const configured = review ? parentProfile?.reviewerDefault ?? parentProfile?.workerDefault : parentProfile?.workerDefault;
+  const defaults = explicit ? {} : roleDefaults ?? loadRoleDefaults();
+  const configured = review ? defaults.reviewerDefault ?? parentProfile?.reviewerDefault ?? parentProfile?.workerDefault : defaults.workerDefault ?? parentProfile?.workerDefault;
   const chosen = explicit ? selector({ ...(requested.model !== undefined ? { model: requested.model } : {}), ...(requested.profile !== undefined ? { profile: requested.profile } : {}) }, "USAP selection") : configured ? selector(configured, "USAP profile default") : undefined;
   const profile = chosen?.profile ? profileById(chosen.profile) : undefined;
   // Automatic defaults resolve the final chain; an explicit selector stays exact.
   const automatic = !explicit && (chosen === undefined || (chosen.model === undefined && (profile?.autoChain === true || (review && profile?.autoReviewChain === true))));
-  // The default reviewer role rides the same prepaid MiMo→Sol subscription chain
-  // as routine workers. No automatic expert step remains in the native review
-  // chain: an expert review is a deliberate explicit choice (the Opus Pass CLI
-  // route or an exact model/profile override), never a silent substitution.
-  // An automatic profile that names a Token Plan model keeps it as the chain head.
-  // Automatic reviewer runs stay on [MiMo V2.6 Pro, GPT-6.1 Sol] unless their profile names
-  // Flash; routine workers resolve the Flash-led default worker chain.
+  // Explicit native Pi reviewer waves retain configured role metadata. Implicit
+  // all-reviewer waves are admitted separately by the official Claude boundary.
   const headRoute = (key: string | undefined) => {
     const slash = key?.indexOf("/") ?? -1;
     return key && slash > 0 ? { provider: key.slice(0, slash), id: key.slice(slash + 1) } : undefined;
   };
   const chainImages = input.requireImages === true;
   const profileChain = workerChainFor(headRoute(profile?.model), chainImages);
-  const chain = review && profileChain[0].id === "mimo-v2.6-flash" && headRoute(profile?.model)?.id !== "mimo-v2.6-flash"
+  const chain = review && !chainImages && !["mimo-v2.6-pro", "mimo-v2.6-flash"].includes(headRoute(profile?.model)?.id ?? "")
     ? workerChainFor({ provider: "xiaomi", id: "mimo-v2.6-pro" }, chainImages)
     : profileChain;
   const key = automatic ? undefined : profile?.model ?? chosen?.model;

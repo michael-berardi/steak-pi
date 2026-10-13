@@ -28,7 +28,8 @@
  * receive Bash, even when requested; parents stage git evidence for them.
  */
 import { spawn as nodeSpawn, execFile, execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { claudeOwnedPathRules } from "./claude-owned-paths.ts";
+export { claudeOwnedPathRules } from "./claude-owned-paths.ts";
 import { randomUUID } from "node:crypto";
 import { CLAUDE_SESSION_ID, removeClaudeWorkerSession } from "./claude-session.ts";
 import type { ChildProcess } from "node:child_process";
@@ -51,10 +52,6 @@ export const CLAUDE_CODE_ALLOWED_TOOLS = "Read,Grep,Glob";
 /** File-editing tools granted to mayEdit leaves; the CLI scopes all of them
  * through `Edit(...)` permission rules. */
 export const CLAUDE_CODE_EDIT_TOOLS = "Edit,Write,NotebookEdit";
-/** Characters that would change the meaning of an `Edit(...)` gitignore-style
- * rule. Owned paths containing them are refused rather than escaped. */
-const PERMISSION_RULE_UNSAFE = /[*?[\]{}()!\\\n\r]/;
-
 export interface ClaudeWorkerPermissions {
   role?: string;
   mayEdit?: boolean;
@@ -62,30 +59,6 @@ export interface ClaudeWorkerPermissions {
   ownedPaths?: readonly string[];
 }
 
-/** `Edit(...)` allow rules for each owned absolute path: the path itself (an
- * owned file) and everything beneath it (an owned directory). A symlinked
- * owned path also gets its resolved form so the CLI's own resolution matches. */
-export function claudeOwnedPathRules(ownedPaths: readonly string[], resolve: (value: string) => string | undefined = realpathOrUndefined): string[] {
-  const rules: string[] = [];
-  for (const owned of ownedPaths) {
-    if (!owned.startsWith("/")) throw new Error(`claude-code owned path must be absolute: ${JSON.stringify(owned)}`);
-    const forms = new Set([owned.replace(/\/+$/, "") || "/"]);
-    const physical = resolve(owned);
-    if (physical) forms.add(physical.replace(/\/+$/, "") || "/");
-    for (const form of forms) {
-      if (PERMISSION_RULE_UNSAFE.test(form)) {
-        throw new Error(`claude-code owned path contains a permission-rule metacharacter and cannot be enforced exactly: ${JSON.stringify(form)}`);
-      }
-      // `//` marks an absolute filesystem path in Claude Code permission rules.
-      rules.push(`Edit(/${form})`, `Edit(/${form === "/" ? "" : form}/**)`);
-    }
-  }
-  return rules;
-}
-
-function realpathOrUndefined(value: string): string | undefined {
-  try { return realpathSync(value); } catch { return undefined; }
-}
 /** Hard cap on accumulated raw stream bytes before the child is killed. */
 export const CLAUDE_CODE_STREAM_BYTES_LIMIT = 8 * 1024 * 1024;
 export const CLAUDE_CODE_ABORT_GRACE_MS = 2_000;
@@ -567,7 +540,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     if (signal.aborted) return { state: isTimeoutSignal(signal) ? "timed_out" : "aborted", output: "", turns: 0, usage: emptyUsage(), error: "Cancelled before CLI launch" };
     if (!options.spawn) {
       try { await verifyClaudeSubscription(executable, claudeWorkerEnv(), run.cwd, signal, run.timeoutMs); }
-      catch (error) { return { state: isTimeoutSignal(signal) ? "timed_out" : signal.aborted ? "aborted" : "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
+      catch (error) { return { state: isTimeoutSignal(signal) ? "timed_out" : signal.aborted ? "aborted" : "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error), ...(!signal.aborted && errorText(error).startsWith("Claude Code workers require an existing first-party") ? { reviewFallbackReason: "auth" as const } : {}) }; }
     }
     if (signal.aborted) return { state: isTimeoutSignal(signal) ? "timed_out" : "aborted", output: "", turns: 0, usage: emptyUsage(), error: "Cancelled before CLI launch" };
     const maxTurns = Math.max(1, Math.min(run.maxTurns, 2048));
@@ -634,6 +607,8 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     let stdoutBuffer = "";
     let rawBytes = 0;
     let syntheticFailed = false;
+    let sawModelOutput = false;
+    let reviewFallbackReason: "quota" | "auth" | undefined;
     child.onStdout((chunk) => {
       // A synthetic error is terminal even if later buffered frames claim success.
       if (syntheticFailed || state.failure !== undefined || state.turnLimitReached) return;
@@ -665,6 +640,8 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
           : event.kind === "result" ? event.models ?? [] : [];
         if (reportedModels.includes("<synthetic>")) {
           syntheticFailed = true;
+          const cause = syntheticClaudeCause(event.kind === "assistant" ? event.text : "", event.kind === "assistant" && event.usageLimit === true);
+          if (!sawModelOutput) reviewFallbackReason = cause.startsWith("quota limit") || cause.startsWith("rate limit") ? "quota" : cause.startsWith("authentication failed") ? "auth" : undefined;
           state.failure ??= `Claude CLI synthetic error: ${event.kind === "assistant" ? syntheticClaudeCause(event.text, event.usageLimit === true) : syntheticClaudeCause("")}; synthetic frame is not a model response or approval`;
           // Do not count this frame as a turn, usage, output, or model evidence.
           killOnce(true);
@@ -688,6 +665,8 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
         if ((event.kind === "assistant" && !event.sidechain && event.model === pinnedModel)
           || (event.kind === "result" && reportedModels.includes(pinnedModel))) state.modelVerified = true;
         if (event.kind === "assistant") {
+          sawModelOutput = true;
+          reviewFallbackReason = undefined;
           if (!event.messageId) {
             state.failure = "Claude CLI assistant frame lacks a stable message ID";
             killOnce(true);
@@ -744,6 +723,8 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
           state.sawResult = true;
           state.result = event;
           if ((event.isError || event.subtype !== "success") && event.subtype !== "error_max_turns") {
+            const cause = syntheticClaudeCause(event.result ?? "", event.usageLimit === true, false);
+            if (!sawModelOutput) reviewFallbackReason = cause.startsWith("quota limit") || cause.startsWith("rate limit") ? "quota" : cause.startsWith("authentication failed") ? "auth" : undefined;
             state.failure ??= `Claude CLI error result: ${syntheticClaudeCause(event.result ?? "", event.usageLimit === true, false)}; error result is not model approval`;
           }
           if (event.numTurns !== undefined) {
@@ -805,6 +786,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     const bounded = truncatePiWorkerOutput([claudeShellPolicy(task).diagnostic, state.outputParts.join("")].filter(Boolean).join("\n"));
     return {
       ...classification,
+      ...(closed && !sawModelOutput && !state.modelVerified && !signal.aborted && classification.state === "failed" && reviewFallbackReason ? { reviewFallbackReason } : {}),
       ...(!closed ? { cleanup: exitPromise } : {}),
       output: bounded.output,
       toolErrors: state.toolErrors,

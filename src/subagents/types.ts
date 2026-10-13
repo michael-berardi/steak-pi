@@ -1,3 +1,17 @@
+import type { MachineCapacitySnapshot } from "./machine-slots.ts";
+
+/** Reviewer launch waits are bounded independently of the execution budget. */
+export const REVIEW_LAUNCH_TIMEOUT_MS = 60_000;
+
+export interface LaunchQueue {
+  tier: "session" | "machine";
+  provider: string;
+  reason: string;
+  since: number;
+  deadlineAt: number;
+  capacity?: MachineCapacitySnapshot;
+}
+
 export const USAP_VERSION = "1.3" as const;
 /** Execution harness that serves a run's leaves. `"pi"` is the native default;
  * `"claude-code"` is the official headless Claude CLI runner (read,
@@ -93,6 +107,8 @@ export interface ModelSelection {
   source: "override" | "profile-default" | "legacy-default" | "chain";
   /** Ordered automatic chain routes (provider/model), for auditable provenance. */
   chainRoutes?: string[];
+  automaticReview?: boolean;
+  reviewRequiresImages?: boolean;
   /** Foreign runners keep their harness identity instead of a native route. */
   harness?: HarnessId;
   images: boolean;
@@ -143,6 +159,10 @@ export interface RelayEnvelope {
 }
 
 export interface TaskRecord extends NormalizedTask {
+  /** Active pre-worker launch wait; absent once inference may start. */
+  launchQueue?: LaunchQueue;
+  /** Last capacity wait retained as evidence after settlement, not an active queue. */
+  lastLaunchQueue?: LaunchQueue;
   retryAttempt?: number;
   retryDelayMs?: number;
   compactions?: number;
@@ -175,6 +195,9 @@ export interface TaskRecord extends NormalizedTask {
   /** Pre-output runtime chain hops, journaled as `from->to` route pairs so usage and
    * reports name the provider/model that actually served each request. */
   routeFallbacks?: string[];
+  providerAccount?: { provider: "opencode-go"; id: "primary" | "b"; label: string; lease: string } |
+    { provider: "codex"; id: "primary" | "fallback"; label: string; lease: string };
+  reviewFallback?: { from: "claude-code/claude-opus-5-5"; to: "openai-codex/gpt-6.1-sol"; reason: "no-eligible-claude" | "quota" | "auth" };
   /** Epoch ms of the last accepted progress update; drives staleness diagnosis. */
   lastProgressAt?: number;
   /** Set only for a turn- or time-budget stop; absent for every other settlement. */
@@ -236,6 +259,8 @@ export interface WorkerProgress {
 }
 
 export interface WorkerResult {
+  /** Trusted official CLI pre-output failure classification; not transcript text. */
+  reviewFallbackReason?: "quota" | "auth";
   /** Cancelled initialization may settle later; retain the launch lease until disposed. */
   cleanup?: Promise<void>;
   state: Extract<TaskState, "done" | "failed" | "aborted" | "timed_out">;
