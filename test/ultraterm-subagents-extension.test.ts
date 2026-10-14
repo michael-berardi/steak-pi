@@ -121,6 +121,60 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); save.mockRestore(); }
   });
 
+  it.each([false, true])("synthetic: unavailable Claude cannot reroute implicit mutating bracket review (background=%s)", async (background) => {
+    const root = mkdtempSync(join(tmpdir(), "usap-review-owned-path-")); dirs.push(root);
+    const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "review-owned-path" };
+    const runner = vi.fn(async () => ({ state: "done" as const, output: "unexpected", turns: 1, usage: emptyUsage() }));
+    const accountCommand = vi.fn(async () => ({ ok: true, providers: { claude: { accounts: [{ eligible: false }] } } }));
+    const h = harness(() => runner, durable, undefined, { accountCommand });
+    const save = vi.spyOn(CheckpointStore.prototype, "save");
+    try {
+      const result = await h.tools.get("ultraterm_subagents").execute("invalid", {
+        goal: "Keep exact ownership", background,
+        tasks: [{ label: "Mutating review", task: "Edit route", role: "reviewer", mayEdit: true, ownedPaths: ["src/pages/[slug].astro"] }],
+      }, undefined, undefined, h.ctx);
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('metacharacter "["');
+      expect(result.content[0].text).not.toContain("Started USAP run");
+      expect(runner).not.toHaveBeenCalled();
+      expect(save).not.toHaveBeenCalled();
+      expect(h.entries).toEqual([]);
+      expect(h.messages).toEqual([]);
+    } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); save.mockRestore(); }
+  });
+
+  it.each([
+    { mayEdit: true, ownedPaths: ["safe.ts"] },
+    { allowBash: true },
+  ])("synthetic: implicit privileged reviewer retains Claude route: %j", async (permissions) => {
+    const runner = vi.fn(async () => ({ state: "done" as const, output: "fixture", turns: 1, usage: emptyUsage() }));
+    const accountCommand = vi.fn(async () => ({ ok: true, providers: { claude: { accounts: [{ eligible: false }] } } }));
+    const h = harness(() => runner, undefined, undefined, { accountCommand });
+    try {
+      const result = await h.tools.get("ultraterm_subagents").execute("privileged", {
+        goal: "Keep harness enforcement", tasks: [{ label: "Privileged review", task: "Review", role: "reviewer", ...permissions }],
+      }, undefined, undefined, h.ctx);
+      expect(result.details.run.model).toBe("claude-code/claude-opus-5-5");
+      expect(result.details.run.harness).toBe("claude-code");
+      expect(runner).toHaveBeenCalledTimes(1);
+      expect(accountCommand).not.toHaveBeenCalled();
+    } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+  });
+
+  it("synthetic: automatic read-only review still falls back when Claude is unavailable", async () => {
+    const runner = vi.fn(async () => ({ state: "done" as const, output: "fixture", turns: 1, usage: emptyUsage() }));
+    const accountCommand = vi.fn(async () => ({ ok: true, providers: { claude: { accounts: [{ eligible: false }] } } }));
+    const h = harness(() => runner, undefined, undefined, { accountCommand });
+    try {
+      const result = await h.tools.get("ultraterm_subagents").execute("readonly", {
+        goal: "Read-only fallback", tasks: [{ label: "Read review", task: "Inspect", role: "reviewer" }],
+      }, undefined, undefined, h.ctx);
+      expect(result.details.run.model).toBe("openai-codex/gpt-6.1-sol");
+      expect(result.details.run.harness ?? "pi").toBe("pi");
+      expect(runner).toHaveBeenCalledTimes(1);
+    } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+  });
+
   it("exposes independent current and last launch queue snapshots in run/status views", () => {
     const run = normalizeDispatch({ goal: "queue metadata", tasks: [{ label: "review", task: "bounded review", role: "reviewer" }] }, process.cwd(), "claude-code/claude-opus-5-5", "xhigh", 1_000, () => "queue-view");
     expect(toRunView(run).tasks[0]).not.toHaveProperty("launchQueue");

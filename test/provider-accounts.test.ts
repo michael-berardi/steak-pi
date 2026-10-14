@@ -53,6 +53,12 @@ describe("automatic-only official review fallback", () => {
     recordReviewFallback(task, "quota");
     expect(task.reviewFallback).toEqual({ from: "claude-code/claude-opus-5-5", to: "openai-codex/gpt-6.1-sol", reason: "quota" });
   });
+  it.each([{ mayEdit: true }, { allowBash: true }, { ownedPaths: ["src/[slug].astro"] }])("synthetic: never falls back a privileged reviewer after quota/auth: %j", (permissions) => {
+    const privileged = run(); Object.assign(privileged.tasks[0], permissions);
+    for (const reason of ["quota", "auth"] as const) {
+      expect(canFallbackReview(privileged, { ...result(), reviewFallbackReason: reason }, new AbortController().signal)).toBe(false);
+    }
+  });
   it("never changes explicit routes, mixed waves, image review, cancelled or unsettled children", () => {
     const explicit = run(); explicit.selection!.automaticReview = false;
     const images = run(); images.selection!.reviewRequiresImages = true;
@@ -66,7 +72,7 @@ describe("automatic-only official review fallback", () => {
 
 describe("real default-runner automatic fallback wiring (offline)", () => {
   it.each([false, true])("records actual Sol completion or failure (failure=%s)", async failure => {
-    const run = normalizeDispatch({ goal: "review", tasks: [{ label: "review", role: "reviewer", task: "inspect only", allowBash: true }] }, process.cwd(), "claude-code/claude-opus-5-5", "xhigh", 0, () => "run-review-fixture");
+    const run = normalizeDispatch({ goal: "review", tasks: [{ label: "review", role: "reviewer", task: "inspect only" }] }, process.cwd(), "claude-code/claude-opus-5-5", "xhigh", 0, () => "run-review-fixture");
     run.harness = "claude-code";
     run.selection = { provider: "claude-code", modelId: "claude-opus-5-5", source: "override", harness: "claude-code", images: true, tools: true, automaticReview: true, reviewRequiresImages: false };
     const task = run.tasks[0];
