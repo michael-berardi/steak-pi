@@ -186,7 +186,9 @@ inspect and use a supported explicit model-change/handoff, never kill a run.
 Without a selector, all-reviewer waves prefer the Opus Pass. When the account
 router proves Claude unavailable, or the official CLI returns a recognized
 pre-output quota/auth failure, automatic text review uses GPT-6.1 Sol on Codex
-OAuth and records the actual fallback. Explicit routes remain exact, and image
+OAuth and records the actual fallback. Every leaf must be read-only, shell-free,
+and ownership-free for automatic fallback; privileged reviewers retain Claude's
+path admission and shell denial. Explicit routes remain exact, and image
 reviews never silently downgrade to text-only Sol. Routine native workers default
 to OpenCode Go DeepSeek V4.1 Flash, with isolated Go 1/Go 2 accounts. Native Pi
 role defaults follow explicit run selection, then global role defaults, then

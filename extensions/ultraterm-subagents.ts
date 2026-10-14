@@ -1,6 +1,6 @@
 import { registryForSolSelection, type CreateIsolatedModelRuntime } from "../src/subagents/codex-selection.ts";
 import { noEligibleClaudeAccount, type AccountCommand } from "../src/subagents/provider-accounts.ts";
-import { canFallbackReview, recordReviewFallback } from "../src/subagents/reviewer-fallback.ts";
+import { canFallbackReview, isReadOnlyReviewWave, recordReviewFallback } from "../src/subagents/reviewer-fallback.ts";
 import { SOL_MODEL_ROUTE } from "../src/retired-model-selection.ts";
 import { statSync } from "node:fs";
 import { PersistenceHealth } from "../src/subagents/persistence-health.ts";
@@ -1371,7 +1371,11 @@ export function createUltratermSubagentsExtension(
         // waves select the official Opus Pass CLI route automatically.
         const opusReviewDefault = implicitRoute && allReviewers;
         if (opusReviewDefault && requested.thinking !== undefined && requested.thinking !== "xhigh") throw new Error("Automatic Opus review requires xhigh effort; a different explicit effort is not silently overridden.");
-        const claudeUnavailable = opusReviewDefault && requested.requireImages !== true &&
+        // A fallback may change the harness only for permission-free reviewers.
+        // Keep privileged leaves on Claude so exact path admission and reviewer
+        // shell denial cannot be bypassed when its subscription is unavailable.
+        const readOnlyReviewFallback = opusReviewDefault && isReadOnlyReviewWave(requested.tasks);
+        const claudeUnavailable = readOnlyReviewFallback && requested.requireImages !== true &&
           await noEligibleClaudeAccount(dependencies.accountCommand);
         const params: UltratermSubagentsParams = {
           ...requested,
@@ -1412,7 +1416,7 @@ export function createUltratermSubagentsExtension(
           ? undefined
           : await resolveNativeSelection(ctx, params, dependencies);
         let reviewFallbackRuntime: PiWorkerRuntime | undefined;
-        if (opusReviewDefault && !claudeUnavailable && requested.requireImages !== true) {
+        if (readOnlyReviewFallback && !claudeUnavailable && requested.requireImages !== true) {
           try {
             const sol = await resolveNativeSelection(ctx,
               { ...requested, harness: "pi", model: SOL_MODEL_ROUTE, profile: undefined, thinking: "high", thinkingReason: "Automatic expert text review fallback after proven Claude unavailability." }, dependencies);

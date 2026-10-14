@@ -233,7 +233,9 @@ Thus Astro paths such as `src/pages/[slug].astro` and
 `src/pages/[...slug].astro` are rejected. There is no automatic ownership
 widening or harness fallback. The parent may explicitly choose Pi exact-path
 guarded writes or revise ownership within approved scope; never silently
-broaden ownership to the parent directory.
+broaden ownership to the parent directory. Implicit privileged reviewer waves
+remain on Claude: automatic text-review fallback requires every leaf to have no
+write permission, shell permission, or owned paths.
 
 **Reviewer shell denial.** A Claude leaf with role `reviewer` and no `mayEdit`
 never receives Bash, even if `allowBash: true` or task text requests a shell.
