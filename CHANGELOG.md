@@ -9,6 +9,12 @@
 
 ## Unreleased
 
+- Record automatic review provenance honestly: an implicit review on its automatic Claude route
+  is `selection.source: "automatic-review"`, and a Sol review chosen because no Claude account
+  was eligible is `"automatic-review-fallback"`, instead of `override` (the value an
+  operator-requested route produces). A resume keeps either automatic source, and a fallback
+  leaf's `reviewFallback` only when it resumes on that fallback route; it does not re-arm the
+  automatic Claude -> Sol fallback.
 - Run the test suite under a private empty HOME so an operator's live `~/.config/ultraterm`,
   `~/.pi` and `~/.claude` cannot change results (49 tests failed on a machine with a live Go
   `routing.json`; the same suite now passes everywhere).

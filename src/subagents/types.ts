@@ -123,8 +123,11 @@ export interface ModelSelection {
   modelId: string;
   profile?: string;
   parentProfile?: string;
-  /** `chain` marks a capability-aware automatic route; explicit selectors stay `override`. */
-  source: "override" | "profile-default" | "legacy-default" | "chain";
+  /** `chain` marks a capability-aware automatic route; explicit selectors stay `override`.
+   * `automatic-review` marks an implicit review wave on its automatic Claude route: no route was requested.
+   * `automatic-review-fallback` marks an implicit review wave moved to Sol because no Claude
+   * account was eligible: never an operator-requested route, so it is not recorded as `override`. */
+  source: "override" | "profile-default" | "legacy-default" | "chain" | "automatic-review" | "automatic-review-fallback";
   /** Ordered automatic chain routes (provider/model), for auditable provenance. */
   chainRoutes?: string[];
   automaticReview?: boolean;

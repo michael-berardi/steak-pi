@@ -124,7 +124,8 @@ A task records `reviewFallback: {from,to,reason}` and `routeFallbacks`; successf
 Sol review emits `Sol fallback review: USAP <run-id> receipt=<checkpoint.json>
 report=<task-id>`. A failed Sol attempt is not approval. The original requested
 Claude run identity remains in runtime-fallback receipts; the task's actual
-answering route is Sol. Parents gate on successful task/checkpoint evidence,
+answering route is Sol. A leaf resumed on Sol keeps its `reviewFallback`; a Claude
+review resumed on Claude does not carry a mid-run Sol fallback. Parents gate on successful task/checkpoint evidence,
 not a prose claim of Opus approval. No commit/push/deploy permission is granted.
 
 GLM 5.3, GLM 5.3 Flash and the Z.ai plan were retired on 2026-10-03. A `zai/`,
@@ -191,8 +192,12 @@ actual worker tool results remain visible.
 
 Dispatch receipts, hub results, and bounded session telemetry carry the resolved
 provider/model, selected profile when supplied, parent profile when matched,
-`override`/`chain`/`profile-default`/`legacy-default` provenance, the ordered
-`chainRoutes` of an automatic chain, capabilities and effort.
+`override`/`chain`/`profile-default`/`legacy-default`/`automatic-review`/`automatic-review-fallback`
+provenance, the ordered `chainRoutes` of an automatic chain, capabilities and effort.
+`automatic-review` marks an implicit review wave on its automatic Claude route, and
+`automatic-review-fallback` one moved to Sol because no Claude account was eligible;
+neither is ever recorded as `override` (the value an operator-requested route
+produces), and a resume keeps them without re-arming the automatic fallback.
 Task results report native tool successes and errors. If every attempted tool
 fails, a prose completion cannot mark the task successful.
 

@@ -1457,7 +1457,10 @@ export function createUltratermSubagentsExtension(
         }
 
         if (apiAdmission) stampClaudeApiRun(run, apiAdmission);
-        run.selection = { ...resolvedSelection, ...(opusReviewDefault ? { automaticReview: true, reviewRequiresImages: requested.requireImages === true } : {}) };
+        run.selection = { ...resolvedSelection,
+          // No route was requested for an implicit review wave: a Sol review chosen only because no Claude
+          // account was eligible is an automatic fallback, never an operator-requested override.
+          ...(opusReviewDefault ? { source: claudeUnavailable ? "automatic-review-fallback" as const : "automatic-review" as const, automaticReview: true, reviewRequiresImages: requested.requireImages === true } : {}) };
         if (claudeUnavailable) for (const task of run.tasks) recordReviewFallback(task, "no-eligible-claude");
         if (reviewFallbackRuntime) current.workerRuntimes.set(`${run.id}:review-fallback`, Object.freeze(reviewFallbackRuntime));
         run.ownerSessionId = current.ownerSessionId;
@@ -1681,7 +1684,11 @@ export function createUltratermSubagentsExtension(
           const run = normalizeDispatch(input, snapshot.cwd, snapshot.model, resolved ? String(resolved.thinkingLevel) : "xhigh", dependencies.now?.() ?? Date.now(), dependencies.idFactory);
           // The resume pins the original route: a recorded automatic chain is not
           // carried over, so no pre-output hop can move the session to another route.
-          run.selection = { ...resumeSelection };
+          // Provenance follows the run: a resumed automatic review (or its Sol fallback) was never
+          // operator-requested, so it keeps its automatic source instead of the resume's pinned `override`.
+          // `automaticReview` is not carried over, so the resume never re-arms the Claude -> Sol fallback.
+          const automaticSource = snapshot.selection?.source === "automatic-review" || snapshot.selection?.source === "automatic-review-fallback" ? snapshot.selection.source : undefined;
+          run.selection = { ...resumeSelection, ...(automaticSource ? { source: automaticSource } : {}) };
           run.resumedFrom = runId;
           if (run.maxTurns > snapshot.maxTurns || run.timeoutMs > snapshot.timeoutMs) throw new Error("Resume refused: a resume never raises the original turn or time budget");
           run.ownerSessionId = current.ownerSessionId;
@@ -1698,6 +1705,10 @@ export function createUltratermSubagentsExtension(
             task.changedPaths = unfinished[index].changedPaths;
             task.lastStep = unfinished[index].lastStep;
             task.resumedFrom = unfinished[index].id;
+            // A leaf resumed on its fallback route still names the Claude route it replaced and why
+            // (a Claude run resumes on Claude, so a mid-run fallback is not carried onto it).
+            const fallback = unfinished[index].reviewFallback;
+            if (fallback && fallback.to === snapshot.model) task.reviewFallback = { ...fallback };
           });
           try { current.store.prepareResume(runId, run); } catch (error) {
             checkpointFailed(current, snapshot, error, "resume-reservation");
