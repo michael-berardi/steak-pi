@@ -131,7 +131,8 @@ Background completion is passive at idle, with no added model call.
 
 Inspect `details.run.model` and `details.run.selection` in dispatch and hub
 results. Selection reports provider, modelId, profile when supplied, matched
-parentProfile, source (`override`, `chain`, `profile-default`, or `legacy-default`), and
+parentProfile, source (`override`, `chain`, `profile-default`, `legacy-default`,
+`automatic-review`, or `automatic-review-fallback`), and
 image/tool-adapter capabilities. Session telemetry records the same provenance
 without prompts or outputs. Task evidence includes `toolSuccesses` and
 `toolErrors`; done status is not parent acceptance.
