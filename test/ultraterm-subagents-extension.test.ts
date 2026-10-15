@@ -275,6 +275,9 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       }, undefined, undefined, h.ctx);
       expect(result.details.run.harness).toBe("claude-code");
       expect(result.details.run.model).toBe("claude-code/claude-opus-5-5");
+      // Only a requested route is `override`; the implicit review wave's route was chosen automatically.
+      expect(result.details.run.selection.automaticReview).toBe(Object.keys(route).length === 0 ? true : undefined);
+      expect(result.details.run.selection.source).toBe(Object.keys(route).length === 0 ? "automatic-review" : "override");
       expect(runner.mock.calls.at(-1)?.[0].run.thinkingLevel).toBe("xhigh");
       const relay = await h.tools.get("ultraterm_hub").execute("send", { action: "send", runId: result.details.run.runId, to: "#run", body: "not delivered" }, undefined, undefined, h.ctx);
       expect(relay.content[0].text).toMatch(/unsupported|not support/i);
@@ -1095,14 +1098,15 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       h.entries.filter((entry) => entry.type === "ultraterm-usap-telemetry" && entry.data.runId === runId).map((entry) => entry.data);
 
     /** A settled checkpoint whose reviewer stopped on its turn budget with a resumable native session. */
-    function partialCheckpoint(name: string, overrides: { model?: string; thinkingLevel?: string; selection?: any; claude?: boolean; account?: TaskRecord["providerAccount"] } = {}) {
+    function partialCheckpoint(name: string, overrides: { model?: string; thinkingLevel?: string; selection?: any; claude?: boolean; account?: TaskRecord["providerAccount"]; reviewFallback?: TaskRecord["reviewFallback"] } = {}) {
       const root = mkdtempSync(join(tmpdir(), `usap-${name}-`)); dirs.push(root);
       const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: name };
       const store = new CheckpointStore(durable.parent, durable.root, durable.parent);
       const run = normalizeDispatch({ goal: "review", background: true, maxTurns: 12, tasks: [{ label: "Metadata signoff", task: "Review the metadata", role: "reviewer" }, { label: "Impl", task: "Done already", role: "worker" }] }, root, overrides.model ?? "openai-codex/gpt-6.1-sol", overrides.thinkingLevel ?? "medium", Date.now(), () => `${name}-origin`);
       if (overrides.selection) run.selection = overrides.selection;
       if (overrides.account) run.tasks[0].providerAccount = overrides.account;
-      if (overrides.claude) { run.harness = "claude-code"; run.selection = { ...resolveClaudeCodeSelection("claude-opus-5-5") }; }
+      if (overrides.reviewFallback) run.tasks[0].reviewFallback = overrides.reviewFallback;
+      if (overrides.claude) { run.harness = "claude-code"; run.selection = overrides.selection ?? { ...resolveClaudeCodeSelection("claude-opus-5-5") }; }
       run.tasks[1].state = "done";
       Object.assign(run.tasks[0], { state: "failed", startedAt: Date.now(), turns: 12, error: turnLimit(12), outcome: "partial", partialReason: "turn_budget", partialSummary: "Turn budget reached after 12/12 turns" });
       run.state = "failed";
@@ -1258,6 +1262,52 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       await k.handlers.get("session_shutdown")!({}, k.ctx);
     });
 
+    it("keeps automatic review provenance on a resumed Sol fallback review instead of recording an override", async () => {
+      const reviewFallback = { from: "claude-code/claude-opus-5-5", to: "openai-codex/gpt-6.1-sol", reason: "no-eligible-claude" } as const;
+      const selection = { provider: "openai-codex", modelId: "gpt-6.1-sol", source: "automatic-review-fallback", automaticReview: true, harness: "pi", images: false, tools: true };
+      const { durable, run } = partialCheckpoint("resume-review-fallback", { selection, reviewFallback });
+      const seen: Array<{ source?: string; fallback?: TaskRecord["reviewFallback"] }> = [];
+      const h = harness(() => async ({ run: context, task }) => {
+        seen.push({ source: context.selection?.source, fallback: task.reviewFallback && { ...task.reviewFallback } });
+        return { state: "done", output: "finished", turns: 1, usage: emptyUsage() };
+      }, durable);
+      await h.handlers.get("session_start")!({}, h.ctx);
+      const resumed = await resume(h, run.id);
+      expect(resumed.details.run.selection).toMatchObject({ provider: "openai-codex", modelId: "gpt-6.1-sol", source: "automatic-review-fallback" });
+      // Resume pins the route, so the automatic Claude -> Sol fallback is not re-armed.
+      expect(resumed.details.run.selection.automaticReview).toBeUndefined();
+      await vi.waitFor(() => expect(seen).toEqual([{ source: "automatic-review-fallback", fallback: reviewFallback }]));
+      await h.handlers.get("session_shutdown")!({}, h.ctx);
+    });
+
+    it("keeps automatic review provenance on a resumed implicit Claude review, without carrying a mid-run Sol fallback onto Claude", async () => {
+      const selection = { ...resolveClaudeCodeSelection("claude-opus-5-5"), source: "automatic-review" as const, automaticReview: true };
+      const reviewFallback = { from: "claude-code/claude-opus-5-5", to: "openai-codex/gpt-6.1-sol", reason: "quota" } as const;
+      const review = partialCheckpoint("resume-automatic-review", { model: "claude-code/claude-opus-5-5", thinkingLevel: "xhigh", claude: true, selection, reviewFallback });
+      const seen: Array<{ source?: string; fallback?: TaskRecord["reviewFallback"] }> = [];
+      const h = harness(() => async ({ run: context, task }) => {
+        seen.push({ source: context.selection?.source, fallback: task.reviewFallback });
+        return { state: "done", output: "finished", turns: 1, usage: emptyUsage() };
+      }, review.durable);
+      h.ctx.modelRegistry.find = () => { throw new Error("must not query Pi models"); };
+      await h.handlers.get("session_start")!({}, h.ctx);
+      const resumed = await resume(h, review.run.id);
+      expect(resumed.details.run.selection).toMatchObject({ provider: "claude-code", modelId: "claude-opus-5-5", source: "automatic-review" });
+      expect(resumed.details.run.selection.automaticReview).toBeUndefined();
+      await vi.waitFor(() => expect(seen).toEqual([{ source: "automatic-review", fallback: undefined }]));
+      await h.handlers.get("session_shutdown")!({}, h.ctx);
+    });
+
+    it("keeps an explicit route as `override` when a checkpoint without automatic provenance is resumed", async () => {
+      const { durable, run } = partialCheckpoint("resume-explicit-override", { selection: { provider: "openai-codex", modelId: "gpt-6.1-sol", source: "override", harness: "pi", images: false, tools: true } });
+      const h = harness(() => async () => ({ state: "done", output: "finished", turns: 1, usage: emptyUsage() }), durable);
+      await h.handlers.get("session_start")!({}, h.ctx);
+      const resumed = await resume(h, run.id);
+      expect(resumed.details.run.selection.source).toBe("override");
+      await flush();
+      await h.handlers.get("session_shutdown")!({}, h.ctx);
+    });
+
     it("refuses a changed or paid route before spending the one resume", async () => {
       const staleSelection = { provider: "xiaomi", modelId: "mimo-v2.6-flash", source: "override", harness: "pi", images: false, tools: true };
       const stale = partialCheckpoint("route-stale", { selection: staleSelection });
@@ -1314,6 +1364,8 @@ describe("fresh Go parent dispatch to isolated authenticated Sol", () => {
     const result = await h.tools.get("ultraterm_subagents").execute("go-sol", { goal: "bounded review", ...selector,
       tasks: [{ label: "Review", task: "Inspect only", role: "reviewer" }] }, undefined, undefined, h.ctx);
     expect(result.details.run.model).toBe(kind === "opus-first" ? "claude-code/claude-opus-5-5" : "openai-codex/gpt-6.1-sol");
+    // A no-Claude fallback is automatic, never an operator-requested `override`; explicit routes stay `override`.
+    expect(result.details.run.selection.source).toBe(kind === "claude-unavailable" ? "automatic-review-fallback" : kind === "opus-first" ? "automatic-review" : "override");
     expect(createRuntime).toHaveBeenCalledWith(isolatedAgentPaths(isolatedCodexAgentDir("fallback")));
     expect(registry.getAll()).toEqual([go]);
     expect(registry.isUsingOAuth()).toBe(false);
