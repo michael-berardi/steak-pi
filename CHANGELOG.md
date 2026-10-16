@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.11 (2026-10-16)
 
 - Rebrand to Pareto Cybernetics: `steak-pi version` reports "(Pareto Cybernetics)" and the
   Homebrew tap is `michael-berardi/pareto-software-distribution`
