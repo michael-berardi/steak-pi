@@ -15,7 +15,7 @@ import {
   isolatedCodexAgentDir,
   type GoAccountLeaseRenewalError,
 } from "../src/subagents/provider-accounts.ts";
-import { canFallbackReview, recordReviewFallback } from "../src/subagents/reviewer-fallback.ts";
+import { canFallbackReview, isReadOnlyReviewWave, recordReviewFallback } from "../src/subagents/reviewer-fallback.ts";
 import { emptyUsage, type RunRecord, type TaskRecord } from "../src/subagents/types.ts";
 
 const dir = (id: string) => join(homedir(), ".ultraterm/provider-accounts/opencode-go", id, "agent");
@@ -53,6 +53,20 @@ describe("automatic-only official review fallback", () => {
     recordReviewFallback(task, "quota");
     expect(task.reviewFallback).toEqual({ from: "claude-code/claude-opus-5-5", to: "openai-codex/gpt-6.1-sol", reason: "quota" });
   });
+  it.each([{ mayEdit: true }, { allowBash: true }, { ownedPaths: ["src/[slug].astro"] }])("never falls back a privileged reviewer after quota/auth: %j", (permissions) => {
+    const privileged = run(); Object.assign(privileged.tasks[0], permissions);
+    expect(isReadOnlyReviewWave(privileged.tasks)).toBe(false);
+    for (const reason of ["quota", "auth"] as const) {
+      expect(canFallbackReview(privileged, { ...result(), reviewFallbackReason: reason }, new AbortController().signal)).toBe(false);
+    }
+  });
+  it("admits only permission-free reviewers as a read-only review wave", () => {
+    expect(isReadOnlyReviewWave([])).toBe(false);
+    expect(isReadOnlyReviewWave([{ role: "reviewer" }, { role: "reviewer", mayEdit: false, allowBash: false, ownedPaths: [] }])).toBe(true);
+    expect(isReadOnlyReviewWave([{ role: "reviewer" }, { role: "worker" }])).toBe(false);
+    expect(isReadOnlyReviewWave([{ role: "reviewer" }, { role: "reviewer", allowBash: true }])).toBe(false);
+    expect(isReadOnlyReviewWave([{ role: "reviewer", ownedPaths: "src" as unknown as string[] }])).toBe(false);
+  });
   it("never changes explicit routes, mixed waves, image review, cancelled or unsettled children", () => {
     const explicit = run(); explicit.selection!.automaticReview = false;
     const images = run(); images.selection!.reviewRequiresImages = true;
@@ -65,13 +79,14 @@ describe("automatic-only official review fallback", () => {
 });
 
 describe("real default-runner automatic fallback wiring (offline)", () => {
-  it.each([false, true])("records actual Sol completion or failure (failure=%s)", async failure => {
-    const run = normalizeDispatch({ goal: "review", tasks: [{ label: "review", role: "reviewer", task: "inspect only", allowBash: true }] }, process.cwd(), "claude-code/claude-opus-5-5", "xhigh", 0, () => "run-review-fixture");
+  const model = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text"] } as any;
+  /** An implicit Opus review whose Claude child fails before output on a weekly-limit message. */
+  function quotaFixture(permissions: { allowBash?: boolean } = {}) {
+    const run = normalizeDispatch({ goal: "review", tasks: [{ label: "review", role: "reviewer", task: "inspect only", ...permissions }] }, process.cwd(), "claude-code/claude-opus-5-5", "xhigh", 0, () => "run-review-fixture");
     run.harness = "claude-code";
     run.selection = { provider: "claude-code", modelId: "claude-opus-5-5", source: "override", harness: "claude-code", images: true, tools: true, automaticReview: true, reviewRequiresImages: false };
     const task = run.tasks[0];
     const relay = new RelayBroker(); relay.createRun(run.id, ["parent", task.id]);
-    const model = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text"] } as any;
     const runtimes = new Map([[`${run.id}:review-fallback`, { model, thinkingLevel: "high" as const }]]);
     const spawn = (() => {
       const listeners: Record<string, any> = {};
@@ -80,6 +95,22 @@ describe("real default-runner automatic fallback wiring (offline)", () => {
         listeners.exit(1, null);
       }); } };
     }) as any;
+    return { run, task, relay, runtimes, spawn };
+  }
+  it("refuses runtime fallback for a privileged reviewer even with a frozen Sol runtime", async () => {
+    const { run, task, relay, runtimes, spawn } = quotaFixture({ allowBash: true });
+    const factory = vi.fn(async () => { throw new Error("must not launch Sol"); });
+    const accountCommand = vi.fn(async () => ({ ok: true }));
+    const result = await defaultWorkerRunner(relay, runtimes, spawn, accountCommand, factory)({ run, task, signal: new AbortController().signal, onProgress() {} });
+    expect(result.state).toBe("failed");
+    expect(factory).not.toHaveBeenCalled();
+    expect(accountCommand).not.toHaveBeenCalled();
+    expect(task.reviewFallback).toBeUndefined();
+    expect(task.allowBash).toBe(true);
+    expect(run.model).toBe("claude-code/claude-opus-5-5");
+  });
+  it.each([false, true])("records actual Sol completion or failure (failure=%s)", async failure => {
+    const { run, task, relay, runtimes, spawn } = quotaFixture();
     let listener: any;
     const factory = vi.fn(async (options: any) => {
       expect(options.model.id).toBe("gpt-6.1-sol");
