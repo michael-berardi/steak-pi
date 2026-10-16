@@ -118,7 +118,11 @@ Claude child with a recognized quota/auth failure **before model output**, may
 use exact **GPT-6.1 Sol on Codex OAuth**. Unknown router state, unavailable Sol,
 transport/protocol/model mismatch, partial output, cancellation, and explicit
 Claude selection do not authorize fallback. Mixed implicit waves are rejected;
-image review never downgrades to text-only Sol.
+image review never downgrades to text-only Sol. Automatic fallback requires every
+reviewer to be read-only, with no `mayEdit`, `allowBash` or owned paths.
+Privileged reviewers retain Claude's path admission and shell restrictions.
+Legacy automatic-fallback checkpoints with unfinished privileged reviewers
+cannot resume; explicitly selected Pi runs are unchanged.
 
 A task records `reviewFallback: {from,to,reason}` and `routeFallbacks`; successful
 Sol review emits `Sol fallback review: USAP <run-id> receipt=<checkpoint.json>

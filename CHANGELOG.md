@@ -1,13 +1,12 @@
 # Changelog
 
-## 0.9.15 (2026-10-13, local candidate)
+## 0.9.17 (2026-10-16)
 
-- Default routine workers to OpenCode Go DeepSeek V4.1 Flash; balance isolated accounts with sticky resumptions, renewed reservations and bounded cleanup.
-- Use GPT-6.1 Sol on Codex OAuth for automatic text review when Claude is unavailable. Preserve explicit routes and record actual fallback evidence.
-- Let Go-only parents admit Sol reviews through separate Codex stores without copying credentials or changing parent environment.
-- Preserve the installed 0.9.14 checkpoint, queue visibility and Claude owned-path protections.
-
-## Unreleased
+- Validate Claude ownership paths before a wave starts, including implicit
+  privileged reviewers when Claude is unavailable.
+- Restrict automatic text-review fallback to read-only reviewers without shell
+  or ownership grants. Refuse privileged legacy fallback checkpoints on resume.
+- Preserve explicit Pi routes, exact ownership, and existing subscription routes.
 
 - Record automatic review provenance honestly: an implicit review on its automatic Claude route
   is `selection.source: "automatic-review"`, and a Sol review chosen because no Claude account
@@ -27,6 +26,15 @@
   arguments and environment stripping are unchanged. See `docs/CLAUDE-API-ROUTE.md`, which
   records that promotional API credits cover headless `claude -p` and the Agent SDK, not
   interactive Claude Code.
+## 0.9.15 (2026-10-13, local candidate)
+
+- Default routine workers to OpenCode Go DeepSeek V4.1 Flash; balance isolated accounts with sticky resumptions, renewed reservations and bounded cleanup.
+- Use GPT-6.1 Sol on Codex OAuth for automatic text review when Claude is unavailable. Preserve explicit routes and record actual fallback evidence.
+- Let Go-only parents admit Sol reviews through separate Codex stores without copying credentials or changing parent environment.
+- Preserve the installed 0.9.14 checkpoint, queue visibility and Claude owned-path protections.
+
+## 0.9.11 (2026-10-16)
+
 - Rebrand to Pareto Cybernetics: `steak-pi version` reports "(Pareto Cybernetics)" and the
   Homebrew tap is `michael-berardi/pareto-software-distribution`
   (`brew install michael-berardi/pareto-software-distribution/steak-pi`).

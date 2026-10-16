@@ -21,20 +21,20 @@ serious sessions need: parallel subagents with hard limits, compaction that
 costs no model calls, checks that run after every edit, and a status line that
 tells you what the agent is doing.
 
-Current release: **0.9.10**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
+Current release: **0.9.17**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
 [UltraTerm](https://paretocybernetics.com/software/).
 
 ## Install
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.9.4
+pi install git:github.com/michael-berardi/steak-pi@v0.9.17
 ```
 
 Or from the release archive, without Git:
 
 ```sh
-shasum -a 256 -c steak-pi-0.9.4.tgz.sha256
-tar -xzf steak-pi-0.9.4.tgz
+shasum -a 256 -c steak-pi-0.9.17.tgz.sha256
+tar -xzf steak-pi-0.9.17.tgz
 pi install "$PWD/package"
 ```
 
@@ -90,6 +90,9 @@ parent
   machine-wide caps shared by every session on the computer.
 - **Ownership:** read-only workers have no edit tools. Writers may only touch
   their own paths, and overlapping ownership is refused before the run starts.
+  Claude ownership paths with permission-rule characters such as `[slug]` are
+  rejected before starting. Automatic review fallback is read-only: write,
+  shell or ownership grants never move silently to another harness.
 - **Budgets:** a 10-minute deadline by default (up to 8 hours) and 64 turns per
   worker by default. Output, relay and history are also bounded. A worker is told
   once when two requests remain, so it writes its findings and a remaining-work

@@ -2,7 +2,7 @@ import { mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from "no
 import { RetiredModelSelectionError } from "../src/retired-model-selection.ts";
 import { CheckpointStore } from "../src/subagents/checkpoints.ts";
 import { normalizeDispatch } from "../src/subagents/policy.ts";
-import { BUILTIN_WORKER_PROFILES, resolveClaudeCodeSelection, retiredRouteError } from "../src/subagents/model-selection.ts";
+import { BUILTIN_WORKER_PROFILES, claudeCodeModelOf, resolveClaudeCodeSelection, retiredRouteError } from "../src/subagents/model-selection.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isolatedCodexAgentDir, isolatedAgentPaths } from "../src/subagents/provider-accounts.ts";
@@ -119,6 +119,67 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       expect(h.messages).toEqual([]);
       expect(h.entries).toEqual([]);
     } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); save.mockRestore(); }
+  });
+
+  const claudeUnavailable = () => vi.fn(async () => ({ ok: true, providers: { claude: { accounts: [{ eligible: false }] } } }));
+
+  it.each([false, true])("synthetic: unavailable Claude cannot reroute an implicit mutating bracket review (background=%s)", async (background) => {
+    const root = mkdtempSync(join(tmpdir(), "usap-review-owned-path-")); dirs.push(root);
+    const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "review-owned-path" };
+    const runner = vi.fn(async () => ({ state: "done" as const, output: "unexpected", turns: 1, usage: emptyUsage() }));
+    const accountCommand = claudeUnavailable();
+    const h = harness(() => runner, durable, undefined, { accountCommand });
+    const save = vi.spyOn(CheckpointStore.prototype, "save");
+    try {
+      const result = await h.tools.get("ultraterm_subagents").execute("invalid", {
+        goal: "Keep exact ownership", background,
+        tasks: [{ label: "Mutating review", task: "Edit route", role: "reviewer", mayEdit: true, ownedPaths: ["src/pages/[slug].astro"] }],
+      }, undefined, undefined, h.ctx);
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('metacharacter "["');
+      expect(result.content[0].text).not.toContain("Started USAP run");
+      expect(accountCommand).not.toHaveBeenCalled();
+      expect(runner).not.toHaveBeenCalled();
+      expect(save).not.toHaveBeenCalled();
+      expect(h.entries).toEqual([]);
+      expect(h.messages).toEqual([]);
+    } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); save.mockRestore(); }
+  });
+
+  it.each([
+    { mayEdit: true, ownedPaths: ["safe.ts"] },
+    { allowBash: true },
+  ])("synthetic: an implicit privileged reviewer keeps its Claude route when no account is eligible: %j", async (permissions) => {
+    const runner = vi.fn(async () => ({ state: "done" as const, output: "fixture", turns: 1, usage: emptyUsage() }));
+    const accountCommand = claudeUnavailable();
+    const h = harness(() => runner, undefined, undefined, { accountCommand });
+    try {
+      const result = await h.tools.get("ultraterm_subagents").execute("privileged", {
+        goal: "Keep harness enforcement", tasks: [{ label: "Privileged review", task: "Review", role: "reviewer", ...permissions }],
+      }, undefined, undefined, h.ctx);
+      expect(result.details.run.harness).toBe("claude-code");
+      expect(claudeCodeModelOf(result.details.run.model)).toBeDefined();
+      expect(result.details.run.selection).toMatchObject({ provider: "claude-code", source: "automatic-review" });
+      expect(result.details.run.tasks[0].reviewFallback).toBeUndefined();
+      expect(accountCommand).not.toHaveBeenCalled();
+      expect(runner).toHaveBeenCalledTimes(1);
+    } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+  });
+
+  it("synthetic: an implicit read-only review still falls back to Sol when no Claude account is eligible", async () => {
+    const runner = vi.fn(async () => ({ state: "done" as const, output: "fixture", turns: 1, usage: emptyUsage() }));
+    const accountCommand = claudeUnavailable();
+    const h = harness(() => runner, undefined, undefined, { accountCommand });
+    try {
+      const result = await h.tools.get("ultraterm_subagents").execute("readonly", {
+        goal: "Read-only fallback", tasks: [{ label: "Read review", task: "Inspect", role: "reviewer" }],
+      }, undefined, undefined, h.ctx);
+      expect(result.details.run.model).toBe("openai-codex/gpt-6.1-sol");
+      expect(result.details.run.harness ?? "pi").toBe("pi");
+      expect(result.details.run.selection.source).toBe("automatic-review-fallback");
+      expect(accountCommand).toHaveBeenCalled();
+      expect(runner).toHaveBeenCalledTimes(1);
+    } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
   });
 
   it("exposes independent current and last launch queue snapshots in run/status views", () => {
@@ -1098,7 +1159,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       h.entries.filter((entry) => entry.type === "ultraterm-usap-telemetry" && entry.data.runId === runId).map((entry) => entry.data);
 
     /** A settled checkpoint whose reviewer stopped on its turn budget with a resumable native session. */
-    function partialCheckpoint(name: string, overrides: { model?: string; thinkingLevel?: string; selection?: any; claude?: boolean; account?: TaskRecord["providerAccount"]; reviewFallback?: TaskRecord["reviewFallback"] } = {}) {
+    function partialCheckpoint(name: string, overrides: { model?: string; thinkingLevel?: string; selection?: any; claude?: boolean; account?: TaskRecord["providerAccount"]; reviewFallback?: TaskRecord["reviewFallback"]; privilege?: "write" | "shell" } = {}) {
       const root = mkdtempSync(join(tmpdir(), `usap-${name}-`)); dirs.push(root);
       const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: name };
       const store = new CheckpointStore(durable.parent, durable.root, durable.parent);
@@ -1106,6 +1167,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       if (overrides.selection) run.selection = overrides.selection;
       if (overrides.account) run.tasks[0].providerAccount = overrides.account;
       if (overrides.reviewFallback) run.tasks[0].reviewFallback = overrides.reviewFallback;
+      if (overrides.privilege) Object.assign(run.tasks[0], overrides.privilege === "write" ? { mayEdit: true, ownedPaths: [join(root, "safe.ts")] } : { allowBash: true });
       if (overrides.claude) { run.harness = "claude-code"; run.selection = overrides.selection ?? { ...resolveClaudeCodeSelection("claude-opus-5-5") }; }
       run.tasks[1].state = "done";
       Object.assign(run.tasks[0], { state: "failed", startedAt: Date.now(), turns: 12, error: turnLimit(12), outcome: "partial", partialReason: "turn_budget", partialSummary: "Turn budget reached after 12/12 turns" });
@@ -1277,6 +1339,37 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       // Resume pins the route, so the automatic Claude -> Sol fallback is not re-armed.
       expect(resumed.details.run.selection.automaticReview).toBeUndefined();
       await vi.waitFor(() => expect(seen).toEqual([{ source: "automatic-review-fallback", fallback: reviewFallback }]));
+      await h.handlers.get("session_shutdown")!({}, h.ctx);
+    });
+
+    it.each([
+      { privilege: "write", source: "automatic-review-fallback" },
+      { privilege: "shell", source: "automatic-review-fallback" },
+      { privilege: "write", source: "override" },
+      { privilege: "shell", source: "override" },
+    ] as const)("refuses a legacy automatic-fallback checkpoint with an unfinished privileged reviewer (%j) before any resume state changes", async ({ privilege, source }) => {
+      const reviewFallback = { from: "claude-code/claude-opus-5-5", to: "openai-codex/gpt-6.1-sol", reason: "no-eligible-claude" } as const;
+      const selection = { provider: "openai-codex", modelId: "gpt-6.1-sol", source, automaticReview: true, harness: "pi", images: false, tools: true };
+      const { durable, run } = partialCheckpoint(`legacy-fallback-${source}-${privilege}`, { selection, reviewFallback, privilege });
+      const launches: string[] = [];
+      const h = harness(() => async ({ task }) => { launches.push(task.id); return { state: "done", output: "finished", turns: 1, usage: emptyUsage() }; }, durable);
+      await h.handlers.get("session_start")!({}, h.ctx);
+      await expect(resume(h, run.id)).rejects.toThrow(/Resume refused: "Metadata signoff" reached Sol only through the automatic review fallback/);
+      const listed = await h.tools.get("ultraterm_hub").execute("l", { action: "list" }, undefined, undefined, h.ctx);
+      expect(listed.details.runs.every((view: any) => view.resumedAs === undefined)).toBe(true);
+      expect(launches).toEqual([]);
+      await h.handlers.get("session_shutdown")!({}, h.ctx);
+    });
+
+    it.each(["write", "shell"] as const)("keeps explicitly Pi-selected %s ownership resumable on its pinned route", async privilege => {
+      const selection = { provider: "openai-codex", modelId: "gpt-6.1-sol", source: "override", harness: "pi", images: false, tools: true };
+      const { durable, run } = partialCheckpoint(`explicit-pi-${privilege}`, { selection, privilege });
+      const seen: Array<{ mayEdit: boolean; allowBash: boolean; owned: number }> = [];
+      const h = harness(() => async ({ task }) => { seen.push({ mayEdit: task.mayEdit, allowBash: task.allowBash, owned: task.ownedPaths.length }); return { state: "done", output: "finished", turns: 1, usage: emptyUsage() }; }, durable);
+      await h.handlers.get("session_start")!({}, h.ctx);
+      const resumed = await resume(h, run.id);
+      expect(resumed.details.run.selection.source).toBe("override");
+      await vi.waitFor(() => expect(seen).toEqual([privilege === "write" ? { mayEdit: true, allowBash: false, owned: 1 } : { mayEdit: false, allowBash: true, owned: 0 }]));
       await h.handlers.get("session_shutdown")!({}, h.ctx);
     });
 

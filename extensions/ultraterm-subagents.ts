@@ -1,6 +1,6 @@
 import { registryForSolSelection, type CreateIsolatedModelRuntime } from "../src/subagents/codex-selection.ts";
 import { noEligibleClaudeAccount, type AccountCommand } from "../src/subagents/provider-accounts.ts";
-import { canFallbackReview, recordReviewFallback } from "../src/subagents/reviewer-fallback.ts";
+import { canFallbackReview, isReadOnlyReviewWave, recordReviewFallback } from "../src/subagents/reviewer-fallback.ts";
 import { SOL_MODEL_ROUTE } from "../src/retired-model-selection.ts";
 import { statSync } from "node:fs";
 import { PersistenceHealth } from "../src/subagents/persistence-health.ts";
@@ -1371,7 +1371,11 @@ export function createUltratermSubagentsExtension(
         // waves select the official Opus Pass CLI route automatically.
         const opusReviewDefault = implicitRoute && allReviewers;
         if (opusReviewDefault && requested.thinking !== undefined && requested.thinking !== "xhigh") throw new Error("Automatic Opus review requires xhigh effort; a different explicit effort is not silently overridden.");
-        const claudeUnavailable = opusReviewDefault && requested.requireImages !== true &&
+        // A fallback may change the harness only for permission-free reviewers.
+        // Keep privileged leaves on Claude so exact path admission and reviewer
+        // shell denial cannot be bypassed when its subscription is unavailable.
+        const readOnlyReviewFallback = opusReviewDefault && isReadOnlyReviewWave(requested.tasks);
+        const claudeUnavailable = readOnlyReviewFallback && requested.requireImages !== true &&
           await noEligibleClaudeAccount(dependencies.accountCommand);
         const params: UltratermSubagentsParams = {
           ...requested,
@@ -1412,7 +1416,7 @@ export function createUltratermSubagentsExtension(
           ? undefined
           : await resolveNativeSelection(ctx, params, dependencies);
         let reviewFallbackRuntime: PiWorkerRuntime | undefined;
-        if (opusReviewDefault && !claudeUnavailable && requested.requireImages !== true) {
+        if (readOnlyReviewFallback && !claudeUnavailable && requested.requireImages !== true) {
           try {
             const sol = await resolveNativeSelection(ctx,
               { ...requested, harness: "pi", model: SOL_MODEL_ROUTE, profile: undefined, thinking: "high", thinkingReason: "Automatic expert text review fallback after proven Claude unavailability." }, dependencies);
@@ -1625,6 +1629,13 @@ export function createUltratermSubagentsExtension(
           if (!statSync(snapshot.cwd).isDirectory()) throw new Error("Checkpoint workspace is unavailable");
           const unfinished = snapshot.tasks.filter((task) => task.state !== "done");
           if (!unfinished.length) throw new Error("No unfinished tasks to resume");
+          // A legacy automatic review fallback may have moved privileged reviewers to Pi.
+          // Only that recorded provenance is refused: an explicit Pi selection keeps its ownership.
+          if ((snapshot.selection?.source === "automatic-review-fallback" ||
+              (snapshot.selection?.automaticReview === true && snapshot.harness !== "claude-code")) &&
+              !isReadOnlyReviewWave(unfinished)) {
+            throw new Error(`Resume refused: ${unfinished.filter((task) => !isReadOnlyReviewWave([task])).map((task) => JSON.stringify(task.label)).join(", ")} reached Sol only through the automatic review fallback, which admits read-only reviewers alone (no write, shell or owned paths). Dispatch a new task on Claude or an explicit Pi route to choose its permissions.`);
+          }
           // Bounded resume: a task continues its checkpointed session at most once.
           // Every task of a resumed run is itself a resumed attempt, so a second
           // resume is refused here, before any state changes (the store re-checks).
