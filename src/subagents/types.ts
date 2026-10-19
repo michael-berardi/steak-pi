@@ -118,6 +118,18 @@ export interface ClaudeApiReceipt {
   sessionId: string;
 }
 
+/** Sanitized official CLI auth-status evidence paired with the exact child namespace.
+ * identityHash is a SHA-256 fingerprint, never an email or credential. */
+export interface ClaudeSubscriptionReceipt {
+  kind: "claude-subscription";
+  account?: "primary" | "b";
+  configMode: "default" | "explicit";
+  configDir?: string;
+  identityHash: string;
+  subscriptionType: "pro" | "max" | "team" | "enterprise";
+  attested: { preflight: true; init: boolean };
+}
+
 export interface ModelSelection {
   provider: string;
   modelId: string;
@@ -145,6 +157,8 @@ export interface DispatchInput {
   profile?: string;
   /** Explicit execution harness; omitted and "pi" are identical. */
   harness?: HarnessId;
+  /** Task-scoped subscription account; never applies to Pi or API routes. */
+  claudeAccount?: "primary" | "b";
   requireImages?: boolean;
   constraints?: string[];
   contract?: string;
@@ -209,6 +223,7 @@ export interface TaskRecord extends NormalizedTask {
   sessionFile?: string;
   /** Claude Code worker session id (`--session-id`), resumable with `--resume`. */
   claudeSessionId?: string;
+  subscriptionReceipt?: ClaudeSubscriptionReceipt;
   /** Explicit Claude API route only: sanitized auth/model/budget receipt. */
   apiReceipt?: ClaudeApiReceipt;
   /** Explicit Claude API route only: spend already booked by the predecessor of a bounded resume. */
@@ -252,6 +267,7 @@ export interface RunRecord {
   /** Set only for non-Pi harnesses; absence is the Pi default. */
   harness?: HarnessId;
   selection?: ModelSelection;
+  claudeAccount?: "primary" | "b";
   thinkingLevel: string;
   concurrency: number;
   timeoutMs: number;
@@ -285,6 +301,7 @@ export interface WorkerProgress {
   sessionFile?: string;
   /** Claude Code session id once the CLI has been launched with it. */
   claudeSessionId?: string;
+  subscriptionReceipt?: ClaudeSubscriptionReceipt;
   /** Explicit Claude API route: receipt recorded as soon as the CLI attests API auth. */
   apiReceipt?: ClaudeApiReceipt;
 }
@@ -294,6 +311,7 @@ export interface WorkerResult {
   reviewFallbackReason?: "quota" | "auth";
   /** Cancelled initialization may settle later; retain the launch lease until disposed. */
   cleanup?: Promise<void>;
+  subscriptionReceipt?: ClaudeSubscriptionReceipt;
   /** Explicit Claude API route: final sanitized receipt, also on failure after attestation. */
   apiReceipt?: ClaudeApiReceipt;
   state: Extract<TaskState, "done" | "failed" | "aborted" | "timed_out">;

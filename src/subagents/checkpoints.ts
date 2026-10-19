@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fchmodSync, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { claudeCodeModelOf } from "./model-selection.ts";
 import { removeClaudeWorkerSession } from "./claude-session.ts";
 import { MAX_ACTIVE_RUNS, MAX_RETAINED_TERMINAL_RUNS, MAX_TASKS, OUTPUT_LIMIT, TURN_BUDGET_ERROR, type RunRecord } from "./types.ts";
 
@@ -34,6 +35,15 @@ function validQueue(value: unknown): boolean {
       && ["lease", "claim"].includes(owner.kind as string)
       && ["live", "dead", "unknown"].includes(owner.status as string));
   });
+}
+
+function validSubscriptionReceipt(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!object(value) || !knownKeys(value, ["kind", "account", "configMode", "configDir", "identityHash", "subscriptionType", "attested"]) || value.kind !== "claude-subscription") return false;
+  if (value.account !== undefined && value.account !== "primary" && value.account !== "b") return false;
+  if (typeof value.identityHash !== "string" || !/^[a-f0-9]{64}$/.test(value.identityHash) || !["pro", "max", "team", "enterprise"].includes(value.subscriptionType as string)) return false;
+  if (value.configMode === "default" ? value.configDir !== undefined : value.configMode !== "explicit" || typeof value.configDir !== "string" || value.configDir.length > 1024 || !isAbsolute(value.configDir) || /[\u0000-\u001f\u007f-\u009f]/.test(value.configDir)) return false;
+  return object(value.attested) && knownKeys(value.attested, ["preflight", "init"]) && value.attested.preflight === true && typeof value.attested.init === "boolean";
 }
 
 /** Copy only queue metadata: never provider payloads, task text or slot paths. */
@@ -255,6 +265,8 @@ export class CheckpointStore {
           const run = checkpoint.run;
           if (checkpoint.version !== 1 || !run || !ID.test(run.id) || `${run.id}.json` !== file || !Array.isArray(run.tasks) || run.tasks.length < 1 || run.tasks.length > MAX_TASKS || typeof run.cwd !== "string" || typeof run.model !== "string") throw new Error("Invalid checkpoint shape");
           if (run.tasks.some((task) => !object(task) || !validQueue(task.launchQueue) || !validQueue(task.lastLaunchQueue))) throw new Error("Invalid checkpoint queue metadata");
+          if (run.claudeAccount !== undefined && (run.harness !== "claude-code" || claudeCodeModelOf(run.model) === undefined || !["primary", "b"].includes(run.claudeAccount))) throw new Error("Invalid checkpoint Claude account");
+          if (run.tasks.some((task) => !validSubscriptionReceipt(task.subscriptionReceipt) || (task.subscriptionReceipt !== undefined && (run.harness !== "claude-code" || claudeCodeModelOf(run.model) === undefined || task.subscriptionReceipt.account !== run.claudeAccount)))) throw new Error("Invalid checkpoint Claude subscription receipt");
           if (this.ownerSessionId && ((run.ownerSessionId && run.ownerSessionId !== this.ownerSessionId)
             || (!run.ownerSessionId && !this.allowLegacy)
             || (run.ownerSessionFile && canonicalSessionFile(run.ownerSessionFile) !== this.ownerSessionFile))) throw new Error("Foreign-session checkpoint");
@@ -280,7 +292,7 @@ export class CheckpointStore {
     if (!ID.test(run.id)) throw new Error("Invalid checkpoint run ID");
     const now = Date.now();
     // Queue transitions are durable metadata; elapsed time is derived on reads.
-    const state = run.state + ":" + run.tasks.map((task) => `${task.state}:${task.sessionFile ?? ""}:${task.claudeSessionId ?? ""}:${task.autoResumes?.length ?? 0}:${JSON.stringify([task.launchQueue, task.lastLaunchQueue])}`).join("|");
+    const state = run.state + ":" + run.tasks.map((task) => `${task.state}:${task.sessionFile ?? ""}:${task.claudeSessionId ?? ""}:${task.autoResumes?.length ?? 0}:${JSON.stringify([task.launchQueue, task.lastLaunchQueue, task.subscriptionReceipt])}`).join("|");
     const previous = this.writes.get(run.id);
     const copy = structuredClone(run);
     if (this.ownerSessionId) {
@@ -312,6 +324,11 @@ export class CheckpointStore {
     if (successor.resumedFrom !== id) throw new Error("Resume refused: the successor does not record the run it resumes");
     if (successor.maxTurns > original.maxTurns || successor.timeoutMs > original.timeoutMs) throw new Error("Resume refused: a resume never raises the original turn or time budget");
     if (successor.model !== original.model || successor.thinkingLevel !== original.thinkingLevel || (successor.harness ?? "pi") !== (original.harness ?? "pi")) throw new Error("Resume refused: a resume stays on the original route");
+    if (successor.claudeAccount !== original.claudeAccount) throw new Error("Resume refused: a resume stays on the original Claude subscription account");
+    for (const task of successor.tasks) {
+      const predecessor = original.tasks.find((item) => item.id === task.resumedFrom);
+      if (predecessor?.subscriptionReceipt && JSON.stringify(task.subscriptionReceipt) !== JSON.stringify(predecessor.subscriptionReceipt)) throw new Error("Resume refused: the original Claude authentication receipt must be preserved");
+    }
     checkpoint.pendingResume = successor.id;
     this.atomic(id, checkpoint);
     this.save(successor, true);
@@ -399,7 +416,7 @@ export class CheckpointStore {
       // A failed Claude worker kept its transcript for resume; once its run is pruned it is never resumed.
       for (const task of checkpoint.run.tasks) {
         if (!task.claudeSessionId || [...this.cache.values()].some((item) => item.run.tasks.some((other) => other.claudeSessionId === task.claudeSessionId))) continue;
-        try { removeClaudeWorkerSession(task.claudeSessionId); } catch { /* best effort */ }
+        try { removeClaudeWorkerSession(task.claudeSessionId, undefined, task.subscriptionReceipt?.configDir); } catch { /* best effort */ }
       }
     }
   }

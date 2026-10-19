@@ -1,5 +1,6 @@
 import { assertActiveModelSelector } from "../retired-model-selection.ts";
 import { claudeOwnedPathRules } from "./claude-owned-paths.ts";
+import { claudeCodeModelOf } from "./model-selection.ts";
 import { lstatSync, realpathSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
@@ -247,6 +248,10 @@ export function normalizeDispatch(
   );
   const background = booleanOrDefault(input.background, false, "background");
   const harness = normalizeHarness(input.harness, "harness");
+  if (input.claudeAccount !== undefined) {
+    if (input.claudeAccount !== "primary" && input.claudeAccount !== "b") fail("claudeAccount must be primary or b");
+    if (harness !== "claude-code" || claudeCodeModelOf(model) === undefined) fail("claudeAccount requires an exact Claude subscription route; no API or Pi account was selected");
+  }
   const runId = `run-${safeDisplayId(idFactory())}`;
   const labels = new Set<string>();
   const ownership: Array<{ task: string; lexical: string; physical: string }> = [];
@@ -330,6 +335,7 @@ export function normalizeDispatch(
     cwd: root.lexical,
     model: model.trim(),
     ...(harness === "pi" ? {} : { harness }),
+    ...(input.claudeAccount === undefined ? {} : { claudeAccount: input.claudeAccount }),
     thinkingLevel: thinking.trim(),
     concurrency,
     timeoutMs,

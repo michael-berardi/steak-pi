@@ -127,6 +127,7 @@ function cloneTask(task: TaskRecord): TaskRecord {
     lastStep: workerJournal(task).lastStep,
     usage: cloneUsage(task.usage),
     ...(task.autoResumes ? { autoResumes: [...task.autoResumes] } : {}),
+    ...(task.subscriptionReceipt ? { subscriptionReceipt: structuredClone(task.subscriptionReceipt) } : {}),
     ...(task.launchQueue ? { launchQueue: structuredClone(task.launchQueue) } : {}),
     ...(task.lastLaunchQueue ? { lastLaunchQueue: structuredClone(task.lastLaunchQueue) } : {}),
   };
@@ -650,6 +651,7 @@ export class SubagentCoordinator {
     if (progress.sessionFile !== undefined) task.sessionFile = progress.sessionFile;
     if (progress.claudeSessionId !== undefined) task.claudeSessionId = progress.claudeSessionId;
     if (progress.apiReceipt !== undefined) task.apiReceipt = structuredClone(progress.apiReceipt);
+    if (progress.subscriptionReceipt !== undefined) task.subscriptionReceipt = structuredClone(progress.subscriptionReceipt);
     task.lastProgressAt = this.now();
     this.observe(runtime);
 
@@ -698,7 +700,7 @@ export class SubagentCoordinator {
     runtime: RunRuntime,
     task: TaskRecord,
     state: TerminalTaskState,
-    result: Pick<WorkerResult, "output" | "error" | "turns" | "usage" | "truncated" | "toolErrors" | "toolSuccesses" | "apiReceipt">,
+    result: Pick<WorkerResult, "output" | "error" | "turns" | "usage" | "truncated" | "toolErrors" | "toolSuccesses" | "apiReceipt" | "subscriptionReceipt">,
   ): void {
     if (isTerminal(task.state)) return;
 
@@ -717,6 +719,7 @@ export class SubagentCoordinator {
     task.toolSuccesses = safeTurns(result.toolSuccesses, task.toolSuccesses ?? 0);
     task.usage = safeUsage;
     if (result.apiReceipt !== undefined) task.apiReceipt = structuredClone(result.apiReceipt);
+    if (result.subscriptionReceipt !== undefined) task.subscriptionReceipt = structuredClone(result.subscriptionReceipt);
     task.truncated = result.truncated ?? task.truncated;
     if (result.error !== undefined) task.error = result.error;
     else delete task.error;

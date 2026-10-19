@@ -25,6 +25,18 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); });
 
 describe("Claude worker transcript cleanup", () => {
+  it("synthetic: selected explicit namespace cleanup never sweeps the default account", () => {
+    const original = join(projects, "normal");
+    const config = join(home, ".claude-b");
+    const selected = join(config, "projects", "normal");
+    transcript(original); transcript(selected);
+    removeClaudeWorkerSession(id, home, config);
+    expect(existsSync(join(original, `${id}.jsonl`))).toBe(true);
+    expect(existsSync(join(selected, `${id}.jsonl`))).toBe(false);
+    expect(existsSync(join(selected, id))).toBe(false);
+    for (const unsafe of ["relative", "/synthetic\nBAD"]) expect(() => removeClaudeWorkerSession(id, home, unsafe)).toThrow(/namespace/);
+  });
+
   it("skips symlinked projects, preserving UUID-named external data", () => {
     const outside = join(root, "outside");
     const normal = join(projects, "normal");

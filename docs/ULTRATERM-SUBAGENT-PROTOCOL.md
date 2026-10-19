@@ -157,6 +157,51 @@ environment variables are not inherited, and there is no fallback to another
 model, route, or billing arrangement. Quota exhaustion is a failed task due to
 quota, not permission to buy credits or an expert approval.
 
+### Task-scoped Claude subscription account
+
+Source for the next managed UltraTerm release adds `claudeAccount: "primary"`
+(Claude 1) or `claudeAccount: "b"` (Claude 2). Pair it with
+`harness: "claude-code"` or an exact `claude-code/…` model:
+
+```json
+{
+  "model": "claude-code/claude-sonnet-5-5",
+  "claudeAccount": "primary",
+  "tasks": [{ "label": "Inspect", "task": "Read the staged diff", "role": "scout" }]
+}
+```
+
+The existing credential-free account router must admit the exact selected
+account at dispatch and again at each launch. Unknown IDs, unavailable accounts,
+Pi routes, profile selectors and API routes are refused; no alternate account,
+model, credits or global default is selected. The selector applies to this run
+only. It does not sign in, move credentials, reserve a new account, or change
+native account-balancing defaults.
+
+Claude 1 uses the CLI default with `CLAUDE_CONFIG_DIR` **unset**; Claude 2 uses
+its registered explicit directory. Explicitly setting `~/.claude` is a different
+authentication namespace from leaving the variable unset. Without this selector,
+a validated inherited namespace is retained, including explicit `~/.claude`;
+an empty variable means unset. API credentials and provider overrides are still
+stripped from subscription children.
+
+The official CLI probes authentication with the exact sanitized child environment.
+Each leaf exposes `subscriptionReceipt` in hub results and checkpoints: selected
+account (if explicit), default/explicit namespace, subscription tier, a SHA-256
+login-identity fingerprint, and separate preflight/init attestations. Raw email,
+organization identity, auth output and credentials are not retained. The selected
+account identifies the router namespace; the fingerprint identifies the login the
+CLI actually reported there, not an independently registered account owner.
+A successful subscription init must report no API key source. This is auth-route
+evidence, not proof of available quota or successful model inference.
+
+Resume preserves the selector and receipt. The account must still be eligible,
+and changing its namespace or authenticated identity refuses inference. Legacy
+started sessions without an account receipt cannot resume safely; inspect retained
+work and explicitly dispatch a new scoped task. Finished transcript cleanup uses
+the same namespace, never another account's default projects directory. Managed
+helpers are not hand-installed to activate this source change.
+
 **Explicit Claude API route.** A separate, distinct route family,
 `claude-code-api/claude-sonnet-5-5` or `claude-code-api/claude-opus-5-5`, runs
 the same headless CLI worker on an API key (behind an approved `apiKeyHelper`,

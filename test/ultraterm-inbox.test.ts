@@ -200,8 +200,11 @@ describe("thin native adapter", () => {
 
 it("Unix transport frames isolated requests and aborts a lost response", async () => {
   const { createServer } = await import("node:net");
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "inbox-wire-")));
-  const path = join(root, "utp.sock");
+  const socketRoot = mkdtempSync(join(tmpdir(), "inbox-wire-"));
+  const root = realpathSync(socketRoot);
+  // Keep a caller's short TMPDIR alias for AF_UNIX (macOS paths are bounded),
+  // while cleanup still uses the canonical, task-owned fixture directory.
+  const path = join(socketRoot, "utp.sock");
   const sockets = new Set<import("node:net").Socket>();
   const server = createServer(socket => {
     sockets.add(socket); socket.on("close", () => sockets.delete(socket));

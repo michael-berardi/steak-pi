@@ -102,6 +102,19 @@ with only reviewer tasks) default to Opus 5.5. Existing first-party
 Claude subscription login is required; quota exhaustion is a failed task due to
 quota, never model approval or permission for credits or silent fallback. This
 replaces the Astra pass.
+For a task-scoped subscription account, pair the Claude harness or exact
+subscription model with `claudeAccount: "primary"` (Claude 1) or `"b"`
+(Claude 2). This source addition arrives with the next managed UltraTerm release;
+never hand-install helpers. The account router must admit that exact account at
+dispatch and each launch. Unknown/unavailable accounts, Pi, profile and API
+routes fail closed, with no fallback, credits or global-default change.
+Claude 1 unsets `CLAUDE_CONFIG_DIR`; setting `~/.claude` explicitly is a distinct
+auth namespace. Omitted selectors preserve validated inheritance. Inspect each
+leaf's `subscriptionReceipt`: namespace, hashed actual CLI login identity and
+separate preflight/init attestations. It contains no raw login identity or
+credentials and does not prove quota or inference success. Resume preserves the
+account and identity; changed or missing legacy account evidence refuses resume.
+
 API credits are a separate explicit route: `model: "claude-code-api/claude-sonnet-5-5"`
 (or `…-opus-5-5`) runs the same headless worker on the operator-approved API key.
 It needs the task- and role-scoped approval record (`USAP_CLAUDE_API_CONFIG`), has hard

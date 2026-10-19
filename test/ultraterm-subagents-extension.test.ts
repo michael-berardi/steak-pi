@@ -3,7 +3,7 @@ import { RetiredModelSelectionError } from "../src/retired-model-selection.ts";
 import { CheckpointStore } from "../src/subagents/checkpoints.ts";
 import { normalizeDispatch } from "../src/subagents/policy.ts";
 import { BUILTIN_WORKER_PROFILES, claudeCodeModelOf, resolveClaudeCodeSelection, retiredRouteError } from "../src/subagents/model-selection.ts";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { isolatedCodexAgentDir, isolatedAgentPaths } from "../src/subagents/provider-accounts.ts";
 import type { ExtensionAPI, ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -85,12 +85,180 @@ async function flush(): Promise<void> {
   for (let index = 0; index < 10; index += 1) await Promise.resolve();
 }
 
+function syntheticClaudeSelection(account: "primary" | "b") {
+  const configDir = join(homedir(), account === "primary" ? ".claude" : ".claude-b");
+  return {
+    ok: true,
+    provider: "claude",
+    account: {
+      id: account, label: account === "primary" ? "Claude 1" : "Claude 2", eligible: true, configDir,
+      launchEnv: account === "primary" ? { unset: ["CLAUDE_CONFIG_DIR"] } : { set: { CLAUDE_CONFIG_DIR: configDir } },
+      // Synthetic private fields must never leak into the public run/result.
+      email: "synthetic-claude@example.invalid", orgId: "synthetic-private-org", accessToken: "synthetic-private-token",
+    },
+  };
+}
+
+function syntheticClaudeReceipt(account: "primary" | "b"): NonNullable<TaskRecord["subscriptionReceipt"]> {
+  return {
+    kind: "claude-subscription", account, configMode: account === "primary" ? "default" : "explicit",
+    ...(account === "b" ? { configDir: join(homedir(), ".claude-b") } : {}),
+    identityHash: (account === "primary" ? "a" : "b").repeat(64), subscriptionType: "max",
+    attested: { preflight: true, init: true },
+  };
+}
+
 afterEach(() => {
   vi.useRealTimers();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 describe("UltraTerm Subagent Protocol Pi extension", () => {
+  describe("synthetic task-scoped Claude account dispatch", () => {
+    it("exposes only the primary and b account IDs as an optional schema enum", () => {
+      expect(ultratermSubagentsSchema.properties.claudeAccount).toMatchObject({ type: "string", enum: ["primary", "b"] });
+      expect(ultratermSubagentsSchema.required ?? []).not.toContain("claudeAccount");
+    });
+
+    describe.each(["primary", "b"] as const)("selected account %s", (account) => {
+      it.each([
+        { selector: { harness: "claude-code" }, role: "worker", model: "claude-code/claude-sonnet-5-5" },
+        { selector: { harness: "claude-code" }, role: "reviewer", model: "claude-code/claude-opus-5-5" },
+        { selector: { model: "claude-code/claude-sonnet-5-5" }, role: "reviewer", model: "claude-code/claude-sonnet-5-5" },
+        { selector: { model: "claude-code/claude-opus-5-5" }, role: "reviewer", model: "claude-code/claude-opus-5-5" },
+        { selector: { harness: "claude-code", model: "claude-code/claude-opus-5-5" }, role: "worker", model: "claude-code/claude-opus-5-5" },
+      ])("propagates through the coordinator and public receipt without automatic fallback: %j", async ({ selector, role, model }) => {
+        const receipt = syntheticClaudeReceipt(account);
+        const runner = vi.fn(async (_context: Parameters<WorkerRunner>[0]) => ({ state: "done" as const, output: "synthetic review", turns: 1, usage: emptyUsage(), subscriptionReceipt: receipt }));
+        const accountCommand = vi.fn(async (args: string[]) => args[0] === "status"
+          ? { ok: true, providers: { claude: { accounts: [{ eligible: false }] } } }
+          : syntheticClaudeSelection(account));
+        const h = harness(() => runner, undefined, undefined, { accountCommand });
+        const find = vi.fn(() => { throw new Error("selected Claude must not consult the Pi registry"); });
+        h.ctx.modelRegistry.find = find;
+        try {
+          const result = await h.tools.get("ultraterm_subagents").execute("account", {
+            goal: "Synthetic account selection", claudeAccount: account, ...selector,
+            tasks: [{ label: "Selected leaf", task: "Inspect synthetic evidence", role }],
+          }, undefined, undefined, h.ctx);
+          expect(result.isError).not.toBe(true);
+          expect(runner).toHaveBeenCalledTimes(1);
+          expect(runner.mock.calls[0][0].run).toMatchObject({ claudeAccount: account, harness: "claude-code", model, thinkingLevel: "xhigh" });
+          expect(result.details.run).toMatchObject({ claudeAccount: account, harness: "claude-code", model, thinkingLevel: "xhigh", tasks: [{ subscriptionReceipt: receipt }] });
+          expect(result.details.run.tasks[0].reviewFallback).toBeUndefined();
+          expect(result.details.run.selection.source).not.toBe("automatic-review-fallback");
+          // A status response proving no eligible accounts must not override an explicit selection.
+          expect(accountCommand.mock.calls).toEqual([[["select", "--provider", "claude", "--account", account]]]);
+          expect(find).not.toHaveBeenCalled();
+          expect(result.content[0].text).toContain(`Claude subscription: ${account}; namespace=${receipt.configMode}; identity=${receipt.identityHash}; preflight=verified; init=verified`);
+          for (const raw of ["synthetic-claude@example.invalid", "synthetic-private-org", "synthetic-private-token"]) {
+            expect(JSON.stringify(result)).not.toContain(raw);
+          }
+          result.details.run.tasks[0].subscriptionReceipt.attested.init = false;
+          const status = await h.tools.get("ultraterm_hub").execute("status", { action: "status", runId: result.details.run.runId }, undefined, undefined, h.ctx);
+          expect(status.details.run).toMatchObject({ claudeAccount: account, tasks: [{ subscriptionReceipt: receipt }] });
+          expect(status.details.run.tasks[0].subscriptionReceipt.attested.init).toBe(true);
+        } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+      });
+    });
+
+    it.each([
+      { claudeAccount: "unknown", harness: "claude-code" },
+      { claudeAccount: "../b", harness: "claude-code" },
+      { claudeAccount: "~/.claude-b", harness: "claude-code" },
+      { claudeAccount: join(homedir(), ".claude-b"), harness: "claude-code" },
+      { claudeAccount: "", harness: "claude-code" },
+      { claudeAccount: "PRIMARY", harness: "claude-code" },
+      { claudeAccount: "b" },
+      { claudeAccount: "b", harness: "pi" },
+      { claudeAccount: "b", model: "openai-codex/gpt-6.1-sol" },
+      { claudeAccount: "b", harness: "claude-code", model: "openai-codex/gpt-6.1-sol" },
+      { claudeAccount: "b", model: "claude-code-api/claude-sonnet-5-5" },
+      { claudeAccount: "b", harness: "claude-code", model: "claude-code-api/claude-opus-5-5" },
+      { claudeAccount: "b", model: "anthropic/claude-opus-5-5" },
+      { claudeAccount: "b", harness: "claude-code", profile: "steak-claude-code/claude-opus-5-5" },
+      { claudeAccount: "b", profile: "steak-pi/gpt-6-1-sol" },
+      { claudeAccount: "b", model: "claude-opus-5-5" },
+      { claudeAccount: "b", model: "claude-code/claude-opus-5-5/" },
+      { claudeAccount: "b", model: "CLAUDE-CODE/claude-sonnet-5-5" },
+    ])("rejects invalid account/route inputs before checkpoints or start: %j", async (selector) => {
+      const root = mkdtempSync(join(tmpdir(), "usap-account-input-")); dirs.push(root);
+      const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "account-input" };
+      const runner = vi.fn(async () => ({ state: "done" as const, output: "unexpected", turns: 1, usage: emptyUsage() }));
+      const accountCommand = vi.fn(async () => syntheticClaudeSelection("b"));
+      const h = harness(() => runner, durable, undefined, { accountCommand });
+      const save = vi.spyOn(CheckpointStore.prototype, "save");
+      try {
+        await expect(h.tools.get("ultraterm_subagents").execute("invalid", {
+          goal: "Refuse before startup", ...selector, tasks: [{ label: "Read review", task: "Inspect", role: "reviewer" }],
+        }, undefined, undefined, h.ctx)).rejects.toThrow(/Unknown Claude account ID|claudeAccount requires an explicit Claude subscription/);
+        expect(accountCommand).not.toHaveBeenCalled();
+        expect(runner).not.toHaveBeenCalled();
+        expect(save).not.toHaveBeenCalled();
+        const list = await h.tools.get("ultraterm_hub").execute("list", { action: "list" }, undefined, undefined, h.ctx);
+        expect(list.details.runs).toEqual([]);
+        expect(h.entries).toEqual([]);
+        expect(h.messages).toEqual([]);
+      } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); save.mockRestore(); }
+    });
+
+    it.each(["refused", "unavailable", "malformed"] as const)("router %s fails closed with no checkpoint, default-account start or Sol fallback", async (failure) => {
+      const root = mkdtempSync(join(tmpdir(), "usap-account-router-")); dirs.push(root);
+      const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "account-router" };
+      const runner = vi.fn(async () => ({ state: "done" as const, output: "unexpected", turns: 1, usage: emptyUsage() }));
+      const accountCommand = vi.fn(async (_args: string[]) => {
+        if (failure === "unavailable") throw new Error("synthetic router unavailable");
+        if (failure === "refused") return { ok: false, reason: "unavailable" };
+        return { ...syntheticClaudeSelection("b"), account: { ...syntheticClaudeSelection("b").account, launchEnv: { set: { CLAUDE_CONFIG_DIR: join(homedir(), ".claude") } } } };
+      });
+      const h = harness(() => runner, durable, undefined, { accountCommand });
+      const save = vi.spyOn(CheckpointStore.prototype, "save");
+      try {
+        await expect(h.tools.get("ultraterm_subagents").execute("refused", {
+          goal: "No selected account fallback", claudeAccount: "b", harness: "claude-code",
+          tasks: [{ label: "Read review", task: "Inspect", role: "reviewer" }],
+        }, undefined, undefined, h.ctx)).rejects.toThrow(/Unsafe Claude provider account selection|synthetic router unavailable/);
+        expect(accountCommand.mock.calls).toEqual([[["select", "--provider", "claude", "--account", "b"]]]);
+        expect(runner).not.toHaveBeenCalled();
+        expect(save).not.toHaveBeenCalled();
+        const list = await h.tools.get("ultraterm_hub").execute("list", { action: "list" }, undefined, undefined, h.ctx);
+        expect(list.details.runs).toEqual([]);
+        expect(h.entries).toEqual([]);
+        expect(h.messages).toEqual([]);
+      } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); save.mockRestore(); }
+    });
+
+    it("exposes a selected subscription receipt from worker progress before final settlement", async () => {
+      const receipt = syntheticClaudeReceipt("b");
+      let finish!: () => void;
+      let progress!: Parameters<WorkerRunner>[0]["onProgress"];
+      const pending = new Promise<void>((resolve) => { finish = resolve; });
+      const accountCommand = vi.fn(async () => syntheticClaudeSelection("b"));
+      const h = harness(() => async ({ onProgress }) => {
+        progress = onProgress;
+        onProgress({ subscriptionReceipt: { ...receipt, attested: { preflight: true, init: false } } });
+        await pending;
+        return { state: "done", output: "synthetic attested report", turns: 1, usage: emptyUsage(), subscriptionReceipt: receipt };
+      }, undefined, undefined, { accountCommand });
+      try {
+        const started = await h.tools.get("ultraterm_subagents").execute("background", {
+          goal: "Expose preflight evidence", claudeAccount: "b", harness: "claude-code", background: true,
+          tasks: [{ label: "Progress leaf", task: "Inspect", role: "reviewer" }],
+        }, undefined, undefined, h.ctx);
+        await vi.waitFor(() => expect(progress).toBeDefined());
+        const runId = started.details.run.runId;
+        const status = await h.tools.get("ultraterm_hub").execute("status", { action: "status", runId }, undefined, undefined, h.ctx);
+        expect(status.details.run).toMatchObject({ claudeAccount: "b", tasks: [{ subscriptionReceipt: { ...receipt, attested: { preflight: true, init: false } } }] });
+        expect(status.content[0].text).toContain("preflight=verified; init=unverified");
+        finish();
+        const done = await h.tools.get("ultraterm_hub").execute("wait", { action: "wait", runId, mode: "all", timeoutMs: 1000 }, undefined, undefined, h.ctx);
+        expect(done.details.run.tasks[0].subscriptionReceipt).toEqual(receipt);
+        expect(done.content[0].text).toContain("preflight=verified; init=verified");
+        expect(JSON.stringify(done)).not.toMatch(/synthetic-claude@example\.invalid|synthetic-private-org|synthetic-private-token/);
+      } finally { finish(); await h.handlers.get("session_shutdown")!({}, h.ctx); }
+    });
+  });
+
   it.each([false, true])("synthetic: rejects a later Claude bracket path before any startup (background=%s)", async (background) => {
     const root = mkdtempSync(join(tmpdir(), "usap-owned-path-preflight-")); dirs.push(root);
     const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "owned-path-preflight" };
@@ -1173,12 +1341,97 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       Object.assign(run.tasks[0], { state: "failed", startedAt: Date.now(), turns: 12, error: turnLimit(12), outcome: "partial", partialReason: "turn_budget", partialSummary: "Turn budget reached after 12/12 turns" });
       run.state = "failed";
       const sessionFile = join(store.sessionsDirectory, "native.jsonl"); writeFileSync(sessionFile, "checkpoint", { mode: 0o600 });
-      if (overrides.claude) run.tasks[0].claudeSessionId = "5b1d6a56-3a4c-4f0e-9a9e-0d6f4c6f2a11";
+      if (overrides.claude) {
+        run.tasks[0].claudeSessionId = "5b1d6a56-3a4c-4f0e-9a9e-0d6f4c6f2a11";
+        run.tasks[0].subscriptionReceipt = { ...syntheticClaudeReceipt("primary"), account: undefined };
+      }
       else run.tasks[0].sessionFile = sessionFile;
       store.save(run, true); store.close();
       return { durable, run, sessionFile };
     }
     const resume = (h: ReturnType<typeof harness>, runId: string) => h.tools.get("ultraterm_hub").execute("hub", { action: "resume", runId }, undefined, undefined, h.ctx);
+
+    it("synthetic: legacy Claude history without an account receipt refuses before spending its resume", async () => {
+      const checkpoint = partialCheckpoint("claude-legacy-identity", { model: "claude-code/claude-opus-5-5", thinkingLevel: "xhigh", claude: true });
+      const store = new CheckpointStore(checkpoint.durable.parent, checkpoint.durable.root, checkpoint.durable.parent);
+      const old = store.get(checkpoint.run.id)!.run; delete old.tasks[0].subscriptionReceipt;
+      store.save(old, true); store.close();
+      const runner = vi.fn(async () => ({ state: "done" as const, output: "unexpected", turns: 1, usage: emptyUsage() }));
+      const h = harness(() => runner, checkpoint.durable);
+      await h.handlers.get("session_start")!({}, h.ctx);
+      const prepare = vi.spyOn(CheckpointStore.prototype, "prepareResume");
+      try {
+        await expect(resume(h, checkpoint.run.id)).rejects.toThrow(/no authenticated Claude account receipt/);
+        expect(prepare).not.toHaveBeenCalled(); expect(runner).not.toHaveBeenCalled();
+      } finally { prepare.mockRestore(); await h.handlers.get("session_shutdown")!({}, h.ctx); }
+    });
+
+    it.each(["primary", "b"] as const)("synthetic: carries selected Claude account %s and its identity receipt across durable resume", async (account) => {
+      const checkpoint = partialCheckpoint(`claude-account-${account}`, { model: "claude-code/claude-opus-5-5", thinkingLevel: "xhigh", claude: true });
+      const receipt = syntheticClaudeReceipt(account);
+      const store = new CheckpointStore(checkpoint.durable.parent, checkpoint.durable.root, checkpoint.durable.parent);
+      try {
+        const record = store.get(checkpoint.run.id)!.run;
+        record.claudeAccount = account;
+        record.tasks[0].subscriptionReceipt = receipt;
+        store.save(record, true);
+      } finally { store.close(); }
+      const seen: Array<{ account?: string; receipt?: TaskRecord["subscriptionReceipt"]; sessionId?: string; model: string }> = [];
+      const accountCommand = vi.fn(async (args: string[]) => {
+        if (args[0] !== "select") throw new Error("resume must only use read-only account selection");
+        return syntheticClaudeSelection(account);
+      });
+      const h = harness(() => async ({ run, task }) => {
+        seen.push({ account: run.claudeAccount, receipt: structuredClone(task.subscriptionReceipt), sessionId: task.claudeSessionId, model: run.model });
+        return { state: "done", output: "synthetic continued report", turns: 1, usage: emptyUsage(), subscriptionReceipt: receipt };
+      }, checkpoint.durable, undefined, { accountCommand });
+      h.ctx.modelRegistry.find = () => { throw new Error("must not query Pi for a selected Claude resume"); };
+      await h.handlers.get("session_start")!({}, h.ctx);
+      try {
+        const resumed = await resume(h, checkpoint.run.id);
+        expect(resumed.details.run).toMatchObject({ claudeAccount: account, harness: "claude-code", model: "claude-code/claude-opus-5-5", resumedFrom: checkpoint.run.id, tasks: [{ subscriptionReceipt: receipt }] });
+        expect(resumed.details.run.tasks).toHaveLength(1);
+        await vi.waitFor(() => expect(seen).toHaveLength(1));
+        expect(seen[0]).toEqual({ account, receipt, sessionId: checkpoint.run.tasks[0].claudeSessionId, model: checkpoint.run.model });
+        expect(accountCommand.mock.calls).toEqual([[["select", "--provider", "claude", "--account", account]]]);
+        const done = await h.tools.get("ultraterm_hub").execute("wait", { action: "wait", runId: resumed.details.run.runId, mode: "all", timeoutMs: 1000 }, undefined, undefined, h.ctx);
+        expect(done.details.run).toMatchObject({ claudeAccount: account, tasks: [{ subscriptionReceipt: receipt }] });
+        expect(done.content[0].text).toContain(`Claude subscription: ${account}; namespace=${receipt.configMode}; identity=${receipt.identityHash}`);
+        expect(JSON.stringify(done)).not.toMatch(/synthetic-claude@example\.invalid|synthetic-private-org|synthetic-private-token/);
+        await expect(resume(h, checkpoint.run.id)).rejects.toThrow(/Already resumed/);
+      } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+    });
+
+    it("synthetic: router refusal on a selected Claude resume cannot reserve a successor or launch the default account", async () => {
+      const checkpoint = partialCheckpoint("claude-account-resume-refused", { model: "claude-code/claude-opus-5-5", thinkingLevel: "xhigh", claude: true });
+      const receipt = syntheticClaudeReceipt("b");
+      const store = new CheckpointStore(checkpoint.durable.parent, checkpoint.durable.root, checkpoint.durable.parent);
+      try {
+        const record = store.get(checkpoint.run.id)!.run;
+        record.claudeAccount = "b";
+        record.tasks[0].subscriptionReceipt = receipt;
+        store.save(record, true);
+      } finally { store.close(); }
+      const runner = vi.fn(async () => ({ state: "done" as const, output: "unexpected", turns: 1, usage: emptyUsage() }));
+      const accountCommand = vi.fn(async (_args: string[]) => ({ ok: false, reason: "unavailable" }));
+      const h = harness(() => runner, checkpoint.durable, undefined, { accountCommand });
+      await h.handlers.get("session_start")!({}, h.ctx);
+      const prepare = vi.spyOn(CheckpointStore.prototype, "prepareResume");
+      try {
+        await expect(resume(h, checkpoint.run.id)).rejects.toThrow("Unsafe Claude provider account selection");
+        expect(accountCommand.mock.calls).toEqual([[["select", "--provider", "claude", "--account", "b"]]]);
+        expect(prepare).not.toHaveBeenCalled();
+        expect(runner).not.toHaveBeenCalled();
+        const list = await h.tools.get("ultraterm_hub").execute("list", { action: "list" }, undefined, undefined, h.ctx);
+        expect(list.details.runs).toHaveLength(1);
+        expect(list.details.runs[0]).toMatchObject({ runId: checkpoint.run.id, claudeAccount: "b", tasks: [{ subscriptionReceipt: receipt }, {}] });
+      } finally { prepare.mockRestore(); await h.handlers.get("session_shutdown")!({}, h.ctx); }
+      const reopened = new CheckpointStore(checkpoint.durable.parent, checkpoint.durable.root, checkpoint.durable.parent);
+      try {
+        expect(reopened.get(checkpoint.run.id)?.resumedAs).toBeUndefined();
+        expect(reopened.get(checkpoint.run.id)?.pendingResume).toBeUndefined();
+      } finally { reopened.close(); }
+    });
 
     it("marks a turn- or time-budget stop partial with role and label in the result, receipt and telemetry", async () => {
       const h = harness(() => async ({ task }) => task.label === "Metadata signoff"

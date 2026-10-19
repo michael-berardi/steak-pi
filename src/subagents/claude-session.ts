@@ -1,6 +1,6 @@
 import { lstatSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 /** Claude Code session ids are lowercase UUIDs. */
 export const CLAUDE_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -15,9 +15,10 @@ function sessionEntry(path: string): ReturnType<typeof lstatSync> | undefined {
 
 /** Delete a finished worker's Claude transcript (and its subagent folder).
  * USAP never retains worker prompts once they are no longer needed to resume. */
-export function removeClaudeWorkerSession(id: string, home: string = homedir()): void {
+export function removeClaudeWorkerSession(id: string, home: string = homedir(), configDir?: string): void {
   if (!CLAUDE_SESSION_ID.test(id)) return;
-  const claude = join(home, ".claude");
+  if (configDir !== undefined && (!isAbsolute(configDir) || /[\u0000-\u001f\u007f]/.test(configDir))) throw new Error("Unsafe Claude transcript namespace; cleanup refused");
+  const claude = configDir ?? join(home, ".claude");
   const projects = join(claude, "projects");
   // lstat, not stat: no intermediate project/root symlink may redirect cleanup.
   if (!sessionEntry(claude)?.isDirectory() || !sessionEntry(projects)?.isDirectory()) return;
