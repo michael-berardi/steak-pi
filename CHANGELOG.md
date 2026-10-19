@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — next managed UltraTerm release
+## 0.9.18 (2026-10-19)
 
 - Add per-run `claudeAccount: "primary" | "b"` selection for the existing Claude
   subscription route. Validate the exact registered account at dispatch and each
@@ -9,8 +9,8 @@
 - Keep default-unset and explicit Claude config namespaces distinct. Record
   sanitized official-CLI subscription identity receipts and pin them on resume;
   clean finished worker transcripts only in their actual namespace.
-- Source-only change; managed helpers are not hand-installed or activated by this
-  source commit. Versioning and delivery belong to the next managed release.
+- Available in the Steak Pi package. UltraTerm receives it through its next
+  managed runtime release; this package release does not replace managed helpers.
 
 ## 0.9.17 (2026-10-16)
 

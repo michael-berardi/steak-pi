@@ -104,8 +104,8 @@ quota, never model approval or permission for credits or silent fallback. This
 replaces the Astra pass.
 For a task-scoped subscription account, pair the Claude harness or exact
 subscription model with `claudeAccount: "primary"` (Claude 1) or `"b"`
-(Claude 2). This source addition arrives with the next managed UltraTerm release;
-never hand-install helpers. The account router must admit that exact account at
+(Claude 2). Available in Steak Pi 0.9.18; UltraTerm receives it through its next
+managed runtime release. Never hand-install managed helpers. The account router must admit that exact account at
 dispatch and each launch. Unknown/unavailable accounts, Pi, profile and API
 routes fail closed, with no fallback, credits or global-default change.
 Claude 1 unsets `CLAUDE_CONFIG_DIR`; setting `~/.claude` explicitly is a distinct
