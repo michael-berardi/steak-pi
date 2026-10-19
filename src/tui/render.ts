@@ -121,7 +121,7 @@ function paintSides(
 
 export function renderCompanionHeader(width: number, palette: SemanticPalette): string[] {
   const safeWidth = Math.max(1, width);
-  const brand = "◆ STEAK PI";
+  const brand = "🥩 STEAK PI";
   const hints = safeWidth >= 64
     ? "/ commands · /model · /resume"
     : safeWidth >= 40

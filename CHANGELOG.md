@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.1 (2026-10-19)
+
+- Show a steak emoji (🥩) in the terminal UI header instead of the diamond: `🥩 STEAK PI`. The activity markers in the status line keep their diamonds.
+
 ## 0.10.0 (2026-10-19)
 
 - Add a built-in `claude-code` provider: Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and

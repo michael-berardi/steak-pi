@@ -19,7 +19,7 @@ preserves upstream behavior while giving Steak Pi a purpose-built entry surface.
 ## Visual hierarchy
 
 ```text
-◆ STEAK PI                              / commands · /model · /resume
+🥩 STEAK PI                             / commands · /model · /resume
 
 [Pi's native transcript and tool rendering]
 
