@@ -1,6 +1,6 @@
 {
   "name": "steak-pi",
-  "version": "0.9.18",
+  "version": "0.10.0",
   "bin": {
     "steak-pi": "bin/steak-pi"
   },
@@ -29,6 +29,7 @@
     "themes",
     "skills",
     "docs/AGENT-LIFECYCLE.md",
+    "docs/CLAUDE-CODE.md",
     "docs/COMPANION-UI.md",
     "docs/MODEL-ROUTING.md",
     "docs/PROFILES.md",
@@ -63,7 +64,8 @@
     "extensions": [
       "./extensions",
       "./extensions/ultracompress/index.ts",
-      "./extensions/skill-catalog-lite/index.ts"
+      "./extensions/skill-catalog-lite/index.ts",
+      "./extensions/claude-code/index.ts"
     ],
     "themes": [
       "./themes"

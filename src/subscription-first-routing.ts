@@ -40,6 +40,9 @@ export function isSubscriptionOrLocalRoute(model: Pick<Model, "provider" | "base
   try { url = new URL(model.baseUrl); } catch { return false; }
   if (url.username || url.password) return false;
   if (["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) && ["http:", "https:"].includes(url.protocol)) return true;
+  // Claude Code spends the operator's own Claude subscription through the installed
+  // CLI; the built-in adapter refuses API keys, proxies and usage-credit overage itself.
+  if (model.provider === "claude-code") return model.baseUrl === "process://claude-code";
   if (url.protocol !== "https:" || url.port) return false;
   if (model.provider === "opencode-go") return url.hostname === "opencode.ai" && /^\/zen\/go(?:\/|$)/.test(url.pathname);
   // The dedicated Singapore Token Plan endpoint spends prepaid subscription
