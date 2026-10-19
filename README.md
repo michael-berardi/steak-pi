@@ -9,7 +9,7 @@ terminal UI for the [Pi coding agent](https://pi.dev).**
 
 [![Latest release](https://img.shields.io/github/v/release/michael-berardi/steak-pi?label=release)](https://github.com/michael-berardi/steak-pi/releases/latest) [![MIT License](https://img.shields.io/github/license/michael-berardi/steak-pi)](LICENSE) ![Pi 0.87+](https://img.shields.io/badge/Pi-0.87%2B-8A2BE2) ![Node.js 22.19+](https://img.shields.io/badge/node-22.19%2B-339933)
 
-[Install](#install) · [What you get](#what-you-get) · [Subagents](#subagents-usap) · [Performance](#performance) · [Configuration](#configuration) · [Changelog](./CHANGELOG.md)
+[Install](#install) · [What you get](#what-you-get) · [Subagents](#subagents-usap) · [Claude Code](#claude-code-on-your-coding-plan) · [Performance](#performance) · [Configuration](#configuration) · [Changelog](./CHANGELOG.md)
 
 </div>
 
@@ -21,20 +21,20 @@ serious sessions need: parallel subagents with hard limits, compaction that
 costs no model calls, checks that run after every edit, and a status line that
 tells you what the agent is doing.
 
-Current release: **0.9.18**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
+Current release: **0.10.0**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
 [UltraTerm](https://paretocybernetics.com/software/).
 
 ## Install
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.9.18
+pi install git:github.com/michael-berardi/steak-pi@v0.10.0
 ```
 
 Or from the release archive, without Git:
 
 ```sh
-shasum -a 256 -c steak-pi-0.9.18.tgz.sha256
-tar -xzf steak-pi-0.9.18.tgz
+shasum -a 256 -c steak-pi-0.10.0.tgz.sha256
+tar -xzf steak-pi-0.10.0.tgz
 pi install "$PWD/package"
 ```
 
@@ -59,6 +59,7 @@ binary. Without it, Steak Pi uses Pi's built-in compaction.
 | Feature | What it does |
 | --- | --- |
 | **Subagents (USAP)** | Up to eight parallel workers per run, with file ownership, deadlines, cancellation, a message relay between workers, and usage reported back to the parent |
+| **Claude Code on your plan** | Built-in `claude-code` provider: Fable, Opus, Sonnet and Haiku through your own Claude subscription, no extra package |
 | **Local compaction** | Summaries built in 10–300 ms with no model call; the full raw session stays searchable |
 | **Verify after edit** | Runs your project check after edits and hands failures straight back to the agent |
 | **Phased todo** | A plan pinned in the terminal, saved per session |
@@ -69,6 +70,28 @@ binary. Without it, Steak Pi uses Pi's built-in compaction.
 Tools appear only when they can act. The subagent hub appears after your
 first dispatch, compaction recall after your first compaction. The prompt
 stays small until you need more.
+
+## Claude Code on your coding plan
+
+Steak Pi includes a `claude-code` provider, so your Claude Pro or Max plan works
+in Pi with the same single package. Pi keeps the conversation, tools and
+approvals; the official Claude Code CLI only talks to the model.
+
+```sh
+npm install -g @anthropic-ai/claude-code && claude auth login   # once
+pi --model claude-code/claude-opus-5-5
+```
+
+Models: `claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5-5`,
+`claude-haiku-5-5`. `/claude-code-status` checks the login.
+
+Billing: usage draws from your subscription limits. Anthropic has announced
+that `claude -p` usage could move to a separate API-rate credit and has put that
+on hold. If your account reports credit overage, the provider stops and says so
+instead of spending it. API keys, proxies, Bedrock and Vertex overrides are
+refused. Details in [docs/CLAUDE-CODE.md](./docs/CLAUDE-CODE.md). The provider
+derives from [pi-claude-code](https://github.com/earendil-works/pi-claude-code)
+by Armin Ronacher (MIT).
 
 ## Subagents (USAP)
 
@@ -130,7 +153,7 @@ key. Missing credentials fail the run instead of falling back to something
 that bills differently. Details: [model routing](./docs/MODEL-ROUTING.md),
 [profiles](./docs/PROFILES.md).
 
-**Claude accounts (Steak Pi 0.9.18; UltraTerm's next managed runtime):** add `claudeAccount: "primary"`
+**Claude accounts (Steak Pi 0.10.0; UltraTerm's next managed runtime):** add `claudeAccount: "primary"`
 (Claude 1) or `"b"` (Claude 2) to an explicit Claude subscription run. Selection
 is local to that run and produces an authenticated account receipt. Unavailable
 accounts fail without changing defaults or enabling credits. See the

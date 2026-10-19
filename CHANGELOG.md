@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.10.0 (2026-10-19)
+
+- Add a built-in `claude-code` provider: Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and
+  Haiku 5.5 through the user's own Claude Code subscription, shipped in the Steak Pi
+  package with no separate extension install. Derived from
+  [earendil-works/pi-claude-code](https://github.com/earendil-works/pi-claude-code)
+  (MIT, Armin Ronacher); the upstream license is kept in `extensions/claude-code/LICENSE`.
+- Subscription-first policy accepts exactly provider `claude-code` on
+  `process://claude-code` as a subscription route. No other provider or URL gains it;
+  `paid-routes.json` is untouched.
+- Fix the intermittent "Incomplete Claude Code upstream response" failures: the model
+  sometimes called a Pi tool by its bare name (`bash`) instead of `mcp__pi__bash`, which
+  aborted the stream. Bare names that match a current Pi tool are now accepted; anything
+  else still fails with its real cause.
+- Retry a turn up to three attempts with backoff on connection errors, 500/502/503/504/529
+  and a stream that dies before its first byte. Never retry 4xx, authentication, rate
+  limit or billing errors, or a stream that already produced output. Failures now report
+  the underlying error, stage and attempt.
+- The usage-credit guard is unchanged: overage stops the run unless
+  `PI_CLAUDE_CODE_ALLOW_USAGE_CREDITS=1`.
+
 ## 0.9.18 (2026-10-19)
 
 - Add per-run `claudeAccount: "primary" | "b"` selection for the existing Claude
