@@ -159,7 +159,7 @@ quota, not permission to buy credits or an expert approval.
 
 ### Task-scoped Claude subscription account
 
-Source for the next managed UltraTerm release adds `claudeAccount: "primary"`
+Steak Pi 0.9.18 adds `claudeAccount: "primary"`
 (Claude 1) or `claudeAccount: "b"` (Claude 2). Pair it with
 `harness: "claude-code"` or an exact `claude-code/…` model:
 
@@ -200,7 +200,8 @@ and changing its namespace or authenticated identity refuses inference. Legacy
 started sessions without an account receipt cannot resume safely; inspect retained
 work and explicitly dispatch a new scoped task. Finished transcript cleanup uses
 the same namespace, never another account's default projects directory. Managed
-helpers are not hand-installed to activate this source change.
+helpers receive this package through UltraTerm's next managed runtime release,
+not a hand-install.
 
 **Explicit Claude API route.** A separate, distinct route family,
 `claude-code-api/claude-sonnet-5-5` or `claude-code-api/claude-opus-5-5`, runs
