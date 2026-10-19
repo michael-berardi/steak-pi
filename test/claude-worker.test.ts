@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { Coordinator, workerJournal } from "../src/subagents/coordinator.ts";
 import { Scheduler } from "../src/subagents/scheduler.ts";
 import { NoopSlots } from "../src/subagents/machine-slots.ts";
@@ -17,7 +20,7 @@ import {
   type ClaudeSpawnHandle,
 } from "../src/subagents/claude-worker.ts";
 import { diagnoseRun } from "../src/subagents/checkpoints.ts";
-import { emptyUsage, USAP_VERSION, type RunRecord, type TaskRecord, type WorkerRunner } from "../src/subagents/types.ts";
+import { emptyUsage, USAP_VERSION, type RunRecord, type TaskRecord, type WorkerProgress, type WorkerRunner } from "../src/subagents/types.ts";
 
 const OUTPUT_LIMIT = 20_000;
 
@@ -854,6 +857,229 @@ describe("claude-code worker stream handling", () => {
     expect(result.state).toBe("failed");
     expect(result.error).toContain("process identity");
     expect(rebinding.calls[0].child.signals).toHaveLength(0);
+  });
+});
+
+describe("claude-code task-scoped subscription accounts (synthetic)", () => {
+  const primaryDir = join(homedir(), ".claude");
+  const bDir = join(homedir(), ".claude-b");
+  const status = {
+    loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", subscriptionType: "max",
+    email: " Synthetic.Worker@example.invalid ", orgId: "synthetic-org-not-for-receipts",
+  };
+  const identityHash = createHash("sha256")
+    .update(JSON.stringify([status.email.trim().toLowerCase(), status.orgId])).digest("hex");
+  function selectedAccount(id: "primary" | "b") {
+    return { ok: true, provider: "claude", account: {
+      id, label: id === "primary" ? "Claude 1" : "Claude 2", eligible: true,
+      configDir: id === "primary" ? primaryDir : bDir,
+      launchEnv: id === "primary" ? { unset: ["CLAUDE_CONFIG_DIR"] } : { set: { CLAUDE_CONFIG_DIR: bDir } },
+    } };
+  }
+  function completed(child: FakeClaudeProcess) {
+    child.stdout(line({ type: "system", subtype: "init", model: CLAUDE_CODE_MODEL, apiKeySource: "none" }));
+    child.stdout(successResult("synthetic account report", {}));
+    child.exit();
+  }
+  function invoke(runner: WorkerRunner, selected = run(), leaf = task(), onProgress: (p: WorkerProgress) => void = () => {}) {
+    return runner({ run: selected, task: leaf, signal: new AbortController().signal, onProgress });
+  }
+
+  it.each(["primary", "b"] as const)("%s overrides inherited b using the same scrubbed preflight/spawn environment", async (id) => {
+    const base = Object.freeze({
+      PATH: "/synthetic/bin", HOME: homedir(), LANG: "en_US.UTF-8", CLAUDE_CONFIG_DIR: bDir,
+      ULTRATERM_PROVIDER_ACCOUNT: "b", ANTHROPIC_API_KEY: "synthetic-secret",
+      ANTHROPIC_AUTH_TOKEN: "synthetic-token", ANTHROPIC_BASE_URL: "https://billing.invalid",
+      CLAUDE_CODE_OAUTH_TOKEN: "synthetic-oauth", CLAUDE_CODE_API_KEY_HELPER: "synthetic-helper",
+      CLAUDE_CODE_USE_BEDROCK: "1", CLAUDE_CODE_USE_VERTEX: "1", CLAUDE_CODE_USE_FOUNDRY: "1",
+      AWS_ACCESS_KEY_ID: "synthetic-aws", GOOGLE_APPLICATION_CREDENTIALS: "/synthetic/credentials",
+      NODE_OPTIONS: "--require=/synthetic/inject", WEATHER: "rain",
+    });
+    const { spawn, calls } = fakeSpawn(completed);
+    const accountCommand = vi.fn(async () => selectedAccount(id));
+    const subscriptionAuthStatus = vi.fn(async (_env: NodeJS.ProcessEnv) => status);
+    const progress: WorkerProgress[] = [];
+    const result = await invoke(createClaudeWorkerRunner({ spawn, env: base, accountCommand, subscriptionAuthStatus }),
+      run({ claudeAccount: id }), task(), (p) => progress.push(p));
+    expect(result.state).toBe("done");
+    expect(accountCommand.mock.calls).toEqual([[ ["select", "--provider", "claude", "--account", id] ]]);
+    expect(calls).toHaveLength(1);
+    expect(subscriptionAuthStatus).toHaveBeenCalledTimes(1);
+    expect(subscriptionAuthStatus.mock.calls[0][0]).toBe(calls[0].env);
+    expect(calls[0].env).toEqual({ PATH: base.PATH, HOME: base.HOME, LANG: base.LANG,
+      ULTRATERM_PROVIDER_ACCOUNT: id, ...(id === "b" ? { CLAUDE_CONFIG_DIR: bDir } : {}) });
+    expect(calls[0].env).not.toBe(base);
+    expect(base.CLAUDE_CONFIG_DIR).toBe(bDir);
+    expect(base.ULTRATERM_PROVIDER_ACCOUNT).toBe("b");
+    const receipt = {
+      kind: "claude-subscription", account: id, configMode: id === "primary" ? "default" : "explicit",
+      ...(id === "b" ? { configDir: bDir } : {}), identityHash, subscriptionType: "max",
+      attested: { preflight: true, init: true },
+    };
+    expect(result.subscriptionReceipt).toEqual(receipt);
+    expect(progress.filter((p) => p.subscriptionReceipt).map((p) => p.subscriptionReceipt)).toEqual([
+      { ...receipt, attested: { preflight: true, init: false } }, receipt,
+    ]);
+    const serialized = JSON.stringify({ result, progress });
+    for (const privateValue of [status.email.trim(), status.email.trim().toLowerCase(), status.orgId,
+      base.ANTHROPIC_API_KEY, base.CLAUDE_CODE_OAUTH_TOKEN]) expect(serialized).not.toContain(privateValue);
+  });
+
+  it("distinguishes inherited unset from explicit ~/.claude and never falls back after auth failure", async () => {
+    const { spawn, calls } = fakeSpawn(completed);
+    const accountCommand = vi.fn(async () => { throw new Error("unexpected router call"); });
+    const subscriptionAuthStatus = vi.fn(async (env: NodeJS.ProcessEnv) =>
+      env.CLAUDE_CONFIG_DIR === undefined ? status : { ...status, loggedIn: false });
+    const unset = await invoke(createClaudeWorkerRunner({ spawn, env: { HOME: homedir() }, accountCommand, subscriptionAuthStatus }));
+    const explicit = await invoke(createClaudeWorkerRunner({ spawn, env: { HOME: homedir(), CLAUDE_CONFIG_DIR: primaryDir }, accountCommand, subscriptionAuthStatus }));
+    expect(unset.state).toBe("done");
+    expect(unset.subscriptionReceipt).toEqual({ kind: "claude-subscription", configMode: "default",
+      identityHash, subscriptionType: "max", attested: { preflight: true, init: true } });
+    expect(explicit.state).toBe("failed");
+    expect(explicit.error).toMatch(/subscription login/);
+    expect(explicit.subscriptionReceipt).toBeUndefined();
+    expect(accountCommand).not.toHaveBeenCalled();
+    expect(subscriptionAuthStatus).toHaveBeenCalledTimes(2);
+    expect(subscriptionAuthStatus.mock.calls[0][0]).not.toHaveProperty("CLAUDE_CONFIG_DIR");
+    expect(subscriptionAuthStatus.mock.calls[1][0].CLAUDE_CONFIG_DIR).toBe(primaryDir);
+    expect(calls).toHaveLength(1);
+  });
+
+  it.each(["missing-frame", "missing-source", "apiKeyHelper"] as const)("does not attest a receipt after %s init", async (mode) => {
+    const { spawn, calls } = fakeSpawn((child) => {
+      if (mode !== "missing-frame") child.stdout(line({ type: "system", subtype: "init", model: CLAUDE_CODE_MODEL,
+        ...(mode === "apiKeyHelper" ? { apiKeySource: "apiKeyHelper" } : {}) }));
+      child.stdout(successResult("must not succeed", {}));
+      child.exit();
+    });
+    const progress: WorkerProgress[] = [];
+    const result = await invoke(createClaudeWorkerRunner({ spawn, env: {}, subscriptionAuthStatus: async () => status }),
+      run(), task(), (p) => progress.push(p));
+    expect(result.state).toBe("failed");
+    expect(result.error).toMatch(/did not attest subscription authentication/);
+    expect(result.subscriptionReceipt).toEqual({ kind: "claude-subscription", configMode: "default", identityHash,
+      subscriptionType: "max", attested: { preflight: true, init: false } });
+    expect(progress.filter((p) => p.subscriptionReceipt)).toHaveLength(1);
+    expect(calls).toHaveLength(1);
+    expect(JSON.stringify({ result, progress })).not.toContain(status.orgId);
+    expect(JSON.stringify({ result, progress })).not.toContain(status.email.trim());
+  });
+
+  it.each([
+    { name: "logged out", value: { ...status, loggedIn: false } },
+    { name: "API key auth", value: { ...status, authMethod: "api_key" } },
+    { name: "alternate provider", value: { ...status, apiProvider: "bedrock" } },
+    { name: "no subscription", value: { ...status, subscriptionType: null } },
+    { name: "missing identity", value: { ...status, email: undefined } },
+  ])("rejects $name before inference", async ({ value }) => {
+    const { spawn, calls } = fakeSpawn(completed);
+    const result = await invoke(createClaudeWorkerRunner({ spawn, env: {}, subscriptionAuthStatus: async () => value }));
+    expect(result.state).toBe("failed");
+    expect(result.error).toMatch(/subscription|login identity/);
+    expect(result.subscriptionReceipt).toBeUndefined();
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each(["primary", "b"] as const)("rejects account %s on an API route before any router/auth/spawn", async (id) => {
+    const { spawn, calls } = fakeSpawn(completed);
+    const accountCommand = vi.fn(async () => selectedAccount(id));
+    const subscriptionAuthStatus = vi.fn(async () => status);
+    const apiAuthStatus = vi.fn(async () => ({}));
+    const result = await invoke(createClaudeWorkerRunner({ spawn, env: {}, accountCommand, subscriptionAuthStatus, apiAuthStatus }),
+      run({ model: `claude-code-api/${CLAUDE_CODE_MODEL}`, claudeAccount: id }));
+    expect(result.state).toBe("failed");
+    expect(result.error).toMatch(/claudeAccount cannot select API billing/);
+    expect(accountCommand).not.toHaveBeenCalled();
+    expect(subscriptionAuthStatus).not.toHaveBeenCalled();
+    expect(apiAuthStatus).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each(["router-error", "ineligible", "wrong-account", "wrong-namespace", "top-level-launch-env", "extra-launch-key"] as const)(
+    "refuses %s router selection without auth or spawn", async (mode) => {
+      const good = selectedAccount("b");
+      const accountCommand = vi.fn(async () => {
+        if (mode === "router-error") throw new Error("synthetic router refused");
+        if (mode === "ineligible") return { ...good, account: { ...good.account, eligible: false } };
+        if (mode === "wrong-account") return selectedAccount("primary");
+        if (mode === "wrong-namespace") return { ...good, account: { ...good.account, launchEnv: { set: { CLAUDE_CONFIG_DIR: primaryDir } } } };
+        if (mode === "top-level-launch-env") {
+          const { launchEnv, ...account } = good.account;
+          return { ...good, account, launchEnv };
+        }
+        return { ...good, account: { ...good.account, launchEnv: { set: { CLAUDE_CONFIG_DIR: bDir, ANTHROPIC_API_KEY: "synthetic" } } } };
+      });
+      const { spawn, calls } = fakeSpawn(completed);
+      const subscriptionAuthStatus = vi.fn(async () => status);
+      const result = await invoke(createClaudeWorkerRunner({ spawn, env: {}, accountCommand, subscriptionAuthStatus }), run({ claudeAccount: "b" }));
+      expect(result.state).toBe("failed");
+      expect(result.error).toMatch(/router refused|Unsafe Claude provider account selection/);
+      expect(accountCommand).toHaveBeenCalledTimes(1);
+      expect(subscriptionAuthStatus).not.toHaveBeenCalled();
+      expect(calls).toHaveLength(0);
+    });
+
+  it("refuses legacy subscription resume without authenticated identity before any probe or spawn", async () => {
+    const { spawn, calls } = fakeSpawn(completed);
+    const subscriptionAuthStatus = vi.fn(async () => status);
+    const result = await invoke(createClaudeWorkerRunner({ spawn, env: {}, subscriptionAuthStatus }), run(),
+      task({ claudeSessionId: "0b5e1c2a-1111-4222-8333-944455556666" }));
+    expect(result.state).toBe("failed"); expect(result.error).toMatch(/no authenticated account receipt/);
+    expect(subscriptionAuthStatus).not.toHaveBeenCalled(); expect(calls).toHaveLength(0);
+  });
+
+  it.each(["account", "config-mode", "config-dir", "email", "organization"] as const)(
+    "refuses changed prior receipt %s before respawning a resumed leaf", async (changed) => {
+      const { spawn, calls } = fakeSpawn(completed);
+      const accountCommand = vi.fn(async () => selectedAccount("b"));
+      const subscriptionAuthStatus = vi.fn(async () => status);
+      const runner = createClaudeWorkerRunner({ spawn, env: {}, accountCommand, subscriptionAuthStatus });
+      const first = await invoke(runner, run({ claudeAccount: "b" }));
+      expect(first.state).toBe("done");
+      const previous = first.subscriptionReceipt!;
+      const priorReceipt = changed === "account" ? { ...previous, account: "primary" as const }
+        : changed === "config-mode" ? { ...previous, configMode: "default" as const }
+        : changed === "config-dir" ? { ...previous, configDir: primaryDir } : previous;
+      if (changed === "email" || changed === "organization") subscriptionAuthStatus.mockResolvedValueOnce({ ...status,
+        ...(changed === "email" ? { email: "other-worker@example.invalid" } : { orgId: "other-synthetic-org" }) });
+      const retried = await invoke(runner, run({ claudeAccount: "b" }), task({ subscriptionReceipt: priorReceipt,
+        claudeSessionId: "0b5e1c2a-1111-4222-8333-944455556666", retryAttempt: 1 }));
+      expect(retried.state).toBe("failed");
+      expect(retried.error).toMatch(changed === "email" || changed === "organization" ? /login identity changed/ : /namespace changed/);
+      expect(retried.subscriptionReceipt).toBeUndefined();
+      expect(calls).toHaveLength(1);
+      expect(accountCommand).toHaveBeenCalledTimes(2);
+      expect(subscriptionAuthStatus).toHaveBeenCalledTimes(changed === "email" || changed === "organization" ? 2 : 1);
+      expect(first.subscriptionReceipt).toEqual(previous);
+    });
+
+  it("keeps parallel primary/b selections isolated without mutating process.env", async () => {
+    const ambient = { ...process.env };
+    const base = Object.freeze({ HOME: homedir(), PATH: "/synthetic/bin", CLAUDE_CONFIG_DIR: bDir, ULTRATERM_PROVIDER_ACCOUNT: "b" });
+    const { spawn, calls } = fakeSpawn(completed);
+    const accountCommand = vi.fn(async (args: string[]) => {
+      await Promise.resolve();
+      return selectedAccount(args[args.length - 1] as "primary" | "b");
+    });
+    const subscriptionAuthStatus = vi.fn(async (_env: NodeJS.ProcessEnv) => { await Promise.resolve(); return status; });
+    const runner = createClaudeWorkerRunner({ spawn, env: base, accountCommand, subscriptionAuthStatus });
+    const results = await Promise.all([
+      invoke(runner, run({ claudeAccount: "primary" }), task({ id: "parallel-primary" })),
+      invoke(runner, run({ claudeAccount: "b" }), task({ id: "parallel-b" })),
+    ]);
+    expect(results.map((result) => result.state)).toEqual(["done", "done"]);
+    expect(calls).toHaveLength(2);
+    const primary = calls.find((call) => call.env.ULTRATERM_PROVIDER_ACCOUNT === "primary")!;
+    const secondary = calls.find((call) => call.env.ULTRATERM_PROVIDER_ACCOUNT === "b")!;
+    expect(primary.env).not.toHaveProperty("CLAUDE_CONFIG_DIR");
+    expect(secondary.env.CLAUDE_CONFIG_DIR).toBe(bDir);
+    expect(primary.env).not.toBe(secondary.env);
+    for (const call of calls) expect(subscriptionAuthStatus.mock.calls.some(([env]) => env === call.env)).toBe(true);
+    expect(accountCommand.mock.calls.map(([args]) => args)).toEqual([
+      ["select", "--provider", "claude", "--account", "primary"], ["select", "--provider", "claude", "--account", "b"],
+    ]);
+    expect(base).toEqual({ HOME: homedir(), PATH: "/synthetic/bin", CLAUDE_CONFIG_DIR: bDir, ULTRATERM_PROVIDER_ACCOUNT: "b" });
+    expect(process.env).toEqual(ambient);
   });
 });
 

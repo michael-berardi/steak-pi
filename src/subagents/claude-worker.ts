@@ -38,11 +38,13 @@
 import { spawn as nodeSpawn, execFile, execFileSync } from "node:child_process";
 import { claudeOwnedPathRules } from "./claude-owned-paths.ts";
 export { claudeOwnedPathRules } from "./claude-owned-paths.ts";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
+import { applyClaudeAccountEnv, resolveClaudeAccount } from "./claude-account.ts";
+import type { AccountCommand } from "./provider-accounts.ts";
 import { CLAUDE_SESSION_ID, removeClaudeWorkerSession } from "./claude-session.ts";
 import type { ChildProcess } from "node:child_process";
 import { OUTPUT_LIMIT, addUsage, emptyUsage, harnessOf, sanitizeUsage, type RunRecord, type TaskRecord,
-  type ClaudeApiReceipt, type UsageTotals, type WorkerProgress, type WorkerResult, type WorkerRunner } from "./types.ts";
+  type ClaudeSubscriptionReceipt, type ClaudeApiReceipt, type UsageTotals, type WorkerProgress, type WorkerResult, type WorkerRunner } from "./types.ts";
 import { CLAUDE_CODE_EFFORT, CLAUDE_CODE_MODEL, CLAUDE_CODE_ROUTE, claudeCodeModelName, claudeCodeModelOf, type ClaudeCodeModel } from "./model-selection.ts";
 import { truncatePiWorkerOutput } from "./pi-worker.ts";
 import { workerJournal } from "./coordinator.ts";
@@ -89,11 +91,16 @@ export const CLAUDE_CODE_PRESERVED_ENV = new Set([
   "http_proxy", "https_proxy", "no_proxy",
 ]);
 
-export function claudeWorkerEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function claudeWorkerEnv(base: NodeJS.ProcessEnv = process.env, subscription = false): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(base)) {
     if (value === undefined || !CLAUDE_CODE_PRESERVED_ENV.has(key)) continue;
     env[key] = value;
+  }
+  if (subscription) {
+    const selected = applyClaudeAccountEnv(base);
+    if (selected.CLAUDE_CONFIG_DIR !== undefined) env.CLAUDE_CONFIG_DIR = selected.CLAUDE_CONFIG_DIR;
+    if (selected.ULTRATERM_PROVIDER_ACCOUNT !== undefined) env.ULTRATERM_PROVIDER_ACCOUNT = selected.ULTRATERM_PROVIDER_ACCOUNT;
   }
   return env;
 }
@@ -106,7 +113,21 @@ export function assertClaudeSubscriptionStatus(value: unknown): void {
   }
 }
 
-async function verifyClaudeSubscription(executable: string, env: NodeJS.ProcessEnv, cwd: string, signal: AbortSignal, timeout: number): Promise<void> {
+export function claudeSubscriptionReceipt(status: unknown, env: NodeJS.ProcessEnv, account?: "primary" | "b"): ClaudeSubscriptionReceipt {
+  assertClaudeSubscriptionStatus(status);
+  const value = status as Record<string, unknown>;
+  if (typeof value.email !== "string" || !value.email.trim()) throw new Error("Claude subscription status did not attest a login identity; no inference started");
+  return {
+    kind: "claude-subscription", ...(account === undefined ? {} : { account }),
+    configMode: env.CLAUDE_CONFIG_DIR ? "explicit" : "default",
+    ...(env.CLAUDE_CONFIG_DIR ? { configDir: env.CLAUDE_CONFIG_DIR } : {}),
+    identityHash: createHash("sha256").update(JSON.stringify([value.email.trim().toLowerCase(), typeof value.orgId === "string" ? value.orgId : null])).digest("hex"),
+    subscriptionType: value.subscriptionType as ClaudeSubscriptionReceipt["subscriptionType"],
+    attested: { preflight: true, init: false },
+  };
+}
+
+export async function verifyClaudeSubscription(executable: string, env: NodeJS.ProcessEnv, cwd: string, signal: AbortSignal, timeout: number): Promise<unknown> {
   const output = await new Promise<string>((resolve, reject) => {
     execFile(executable, ["--safe-mode", "--restricted", "auth", "status", "--json"],
       { cwd, env, signal, timeout: Math.max(1, Math.min(10_000, timeout)), maxBuffer: 64 * 1024, encoding: "utf8" },
@@ -115,6 +136,7 @@ async function verifyClaudeSubscription(executable: string, env: NodeJS.ProcessE
   let status: unknown;
   try { status = JSON.parse(output); } catch { throw new Error("Claude Code authentication status was invalid; no inference started"); }
   assertClaudeSubscriptionStatus(status);
+  return status;
 }
 
 /** Exact CLI arguments. The USAP leaf prompt is written to stdin, never passed
@@ -499,6 +521,10 @@ export interface ClaudeWorkerRunnerOptions {
   api?: ClaudeApiConfigOptions;
   /** Explicit API route only: replaces the CLI `auth status` probe (tests). */
   apiAuthStatus?: (settingsPath: string) => Promise<unknown>;
+  /** Test seams; production always probes the official CLI with the child environment. */
+  subscriptionAuthStatus?: (env: NodeJS.ProcessEnv) => Promise<unknown>;
+  accountCommand?: AccountCommand;
+  env?: NodeJS.ProcessEnv;
 }
 
 interface RunState {
@@ -613,6 +639,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     if (pinnedModel === undefined || run.thinkingLevel !== CLAUDE_CODE_EFFORT) {
       return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "Claude Code requires the exact Sonnet 5.5 or Opus 5.5 xhigh route" };
     }
+    if (run.claudeAccount !== undefined && apiModel !== undefined) return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "claudeAccount cannot select API billing; no inference started" };
     const resuming = typeof task.claudeSessionId === "string" && CLAUDE_SESSION_ID.test(task.claudeSessionId);
     const sessionId = resuming ? task.claudeSessionId! : randomUUID();
     // The approval record is re-read at EVERY launch (including automatic and
@@ -633,16 +660,34 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     }
     catch (error) { return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
     if (signal.aborted) return { state: isTimeoutSignal(signal) ? "timed_out" : "aborted", output: "", turns: 0, usage: emptyUsage(), error: "Cancelled before CLI launch" };
+    // Resolve again at each launch: dispatch eligibility is not a permanent grant.
+    // Use precisely the same sanitized environment for auth status and inference.
+    let childEnv: NodeJS.ProcessEnv;
+    let subscriptionReceipt: ClaudeSubscriptionReceipt | undefined;
+    try {
+      const selected = run.claudeAccount === undefined ? undefined : await resolveClaudeAccount(run.claudeAccount, options.accountCommand);
+      childEnv = claudeWorkerEnv(admission ? options.env : applyClaudeAccountEnv(options.env ?? process.env, selected), !admission);
+      const previous = task.subscriptionReceipt;
+      if (resuming && !admission && !previous && (!options.spawn || options.subscriptionAuthStatus)) throw new Error("Claude resume has no authenticated account receipt; inspect legacy work before a new dispatch");
+      if (previous && (previous.account !== run.claudeAccount || previous.configMode !== (childEnv.CLAUDE_CONFIG_DIR ? "explicit" : "default") || previous.configDir !== childEnv.CLAUDE_CONFIG_DIR)) throw new Error("Claude subscription namespace changed since the previous attempt; no inference started");
+    } catch (error) { return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
     let apiPreflight = false;
     if (admission) {
       // A production launch always asks the real CLI. Only a test-injected spawn
       // may skip the probe, and it can still inject a status to exercise failures.
       if (!options.spawn || options.apiAuthStatus) {
-        try { await verifyClaudeApiAuth(executable, claudeWorkerEnv(), run.cwd, signal, run.timeoutMs, admission.settingsPath, options.apiAuthStatus); apiPreflight = true; }
+        try { await verifyClaudeApiAuth(executable, childEnv, run.cwd, signal, run.timeoutMs, admission.settingsPath, options.apiAuthStatus); apiPreflight = true; }
         catch (error) { return { state: isTimeoutSignal(signal) ? "timed_out" : signal.aborted ? "aborted" : "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
       }
-    } else if (!options.spawn) {
-      try { await verifyClaudeSubscription(executable, claudeWorkerEnv(), run.cwd, signal, run.timeoutMs); }
+    } else if (!options.spawn || options.subscriptionAuthStatus) {
+      try {
+        const status = options.subscriptionAuthStatus
+          ? await options.subscriptionAuthStatus(childEnv)
+          : await verifyClaudeSubscription(executable, childEnv, run.cwd, signal, run.timeoutMs);
+        subscriptionReceipt = claudeSubscriptionReceipt(status, childEnv, run.claudeAccount);
+        if (task.subscriptionReceipt && task.subscriptionReceipt.identityHash !== subscriptionReceipt.identityHash) throw new Error("Claude subscription login identity changed since the previous attempt; no inference started");
+        onProgress({ subscriptionReceipt });
+      }
       catch (error) { return { state: isTimeoutSignal(signal) ? "timed_out" : signal.aborted ? "aborted" : "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error), ...(!signal.aborted && errorText(error).startsWith("Claude Code workers require an existing first-party") ? { reviewFallbackReason: "auth" as const } : {}) }; }
     }
     if (signal.aborted) return { state: isTimeoutSignal(signal) ? "timed_out" : "aborted", output: "", turns: 0, usage: emptyUsage(), error: "Cancelled before CLI launch" };
@@ -667,7 +712,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     const stopPromise = new Promise<void>((resolve) => { stopExpired = resolve; });
     let killed = false;
     let closed = false;
-    const child = spawn({ command: executable, args, env: claudeWorkerEnv(), cwd: run.cwd });
+    const child = spawn({ command: executable, args, env: childEnv, cwd: run.cwd });
     onProgress({ claudeSessionId: sessionId });
     // Captured process identity at launch; every kill/cleanup revalidates it so
     // a replaced or rebinding handle can never signal an unrelated process.
@@ -769,6 +814,15 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
             : `Claude CLI usage shows no turn on the pinned ${claudeCodeModelName(pinnedModel)} route`;
           killOnce(true);
           return;
+        }
+        if (subscriptionReceipt && event.kind === "identity") {
+          if (event.apiKeySource !== "none") {
+            state.failure = "Claude CLI did not attest subscription authentication (expected no API key source); no billing fallback was selected";
+            killOnce(false);
+            return;
+          }
+          subscriptionReceipt = { ...subscriptionReceipt, attested: { preflight: true, init: true } };
+          onProgress({ subscriptionReceipt });
         }
         if (admission && event.kind === "identity") {
           // The init frame is the CLI's own statement of where its credential came from.
@@ -907,16 +961,18 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     }
     if (!closed) state.failure ??= "claude-code process exit could not be verified; cleanup lease retained";
 
+    if (subscriptionReceipt && !subscriptionReceipt.attested.init) state.failure ??= "Claude CLI did not attest subscription authentication in its init frame";
     const classification = classifyClaudeWorkerState({ signal, state, maxTurns, exitCode, exitSignal, ...(spawnError !== undefined ? { spawnError } : {}),
       ...(admission ? { apiRequired: true, apiAttested: apiInitAttested } : {}) });
     // Keep the transcript only while it may still be resumed.
     if (classification.state === "done" && !options.spawn) {
-      try { removeClaudeWorkerSession(sessionId); } catch { /* best effort; the report is unaffected */ }
+      try { removeClaudeWorkerSession(sessionId, childEnv.HOME, childEnv.CLAUDE_CONFIG_DIR); } catch { /* best effort; the report is unaffected */ }
     }
     const bounded = truncatePiWorkerOutput([claudeShellPolicy(task).diagnostic, state.outputParts.join("")].filter(Boolean).join("\n"));
     return {
       ...classification,
       ...(closed && !sawModelOutput && !state.modelVerified && !signal.aborted && classification.state === "failed" && reviewFallbackReason && !admission ? { reviewFallbackReason } : {}),
+      ...(subscriptionReceipt ? { subscriptionReceipt } : {}),
       ...(buildApiReceipt(state.result?.totalCostUsd) ? { apiReceipt: buildApiReceipt(state.result?.totalCostUsd)! } : {}),
       ...(!closed ? { cleanup: exitPromise } : {}),
       output: bounded.output,

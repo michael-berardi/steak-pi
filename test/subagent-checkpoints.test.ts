@@ -21,6 +21,50 @@ function setup() {
 afterEach(() => { for (const store of stores.splice(0)) store.close(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 describe("durable USAP checkpoints", () => {
+  const subscriptionReceipt = () => ({ kind: "claude-subscription" as const, account: "primary" as const, configMode: "default" as const,
+    identityHash: "a".repeat(64), subscriptionType: "max" as const, attested: { preflight: true as const, init: false } });
+
+  it("synthetic: persists account receipts immediately and forbids switching account or identity on resume", () => {
+    const { root, store, run } = setup();
+    run.model = "claude-code/claude-sonnet-5-5"; run.harness = "claude-code"; run.thinkingLevel = "xhigh"; run.claudeAccount = "primary";
+    run.tasks[0].subscriptionReceipt = subscriptionReceipt();
+    store.save(run, true);
+    run.tasks[0].subscriptionReceipt.attested.init = true;
+    expect(store.save(run)).toBe(true);
+    expect(store.get(run.id)!.run.tasks[0].subscriptionReceipt?.attested.init).toBe(true);
+    const successor = structuredClone(run); successor.id = "run-successor"; successor.resumedFrom = run.id;
+    successor.tasks[0].resumedFrom = run.tasks[0].id;
+    successor.claudeAccount = "b";
+    expect(() => store.prepareResume(run.id, successor)).toThrow(/original Claude subscription account/);
+    successor.claudeAccount = "primary";
+    successor.tasks[0].subscriptionReceipt!.identityHash = "b".repeat(64);
+    expect(() => store.prepareResume(run.id, successor)).toThrow(/receipt must be preserved/);
+    successor.tasks[0].subscriptionReceipt = structuredClone(run.tasks[0].subscriptionReceipt);
+    store.prepareResume(run.id, successor);
+    store.close();
+    const reopened = new CheckpointStore(join(root, "parent.jsonl"), join(root, "checkpoints")); stores.push(reopened);
+    expect(reopened.warnings).toEqual([]);
+    expect(reopened.get(successor.id)!.run.claudeAccount).toBe("primary");
+    expect(reopened.get(successor.id)!.run.tasks[0].subscriptionReceipt).toEqual(run.tasks[0].subscriptionReceipt);
+  });
+
+  it.each([
+    { identityHash: "raw-email@example.test" }, { configMode: "default", configDir: "/synthetic/.claude" },
+    { configMode: "explicit", configDir: "relative" }, { account: "unknown" }, { email: "raw@example.test" },
+    { attested: { preflight: false, init: true } },
+  ])("synthetic: quarantines malformed or unsanitized account receipts %#", (invalid) => {
+    const { root, store, run } = setup();
+    run.model = "claude-code/claude-sonnet-5-5"; run.harness = "claude-code"; run.claudeAccount = "primary";
+    run.tasks[0].subscriptionReceipt = subscriptionReceipt(); store.save(run, true);
+    const path = join(store.directory, `${run.id}.json`);
+    const checkpoint = JSON.parse(readFileSync(path, "utf8"));
+    Object.assign(checkpoint.run.tasks[0].subscriptionReceipt, invalid);
+    writeFileSync(path, JSON.stringify(checkpoint), { mode: 0o600 }); store.close();
+    const reopened = new CheckpointStore(join(root, "parent.jsonl"), join(root, "checkpoints")); stores.push(reopened);
+    expect(reopened.get(run.id)).toBeUndefined();
+    expect(reopened.warnings.join(" ")).toContain(`Unreadable checkpoint: ${run.id}.json`);
+  });
+
   const queue = () => ({ tier: "machine" as const, provider: "anthropic", reason: "provider_capacity", since: 1_000, deadlineAt: 5_000,
     capacity: { provider: "anthropic", providerBucket: { cap: 1, held: 1, owners: [{ index: 0, pid: 123, born: 500, runId: "run-peer", taskId: "task-peer", sessionId: "session-peer", kind: "lease" as const, status: "live" as const }] },
       globalBucket: { cap: 2, held: 1, owners: [{ index: 1, kind: "claim" as const, status: "unknown" as const }] } } });

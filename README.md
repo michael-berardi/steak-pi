@@ -130,6 +130,12 @@ key. Missing credentials fail the run instead of falling back to something
 that bills differently. Details: [model routing](./docs/MODEL-ROUTING.md),
 [profiles](./docs/PROFILES.md).
 
+**Coming in the next managed UltraTerm release:** add `claudeAccount: "primary"`
+(Claude 1) or `"b"` (Claude 2) to an explicit Claude subscription run. Selection
+is local to that run and produces an authenticated account receipt. Unavailable
+accounts fail without changing defaults or enabling credits. See the
+[account-selection contract](./docs/ULTRATERM-SUBAGENT-PROTOCOL.md#task-scoped-claude-subscription-account).
+
 **Trust boundary.** USAP coordinates work; it is not an operating-system
 sandbox. Granting a worker `allowBash` gives it an unrestricted shell that can
 bypass path ownership. See [SECURITY.md](./SECURITY.md) and the

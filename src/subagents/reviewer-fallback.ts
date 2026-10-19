@@ -10,7 +10,7 @@ export function isReadOnlyReviewWave(tasks: readonly { role?: string; mayEdit?: 
 }
 
 export function canFallbackReview(run: RunRecord, result: WorkerResult, signal: AbortSignal): boolean {
-  return run.selection?.automaticReview === true && run.model === CLAUDE_CODE_OPUS_ROUTE &&
+  return run.claudeAccount === undefined && run.selection?.automaticReview === true && run.model === CLAUDE_CODE_OPUS_ROUTE &&
     run.selection.reviewRequiresImages !== true && isReadOnlyReviewWave(run.tasks) &&
     !signal.aborted && !result.cleanup && result.state === "failed" &&
     (result.reviewFallbackReason === "quota" || result.reviewFallbackReason === "auth");

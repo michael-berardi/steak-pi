@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — next managed UltraTerm release
+
+- Add per-run `claudeAccount: "primary" | "b"` selection for the existing Claude
+  subscription route. Validate the exact registered account at dispatch and each
+  launch; unavailable or ambiguous selections fail closed without another account,
+  model, API credits or global-default changes.
+- Keep default-unset and explicit Claude config namespaces distinct. Record
+  sanitized official-CLI subscription identity receipts and pin them on resume;
+  clean finished worker transcripts only in their actual namespace.
+- Source-only change; managed helpers are not hand-installed or activated by this
+  source commit. Versioning and delivery belong to the next managed release.
+
 ## 0.9.17 (2026-10-16)
 
 - Validate Claude ownership paths before a wave starts, including implicit

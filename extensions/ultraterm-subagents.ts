@@ -10,6 +10,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type, type TSchema } from "typebox";
 import { SubagentCoordinator, CoordinatorWaitTimeoutError } from "../src/subagents/coordinator.ts";
 import { normalizeDispatch, SubagentPolicyError } from "../src/subagents/policy.ts";
+import { assertClaudeAccountId, resolveClaudeAccount } from "../src/subagents/claude-account.ts";
 import { assertActiveModelSelector } from "../src/retired-model-selection.ts";
 import { resolveWorkerSelection, resolveClaudeCodeSelection, assertClaudeCodeImageAdmission, claudeCodeModelOf, claudeCodeModelName, defaultClaudeCodeRoute, CLAUDE_CODE_ROUTES, type WorkerProfile } from "../src/subagents/model-selection.ts";
 import { admitClaudeApiRoute, anyClaudeRouteModelOf, claudeApiConcurrency, claudeApiModelOf, CLAUDE_API_ROUTES, formatClaudeApiReceipt, isClaudeApiRoute, resolveClaudeApiSelection, stampClaudeApiRun } from "../src/subagents/claude-api-route.ts";
@@ -98,6 +99,7 @@ const TaskSchema = Type.Object({
 export const ultratermSubagentsSchema = Type.Object({
   goal: Type.String({ minLength: 1, maxLength: 8_000 }),
   model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Exact authenticated provider/model for all tasks; mutually exclusive with profile." })),
+  claudeAccount: Type.Optional(Type.Unsafe<"primary" | "b">({ type: "string", enum: ["primary", "b"], description: "Task-scoped Claude subscription account (primary = Claude 1, b = Claude 2). Requires a Claude subscription route; unknown, unavailable, Pi and API selections fail closed. Never changes defaults or enables credits." })),
   profile: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Native harness/profile route (e.g. steak-pi/gpt-6-1-sol); mutually exclusive with model. GPT-6.0 Sol is retired and rejected." })),
   harness: Type.Optional(Type.Unsafe<"pi" | "claude-code">({ type: "string", enum: ["pi", "claude-code"], description: "Execution harness. pi (default) is the native runner; claude-code is the official headless Claude CLI at xhigh: Sonnet 5.5 by default, Opus 5.5 for all-reviewer waves or model claude-code/claude-opus-5-5; workers, scouts and reviewers alike, with CLI-enforced ownedPaths; no Bash for read-only reviewers. Image review reads staged files under cwd with native Read." })),
   requireImages: Type.Optional(Type.Boolean({ description: "Require advertised image input; no silent fallback. Claude Code uses native Read on staged image files under cwd, not inline attachments." })),
@@ -173,6 +175,7 @@ export interface SettledTaskView {
   lastProgressAt?: number;
   launchQueue?: NonNullable<TaskRecord["launchQueue"]> & { elapsedMs: number; remainingMs: number };
   lastLaunchQueue?: NonNullable<TaskRecord["lastLaunchQueue"]> & { elapsedMs: number; remainingMs: number };
+  subscriptionReceipt?: TaskRecord["subscriptionReceipt"];
   detail?: string;
 }
 
@@ -187,6 +190,7 @@ export interface RunView {
   /** Absent means the Pi default harness. */
   harness?: HarnessId;
   selection?: RunRecord["selection"];
+  claudeAccount?: RunRecord["claudeAccount"];
   thinkingLevel: string;
   background: boolean;
   createdAt: number;
@@ -521,6 +525,7 @@ function taskView(task: TaskRecord): SettledTaskView {
     toolErrors: task.toolErrors ?? 0,
     toolSuccesses: task.toolSuccesses ?? 0,
     truncated: task.truncated,
+    ...(task.subscriptionReceipt ? { subscriptionReceipt: structuredClone(task.subscriptionReceipt) } : {}),
   };
 }
 
@@ -534,6 +539,7 @@ export function toRunView(run: RunRecord, links: RunLinks = {}): RunView {
     goal: run.goal,
     state: run.state,
     model: run.model,
+    ...(run.claudeAccount === undefined ? {} : { claudeAccount: run.claudeAccount }),
     ...(run.harness === undefined ? {} : { harness: run.harness }),
     ...(run.selection ? { selection: { ...run.selection } } : {}),
     thinkingLevel: run.thinkingLevel,
@@ -596,7 +602,7 @@ export function renderRunResult(run: RunRecord, limit = MAX_TOOL_CONTENT): strin
     const retained = task.partialSummary ? `\nretained: ${task.partialSummary}` : "";
     const queue = task.launchQueue;
     const queued = queue ? `\nlaunch queue: ${queue.tier}/${queue.provider} · ${queue.reason} · ${Math.max(0, (task.endedAt ?? Date.now()) - queue.since)}ms elapsed` : "";
-    const block = `\n\n[${task.label}] ${task.state}${suffix}${queued}${error}${retained}${routeReceipt}${apiReceipt}${accountReceipt}\n${task.output || "(no output)"}`;
+    const block = `\n\n[${task.label}] ${task.state}${suffix}${queued}${error}${retained}${routeReceipt}${apiReceipt}${accountReceipt}${task.subscriptionReceipt ? `\nClaude subscription: ${task.subscriptionReceipt.account ?? "inherited"}; namespace=${task.subscriptionReceipt.configMode}; identity=${task.subscriptionReceipt.identityHash}; preflight=verified; init=${task.subscriptionReceipt.attested.init ? "verified" : "unverified"}` : ""}\n${task.output || "(no output)"}`;
     const next = appendBounded(text, block, limit);
     text = next.text;
     if (next.truncated) {
@@ -689,7 +695,7 @@ export function defaultWorkerRunner(
           if (typeof factory !== "function") {
             throw new Error("claude-worker module does not export createClaudeWorkerRunner");
           }
-          return factory(claudeSpawn ? { spawn: claudeSpawn } : {});
+          return factory({ ...(claudeSpawn ? { spawn: claudeSpawn } : {}), accountCommand });
         });
       const result = await (await claudeRunner)(context);
       if (!canFallbackReview(context.run, result, context.signal)) return result;
@@ -1361,7 +1367,13 @@ export function createUltratermSubagentsExtension(
         const requested = rawParams as UltratermSubagentsParams;
         // Do not let a mixed implicit wave silently bypass the Opus review
         // standard or spend expert quota on routine implementation leaves.
-        const implicitRoute = requested.harness === undefined && requested.model === undefined && requested.profile === undefined;
+        if (requested.claudeAccount !== undefined) {
+          assertClaudeAccountId(requested.claudeAccount);
+          if (requested.profile !== undefined || (requested.harness !== undefined && requested.harness !== "claude-code") || (requested.harness !== "claude-code" && !CLAUDE_CODE_ROUTES.includes(requested.model ?? "")) || (requested.model !== undefined && !CLAUDE_CODE_ROUTES.includes(requested.model))) {
+            throw new Error("claudeAccount requires an explicit Claude subscription harness or exact model; Pi, API and profile routes are refused");
+          }
+        }
+        const implicitRoute = requested.claudeAccount === undefined && requested.harness === undefined && requested.model === undefined && requested.profile === undefined;
         const hasReviewer = requested.tasks.some((task) => task.role === "reviewer");
         const allReviewers = requested.tasks.length > 0 && requested.tasks.every((task) => task.role === "reviewer");
         if (implicitRoute && hasReviewer && !allReviewers) {
@@ -1460,6 +1472,7 @@ export function createUltratermSubagentsExtension(
           };
         }
 
+        if (run.claudeAccount !== undefined) await resolveClaudeAccount(run.claudeAccount, dependencies.accountCommand);
         if (apiAdmission) stampClaudeApiRun(run, apiAdmission);
         run.selection = { ...resolvedSelection,
           // No route was requested for an implicit review wave: a Sol review chosen only because no Claude
@@ -1644,6 +1657,7 @@ export function createUltratermSubagentsExtension(
             throw new Error(`Resume refused: ${unfinished.map((task) => JSON.stringify(task.label)).join(", ")} already used the one bounded resume (continuing ${spent}). A task is resumed at most once; inspect its retained partial work and dispatch a new, explicitly scoped task for what remains.`);
           }
           for (const task of unfinished) {
+            if (snapshot.harness === "claude-code" && !isClaudeApiRoute(snapshot.model) && task.claudeSessionId && !task.subscriptionReceipt) throw new Error(`Resume refused: ${JSON.stringify(task.label)} has no authenticated Claude account receipt; inspect legacy work before a new dispatch`);
             if (task.startedAt !== undefined && !task.sessionFile && !task.claudeSessionId) throw new Error(`No native checkpoint for ${task.label}${snapshot.harness === "claude-code" ? " (this Claude CLI task ran before resumable sessions)" : ""}; inspect partial work before a new dispatch`);
             if (task.sessionFile) current.store.validateSession(task.sessionFile);
           }
@@ -1651,6 +1665,7 @@ export function createUltratermSubagentsExtension(
           const input: DispatchInput = {
             goal: snapshot.goal, constraints: snapshot.constraints, contract: snapshot.contract,
             model: snapshot.model, thinking: snapshot.thinkingLevel as DispatchInput["thinking"],
+            ...(snapshot.claudeAccount === undefined ? {} : { claudeAccount: snapshot.claudeAccount }),
             ...(snapshot.harness === "claude-code" ? { harness: "claude-code" as const } : {}),
             requireImages: snapshot.selection?.images === true,
             thinkingReason: "Continue the explicitly budgeted checkpoint on its original model and reasoning level.",
@@ -1692,6 +1707,7 @@ export function createUltratermSubagentsExtension(
           } else if (snapshot.thinkingLevel !== "xhigh") {
             refuseRoute(`Claude Code runs only at xhigh, not ${snapshot.thinkingLevel}`);
           }
+          if (snapshot.claudeAccount !== undefined) await resolveClaudeAccount(snapshot.claudeAccount, dependencies.accountCommand);
           const run = normalizeDispatch(input, snapshot.cwd, snapshot.model, resolved ? String(resolved.thinkingLevel) : "xhigh", dependencies.now?.() ?? Date.now(), dependencies.idFactory);
           // The resume pins the original route: a recorded automatic chain is not
           // carried over, so no pre-output hop can move the session to another route.
@@ -1708,6 +1724,7 @@ export function createUltratermSubagentsExtension(
             task.sessionFile = unfinished[index].sessionFile;
             task.providerAccount = unfinished[index].providerAccount ? { ...unfinished[index].providerAccount } : undefined;
             task.claudeSessionId = unfinished[index].claudeSessionId;
+            if (unfinished[index].subscriptionReceipt) task.subscriptionReceipt = structuredClone(unfinished[index].subscriptionReceipt);
             if (resumeApi) {
               // The ceiling and the spend booked so far carry over; the resume cannot widen either.
               if (unfinished[index].apiLeafCapUsd !== undefined) task.apiLeafCapUsd = unfinished[index].apiLeafCapUsd;
