@@ -21,20 +21,20 @@ serious sessions need: parallel subagents with hard limits, compaction that
 costs no model calls, checks that run after every edit, and a status line that
 tells you what the agent is doing.
 
-Current release: **0.10.0**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
+Current release: **0.10.1**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
 [UltraTerm](https://paretocybernetics.com/software/).
 
 ## Install
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.10.0
+pi install git:github.com/michael-berardi/steak-pi@v0.10.1
 ```
 
 Or from the release archive, without Git:
 
 ```sh
-shasum -a 256 -c steak-pi-0.10.0.tgz.sha256
-tar -xzf steak-pi-0.10.0.tgz
+shasum -a 256 -c steak-pi-0.10.1.tgz.sha256
+tar -xzf steak-pi-0.10.1.tgz
 pi install "$PWD/package"
 ```
 

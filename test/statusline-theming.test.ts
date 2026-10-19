@@ -228,12 +228,12 @@ describe("responsive semantic rendering", () => {
   });
 
   it("preserves the full brand without spending another terminal row", () => {
-    expect(renderCompanionHeader(20, plainPalette)).toEqual(["◆ STEAK PI"]);
+    expect(renderCompanionHeader(20, plainPalette)).toEqual(["🥩 STEAK PI"]);
   });
 
   it("keeps a useful compact hierarchy", () => {
     expect(renderCompanionHeader(40, plainPalette)).toEqual([
-      "◆ STEAK PI          / · /model · /resume",
+      "🥩 STEAK PI         / · /model · /resume",
     ]);
     expect(renderComposerBand(40, snapshot, plainPalette)).toBe(
       "◆ a-very-long-model… · ● resumed ▶─◫ 72%",
