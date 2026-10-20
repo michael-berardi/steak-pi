@@ -150,3 +150,25 @@ setting rather than an endurance guarantee: host exit interrupts workers, and no
 automatic restart or detached daemon exists. Existing sessions retain their loaded
 schemas until an operator-coordinated activation. Never overwrite a running
 runtime tree or replace sessions to make a new selector appear.
+
+### Approved temporary free preference
+
+`steak-pi/minimax-m3-1-flash-free` selects exact
+`openrouter/minimax/minimax-m3.1-flash:free` with mandatory high reasoning.
+It requires a currently valid operator temporary-route configuration and fails
+closed on expiry, unavailable pricing, or request-policy mismatch, with no paid
+MiniMax variant or OpenRouter backup provider.
+
+`steak-pi/preferred-free` is a stable native Pi **virtual** profile: each model
+call observes the current bounded coordinator-approved OpenRouter `:free`
+preference, with lazily fetched/cached official zero-price text/tool/reasoning
+metadata. Future approved free models need data activation only; the initial live
+authorization remains MiniMax. Expiry/revocation or ineligible metadata raises
+`TEMPORARY_FREE_ROUTE_RETURN_TO_NORMAL`; the backend must checkpoint/switch a
+quiet settled job through its normal Codex OAuth/account ownership and lease
+path, never dispatch unleased Sol from this virtual namespace.
+This is also the selected profile for ordinary
+implicit text workers while the temporary configuration is active; reviewers,
+image requirements and explicit selections keep their existing semantics.
+Physical assistant-message receipts, not the selected virtual profile or config
+status, prove which model actually answered. See [temporary free routing](./MODEL-ROUTING.md#temporary-approved-free-workers).

@@ -121,20 +121,28 @@ function paintSides(
 
 export function renderCompanionHeader(width: number, palette: SemanticPalette): string[] {
   const safeWidth = Math.max(1, width);
-  const brand = "🥩 STEAK PI";
+  // Keep the emoji gutter outside plain-text normalization, which collapses spaces.
+  const prefix = "🥩  ";
+  const prefixWidth = displayWidth(prefix);
+  if (safeWidth <= prefixWidth) {
+    return [palette.bold(palette.accent(truncateToWidth(prefix, safeWidth, "")))];
+  }
+  const brand = "STEAK PI";
+  const contentWidth = safeWidth - prefixWidth;
+  const paintedPrefix = palette.bold(palette.accent(prefix));
   const hints = safeWidth >= 64
     ? "/ commands · /model · /resume"
     : safeWidth >= 40
       ? "/ · /model · /resume"
       : "";
   if (!hints) {
-    return [palette.bold(palette.accent(truncatePlain(brand, safeWidth)))];
+    return [paintedPrefix + palette.bold(palette.accent(truncatePlain(brand, contentWidth)))];
   }
   return [
-    paintSides(
+    paintedPrefix + paintSides(
       brand,
       hints,
-      safeWidth,
+      contentWidth,
       palette,
       (text) => palette.bold(palette.accent(text)),
       (text) => palette.muted(text),

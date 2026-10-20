@@ -347,3 +347,69 @@ defaults, resolved aliases, all provider request entries, child creation, and
 restart/resume, plus 6.1 Sol routing and non-Sol preservation.
 Allowed live probes remain a separate release check. Production
 failures must never trigger OpenRouter GPT fallback.
+
+## Temporary approved free workers
+
+The optional operator-owned `~/.config/ultraterm/temporary-worker-route.json`
+uses `schemaVersion: 1`, exact `provider`, `model`, `harness`, `profile`, UTC
+`startsAt` / `expiresAt` (positive duration, at most 72 hours),
+`fallbackHarness: "steak-pi"`, `fallbackProfile: "gpt-6-1-sol"`,
+`zeroPriceOnly: true`, and nonempty `source` / `evidence`. Unknown fields,
+unknown routes, malformed timestamps, symlinks and unsafe ownership/write modes
+are named configuration errors, not permission to select another paid route.
+The canonical configuration profile is `preferred-free`; the initial
+`minimax-m3-1-flash-free` profile spelling remains accepted for compatibility.
+Initial live authorization remains exact OpenRouter
+`minimax/minimax-m3.1-flash:free`. Future coordinator-approved exact OpenRouter
+`:free` targets need only an authenticated DATA/CLI/MCP activation, not code,
+rebuild or worker restart. An arbitrary suffix is not authorization: the private
+activation data must carry real source/evidence, and fresh official catalog plus
+endpoint metadata must prove zero pricing and text/tool/reasoning capabilities.
+GPT-on-OpenRouter, retired GLM/Sol routes and other existing forbidden identities
+remain denied. Arbitrary providers and URLs are never supported. No live
+configuration is created by the package.
+
+While active, ordinary implicit text workers select the stable SDK virtual
+model/profile `steak-pi/preferred-free`. Explicit harness/model/profile selectors,
+review gates and image requirements are unchanged. The virtual router re-reads
+the small local configuration before **every model call**, including tool
+continuations, retry and compaction. Reads are bounded, cached by file metadata,
+private `0600`, single-link and no-follow; duplicate JSON keys are rejected and
+UTC timestamps normalize to milliseconds. There is no timer or daemon. Only
+uncached/stale metadata needs bounded public official OpenRouter catalog and
+endpoint fetches; valid proofs are cached in-process for five minutes.
+It returns the exact approved physical free model. When inactive or when
+catalog/auth/known-zero eligibility is lost, it raises
+`TEMPORARY_FREE_ROUTE_RETURN_TO_NORMAL` at the model-call boundary, never routes
+ambient Codex credentials from the virtual provider. The supported backend must
+checkpoint and switch a quiet settled worker to its normal profile, preserving
+Codex OAuth/account lease, balance and ownership gates. The native package alone
+does not perform that backend job switch. Transient 429/5xx failures retain the free preference
+and native bounded retry/backoff; they never authorize a route change. It never
+replays partial output itself.
+
+The selected virtual identity is intent; Pi assistant-message receipts identify
+the actual physical answering model and usage/cost. An already-streaming request
+can finish. Explicit `steak-pi/minimax-m3-1-flash-free` remains the exact physical
+route and refuses after expiry/revocation rather than silently switching.
+Outside the active window, new implicit runs retain their pre-existing defaults.
+
+The request-boundary guard requires the exact OpenRouter HTTPS endpoint,
+OpenAI-completions API and known zero catalog prices. After caller payload hooks,
+it enforces the exact free model, `provider.allow_fallbacks: false` and
+zero `provider.max_price` for prompt, completion, request, image, audio, video,
+input/output audio, cache read/write, internal reasoning and web search; OpenRouter
+documents these as hard price filters, including unavailable-price refusal.
+`models`, `route`, paid plugins, transforms and web-search options are refused.
+Reasoning is mandatory (`high`); only omitted/`auto` tool choice is supported.
+Deferred execution is not supported. The built-in OpenRouter transport and auth
+are retained, and lazy complete-provider catalog augmentation appends approved
+physical metadata without replacing built-in chat/image/classifier models.
+The initial physical MiniMax alias remains exact and is never remapped;
+its startup display metadata alone does not authorize a request.
+
+The official catalog snapshot reports 1,000,000 context, 524,288 maximum output,
+zero prompt/completion prices and `expiration_date: null`. It supplies **no
+official expiry timestamp**. The operator must choose and evidence the effective
+expiry separately; 72 hours is a maximum permission duration, not an official
+billing guarantee. Final server-side zero-price constraints remain authoritative.

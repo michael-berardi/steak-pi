@@ -931,6 +931,9 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
         accountProvider = "opencode-go";
         task.providerAccount = { provider: "opencode-go", id: account.id, label: account.label, lease: account.lease };
       } else if (`${runtime.model.provider}/${runtime.model.id}` === SOL_MODEL_ROUTE) {
+        // preferred-free is deliberately NOT included: its virtual call boundary
+        // signals return-to-normal instead of borrowing ambient Codex credentials.
+        // A normal-profile checkpointed relaunch must enter this reservation path.
         // Every Sol child gets its own router reservation, never the Go parent store.
         account = await reserveCodexAccount(`${run.id}/${task.id}`, accountCommand,
           resuming && task.providerAccount?.provider === "codex" ? task.providerAccount.id : undefined);
