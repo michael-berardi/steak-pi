@@ -16,6 +16,10 @@ application keybindings. Pi also continues to own the transcript, Markdown,
 tool cards, selectors, scrolling, compaction notices, and session restore. This
 preserves upstream behavior while giving Steak Pi a purpose-built entry surface.
 
+Long pastes remain collapsed visually, but editor snapshots expose their full
+text. Restoring queued messages, opening dialogs or replacing the editor keeps
+the pasted content together with the text typed before and after it.
+
 ## Visual hierarchy
 
 ```text
@@ -103,11 +107,12 @@ npm run test:tui
 ```
 
 The simulator is intentionally not a fork or pixel clone of Pi's renderer.
-The isolated native smoke test runs the installed Pi 0.85.1 or 0.86.0 on a
-private tmux socket with
-private config/session stores. It covers local submit, Up/Down history, selector
-confirmation, real session resume, stock dark/light themes, ANSI integrity, and
-40/120-column redraws without touching UltraTerm's tmux sessions. Final visual
+The isolated native smoke test runs the pinned Pi host (currently 1.0.4) on a
+private tmux socket with private config/session stores. It covers local submit,
+Up/Down history, selector confirmation, real session resume, stock dark/light
+themes, ANSI integrity, and 40/120-column redraws without touching UltraTerm's
+tmux sessions. A local scripted provider also checks an exact mixed-paste
+message after queuing and interrupting a response; it makes no network request. Final visual
 acceptance still runs against the installed Pi TUI inside UltraTerm.
 
 ## Acceptance gates
@@ -120,6 +125,8 @@ acceptance still runs against the installed Pi TUI inside UltraTerm.
 - Editor submit/history/escape and resize remain deterministic in simulation.
 - Native submit, Up/Down history, selector confirmation, and resume pass in an
   isolated pinned-Pi PTY smoke test.
+- Long pasted content and typed text reach the provider intact after queue
+  restoration; native compact paste rendering and undo remain intact.
 - Print/JSON/RPC modes do not install TUI components.
 - Production UI code uses only semantic theme functions.
 - The context meter changes fill at 0%, mid-range, warning, and error pressure

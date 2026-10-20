@@ -37,7 +37,7 @@ def measure(argv, env, cwd):
     code = ("import resource,subprocess,sys,time,json;t=time.perf_counter();"
             "r=subprocess.run(sys.argv[1:],stdin=subprocess.DEVNULL,capture_output=True,timeout=180);"
             "print(json.dumps({'rc':r.returncode,'wall':time.perf_counter()-t,"
-            "'rss_kb':resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss}))")
+            "'rss_bytes':resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * (1 if sys.platform == 'darwin' else 1024)}))")
     out = subprocess.run([sys.executable, "-c", code, *argv], cwd=cwd, env=env, capture_output=True, timeout=240)
     return json.loads(out.stdout.decode().strip().splitlines()[-1])
 
@@ -90,13 +90,14 @@ def main():
                     reqs = [json.loads(l) for l in open(log)] if os.path.exists(log) else []
                     row = {"arm": name, "case": case, "round": rnd,
                            "pass": m["rc"] == 0 and all(os.path.exists(os.path.join(fx, f)) for f in expect),
-                           "wall_s": round(m["wall"], 3), "peak_rss_mb": round(m["rss_kb"] / 1024, 1),
+                           "wall_s": round(m["wall"], 3), "peak_rss_mb": round(m["rss_bytes"] / (1024 * 1024), 1),
                            "requests": len(reqs), "request_bytes": sum(r["bytes"] for r in reqs),
                            "first_request_bytes": reqs[0]["bytes"] if reqs else 0, "tools": reqs[0]["tools"] if reqs else 0}
                     rows.append(row)
                     print(json.dumps(row), flush=True)
     finally:
         server.terminate()
+        server.wait(timeout=10)
         shutil.rmtree(work, ignore_errors=True)
     summary = {}
     for name, _ in arms:

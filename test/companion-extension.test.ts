@@ -14,6 +14,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
     constructor(..._args: unknown[]) {}
     setText(text: string): void { this.text = text; }
     getText(): string { return this.text; }
+    getExpandedText(): string { return this.text; }
     handleInput(_data: string): void {}
     render(_width: number): string[] { return ["", this.text || "Type a message…", ""]; }
   },
