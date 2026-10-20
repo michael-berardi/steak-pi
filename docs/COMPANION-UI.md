@@ -6,7 +6,7 @@ Steak Pi is a native Pi companion for UltraTerm, not a replacement TUI. It
 owns three bounded surfaces exposed by Pi's extension API:
 
 1. a single-line, responsive identity and command header;
-2. Steak Pi's status band and prompt gutter around Pi's native editor,
+2. Steak Pi's adaptive status band and prompt gutter around Pi's native editor,
    including live lifecycle state and context pressure;
 3. a conditional extension-status row only when another extension publishes one.
 
@@ -27,8 +27,9 @@ the pasted content together with the text typed before and after it.
 
 [Pi's native transcript and tool rendering]
 
-◆ > mimo-v2.6-flash · high > responding ▶━━━━────────◀ ◫ 18%/131k · $0.018
-╰─ Ask anything, edit files, run tools
+◆ mimo-v2.6-flash · high · responding
+◫ 18%/131k · 11.9k tok · 80% cache · $0.018
+╰─ Message
 [extension status appears here only when present]
 ```
 
@@ -36,9 +37,9 @@ The composer band communicates, in order:
 
 - active model name, plus thinking level when space permits, never a provider label;
 - current lifecycle state;
-- a live context meter, with semantic pressure-colored fill and a dim remainder;
-- context percentage/window, session cost, token volume, and cache efficiency as
-  width permits.
+- context percentage/window, token volume, cache efficiency and session cost;
+- a short context meter only when the complete readout leaves room, with a
+  pressure-colored thick fill and a dim thin remainder.
 
 No baseline footer is rendered. This avoids duplicating the composer status
 band; a compact row appears only when another extension publishes status.
@@ -46,10 +47,24 @@ band; a compact row appears only when another extension publishes status.
 Statuses published by other Pi extensions remain visible on a conditional
 row, matching the built-in footer contract.
 
-At narrow widths, reserve the context percentage first; thinking detail, cost,
-and window size drop before the model and lifecycle. Long names/details truncate
-by grapheme. Native three-pane inspection caught the previous 59-column context
-label disappearing; regression cases now cover 40–64 columns and 0–100% pressure.
+The band uses one line when all values fit, otherwise two compact lines. At
+ordinary split-pane widths (40–64 columns), model, thinking level, lifecycle,
+context percentage/window, tokens, meaningful cache percentage and cost remain
+visible. The meter never takes space from data. Metadata uses the readable muted
+text role rather than the faint decorative role.
+
+At very small widths, compact units and up to three lines preserve as much as
+possible. Individual numbers are never sliced; an indivisible value that cannot
+fit is omitted. Long model names and status details truncate by grapheme. Zero
+usage is shown as zero; an unavailable cache ratio is not invented.
+
+Native terminal captures with example data, cropped to the status band:
+
+![Compact dark status band with all usage values](./assets/status-compact-dark.png)
+
+![Compact light status band with all usage values](./assets/status-compact-light.png)
+
+![Wide single-line status band](./assets/status-wide-dark.png)
 
 ## State model
 
@@ -110,7 +125,7 @@ The simulator is intentionally not a fork or pixel clone of Pi's renderer.
 The isolated native smoke test runs the pinned Pi host (currently 1.0.4) on a
 private tmux socket with private config/session stores. It covers local submit,
 Up/Down history, selector confirmation, real session resume, stock dark/light
-themes, ANSI integrity, and 40/120-column redraws without touching UltraTerm's
+themes, ANSI integrity, and 40/48/59/64/80/120/192-column redraws without touching UltraTerm's
 tmux sessions. A local scripted provider also checks an exact mixed-paste
 message after queuing and interrupting a response; it makes no network request. Final visual
 acceptance still runs against the installed Pi TUI inside UltraTerm.
@@ -129,8 +144,9 @@ acceptance still runs against the installed Pi TUI inside UltraTerm.
   restoration; native compact paste rendering and undo remain intact.
 - Print/JSON/RPC modes do not install TUI components.
 - Production UI code uses only semantic theme functions.
-- The context meter changes fill at 0%, mid-range, warning, and error pressure
-  without polling or reserving a second header row.
+- The optional meter changes fill at 0%, mid-range, warning and error pressure
+  without polling or hiding useful metrics.
+- Adaptive band height preserves native content and autocomplete mouse positions.
 - Full package tests and TypeScript checks pass before live verification.
 - Live UltraTerm checks inspect dark and light themes at desktop widths (1440px
   and 1920px), including stacked panes, without replacing a live tmux pane.

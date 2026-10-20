@@ -16,6 +16,8 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
     getText(): string { return this.text; }
     getExpandedText(): string { return this.text; }
     handleInput(_data: string): void {}
+    mouseEvents: unknown[] = [];
+    handleMouse(event: unknown) { this.mouseEvents.push(event); return { handled: true, focus: true }; }
     render(_width: number): string[] { return ["", this.text || "Type a message…", ""]; }
   },
 }));
@@ -99,8 +101,8 @@ describe("companion extension integration", () => {
     const editor = editorFactory(tui, theme, { matches: () => false });
     expect(header.render(80).join(" ")).toContain("STEAK PI");
     expect(stripAnsi(editor.render(80)[0])).toContain("resumed");
-    expect(stripAnsi(editor.render(80)[1])).toContain("╰─");
-    expect(stripAnsi(editor.render(80)[1])).toContain("Ask anything");
+    const composer = editor.render(80).map(stripAnsi).find((line: string) => line.startsWith("╰─"));
+    expect(composer).toContain("Message");
     const readsAfterFirstRender = entryReads;
     footer.render(80);
     footer.render(120);
@@ -122,7 +124,11 @@ describe("companion extension integration", () => {
     await emit("tool_execution_end", { toolCallId: "two", toolName: "grep", isError: false });
     await emit("agent_settled");
     expect(editor.render(80)[0]).toContain("complete");
-    expect(editor.render(80)[0]).toContain("◫ 13%/131k · $0.010");
+    const usageBand = editor.render(80).join("\n");
+    expect(usageBand).toContain("◫ 13%/131k");
+    expect(usageBand).toContain("420 tok");
+    expect(usageBand).toContain("75% cache");
+    expect(usageBand).toContain("$0.010");
     expect(footer.render(80)).toEqual([]);
     expect(workingMessages.at(-1)).toBeUndefined();
     expect(renders).toBeGreaterThan(5);
@@ -169,6 +175,23 @@ describe("companion extension integration", () => {
     expect(fallback[0]).toBe("Steak Pi");
     footerData.getExtensionStatuses = originalStatuses;
     expect(footer.render(80)).toEqual([]);
+
+    // Adaptive band height must not shift native content or autocomplete clicks.
+    for (const width of [24, 40, 59, 80, 120, 192]) {
+      const lines = editor.render(width).map(stripAnsi);
+      const bandRows = lines.findIndex((line: string) => line.startsWith("╰─"));
+      expect(bandRows).toBeGreaterThan(0);
+      editor.mouseEvents.length = 0;
+      const event = { type: "click", button: "left", x: 7, y: 0, width, height: 24 };
+      for (let y = 0; y < bandRows; y++) {
+        expect(editor.handleMouse({ ...event, y })).toEqual({ handled: true, focus: true });
+      }
+      expect(editor.mouseEvents).toEqual([]);
+      editor.handleMouse({ ...event, y: bandRows });
+      expect(editor.mouseEvents.at(-1)).toMatchObject({ width: width - 3, x: 4, y: 1 });
+      editor.handleMouse({ ...event, y: bandRows + 1 });
+      expect(editor.mouseEvents.at(-1)).toMatchObject({ width: width - 3, x: 4, y: 3 });
+    }
   });
 
   it("does not install TUI components in print, JSON, or RPC modes", async () => {

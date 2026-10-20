@@ -24,6 +24,24 @@ Idle multi-session memory uses PSS, following jcode's
 `scripts/bench_memory_cli.py`: N interactive TUI sessions in pseudo-terminals,
 summed `Pss` from `/proc/<pid>/smaps_rollup` over each process tree.
 
+## Steak Pi 0.10.3 on Pi 1.0.4 (macOS)
+
+October 20, 2026, Apple silicon, macOS. Same scripted local fixtures and host for
+stock Pi, the public 0.10.2 archive, 0.10.3 and its launcher mode. Medians of five;
+all 80 runs passed. No current-release median wall time regressed by 20% against
+0.10.2. This measures harness overhead, not model quality.
+
+| Case: wall / peak RSS | Stock Pi | 0.10.2 | 0.10.3 | 0.10.3 via `steak-pi run` |
+| --- | ---: | ---: | ---: | ---: |
+| direct | 0.291 s / 121.9 MiB | 0.430 s / 149.9 MiB | 0.417 s / 150.2 MiB | 0.429 s / 122.8 MiB |
+| modules | 0.288 s / 121.7 MiB | 0.419 s / 150.4 MiB | 0.430 s / 150.2 MiB | 0.437 s / 122.9 MiB |
+| gate | 0.283 s / 121.7 MiB | 0.435 s / 150.5 MiB | 0.408 s / 150.2 MiB | 0.398 s / 122.7 MiB |
+| fanout | no subagents | 1.241 s / 202.6 MiB | 1.251 s / 195.6 MiB | 1.262 s / 160.9 MiB |
+
+Stock Pi passes the eight-file fixture without workers; its timing is not an
+orchestration comparison. Peak RSS is converted from the platform's native
+`getrusage` units to MiB and is not PSS.
+
 ## Steak Pi 0.10.2 on Pi 1.0.4 (macOS)
 
 October 20, 2026, Apple silicon, macOS. Scripted local provider, medians of five

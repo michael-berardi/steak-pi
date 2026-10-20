@@ -1,6 +1,6 @@
 {
   "name": "steak-pi",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "bin": {
     "steak-pi": "bin/steak-pi"
   },
@@ -31,6 +31,7 @@
     "docs/AGENT-LIFECYCLE.md",
     "docs/CLAUDE-CODE.md",
     "docs/COMPANION-UI.md",
+    "docs/assets",
     "docs/MODEL-ROUTING.md",
     "docs/PROFILES.md",
     "docs/THEME-PASS.md",

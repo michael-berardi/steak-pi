@@ -43,9 +43,9 @@ describe("deterministic headless TUI", () => {
       "",
       "",
       "",
-      "",
-      "◆ > glm5.3-flash > ✓ complete ▶────────────◫ 18%",
-      "╰─ Ask anything, edit files, run tools",
+      "◆ glm5.3-flash · high · ✓ complete",
+      "◫ 18%/131k · 11.9k tok · 80% cache · $0.018",
+      "╰─ Message",
     ]);
   });
 
