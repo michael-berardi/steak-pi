@@ -26,7 +26,7 @@ import {
   emptyUsage,
   renderCompanionFooter,
   renderCompanionHeader,
-  renderComposerBand,
+  renderComposerBands,
   type ContextSnapshot,
   type SemanticPalette,
 } from "../src/tui/render.ts";
@@ -196,6 +196,8 @@ export default function companionUiExtension(pi: ExtensionAPI): void {
     });
 
     class SteakBandEditor extends PasteSafeEditor {
+      private bandLineCount = 1;
+
       constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) {
         super(tui, theme, keybindings, { paddingX: 0 });
       }
@@ -218,7 +220,7 @@ export default function companionUiExtension(pi: ExtensionAPI): void {
             const cursor = truncateToWidth(rendered, 1, "");
             const hint = theme.fg(
               "dim",
-              truncateToWidth(" Ask anything, edit files, run tools", innerWidth - 1, ""),
+              truncateToWidth(" Message", innerWidth - 1, ""),
             );
             const used = visibleWidth(cursor) + visibleWidth(hint);
             rendered = cursor + hint + " ".repeat(Math.max(0, innerWidth - used));
@@ -229,22 +231,23 @@ export default function companionUiExtension(pi: ExtensionAPI): void {
         const autocomplete = base.slice(contentCount + 2).map(
           (line) => this.borderColor("   ") + line,
         );
-        return [
-          renderComposerBand(width, snapshot(), paletteFor(theme)),
-          ...content,
-          ...autocomplete,
-        ];
+        const bands = renderComposerBands(width, snapshot(), paletteFor(theme));
+        this.bandLineCount = bands.length;
+        return [...bands, ...content, ...autocomplete];
       }
 
       override handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
         if (event.width <= 3) return super.handleMouse(event);
-        if (event.y === 0) return { handled: true, focus: true };
+        if (event.y < this.bandLineCount) return { handled: true, focus: true };
         const contentCount = this.contentLineCount();
+        const nativeY = event.y - this.bandLineCount + 1;
         return super.handleMouse({
           ...event,
           width: event.width - 3,
           x: Math.max(0, event.x - 3),
-          y: event.y > contentCount ? event.y + 1 : event.y,
+          // Native editor has one top border and a bottom border, both replaced
+          // by our adaptive bands/gutter. Autocomplete remains below content.
+          y: nativeY > contentCount ? nativeY + 1 : nativeY,
         });
       }
     }

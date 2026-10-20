@@ -6,7 +6,7 @@ import {
   plainPalette,
   renderCompanionFooter,
   renderCompanionHeader,
-  renderComposerBand,
+  renderComposerBands,
   type FooterSnapshot,
   type SemanticPalette,
 } from "./render.ts";
@@ -225,10 +225,10 @@ export function renderSimulator(state: SimulatorState, palette: SemanticPalette 
   const header = renderCompanionHeader(width, palette);
   const snapshot = { ...state.footer, state: state.companion };
   const editor = [
-    renderComposerBand(width, snapshot, palette),
+    ...renderComposerBands(width, snapshot, palette),
     palette.accent("╰─ ") + palette.text(
       truncatePlain(
-        state.editor || "Ask anything, edit files, run tools",
+        state.editor || "Message",
         Math.max(1, width - 3),
       ),
     ),

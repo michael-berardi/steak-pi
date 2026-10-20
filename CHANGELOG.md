@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.10.3 (2026-10-20)
+
+- Keep context/window size, tokens, meaningful cache percentage and session cost
+  visible in narrow terminal panes. Use a compact second line when the complete
+  status readout cannot fit on one line; shorten decoration before dropping data.
+- Limit the context meter to twelve cells and distinguish filled/remaining
+  portions by weight as well as color. Improve metadata contrast in both themes.
+- Preserve mouse and autocomplete positions when the band gains a line. Replace
+  the long empty-editor hint with `Message`.
+- Retain the 0.10.2 paste fix. Verify collapsed, restored and submitted paste states
+  with native screenshots and the exact provider-bound text in the offline test.
+- Extend native dark/light checks to 40/48/59/64/80/120/192 columns. Independent
+  fixture sessions prevent the test hosts from competing for checkpoint ownership.
+
 ## 0.10.2 (2026-10-20)
 
 - Keep long pasted content and surrounding typed instructions intact when restoring

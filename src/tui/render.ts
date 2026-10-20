@@ -157,38 +157,6 @@ interface ComposerSegment {
   paint: (text: string) => string;
 }
 
-/** Paint a fitted plain-text prefix without allowing lifecycle tone to bleed into metadata. */
-function paintComposerSegments(fitted: string, segments: readonly ComposerSegment[]): string {
-  const full = segments.map((segment) => segment.text).join("");
-  const truncated = fitted !== full;
-  const hasEllipsis = truncated && fitted.endsWith("…");
-  let remaining = hasEllipsis ? fitted.slice(0, -1) : fitted;
-  let result = "";
-  let nextPainter = segments[0]?.paint ?? ((text: string) => text);
-
-  for (const segment of segments) {
-    nextPainter = segment.paint;
-    if (!remaining) break;
-    if (remaining.startsWith(segment.text)) {
-      result += segment.paint(segment.text);
-      remaining = remaining.slice(segment.text.length);
-      continue;
-    }
-    result += segment.paint(remaining);
-    remaining = "";
-    break;
-  }
-
-  return hasEllipsis ? result + nextPainter("…") : result;
-}
-
-function modelSummary(snapshot: FooterSnapshot): string {
-  const model = shortModel(snapshot.model);
-  const thinking = oneLine(snapshot.thinking);
-  // Provider routing is configuration, not part of the TUI model label.
-  return thinking && thinking !== "off" ? `${model} · ${thinking}` : model;
-}
-
 function contextPercent(snapshot: FooterSnapshot): number | null {
   const percent = snapshot.context?.percent;
   return typeof percent === "number" && Number.isFinite(percent)
@@ -227,24 +195,6 @@ export function usageSummary(snapshot: FooterSnapshot, width: number): string {
   return parts.join(" · ") || "◫ —";
 }
 
-function usageSegments(
-  snapshot: FooterSnapshot,
-  width: number,
-  palette: SemanticPalette,
-): ComposerSegment[] {
-  const percent = contextPercent(snapshot);
-  const summary = width >= 72
-    ? usageSummary(snapshot, width)
-    : `${width >= 32 ? "◫ " : ""}${percent === null ? "?" : `${percent.toFixed(0)}%`}`;
-  const context = summary.split(" · ", 1)[0] ?? summary;
-  const remainder = summary.slice(context.length);
-  return [
-    ...(width >= 72 ? [{ text: "◀ ", paint: palette.dim }] : []),
-    { text: context, paint: contextPainter(snapshot, palette) },
-    ...(remainder ? [{ text: remainder, paint: palette.dim }] : []),
-  ];
-}
-
 function renderContextMeter(
   width: number,
   snapshot: FooterSnapshot,
@@ -257,50 +207,161 @@ function renderContextMeter(
     : percent >= 100
       ? width
       : Math.max(1, Math.ceil((width * percent) / 100));
-  return contextPainter(snapshot, palette)("─".repeat(used)) + palette.dim("─".repeat(width - used));
+  return contextPainter(snapshot, palette)("━".repeat(used)) + palette.dim("─".repeat(width - used));
 }
 
-export function renderComposerBand(
+function segmentWidth(segments: readonly ComposerSegment[]): number {
+  return displayWidth(segments.map(({ text }) => text).join(""));
+}
+
+function paintSegments(segments: readonly ComposerSegment[]): string {
+  return segments.map(({ text, paint }) => paint(text)).join("");
+}
+
+function scientific(value: number, precision = 2): string {
+  return value.toExponential(precision).replace(/\.?0+e/, "e").replace("e+", "e");
+}
+
+/** Bounded numeric atoms: large persisted totals must not crowd out other metrics. */
+function composerTokens(value: number): string {
+  const count = finite(value);
+  for (const [scale, suffix] of [[1e12, "T"], [1e9, "B"], [1e6, "M"], [1e3, "k"]] as const) {
+    if (count >= 1e15) return scientific(count);
+    if (count >= scale) return `${Number((count / scale).toPrecision(3))}${suffix}`;
+  }
+  return String(Math.round(count));
+}
+
+function totalTokens(usage: UsageTotals): string {
+  const values = [usage.input, usage.output, usage.cacheRead, usage.cacheWrite].map(finite);
+  const sum = values.reduce((total, value) => total + value, 0);
+  if (Number.isFinite(sum)) return composerTokens(sum);
+  // Scaling first preserves a meaningful total even if several finite counters overflow a sum.
+  const [mantissa, exponent] = scientific(values.reduce((total, value) => total + value / 1e6, 0)).split("e");
+  return `${mantissa}e${Number(exponent) + 6}`;
+}
+
+function composerMetrics(
+  snapshot: FooterSnapshot,
+  palette: SemanticPalette,
+  density: "full" | "compact" | "tight",
+): ComposerSegment[] {
+  const compact = density !== "full";
+  const tight = density === "tight";
+  const percent = contextPercent(snapshot);
+  const context = snapshot.context
+    ? `${percent === null ? "?" : `${percent.toFixed(0)}%`}/${composerTokens(snapshot.context.contextWindow)}`
+    : "—";
+  const metrics: ComposerSegment[] = [
+    { text: `◫${compact ? "" : " "}${context}`, paint: contextPainter(snapshot, palette) },
+    { text: `${totalTokens(snapshot.usage)}${tight ? "t" : " tok"}`, paint: palette.muted },
+  ];
+  const input = finite(snapshot.usage.input);
+  const read = finite(snapshot.usage.cacheRead);
+  const write = finite(snapshot.usage.cacheWrite);
+  const scale = Math.max(input, read, write);
+  // No prompt is not a zero-percent cache hit. Scale before summing to avoid overflow.
+  if (scale > 0 && (read > 0 || write > 0)) {
+    const ratio = Math.round(100 * (read / scale) / (input / scale + read / scale + write / scale));
+    metrics.push({ text: tight ? `c${ratio}%` : `${ratio}% cache`, paint: palette.muted });
+  }
+  const cost = finite(snapshot.usage.cost);
+  const dollars = cost >= (tight ? 1e4 : 1e6) || (cost > 0 && cost < 0.0005)
+    ? scientific(cost, tight ? 1 : 2)
+    : cost.toFixed(3);
+  metrics.push({ text: `$${dollars}`, paint: palette.muted });
+  return metrics;
+}
+
+function joinSegments(
+  segments: readonly ComposerSegment[],
+  separator: string,
+  palette: SemanticPalette,
+): ComposerSegment[] {
+  return segments.flatMap((segment, index) => index
+    ? [{ text: separator, paint: palette.muted }, segment]
+    : [segment]);
+}
+
+function composerIdentity(
   width: number,
   snapshot: FooterSnapshot,
   palette: SemanticPalette,
-): string {
-  const safeWidth = Math.max(1, width);
+): ComposerSegment[] {
   const status = statusPresentation(snapshot.state);
   const paintStatus = tonePainter(palette, status.tone);
-  // Reserve context first. Ordinary multi-pane widths must not silently hide
-  // the live reading; drop thinking detail and shorten only model/detail text.
-  const rightSegments = safeWidth >= 18 ? usageSegments(snapshot, safeWidth, palette) : [];
-  const right = rightSegments.map((segment) => segment.text).join("");
-  const statusText = truncatePlain(status.text, Math.max(7, Math.min(safeWidth >= 72 ? 32 : 14, Math.floor(safeWidth / 2))));
-  const prefix = safeWidth >= 42 ? " > " : " ";
-  const separator = safeWidth >= 42 ? " > " : " · ";
-  const modelBudget = safeWidth - displayWidth(right) - 1
-    - displayWidth(`◆${prefix}${separator}${statusText} ▶`);
-  const showModel = safeWidth >= 32 && modelBudget >= 6;
-  const model = safeWidth >= 72 ? modelSummary(snapshot) : shortModel(snapshot.model);
-  const leftSegments: ComposerSegment[] = [
-    { text: "◆", paint: palette.accent },
-    { text: showModel ? prefix : " ", paint: palette.muted },
-    ...(showModel ? [
-      { text: truncatePlain(model, modelBudget), paint: palette.text },
-      { text: separator, paint: palette.muted },
+  const statusText = oneLine(status.text);
+  if (width < 14) return [{ text: truncatePlain(statusText, width), paint: paintStatus }];
+
+  const thinking = oneLine(snapshot.thinking);
+  const reasoning = thinking && thinking !== "off" ? thinking : "";
+  const full = [
+    { text: "◆ ", paint: palette.accent },
+    { text: shortModel(snapshot.model), paint: palette.text },
+    ...(reasoning ? [
+      { text: " · ", paint: palette.muted },
+      { text: reasoning, paint: palette.text },
     ] : []),
+    { text: " · ", paint: palette.muted },
     { text: statusText, paint: paintStatus },
-    { text: " ▶", paint: palette.accent },
   ];
-  const left = leftSegments.map((segment) => segment.text).join("");
-  const fitted = fitSides(left, right, safeWidth, 1);
-  const meterWidth = right
-    ? displayWidth(fitted.gap)
-    : Math.max(0, safeWidth - displayWidth(fitted.left));
-  return truncateToWidth(
-    palette.bold(paintComposerSegments(fitted.left, leftSegments)) +
-      renderContextMeter(meterWidth, snapshot, palette) +
-      paintComposerSegments(fitted.right, rightSegments),
-    safeWidth,
-    "",
-  );
+  if (segmentWidth(full) <= width) return full;
+
+  // Keep reasoning separate from the model so a long model cannot swallow it.
+  const statusBudget = Math.min(displayWidth(statusText), Math.max(4, Math.floor(width * 0.45)));
+  const thinkingText = reasoning ? truncatePlain(reasoning, Math.max(1, Math.floor(width / 5))) : "";
+  const separator = width >= 40 ? " · " : " ";
+  const modelBudget = width - statusBudget - displayWidth(separator)
+    - (thinkingText ? displayWidth(thinkingText) + 1 : 0);
+  return [
+    { text: truncatePlain(shortModel(snapshot.model), modelBudget), paint: palette.text },
+    ...(thinkingText ? [{ text: ` ${thinkingText}`, paint: palette.text }] : []),
+    { text: separator, paint: palette.muted },
+    { text: truncatePlain(statusText, statusBudget), paint: paintStatus },
+  ];
+}
+
+/** Metadata is indivisible; decoration is admitted only after all useful data fits. */
+export function renderComposerBands(
+  width: number,
+  snapshot: FooterSnapshot,
+  palette: SemanticPalette,
+): string[] {
+  const safeWidth = Math.max(1, Math.floor(Number.isFinite(width) ? width : 1));
+  const identity = composerIdentity(safeWidth, snapshot, palette);
+  const fullMetrics = joinSegments(composerMetrics(snapshot, palette, "full"), " · ", palette);
+  const spare = safeWidth - segmentWidth(identity) - segmentWidth(fullMetrics);
+  if (spare >= 1) {
+    // A modest pressure cue, not a full-width ruler or reserved metric budget.
+    const meter = spare >= 6
+      ? renderContextMeter(Math.min(12, spare - 2), snapshot, palette)
+      : palette.muted(spare >= 3 ? " · " : " ");
+    return [palette.bold(paintSegments(identity)) + (spare >= 6 ? ` ${meter} ` : meter) + paintSegments(fullMetrics)];
+  }
+
+  for (const density of ["full", "compact", "tight"] as const) {
+    const metrics = joinSegments(composerMetrics(snapshot, palette, density), density === "full" ? " · " : " ", palette);
+    if (segmentWidth(metrics) <= safeWidth) {
+      return [palette.bold(paintSegments(identity)), paintSegments(metrics)];
+    }
+  }
+
+  // Genuinely tiny panes get at most two metadata rows. Omit an atom that cannot
+  // fit rather than slicing a numeric value or leaving a misleading currency prefix.
+  const maxRows = safeWidth < 40 ? 2 : 1;
+  const rows: ComposerSegment[][] = [[]];
+  for (const metric of composerMetrics(snapshot, palette, "tight")) {
+    if (displayWidth(metric.text) > safeWidth) continue;
+    let row = rows[rows.length - 1]!;
+    if (segmentWidth(row) + (row.length ? 1 : 0) + displayWidth(metric.text) > safeWidth) {
+      if (rows.length >= maxRows) continue;
+      rows.push([]);
+      row = rows[rows.length - 1]!;
+    }
+    if (row.length) row.push({ text: " ", paint: palette.muted });
+    row.push(metric);
+  }
+  return [palette.bold(paintSegments(identity)), ...rows.filter((row) => row.length).map(paintSegments)];
 }
 
 export function renderCompanionFooter(

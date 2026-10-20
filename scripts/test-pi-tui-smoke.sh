@@ -151,14 +151,14 @@ const iso = new Date(now - 60_000).toISOString();
 const lines = [
   { type: "session", version: 3, id: "11111111-1111-4111-8111-111111111111", timestamp: iso, cwd },
   { type: "message", id: "a1b2c3d4", parentId: null, timestamp: iso, message: { role: "user", content: "fixture-resume-marker", timestamp: now - 60_000 } },
-  { type: "message", id: "b2c3d4e5", parentId: "a1b2c3d4", timestamp: iso, message: { role: "assistant", content: [{ type: "text", text: "fixture restored" }], api: "openai-completions", provider: "xiaomi", model: "mimo-v2.6-flash", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: now - 59_000 } },
+  { type: "message", id: "b2c3d4e5", parentId: "a1b2c3d4", timestamp: iso, message: { role: "assistant", content: [{ type: "text", text: "fixture restored" }], api: "openai-completions", provider: "xiaomi", model: "mimo-v2.6-flash", usage: { input: 16200, output: 450, cacheRead: 8000, cacheWrite: 200, totalTokens: 24850, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 1.234 } }, stopReason: "stop", timestamp: now - 59_000 } },
 ];
 const run = { runId: "run-visual-fixture", goal: "Verify the subagent workgroup", state: "failed", model: "xiaomi/mimo-v2.6-flash", createdAt: now - 60_000, endedAt: now - 1_000, tasks: [
   { taskId: "one", label: "Source review", state: "done", turns: 8, toolSuccesses: 6, toolErrors: 0, startedAt: now - 60_000, endedAt: now - 10_000, output: "Reviewed implementation and retained evidence." },
   { taskId: "two", label: "Long-running verification", state: "failed", turns: 64, toolSuccesses: 55, toolErrors: 1, startedAt: now - 60_000, endedAt: now - 1_000, error: "Turn budget reached — partial work retained", output: "Partial verification report is available for inspection." },
 ] };
 lines.push(
-  { type: "message", id: "c3d4e5f6", parentId: "b2c3d4e5", timestamp: iso, message: { ...lines[2].message, content: [{ type: "toolCall", id: "fixture-dispatch", name: "ultraterm_subagents", arguments: { goal: run.goal, tasks: run.tasks.map(t => ({ label: t.label, task: t.label })) } }], stopReason: "toolUse" } },
+  { type: "message", id: "c3d4e5f6", parentId: "b2c3d4e5", timestamp: iso, message: { ...lines[2].message, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { total: 0 } }, content: [{ type: "toolCall", id: "fixture-dispatch", name: "ultraterm_subagents", arguments: { goal: run.goal, tasks: run.tasks.map(t => ({ label: t.label, task: t.label })) } }], stopReason: "toolUse" } },
   { type: "message", id: "d4e5f6a7", parentId: "c3d4e5f6", timestamp: iso, message: { role: "toolResult", toolCallId: "fixture-dispatch", toolName: "ultraterm_subagents", content: [{ type: "text", text: "USAP visual fixture: one success and one exhausted budget" }], details: { mode: "foreground", run }, isError: false, timestamp: now } },
 );
 fs.writeFileSync(file, lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
@@ -171,6 +171,14 @@ cat >"$TMP/completion-proof.ts" <<EOF
 import { createUltratermSubagentsExtension } from "$ROOT/extensions/ultraterm-subagents.ts";
 import { emptyUsage } from "$ROOT/src/subagents/types.ts";
 export default function(pi) {
+  // A credential-free, network-denied model keeps real model/context metadata
+  // available in both stock themes. Any accidental request fails explicitly.
+  pi.registerProvider("xiaomi", {
+    baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1", api: "openai-completions", apiKey: "offline-fixture",
+    models: [{ id: "mimo-v2.6-flash", name: "Offline TUI fixture", reasoning: true, input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1000000, maxTokens: 1000 }],
+    streamSimple() { throw new Error("Network forbidden in offline TUI fixture"); },
+  });
   const tools = new Map();
   const model = { provider: "xiaomi", id: "mimo-v2.6-flash", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1", input: ["text"] };
   createUltratermSubagentsExtension({ checkpointRoot: "$TMP/completion-checkpoints", profiles: [], idFactory: () => "completion-proof", createRunner: () => async () => ({ state: "done", output: "offline proof", turns: 1, usage: emptyUsage() }) })({
@@ -253,19 +261,22 @@ if [[ -n "${TUI_EVIDENCE_DIR:-}" ]]; then
 fi
 
 # Exercise compact and wide redraws and ensure both footer surfaces survive.
-for geometry in "40 14" "80 32" "120 32"; do
+for geometry in "40 16" "48 20" "59 24" "64 24" "80 32" "120 32" "192 40"; do
   read -r width height <<<"$geometry"
   tmux_private resize-window -t "$SESSION" -x "$width" -y "$height"
   sleep 0.2
   pane="$(capture_current)"
-  grep -Fq -- "● resumed" <<<"$pane"
-  grep -Fq -- "╰─" <<<"$pane"
-  if (( width >= 54 )); then grep -Eq -- "ctx | tok|ctx —|◫" <<<"$pane"; fi
-  assert_ansi_width "$width"
   if [[ -n "${TUI_EVIDENCE_DIR:-}" ]]; then
     tmux_private capture-pane -p -e -t "$SESSION:0.0" >"$TUI_EVIDENCE_DIR/steak-usap-${width}.ansi"
     capture_current >"$TUI_EVIDENCE_DIR/steak-usap-${width}.txt"
   fi
+  for expected in '● resumed' '╰─' '◫' '$1.234' 'tok' 'cache'; do
+    if ! grep -Fq -- "$expected" <<<"$pane"; then
+      printf 'Native status at %s columns is missing %q\n%s\n' "$width" "$expected" "$pane" >&2
+      exit 1
+    fi
+  done
+  assert_ansi_width "$width"
 done
 
 # Native expansion uses the same tool context as a real restored transcript.
@@ -281,15 +292,35 @@ for width in 120 80; do
   fi
 done
 
-# Repeat startup under Pi's opposite stock theme.
+# Repeat startup under Pi's opposite stock theme with an independent session:
+# concurrent hosts must never share the same session/checkpoint ownership.
+node - "$TMP/sessions/fixture.jsonl" "$TMP/light-fixture.jsonl" <<'NODE'
+const fs = require("node:fs");
+const [source, target] = process.argv.slice(2);
+const lines = fs.readFileSync(source, "utf8").trim().split("\n").map(JSON.parse);
+lines[0].id = "22222222-2222-4222-8222-222222222222";
+fs.writeFileSync(target, lines.map(line => JSON.stringify(line)).join("\n") + "\n");
+NODE
 SESSION="light"
 tmux_private new-session -d -x 80 -y 24 -s "$SESSION" \
-  "cd '$ROOT' && exec $PI_ENV '$PI_EXECUTABLE' --offline --approve --no-session \
-    --no-skills --no-prompt-templates --no-context-files --use-theme light"
+  "cd '$ROOT' && exec $PI_ENV '$PI_EXECUTABLE' --offline --approve --session '$TMP/light-fixture.jsonl' \
+    --extension '$TMP/completion-proof.ts' --no-skills --no-prompt-templates --no-context-files --use-theme light"
 record_ownership
-wait_for "STEAK PI"
-wait_for_current "● ready"
-assert_ansi_width 80
+wait_for_current "● resumed"
+for width in 40 59 80 120 192; do
+  tmux_private resize-window -t "$SESSION" -x "$width" -y 32
+  sleep .2
+  assert_ansi_width "$width"
+  if [[ -n "${TUI_EVIDENCE_DIR:-}" ]]; then
+    tmux_private capture-pane -p -e -t "$SESSION:0.0" >"$TUI_EVIDENCE_DIR/steak-light-${width}.ansi"
+    capture_current >"$TUI_EVIDENCE_DIR/steak-light-${width}.txt"
+  fi
+done
+if capture | grep -Eq 'Extension .* error:|USAP checkpoints already owned'; then
+  echo 'Light-theme fixture reported an extension/session ownership error' >&2
+  capture >&2
+  exit 1
+fi
 
 # Offline provider-boundary regression: queue a follow-up, compose a mixed long
 # paste, then Escape to restore the queue. Native getText -> setText used to
@@ -357,14 +388,30 @@ PY
 tmux_private load-buffer "$TMP/paste-input"
 tmux_private paste-buffer -t "$SESSION:0.0"
 wait_for_current '[paste #1'
+if [[ -n "${TUI_EVIDENCE_DIR:-}" ]]; then
+  tmux_private capture-pane -p -e -t "$SESSION:0.0" >"$TUI_EVIDENCE_DIR/steak-paste-collapsed.ansi"
+  capture_current >"$TUI_EVIDENCE_DIR/steak-paste-collapsed.txt"
+fi
 tmux_private send-keys -t "$SESSION:0.0" Escape
+# Restoration expands the draft, so its prefix can be above the editor viewport.
+# Give the restored fixture enough rows to inspect both ends without editing it.
+tmux_private resize-window -t "$SESSION" -x 120 -y 64
 wait_for_current 'queued paste preface'
 sleep .3
+if [[ -n "${TUI_EVIDENCE_DIR:-}" ]]; then
+  tmux_private capture-pane -p -e -t "$SESSION:0.0" >"$TUI_EVIDENCE_DIR/steak-paste-restored.ansi"
+  capture_current >"$TUI_EVIDENCE_DIR/steak-paste-restored.txt"
+fi
 tmux_private send-keys -t "$SESSION:0.0" Enter
 for _ in {1..100}; do
   [[ "$(wc -l <"$TMP/paste-requests.jsonl" | tr -d ' ')" -ge 2 ]] && break
   sleep .1
 done
+if [[ -n "${TUI_EVIDENCE_DIR:-}" ]]; then
+  sleep .2
+  tmux_private capture-pane -p -e -t "$SESSION:0.0" >"$TUI_EVIDENCE_DIR/steak-paste-submitted.ansi"
+  capture_current >"$TUI_EVIDENCE_DIR/steak-paste-submitted.txt"
+fi
 python3 - "$TMP" <<'PY'
 import json, pathlib, sys
 root = pathlib.Path(sys.argv[1])

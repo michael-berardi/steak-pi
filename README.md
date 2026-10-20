@@ -21,20 +21,20 @@ serious sessions need: parallel subagents with hard limits, compaction that
 costs no model calls, checks that run after every edit, and a status line that
 tells you what the agent is doing.
 
-Current release: **0.10.2**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
+Current release: **0.10.3**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
 [UltraTerm](https://paretocybernetics.com/software/).
 
 ## Install
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.10.2
+pi install git:github.com/michael-berardi/steak-pi@v0.10.3
 ```
 
 Or from the release archive, without Git:
 
 ```sh
-shasum -a 256 -c steak-pi-0.10.2.tgz.sha256
-tar -xzf steak-pi-0.10.2.tgz
+shasum -a 256 -c steak-pi-0.10.3.tgz.sha256
+tar -xzf steak-pi-0.10.3.tgz
 pi install "$PWD/package"
 ```
 
@@ -73,6 +73,8 @@ stays small until you need more.
 
 Long pastes stay compact in the editor. Their full text and your surrounding
 instructions survive queue restoration, dialogs and editor replacement.
+The status band keeps context, tokens, cache use and cost visible in narrow
+panes, moving them to a compact second line when needed.
 
 ## Claude Code on your coding plan
 
@@ -214,11 +216,11 @@ runs identical fixtures, so these numbers show harness overhead, not model
 quality. Medians of 5; all 80 fixture runs passed across stock Pi, the previous
 release and both current launch modes.
 
-| | Stock Pi | Steak Pi 0.10.2 | Via `steak-pi run` |
+| | Stock Pi | Steak Pi 0.10.3 | Via `steak-pi run` |
 | --- | ---: | ---: | ---: |
-| One-shot edit, peak memory | 108 MiB | 150 MiB | 123 MiB |
-| One-shot edit, wall time | 0.37 s | 0.52 s | 0.49 s |
-| Eight-worker fan-out, wall time | no subagents | 1.27 s | 1.40 s |
+| One-shot edit, peak memory | 122 MiB | 150 MiB | 123 MiB |
+| One-shot edit, wall time | 0.29 s | 0.42 s | 0.43 s |
+| Eight-worker fan-out, wall time | no subagents | 1.25 s | 1.26 s |
 
 Steak Pi adds orchestration overhead; the launcher lowers its peak memory.
 Workers share the host's Pi code instead of loading their own copy. Stock Pi
