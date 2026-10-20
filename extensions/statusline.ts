@@ -1,6 +1,6 @@
 import { companionActivity, createActivitySignal } from "../src/tui/activity-signal.ts";
+import { PasteSafeEditor } from "../src/tui/paste-safe-editor.ts";
 import {
-  CustomEditor,
   type ExtensionAPI,
   type ExtensionContext,
   type KeybindingsManager,
@@ -195,7 +195,7 @@ export default function companionUiExtension(pi: ExtensionAPI): void {
       };
     });
 
-    class SteakBandEditor extends CustomEditor {
+    class SteakBandEditor extends PasteSafeEditor {
       constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) {
         super(tui, theme, keybindings, { paddingX: 0 });
       }

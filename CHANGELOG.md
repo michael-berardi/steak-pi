@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.10.2 (2026-10-20)
+
+- Keep long pasted content and surrounding typed instructions intact when restoring
+  queued messages, opening dialogs or replacing the editor. Previously those
+  operations could retain only a `[paste #…]` marker and lose its stored text.
+- Preserve native compact paste rendering, editing, undo and submission. Add an
+  offline native-TUI regression that checks the exact text reaching the provider
+  after queue restoration and interruption.
+- Refresh the published overhead measurements on Pi 1.0.4, correct macOS peak
+  memory units in the benchmark, and wait for its local fixture process to exit.
+- UltraTerm receives the fix through its next managed runtime update; this package
+  release does not replace running UltraTerm sessions.
+
 ## 0.10.1 (2026-10-19)
 
 - Show a steak emoji (🥩) in the terminal UI header instead of the diamond: `🥩 STEAK PI`. The activity markers in the status line keep their diamonds.

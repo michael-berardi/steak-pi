@@ -291,6 +291,89 @@ wait_for "STEAK PI"
 wait_for_current "● ready"
 assert_ansi_width 80
 
+# Offline provider-boundary regression: queue a follow-up, compose a mixed long
+# paste, then Escape to restore the queue. Native getText -> setText used to
+# erase the paste map here while leaving only its marker in the sent message.
+cat >"$TMP/paste-proof.ts" <<EOF
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
+import { appendFileSync, writeFileSync } from "node:fs";
+export default function(pi) {
+  pi.registerProvider("xiaomi", {
+    baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1", api: "openai-completions", apiKey: "offline-fixture",
+    models: [{ id: "mimo-v2.6-flash", name: "Offline paste fixture", reasoning: false, input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 1000 }],
+    streamSimple(model, context, options) {
+      // No network or inference: capture exactly what reaches the provider API.
+      const stream = createAssistantMessageEventStream();
+      const users = context.messages.filter(m => m.role === "user");
+      const last = users.at(-1);
+      const text = typeof last?.content === "string" ? last.content : (last?.content ?? []).filter(b => b.type === "text").map(b => b.text).join("");
+      appendFileSync("$TMP/paste-requests.jsonl", JSON.stringify({ text }) + "\\n");
+      const message = { role: "assistant", api: "openai-completions", provider: model.provider, model: model.id,
+        timestamp: Date.now(), content: [], stopReason: "pending", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+      queueMicrotask(() => {
+        stream.push({ type: "start", partial: message });
+        if (text === "paste-stream") {
+          const finish = () => {
+            clearTimeout(timer);
+            message.stopReason = "aborted"; message.errorMessage = "Offline fixture aborted";
+            stream.push({ type: "error", reason: "aborted", error: message }); stream.end();
+          };
+          const timer = setTimeout(finish, 30000);
+          options?.signal?.addEventListener("abort", finish, { once: true });
+          writeFileSync("$TMP/paste-stream-started", "ready");
+        } else {
+          message.stopReason = "stop";
+          stream.push({ type: "done", reason: "stop", message }); stream.end();
+        }
+      });
+      return stream;
+    },
+  });
+}
+EOF
+SESSION="paste"
+tmux_private new-session -d -x 120 -y 32 -s "$SESSION" \
+  "cd '$ROOT' && exec $PI_ENV '$PI_EXECUTABLE' --offline --approve --no-session \
+    --extension '$TMP/paste-proof.ts' --no-skills --no-prompt-templates --no-context-files --use-theme dark"
+record_ownership
+wait_for_current "● ready"
+tmux_private send-keys -t "$SESSION:0.0" -l 'paste-stream'
+tmux_private send-keys -t "$SESSION:0.0" Enter
+for _ in {1..100}; do [[ -f "$TMP/paste-stream-started" ]] && break; sleep .1; done
+[[ -f "$TMP/paste-stream-started" ]] || { capture >&2; echo 'Offline paste stream did not start' >&2; exit 1; }
+tmux_private send-keys -t "$SESSION:0.0" -l 'queued paste preface'
+tmux_private send-keys -t "$SESSION:0.0" M-Enter
+wait_for_current 'Follow-up: queued paste preface'
+python3 - "$TMP" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+payload = "It's kind of interesting, this talk has a lot of detail. Keep the quoted words, punctuation, and Unicode intact: café 🥩. " * 14
+prefix, suffix = 'Please examine this quote: ', ' Then compare it with my other content.'
+(root / 'paste-input').write_bytes((prefix + '\x1b[200~' + payload + '\x1b[201~' + suffix).encode())
+(root / 'paste-expected.json').write_text(json.dumps('queued paste preface\n\n' + prefix + payload + suffix))
+PY
+# Scripted bracketed paste, not clipboard or real user input.
+tmux_private load-buffer "$TMP/paste-input"
+tmux_private paste-buffer -t "$SESSION:0.0"
+wait_for_current '[paste #1'
+tmux_private send-keys -t "$SESSION:0.0" Escape
+wait_for_current 'queued paste preface'
+sleep .3
+tmux_private send-keys -t "$SESSION:0.0" Enter
+for _ in {1..100}; do
+  [[ "$(wc -l <"$TMP/paste-requests.jsonl" | tr -d ' ')" -ge 2 ]] && break
+  sleep .1
+done
+python3 - "$TMP" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+requests = [json.loads(line)['text'] for line in (root / 'paste-requests.jsonl').read_text().splitlines()]
+expected = json.loads((root / 'paste-expected.json').read_text())
+assert requests == ['paste-stream', expected], f'Provider-bound paste mismatch: {requests!r}'
+print(f'Native queue/abort/paste provider-boundary proof passed ({len(expected)} characters, exact match).')
+PY
+
 session_count="$(find "$TMP/sessions" -type f -name '*.jsonl' | wc -l | tr -d ' ')"
 [[ "$session_count" -ge 1 ]]
 printf 'Steak Pi native TUI smoke passed offline with isolated resume (%s session files).\n' "$session_count"
