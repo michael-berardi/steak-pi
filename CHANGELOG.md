@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.11.0 (2026-10-20)
+
+- Add a stable preferred-free worker route. Approved preference changes are read
+  at model-call boundaries without restarting sessions; assistant receipts keep
+  the actual answering model and cost.
+- Add the MiniMax M3.1 Flash free route on OpenRouter, UTC expiry and strict
+  zero-price request bounds. Paid fallback lists and paid plugins are refused.
+- Support temporary preference control through UltraTerm's MCP/CLI interface.
+  Expired preferences return through the normal routing safeguards.
+- Keep a visible gap between the steak emoji and the TUI name, including narrow
+  headers where plain-text normalization previously collapsed extra spacing.
+
 ## 0.10.3 (2026-10-20)
 
 - Keep context/window size, tokens, meaningful cache percentage and session cost

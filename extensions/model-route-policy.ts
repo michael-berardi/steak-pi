@@ -1,12 +1,19 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { assertActiveModelIdentity } from "../src/retired-model-selection.ts";
 import { createRegistryGuard } from "../src/model-route-policy.ts";
+import { activeTemporaryWorkerRoute, preferredFreeMetadata, selectPreferredFreePhysical, temporaryFreeStartupProvider } from "../src/temporary-free-route.ts";
 import { createExplicitPaidApproval, createSelectedRouteApproval, PAID_ROUTE_FLAG } from "../src/explicit-paid-route.ts";
 
 type Model = NonNullable<ExtensionContext["model"]>;
 
 /** Guard provider execution, including restored models, compaction, and model switching. */
 export default function modelRoutePolicy(pi: ExtensionAPI): void {
+  // Native provider registration happens before Pi resolves --model at startup.
+  // Complete-provider augmentation preserves its built-in catalog and auth.
+  pi.registerProvider(temporaryFreeStartupProvider());
+  if (activeTemporaryWorkerRoute()) {
+    pi.registerVirtualModel({ ...preferredFreeMetadata, route: (_request, ctx) => selectPreferredFreePhysical(ctx.modelRegistry) });
+  }
   pi.registerFlag(PAID_ROUTE_FLAG, { type: "string", description: "Exact paid profile selection; requires user paid-routes.json approval." });
   // Operator `/model` switching is no longer launch-locked: the exact paid route
   // currently selected in this runtime is authorized when the user allowlist

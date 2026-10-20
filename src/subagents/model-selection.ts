@@ -6,6 +6,7 @@ import { assertActiveModelIdentity, assertActiveModelSelector, SOL_MODEL_ROUTE, 
 import { assertModelRoute, assertSubscriptionRequest, selectChainedWorkerModel, selectWorkerModel, selectWorkerThinking,
   DEFAULT_MULTIMODAL_WORKER_CHAIN, DEFAULT_TEXT_WORKER_CHAIN, workerChainFor, type ChainOptions } from "../model-route-policy.ts";
 import type { DispatchInput, ModelSelection } from "./types.ts";
+import { activeTemporaryWorkerRoute, assertTemporaryFreeRequest, FREE_MODEL, FREE_PROFILE, isTemporaryFreeModel, PREFERRED_FREE_PROFILE } from "../temporary-free-route.ts";
 
 type Model = NonNullable<ExtensionContext["model"]>;
 type Registry = ExtensionContext["modelRegistry"];
@@ -30,6 +31,10 @@ export interface WorkerProfile {
  * legacy native-review profiles keep their exact Pro/image chain. The dispatch
  * boundary handles automatic Opus -> Sol separately, never as a worker chain. */
 export const BUILTIN_WORKER_PROFILES: readonly WorkerProfile[] = [
+  { id: PREFERRED_FREE_PROFILE, model: PREFERRED_FREE_PROFILE, thinking: "high",
+    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+  { id: FREE_PROFILE, model: `openrouter/${FREE_MODEL}`, thinking: "high",
+    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: "steak-pi/gpt-6-astra", model: "openai-codex/gpt-6-astra", thinking: "medium", autoReviewChain: true,
     workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: SOL_PROFILE, model: SOL_MODEL_ROUTE, thinking: "high",
@@ -264,6 +269,10 @@ export function resolveWorkerSelection(
     if (matches.length !== 1) throw new Error(`USAP profile ${id} is unavailable or ambiguous; use its harness/profile identity.`);
     assertActiveModelSelector(matches[0].id);
     assertActiveModelSelector(matches[0].model);
+    if ((matches[0].id === FREE_PROFILE && matches[0].model !== `openrouter/${FREE_MODEL}`) ||
+        (matches[0].id === PREFERRED_FREE_PROFILE && matches[0].model !== PREFERRED_FREE_PROFILE)) {
+      throw new Error("USAP approved free profile identity cannot be overridden by manifest metadata.");
+    }
     return matches[0];
   };
   const parents = profiles.filter((p) => p.model === parentKey);
@@ -271,8 +280,11 @@ export function resolveWorkerSelection(
   // A /model change must not inherit defaults belonging to a stale launch profile.
   const parentProfile = namedParent && namedParent.model === parentKey ? namedParent : parents.length === 1 ? parents[0] : undefined;
   const review = input.tasks.some((task) => task.role === "reviewer");
-  const defaults = explicit ? {} : roleDefaults ?? loadRoleDefaults();
-  const configured = review ? defaults.reviewerDefault ?? parentProfile?.reviewerDefault ?? parentProfile?.workerDefault : defaults.workerDefault ?? parentProfile?.workerDefault;
+  // Only ordinary implicit text workers observe the temporary preference;
+  // explicit model/profile/harness and all review/image gates remain exact.
+  const temporary = !explicit && !review && !input.harness && !input.requireImages ? activeTemporaryWorkerRoute() : undefined;
+  const defaults = explicit || temporary ? {} : roleDefaults ?? loadRoleDefaults();
+  const configured = temporary ? { profile: PREFERRED_FREE_PROFILE } : review ? defaults.reviewerDefault ?? parentProfile?.reviewerDefault ?? parentProfile?.workerDefault : defaults.workerDefault ?? parentProfile?.workerDefault;
   const chosen = explicit ? selector({ ...(requested.model !== undefined ? { model: requested.model } : {}), ...(requested.profile !== undefined ? { profile: requested.profile } : {}) }, "USAP selection") : configured ? selector(configured, "USAP profile default") : undefined;
   const profile = chosen?.profile ? profileById(chosen.profile) : undefined;
   // Automatic defaults resolve the final chain; an explicit selector stays exact.
@@ -294,6 +306,8 @@ export function resolveWorkerSelection(
     : key ? findModel(key, registry)
     : selectWorkerModel(parent, input.tasks.map((task) => task.role), registry, options);
   assertSubscriptionRequest(model, registry.isUsingOAuth(model));
+  // Selection is not dispatch: lazy official proof is fetched at the call boundary.
+  if (isTemporaryFreeModel(model)) assertTemporaryFreeRequest(model, undefined, undefined, false);
   // Authentication and dispatch membership consult the published catalog, never the
   // curated picker snapshot: an operator can still dispatch an authenticated route
   // that is deliberately not a picker choice (the ordered chain's Go fallback).
@@ -305,6 +319,7 @@ export function resolveWorkerSelection(
     throw new Error(`USAP model ${route(model)} needs a native text/tool streaming adapter.`);
   }
   const images = model.input.includes("image");
+  if (model.api === "pi-virtual" && (model.provider !== "steak-pi" || model.id !== "preferred-free")) throw new Error("USAP virtual worker route is not approved.");
   if (input.requireImages && !images) throw new Error(`USAP model ${route(model)} does not advertise image input. Select an authenticated vision model for image inspection; no fallback was selected.`);
   const thinkingLevel = selectWorkerThinking(model, profile?.thinking ?? inheritedThinking, input.thinking, input.thinkingReason);
   const result: { model: Model; thinkingLevel: Thinking; selection: ModelSelection } = {

@@ -213,7 +213,7 @@ describe("operator /model paid authorization across all approved profiles", () =
     const handlers = new Map<string, (event: any, ctx: any) => unknown>();
     const registerFlag = vi.fn();
     const getFlag = vi.fn(() => flag);
-    modelRoutePolicy({ registerFlag, getFlag,
+    modelRoutePolicy({ registerFlag, getFlag, registerProvider: vi.fn(), registerVirtualModel: vi.fn(),
       on: (name: string, handler: (event: any, ctx: any) => unknown) => handlers.set(name, handler),
     } as any);
     const ctx = { mode: "tui", hasUI: true, model: initialModel, sessionManager: {},

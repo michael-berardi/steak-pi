@@ -21,20 +21,20 @@ serious sessions need: parallel subagents with hard limits, compaction that
 costs no model calls, checks that run after every edit, and a status line that
 tells you what the agent is doing.
 
-Current release: **0.10.3**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
+Current release: **0.11.0**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
 [UltraTerm](https://paretocybernetics.com/software/).
 
 ## Install
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.10.3
+pi install git:github.com/michael-berardi/steak-pi@v0.11.0
 ```
 
 Or from the release archive, without Git:
 
 ```sh
-shasum -a 256 -c steak-pi-0.10.3.tgz.sha256
-tar -xzf steak-pi-0.10.3.tgz
+shasum -a 256 -c steak-pi-0.11.0.tgz.sha256
+tar -xzf steak-pi-0.11.0.tgz
 pi install "$PWD/package"
 ```
 
@@ -59,6 +59,7 @@ binary. Without it, Steak Pi uses Pi's built-in compaction.
 | Feature | What it does |
 | --- | --- |
 | **Subagents (USAP)** | Up to eight parallel workers per run, with file ownership, deadlines, cancellation, a message relay between workers, and usage reported back to the parent |
+| **Temporary free routes** | Switch an approved free-model preference at model-call boundaries, with a UTC expiry, zero-price request bounds and actual answering-model receipts |
 | **Claude Code on your plan** | Built-in `claude-code` provider: Fable, Opus, Sonnet and Haiku through your own Claude subscription, no extra package |
 | **Local compaction** | Summaries built in 10–300 ms with no model call; the full raw session stays searchable |
 | **Verify after edit** | Runs your project check after edits and hands failures straight back to the agent |
@@ -74,7 +75,16 @@ stays small until you need more.
 Long pastes stay compact in the editor. Their full text and your surrounding
 instructions survive queue restoration, dialogs and editor replacement.
 The status band keeps context, tokens, cache use and cost visible in narrow
-panes, moving them to a compact second line when needed.
+panes, moving them to a compact second line when needed. The header keeps a
+visible gap between its steak emoji and name.
+
+With UltraTerm, agents use the same `overseer_temporary_worker_route` MCP tool
+or `ut-overseer temporary-worker-route` CLI to list, preview, activate, inspect
+or clear an approved free route. Preferences are data, not package updates:
+subsequent model calls pick up changes without restarting workers. Activation
+requires the operator's authorization, an exact supported free model and a UTC
+expiry; no paid fallback or paid plugin is permitted. OpenRouter is the first
+adapter. See [model routing](./docs/MODEL-ROUTING.md).
 
 ## Claude Code on your coding plan
 
@@ -142,8 +152,9 @@ parent
   would end the same way): Steak Pi names the failure, keeps the model and
   reasoning level, and continues once in smaller steps.
 
-**Models.** Routine workers default to OpenCode Go DeepSeek V4.1 Flash, with
-isolated, balanced Go accounts. Implicit reviewers prefer Opus 5.5; when Claude
+**Models.** Routine workers follow the configured role defaults. An approved,
+active free preference applies to implicit workers until its expiry; explicit
+selections remain exact. Go accounts stay isolated and balanced. Implicit reviewers prefer Opus 5.5; when Claude
 is provably unavailable before output, text reviews use GPT-6.1 Sol on Codex
 OAuth. Go-only parents resolve Sol through separate Codex account stores,
 without copying credentials or changing the parent environment. Explicit routes

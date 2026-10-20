@@ -1,4 +1,5 @@
 import type { ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { activeTemporaryWorkerRoute, ensureTemporaryFreeMetadata, assertTemporaryFreeRequest, isTemporaryFreeModel, preferredFreeMetadata, selectPreferredFreePhysical, temporaryFreeOptions, withTemporaryFreeCatalog, TemporaryFreeRouteRequestError } from "./temporary-free-route.ts";
 import { createAllowlistApproval, findPaidRoute } from "./explicit-paid-route.ts";
 import { curatedPickerScope } from "./harness-profiles.ts";
 import { curatedPickerModels, sharedPickerModels } from "./model-visibility.ts";
@@ -116,6 +117,7 @@ export function guardProvider(provider: Provider, usingOAuth: () => boolean,
     assertActiveModelIdentity(model);
     if (model.provider !== provider.id) throw new Error(GPT_ROUTE_ERROR);
     assertSubscriptionRequest(model, !isGptFamily(model) || usingOAuth());
+    if (isTemporaryFreeModel(model)) assertTemporaryFreeRequest(model, undefined, undefined, false);
   };
   // Registries without authentication introspection cannot gate metered routes.
   const metering: (() => Promise<string | undefined>) | undefined =
@@ -156,6 +158,9 @@ export function guardProvider(provider: Provider, usingOAuth: () => boolean,
     },
     stream(model, context, options) {
       check(model);
+      if (isTemporaryFreeModel(model)) return gatedMeteredStream(model, async () => {
+        await ensureTemporaryFreeMetadata(model.id); assertTemporaryFreeRequest(model); return false;
+      }, async () => undefined, () => provider.stream(model, context, temporaryFreeOptions(model, options)), options?.signal, () => true);
       const inner = metering && !isSubscriptionOrLocalRoute(model, false)
         ? gatedMeteredStream(model, () => requestOAuth(model, options), metering, () => provider.stream(model, context, options), options?.signal, () => approval?.(model) === true)
         : provider.stream(model, context, options);
@@ -164,6 +169,9 @@ export function guardProvider(provider: Provider, usingOAuth: () => boolean,
     },
     streamSimple(model, context, options) {
       check(model);
+      if (isTemporaryFreeModel(model)) return gatedMeteredStream(model, async () => {
+        await ensureTemporaryFreeMetadata(model.id); assertTemporaryFreeRequest(model); return false;
+      }, async () => undefined, () => provider.streamSimple(model, context, temporaryFreeOptions(model, options)), options?.signal, () => true);
       const inner = metering && !isSubscriptionOrLocalRoute(model, false)
         ? gatedMeteredStream(model, () => requestOAuth(model, options), metering, () => provider.streamSimple(model, context, options), options?.signal, () => approval?.(model) === true)
         : provider.streamSimple(model, context, options);
@@ -172,6 +180,7 @@ export function guardProvider(provider: Provider, usingOAuth: () => boolean,
     },
     ...(provider.fetchDeferred ? { fetchDeferred: ((model, handle, options) => {
       check(model);
+      if (isTemporaryFreeModel(model)) throw new TemporaryFreeRouteRequestError("Temporary free route denied: deferred requests are unsupported.");
       if (metering && !isSubscriptionOrLocalRoute(model, false)) {
         return gatedMeteredStream(model, () => requestOAuth(model, options), metering, () => provider.fetchDeferred!(model, handle, options), options?.signal, () => approval?.(model) === true);
       }
@@ -179,6 +188,7 @@ export function guardProvider(provider: Provider, usingOAuth: () => boolean,
     }) as NonNullable<Provider["fetchDeferred"]> } : {}),
     ...(provider.cancelDeferred ? { cancelDeferred: (async (model, handle, options) => {
       check(model);
+      if (isTemporaryFreeModel(model)) throw new TemporaryFreeRouteRequestError("Temporary free route denied: deferred requests are unsupported.");
       return provider.cancelDeferred!(model, handle, options);
     }) as NonNullable<Provider["cancelDeferred"]> } : {}),
   };
@@ -206,6 +216,15 @@ export function createRegistryGuard(approval?: PaidApproval, chain?: ChainFallba
     // curated picker filter (filterModels below) and would leave pre-output chain
     // targets without the metering check. `active` is accepted for 0.7.0 callers.
     void active;
+    if (apisByProvider.has("openrouter")) {
+      // Augment the registered native root, not a recomposed config overlay;
+      // otherwise every controlled turn can wrap yesterday's guard again.
+      const provider = registry.getRegisteredNativeProvider("openrouter") ?? registry.getProvider("openrouter");
+      if (provider) {
+        const augmented = withTemporaryFreeCatalog(provider);
+        if (augmented !== provider) registry.registerProvider(augmented);
+      }
+    }
     for (const [id, apis] of apisByProvider) {
       const native = registry.getRegisteredNativeProvider(id);
       const mark = native && guardMark(native);
@@ -239,6 +258,16 @@ export function createRegistryGuard(approval?: PaidApproval, chain?: ChainFallba
  * `active` names the run's own provider so it is guarded even before its
  * credentials resolve (only dispatch-capable providers are guarded). */
 export function guardModelRuntime(runtime: ModelRuntime, fallback?: ChainFallbackInput, active?: Pick<Model, "provider">): void {
+  // SDK virtual routing runs at each model call, not just the next user turn.
+  // Optional only for legacy/test SDK facades: preferred-free admission fails
+  // without its virtual catalog entry, never impersonating a physical route.
+  if (active?.provider === "steak-pi" || runtime.getModel("steak-pi", "preferred-free") || activeTemporaryWorkerRoute()) {
+    runtime.registerVirtualModel?.({ ...preferredFreeMetadata, route: () => selectPreferredFreePhysical({
+      find: (provider, id) => runtime.getModel(provider, id),
+      hasConfiguredAuth: model => runtime.hasConfiguredAuth(model.provider),
+      isUsingOAuth: model => runtime.isUsingOAuth(model.provider),
+    }) });
+  }
   const approval = fallback?.approvePaidRoute;
   const chain: ChainFallbackOptions | undefined = fallback && {
     ...fallback,

@@ -228,6 +228,7 @@ describe("GPT coding-plan route policy", () => {
   it("reapplies worker runtime guards after an API refresh without stacking unchanged providers", () => {
     const { registry, native, methods } = fakeRegistry();
     const runtime = {
+      getModel: (provider: string, id: string) => registry.getAll().find(model => model.provider === provider && model.id === id),
       getModels: () => registry.getAll(),
       getProvider: (id: string) => registry.getProvider(id),
       getRegisteredNativeProvider: (id: string) => registry.getRegisteredNativeProvider(id),

@@ -282,8 +282,13 @@ describe("responsive semantic rendering", () => {
   });
 
   it("preserves the header and does not invent footer filler", () => {
-    expect(renderCompanionHeader(20, plainPalette)).toEqual(["🥩 STEAK PI"]);
-    expect(renderCompanionHeader(40, plainPalette)).toEqual(["🥩 STEAK PI         / · /model · /resume"]);
+    expect(renderCompanionHeader(20, plainPalette)).toEqual(["🥩  STEAK PI"]);
+    expect(renderCompanionHeader(40, plainPalette)).toEqual(["🥩  STEAK PI        / · /model · /resume"]);
+    for (const width of [1, 2, 3, 4, 5, 8, 12, 20, 40, 64, 120]) {
+      const header = renderCompanionHeader(width, plainPalette)[0]!;
+      expect(visibleWidth(header)).toBeLessThanOrEqual(width);
+      if (width >= 12) expect(header).toMatch(/^🥩 {2}STEAK PI/);
+    }
     expect(renderCompanionFooter(40, snapshot, plainPalette)).toEqual([]);
     for (const width of [20, 40, 80, 120]) {
       const rows = renderCompanionFooter(width, { extensionStatuses: ["external status"] }, simulatorAnsiPalette);

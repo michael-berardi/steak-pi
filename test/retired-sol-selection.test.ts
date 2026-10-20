@@ -127,7 +127,7 @@ describe("GPT-6.0 Sol retirement (2026-10-05)", () => {
   });
   it("refuses a retired active model at every policy-extension hook, but accepts 6.1 Sol", () => {
     const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
-    modelRoutePolicy({ registerFlag: vi.fn(), getFlag: () => undefined, on: (name: string, handler: (event: unknown, ctx: unknown) => void) => { handlers.set(name, handler); } } as never);
+    modelRoutePolicy({ registerProvider: vi.fn(), registerVirtualModel: vi.fn(), registerFlag: vi.fn(), getFlag: () => undefined, on: (name: string, handler: (event: unknown, ctx: unknown) => void) => { handlers.set(name, handler); } } as never);
     const modelRegistry = { getAll: () => [], getProvider: () => undefined, getRegisteredNativeProvider: () => undefined, registerProvider: vi.fn(), isUsingOAuth: () => true };
     for (const hook of ["session_start", "model_select", "before_agent_start", "session_before_compact"]) {
       expect(() => handlers.get(hook)!({ model: retired }, { model: retired, modelRegistry })).toThrow(RetiredModelSelectionError);

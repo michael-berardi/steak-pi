@@ -1119,3 +1119,22 @@ describe("Sol account-isolated SDK lifecycle", () => {
     expect(command.mock.calls.filter(([args]) => args[0] === "release")).toHaveLength(1);
   });
 });
+
+describe("preferred-free normal-return account ownership", () => {
+  it("propagates named return without selecting or borrowing a Codex lease", async () => {
+    const { TemporaryFreeRouteReturnToNormalError, RETURN_TO_NORMAL } = await import("../src/temporary-free-route.ts");
+    const cwd = await mkdtemp(join(tmpdir(), "steak-free-return-"));
+    try {
+      const record = task(); const fake = new FakeSession();
+      fake.onPrompt = async () => { throw new TemporaryFreeRouteReturnToNormalError(); };
+      const accountCommand = vi.fn(async () => { throw new Error("Virtual workers must not borrow a Codex lease"); });
+      const model = { provider: "steak-pi", id: "preferred-free", api: "pi-virtual" } as never;
+      const runner = createPiWorkerRunner({ relay: setupBroker(), accountCommand,
+        resolveRuntime: () => ({ model, thinkingLevel: "high" }), sessionFactory: async () => ({ session: fake }) });
+      const result = await runner({ run: run(cwd, record), task: record, signal: new AbortController().signal, onProgress: vi.fn() });
+      expect(result.state).toBe("failed"); expect(result.error).toContain(RETURN_TO_NORMAL);
+      expect(accountCommand).not.toHaveBeenCalled(); expect(record.providerAccount).toBeUndefined();
+      expect(fake.disposed).toBe(true);
+    } finally { await rm(cwd, { recursive: true, force: true }); }
+  });
+});

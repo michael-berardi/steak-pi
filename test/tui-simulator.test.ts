@@ -30,7 +30,7 @@ describe("deterministic headless TUI", () => {
   it("captures the compact completed hierarchy", () => {
     const output = renderSimulator(createSimulatorState("complete", 48, 16), plainPalette);
     expect(output).toEqual([
-      "🥩 STEAK PI                 / · /model · /resume",
+      "🥩  STEAK PI                / · /model · /resume",
       "",
       "user",
       "  Refine the terminal workspace without",
