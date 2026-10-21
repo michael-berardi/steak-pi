@@ -1,6 +1,6 @@
 {
   "name": "steak-pi",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "bin": {
     "steak-pi": "bin/steak-pi"
   },
@@ -56,7 +56,7 @@
   "scripts": {
     "test": "vitest run",
     "usap:claude-api": "node scripts/usap-claude-api.ts",
-    "test:tui": "./scripts/test-pi-tui-smoke.sh",
+    "test:tui": "./scripts/test-pi-tui-smoke.sh && ./scripts/test-pi-startup-paste.sh",
     "typecheck": "tsc --noEmit",
     "ui:simulate": "node --experimental-strip-types src/tui/simulator.ts",
     "verify": "npm run typecheck && npm test && npm run test:tui"

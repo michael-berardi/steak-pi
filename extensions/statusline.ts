@@ -252,10 +252,14 @@ export default function companionUiExtension(pi: ExtensionAPI): void {
       }
     }
 
+    // The first editor is native, so its getText() can still be a paste label.
+    // Capture through Pi's expanded UI getter before the host replaces it.
+    const startupDraft = ctx.ui.getEditorText();
     ctx.ui.setWorkingVisible(false);
     ctx.ui.setEditorComponent(
       (tui, theme, keybindings) => new SteakBandEditor(tui, theme, keybindings),
     );
+    if (startupDraft) ctx.ui.setEditorText(startupDraft);
     requestRender();
   });
 

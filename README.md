@@ -73,7 +73,8 @@ first dispatch, compaction recall after your first compaction. The prompt
 stays small until you need more.
 
 Long pastes stay compact in the editor. Their full text and your surrounding
-instructions survive queue restoration, dialogs and editor replacement.
+instructions survive queue restoration, dialogs and editor replacement,
+including pastes entered while a new session is still starting.
 The status band keeps context, tokens, cache use and cost visible in narrow
 panes, moving them to a compact second line when needed. The header keeps a
 visible gap between its steak emoji and name.

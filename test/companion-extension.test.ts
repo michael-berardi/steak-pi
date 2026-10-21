@@ -70,6 +70,8 @@ describe("companion extension integration", () => {
         theme,
         setHeader(factory: any) { headerFactory = factory; },
         setFooter(factory: any) { footerFactory = factory; },
+        getEditorText: () => "",
+        setEditorText: vi.fn(),
         setEditorComponent(factory: any) { editorFactory = factory; },
         setWorkingVisible(value: boolean) { workingVisible = value; },
         setWorkingMessage(value?: string) { workingMessages.push(value); },

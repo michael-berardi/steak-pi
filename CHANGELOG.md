@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.1 (2026-10-20)
+
+- Preserve a paste and its trailing instruction when entered before the companion
+  editor finishes loading. The first native-to-Steak editor swap now captures
+  the expanded draft rather than transferring only its paste label.
+- Add real-editor and isolated CLI/PTY startup-timing regressions. Existing queue,
+  dialog, literal-marker, undo and compact-paste behavior stays unchanged.
+
 ## 0.11.0 (2026-10-20)
 
 - Add a stable preferred-free worker route. Approved preference changes are read
