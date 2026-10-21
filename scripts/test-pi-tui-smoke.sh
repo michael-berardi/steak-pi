@@ -57,8 +57,12 @@ cleanup() {
     echo "TUI processes have not exited; preserving $TMP" >&2
     return 1
   fi
-  rm -rf "$TMP"
-  [[ ! -e "$TMP" ]] && echo "TUI cleanup verified: owned server/panes exited; private socket and workspace absent."
+  if [[ "${TUI_KEEP_WORKSPACE:-0}" == 1 ]]; then
+    printf 'TUI processes/socket closed; workspace retained: %s\n' "$TMP"
+  else
+    rm -rf "$TMP"
+    [[ ! -e "$TMP" ]] && echo "TUI cleanup verified: owned server/panes exited; private socket and workspace absent."
+  fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -249,6 +253,9 @@ tmux_private resize-window -t "$SESSION" -x 120 -y 40
 tmux_private send-keys -t "$SESSION:0.0" -l '/resume'
 tmux_private send-keys -t "$SESSION:0.0" Enter
 wait_for_current "Resume Session"
+# Select the seeded fixture explicitly; the current session can sort ahead of it.
+tmux_private send-keys -t "$SESSION:0.0" -l 'fixture-resume-marker'
+sleep .2
 tmux_private send-keys -t "$SESSION:0.0" Enter
 wait_for_current "● resumed"
 wait_for_current "fixture-resume-marker"

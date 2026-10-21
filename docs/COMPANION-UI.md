@@ -18,7 +18,8 @@ preserves upstream behavior while giving Steak Pi a purpose-built entry surface.
 
 Long pastes remain collapsed visually, but editor snapshots expose their full
 text. Restoring queued messages, opening dialogs or replacing the editor keeps
-the pasted content together with the text typed before and after it.
+the pasted content together with the text typed before and after it. The first
+native-to-Steak editor swap also preserves content pasted during startup.
 
 ## Visual hierarchy
 
@@ -127,8 +128,10 @@ private tmux socket with private config/session stores. It covers local submit,
 Up/Down history, selector confirmation, real session resume, stock dark/light
 themes, ANSI integrity, and 40/48/59/64/80/120/192-column redraws without touching UltraTerm's
 tmux sessions. A local scripted provider also checks an exact mixed-paste
-message after queuing and interrupting a response; it makes no network request. Final visual
-acceptance still runs against the installed Pi TUI inside UltraTerm.
+message after queuing and interrupting a response; it makes no network request.
+A separate delayed-startup test pastes into the initial native editor before
+Steak Pi installs its companion, then checks the exact submitted content.
+Final visual acceptance still runs against the installed Pi TUI inside UltraTerm.
 
 ## Acceptance gates
 
@@ -141,7 +144,8 @@ acceptance still runs against the installed Pi TUI inside UltraTerm.
 - Native submit, Up/Down history, selector confirmation, and resume pass in an
   isolated pinned-Pi PTY smoke test.
 - Long pasted content and typed text reach the provider intact after queue
-  restoration; native compact paste rendering and undo remain intact.
+  restoration and the first startup editor swap; native compact paste rendering
+  and undo remain intact.
 - Print/JSON/RPC modes do not install TUI components.
 - Production UI code uses only semantic theme functions.
 - The optional meter changes fill at 0%, mid-range, warning and error pressure
