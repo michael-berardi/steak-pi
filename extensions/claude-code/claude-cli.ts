@@ -444,14 +444,30 @@ function processEnvironment(
   return env;
 }
 
-async function writeFrame(child: ChildProcess, frame: NativeFrame): Promise<void> {
-  if (!child.stdin?.writable) throw new Error("Claude Code stdin closed during history replay");
-  if (!child.stdin.write(`${JSON.stringify(frame)}\n`)) {
-    await new Promise<void>((resolve, reject) => {
-      child.stdin!.once("drain", resolve);
-      child.stdin!.once("error", reject);
-    });
-  }
+async function writeFrame(child: ChildProcess, frame: NativeFrame, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  const stdin = child.stdin;
+  if (!stdin?.writable) throw new Error("Claude Code stdin closed during history replay");
+  if (stdin.write(`${JSON.stringify(frame)}\n`)) return;
+  // A long history fills the pipe. Escape, or Claude Code going away, must end the wait: a pipe that
+  // is closed without an error never drains, and the turn would sit at "thinking" for good.
+  await new Promise<void>((resolve, reject) => {
+    const finish = (fn: () => void) => {
+      stdin.off("drain", onDrain);
+      stdin.off("error", onError);
+      stdin.off("close", onClose);
+      signal?.removeEventListener("abort", onAbort);
+      fn();
+    };
+    const onDrain = () => finish(resolve);
+    const onError = (error: Error) => finish(() => reject(error));
+    const onClose = () => finish(() => reject(signal?.reason ?? new Error("Claude Code stdin closed during history replay")));
+    const onAbort = () => finish(() => reject(signal?.reason ?? new Error("Claude Code request aborted")));
+    stdin.once("drain", onDrain);
+    stdin.once("error", onError);
+    stdin.once("close", onClose);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function nativeErrorText(event: Extract<NativeOutputEvent, { type: "assistant" }>): string | undefined {
@@ -926,7 +942,7 @@ class ClaudeProcess {
     try {
       const frames = continuation ? input.frames.slice(-1) : input.frames;
       for (const frame of frames) {
-        await writeFrame(this.child, frame);
+        await writeFrame(this.child, frame, input.signal);
         if (frame.shouldQuery === false) {
           for (;;) {
             const event = await this.queue.next(input.signal, this.timeoutMs);
@@ -1034,7 +1050,21 @@ class ClaudeProcess {
 
   async close(): Promise<void> {
     this.closeNow();
-    await Promise.allSettled([this.readTask, this.exitOutcome, this.relay.close()]);
+    // A process Claude Code started in its own session (an MCP server, a hook) can keep its stdout
+    // open after the group is killed, so the stream never ends. Never let that hold up Escape or
+    // the next message: wait a bounded time, then drop the pipes ourselves.
+    const settled = Promise.allSettled([this.readTask, this.exitOutcome, this.relay.close()]);
+    let timer: NodeJS.Timeout | undefined;
+    const bounded = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), CLAUDE_PROCESS_CLOSE_GRACE_MS);
+      timer.unref?.();
+    });
+    if ((await Promise.race([settled, bounded])) === "timeout") {
+      this.child.stdout?.destroy();
+      this.child.stderr?.destroy();
+      this.queue.end(new Error("Claude Code was closed"));
+    }
+    clearTimeout(timer);
     await rm(this.root, { recursive: true, force: true });
   }
 
@@ -1043,6 +1073,7 @@ class ClaudeProcess {
     this.closed = true;
     this.clearExpiryTimer();
     this.relay.abort();
+    this.child.stdin?.destroy();
     if (this.child.exitCode === null) killProcessTree(this.child);
   }
 
@@ -1060,6 +1091,9 @@ interface AcquiredProcess {
   continuation: boolean;
   sessionId?: string;
 }
+
+/** How long closing a Claude Code process may wait for its streams before dropping them. */
+const CLAUDE_PROCESS_CLOSE_GRACE_MS = 2_000;
 
 const processCache = new Map<string, ClaudeProcess>();
 let managerTail: Promise<void> = Promise.resolve();
@@ -1183,7 +1217,10 @@ export async function runClaudeRequest(input: RunClaudeInput): Promise<RunClaude
     }
     return output;
   } catch (error) {
-    await discardProcess(acquired);
+    // An interrupted turn (Escape) settles at once: Pi must be ready for the next message even
+    // while the old process is still being torn down.
+    if (input.signal?.aborted) void discardProcess(acquired).catch(() => {});
+    else await discardProcess(acquired);
     throw error;
   }
 }
