@@ -592,6 +592,13 @@ USAP is coordination, not a security sandbox.
 - Do not place secrets in task prompts, relay bodies, status output, or final
   reports. Do not delegate secret-bearing work unless the operator explicitly
   authorizes the same trust boundary.
+- Every harness-generated child preamble carries process-listing guidance,
+  independent of the parent's task text or shell grant. Treat a full process
+  command line as credential-bearing. List only PIDs and names with
+  `pgrep -f "pattern"` (PIDs only) or `ps -o pid,ppid,etime,comm -p <pid>`;
+  never print full command lines or environment listings. Claude continuation
+  prompts repeat the rule for resumed histories. This is guidance, not a shell
+  filter or redaction guarantee.
 - Cancellation cannot undo shell commands, file writes, network requests, or
   other external side effects already performed.
 
