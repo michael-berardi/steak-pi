@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.11.2 (2026-10-22)
+
+- Escape on a Claude Code turn no longer leaves the session stuck at "thinking".
+  A process Claude Code started (an MCP server or a hook) could keep the output
+  pipe open after the turn was stopped, so the turn never ended and the next
+  message stayed in the queue. Stopping a turn now settles at once, closing the
+  old process waits at most two seconds, and the next message runs.
+- Escape also ends a turn that is still writing a long history to Claude Code.
+- Regression tests reproduce both hangs with a fake Claude Code process.
+
 ## 0.11.1 (2026-10-20)
 
 - Preserve a paste and its trailing instruction when entered before the companion
