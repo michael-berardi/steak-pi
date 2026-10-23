@@ -329,6 +329,13 @@ function composerIdentity(
   ];
 }
 
+/** Fill `spare` columns between two regions: " ━━━─── " when roomy, else a separator. */
+function meterGap(spare: number, snapshot: FooterSnapshot, palette: SemanticPalette): string {
+  if (spare >= 6) return ` ${renderContextMeter(spare - 2, snapshot, palette)} `;
+  const sep = spare >= 3 ? " · " : " ";
+  return palette.muted(sep) + " ".repeat(spare - sep.length);
+}
+
 /** Metadata is indivisible; decoration is admitted only after all useful data fits. */
 export function renderComposerBands(
   width: number,
@@ -340,17 +347,17 @@ export function renderComposerBands(
   const fullMetrics = joinSegments(composerMetrics(snapshot, palette, "full"), " · ", palette);
   const spare = safeWidth - segmentWidth(identity) - segmentWidth(fullMetrics);
   if (spare >= 1) {
-    // A modest pressure cue, not a full-width ruler or reserved metric budget.
-    const meter = spare >= 6
-      ? renderContextMeter(Math.min(12, spare - 2), snapshot, palette)
-      : palette.muted(spare >= 3 ? " · " : " ");
-    return [palette.bold(paintSegments(identity)) + (spare >= 6 ? ` ${meter} ` : meter) + paintSegments(fullMetrics)];
+    // The meter stretches across the free space so the stats sit flush right.
+    // Decoration is admitted only after every metric fits.
+    return [palette.bold(paintSegments(identity)) + meterGap(spare, snapshot, palette) + paintSegments(fullMetrics)];
   }
 
   for (const density of ["full", "compact", "tight"] as const) {
     const metrics = joinSegments(composerMetrics(snapshot, palette, density), density === "full" ? " · " : " ", palette);
-    if (segmentWidth(metrics) <= safeWidth) {
-      return [palette.bold(paintSegments(identity)), paintSegments(metrics)];
+    const room = safeWidth - segmentWidth(metrics);
+    if (room >= 0) {
+      // Second row: pressure meter on the left, stats flush right.
+      return [palette.bold(paintSegments(identity)), (room >= 6 ? meterGap(room, snapshot, palette) : "") + paintSegments(metrics)];
     }
   }
 
