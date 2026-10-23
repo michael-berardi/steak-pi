@@ -272,6 +272,8 @@ for geometry in "40 16" "48 20" "59 24" "64 24" "80 32" "120 32" "192 40"; do
   read -r width height <<<"$geometry"
   tmux_private resize-window -t "$SESSION" -x "$width" -y "$height"
   sleep 0.2
+  wait_for_current '$1.234' 50
+  sleep 0.1
   pane="$(capture_current)"
   if [[ -n "${TUI_EVIDENCE_DIR:-}" ]]; then
     tmux_private capture-pane -p -e -t "$SESSION:0.0" >"$TUI_EVIDENCE_DIR/steak-usap-${width}.ansi"
@@ -392,8 +394,8 @@ prefix, suffix = 'Please examine this quote: ', ' Then compare it with my other 
 (root / 'paste-expected.json').write_text(json.dumps('queued paste preface\n\n' + prefix + payload + suffix))
 PY
 # Scripted bracketed paste, not clipboard or real user input.
-tmux_private load-buffer "$TMP/paste-input"
-tmux_private paste-buffer -t "$SESSION:0.0"
+# tmux 3.8 paste-buffer rewrites embedded bracketed-paste markers, so send the bytes literally.
+tmux_private send-keys -t "$SESSION:0.0" -l "$(cat "$TMP/paste-input")"
 wait_for_current '[paste #1'
 if [[ -n "${TUI_EVIDENCE_DIR:-}" ]]; then
   tmux_private capture-pane -p -e -t "$SESSION:0.0" >"$TUI_EVIDENCE_DIR/steak-paste-collapsed.ansi"
