@@ -216,8 +216,9 @@ python3 - "$TMP" <<'PYFIX'
 import json,pathlib,sys
 p=pathlib.Path(sys.argv[1]);nonce="startup-proof";payload="\n".join(f"Row {i:02d}: synthetic note {nonce} for paste test." for i in range(1,26));suffix=" help me do a new linkedin post about this";p.joinpath('direct-paste-input').write_bytes(('[200~'+payload+'[201~').encode());p.joinpath('direct-expected.json').write_text(json.dumps(payload+suffix));p.joinpath('direct-suffix').write_text(suffix)
 PYFIX
-tmux_private load-buffer "$TMP/direct-paste-input"
-tmux_private paste-buffer -t "$SESSION:0.0"
+# Scripted bracketed paste, not clipboard or real user input.
+# tmux 3.8 paste-buffer rewrites embedded bracketed-paste markers, so send the bytes literally.
+tmux_private send-keys -t "$SESSION:0.0" -l "$(cat "$TMP/direct-paste-input")"
 wait_for_current '[paste #1 +25 lines]'
 tmux_private send-keys -t "$SESSION:0.0" -l "$(<"$TMP/direct-suffix")"
 sleep .2
