@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.11.4 (2026-10-23)
+
+- A subagent's findings are no longer lost when another subagent in the same
+  run messages it after it has finished. The late message used to wake the
+  finished child for another turn, and that turn's reply ("already reported")
+  replaced the real report. Messages that arrive after a child's final answer
+  wait in its inbox, and the first final answer is always kept as the report;
+  a later answer is appended after it. A reply that also calls a tool, or was
+  cut off at the token limit, no longer counts as a final answer.
+- Children are told to put findings and review requests in their final report,
+  which is what the parent reads, and not to broadcast them over the relay.
+- The startup-paste TUI test sends its paste byte for byte, as the main smoke
+  test already did, so it passes on tmux 3.8.
+
 ## 0.11.3 (2026-10-23)
 
 - Restore the composer's context meter. It now stretches across the free space

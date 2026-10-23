@@ -479,6 +479,13 @@ replayed observation.
 - **reply** — answer one request while preserving its correlation ID; and
 - **receive** — read pending envelopes addressed to the current child.
 
+The parent reads a child's final answer, not the relay. Findings, completion
+notices and review requests belong in the final report. A message that
+arrives after a child's final answer is complete stays in its inbox instead of
+waking it for another turn. A message that lands while the answer is still
+streaming can still wake it; in every case the first final answer is kept as
+the report, and a later answer is appended (bounded) rather than replacing it.
+
 Requests do not suspend budgets and must never create an unbounded wait. A
 child that cannot obtain a timely answer reports the unresolved dependency to
 the parent. Relay is for coordination, not shared authorship: it never changes

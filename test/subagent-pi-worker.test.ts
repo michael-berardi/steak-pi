@@ -13,6 +13,8 @@ import {
   MAX_PI_WORKER_TURNS,
   buildPiWorkerContinuationPrompt,
   buildPiWorkerSystemPrompt,
+  isFinalAnswer,
+  mergeFinalReport,
   classifyPiWorkerState,
   compactionOrRetryPhase,
   createChainFallbackReporter,
@@ -842,6 +844,123 @@ describe("native in-process Pi worker runner", () => {
     await pending;
     expect(relay.bind("run-test", recordTask.id).inbox().messages.map((message) => message.body))
       .toEqual(["retain me"]);
+  });
+});
+
+describe("final report survives late relay wakeups", () => {
+  it("keeps the first final answer when a peer message wakes the child again", async () => {
+    // Regression for a measured failure: a read-only scout wrote its findings,
+    // a peer's #run broadcast then steered it into another turn, and the run
+    // reported only "A-Q1 complete; no new relevant evidence."
+    const cwd = await mkdtemp(join(tmpdir(), "steak-pi-relay-final-"));
+    const recordTask = task();
+    const relay = setupBroker([recordTask.id, "peer"]);
+    const sender = relay.bind("run-test", "peer");
+    const fake = new FakeSession();
+    let release!: () => void;
+    fake.onPrompt = () => new Promise<void>((resolve) => { release = resolve; });
+    const runner = createPiWorkerRunner({
+      relay,
+      resolveRuntime: () => ({ model: fakeModel, thinkingLevel: "off" }),
+      sessionFactory: async () => ({ session: fake }),
+    });
+    const pending = runner({ run: run(cwd, recordTask), task: recordTask, signal: new AbortController().signal, onProgress: vi.fn() });
+    await vi.waitFor(() => expect(fake.prompts).toHaveLength(1));
+
+    const findings = assistant("Evidence: limit is 20,000 chars (src/subagents/types.ts:42)");
+    fake.emit({ type: "turn_start" } as AgentSessionEvent);
+    fake.emit({ type: "message_end", message: findings } as AgentSessionEvent);
+    fake.emit({ type: "turn_end", message: findings, toolResults: [] } as AgentSessionEvent);
+
+    // A peer broadcast arrives after the final answer: it is not steered into the child.
+    expect(sender.send({ to: recordTask.id, body: "peer done" })).toMatchObject({ status: "queued" });
+    await flush();
+    expect(fake.steers).toEqual([]);
+
+    // Even if the harness still runs another turn, its acknowledgement cannot erase the findings.
+    const ack = assistant("Already reported; leaf complete.");
+    fake.emit({ type: "turn_start" } as AgentSessionEvent);
+    fake.emit({ type: "message_end", message: ack } as AgentSessionEvent);
+    fake.emit({ type: "turn_end", message: ack, toolResults: [] } as AgentSessionEvent);
+    release();
+    const result = await pending;
+
+    expect(result.state).toBe("done");
+    expect(result.output).toContain("src/subagents/types.ts:42");
+    expect(result.output).toContain("Already reported; leaf complete.");
+    expect(result.output.indexOf("types.ts:42")).toBeLessThan(result.output.indexOf("Already reported"));
+    expect(relay.bind("run-test", recordTask.id).inbox().messages.map((message) => message.body)).toEqual(["peer done"]);
+  });
+
+  it("steers a child that was woken for another turn after its answer", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "steak-pi-relay-rewake-"));
+    const recordTask = task();
+    const relay = setupBroker([recordTask.id, "peer"]);
+    const sender = relay.bind("run-test", "peer");
+    const fake = new FakeSession();
+    let release!: () => void;
+    fake.onPrompt = () => new Promise<void>((resolve) => { release = resolve; });
+    const runner = createPiWorkerRunner({
+      relay,
+      resolveRuntime: () => ({ model: fakeModel, thinkingLevel: "off" }),
+      sessionFactory: async () => ({ session: fake }),
+    });
+    const pending = runner({ run: run(cwd, recordTask), task: recordTask, signal: new AbortController().signal, onProgress: vi.fn() });
+    await vi.waitFor(() => expect(fake.prompts).toHaveLength(1));
+    const first = assistant("Evidence: first findings");
+    fake.emit({ type: "turn_start" } as AgentSessionEvent);
+    fake.emit({ type: "message_end", message: first } as AgentSessionEvent);
+    fake.emit({ type: "turn_end", message: first, toolResults: [] } as AgentSessionEvent);
+    // Woken anyway (e.g. a message that landed while the answer streamed): a new turn starts.
+    fake.emit({ type: "turn_start" } as AgentSessionEvent);
+    sender.send({ to: recordTask.id, body: "interface changed" });
+    await flush();
+    expect(fake.steers.some((text) => text.includes("interface changed"))).toBe(true);
+    const tool = { ...assistant("checking", "stop"), content: [{ type: "text" as const, text: "checking" }, { type: "toolCall" as const, id: "t1", name: "read", arguments: {} }] };
+    fake.emit({ type: "message_end", message: tool } as AgentSessionEvent);
+    fake.emit({ type: "turn_end", message: tool, toolResults: [] } as AgentSessionEvent);
+    const second = assistant("Evidence: updated findings");
+    fake.emit({ type: "turn_start" } as AgentSessionEvent);
+    fake.emit({ type: "message_end", message: second } as AgentSessionEvent);
+    fake.emit({ type: "turn_end", message: second, toolResults: [] } as AgentSessionEvent);
+    release();
+    const result = await pending;
+    expect(result.output).toContain("first findings");
+    expect(result.output).toContain("updated findings");
+    expect(result.output).not.toContain("checking");
+  });
+
+  it("treats only completed text answers as final", () => {
+    expect(isFinalAnswer({ text: "done", stopReason: "stop" })).toBe(true);
+    expect(isFinalAnswer({ text: "preamble", stopReason: "stop", toolCalls: true })).toBe(false);
+    expect(isFinalAnswer({ text: "cut off", stopReason: "length" })).toBe(false);
+    expect(isFinalAnswer({ text: "done" })).toBe(true);
+    expect(isFinalAnswer({ text: "calling a tool", stopReason: "toolUse" })).toBe(false);
+    expect(isFinalAnswer({ text: "  ", stopReason: "stop" })).toBe(false);
+    expect(isFinalAnswer({ text: "partial", stopReason: "error" })).toBe(false);
+    expect(isFinalAnswer({ text: "partial", stopReason: "aborted" })).toBe(false);
+  });
+
+  it("merges later answers as bounded, deduplicated notes", () => {
+    expect(mergeFinalReport(undefined, " findings ")).toBe("findings");
+    expect(mergeFinalReport("findings", "findings")).toBe("findings");
+    expect(mergeFinalReport("findings", "")).toBe("findings");
+    const once = mergeFinalReport("findings", "ack 1");
+    expect(once).toContain("findings");
+    expect(once).toContain("[Later answer from this child after its first final answer]\nack 1");
+    let report = once;
+    for (let index = 0; index < 50; index += 1) report = mergeFinalReport(report, `ack ${index + 2} ${"x".repeat(300)}`, 2_000);
+    expect(report.startsWith("findings")).toBe(true);
+    expect(report.length - "findings".length).toBeLessThanOrEqual(2_000);
+    expect(report).not.toContain("]\n…");
+  });
+
+  it("tells children to keep findings and review requests in the final report, not the relay", () => {
+    const recordTask = task();
+    const prompt = buildPiWorkerSystemPrompt(run("/repo", recordTask), recordTask);
+    expect(prompt).toContain("The parent reads your final answer, not the relay");
+    expect(prompt).toContain("never relay findings, completion notices or review requests");
+    expect(prompt).toContain("write your complete report again");
   });
 });
 
