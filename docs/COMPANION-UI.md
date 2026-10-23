@@ -28,8 +28,7 @@ native-to-Steak editor swap also preserves content pasted during startup.
 
 [Pi's native transcript and tool rendering]
 
-◆ mimo-v2.6-flash · high · responding
-◫ 18%/131k · 11.9k tok · 80% cache · $0.018
+◆ mimo-v2.6-flash · high · ● responding ━━━━━━──────────── ◫ 18%/131k · 11.9k tok · 80% cache · $0.018
 ╰─ Message
 [extension status appears here only when present]
 ```
@@ -39,8 +38,8 @@ The composer band communicates, in order:
 - active model name, plus thinking level when space permits, never a provider label;
 - current lifecycle state;
 - context percentage/window, token volume, cache efficiency and session cost;
-- a short context meter only when the complete readout leaves room, with a
-  pressure-colored thick fill and a dim thin remainder.
+- a context meter that fills the free space between identity and stats, with a
+  pressure-colored thick fill and a dim thin remainder; stats stay flush right.
 
 No baseline footer is rendered. This avoids duplicating the composer status
 band; a compact row appears only when another extension publishes status.
@@ -48,7 +47,8 @@ band; a compact row appears only when another extension publishes status.
 Statuses published by other Pi extensions remain visible on a conditional
 row, matching the built-in footer contract.
 
-The band uses one line when all values fit, otherwise two compact lines. At
+The band uses one line when all values fit, otherwise two lines: identity on the
+first, the meter and stats on the second. At
 ordinary split-pane widths (40–64 columns), model, thinking level, lifecycle,
 context percentage/window, tokens, meaningful cache percentage and cost remain
 visible. The meter never takes space from data. Metadata uses the readable muted

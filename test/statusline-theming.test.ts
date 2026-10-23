@@ -116,17 +116,19 @@ describe("responsive semantic rendering", () => {
   });
 
   it("keeps metadata ahead of a restrained, genuinely residual meter", () => {
-    expect(rowsAt(40)).toEqual([
-      "◆ gpt-6.1-sol · high · ✓ complete",
-      "◫ 20%/1M · 123k tok · 85% cache · $1.234",
-    ]);
-    expect(rowsAt(59)).toEqual([
-      "◆ gpt-6.1-sol · high · ✓ complete",
-      "◫ 20%/1M · 123k tok · 85% cache · $1.234",
-    ]);
+    const stats = "◫ 20%/1M · 123k tok · 85% cache · $1.234";
+    expect(rowsAt(40)).toEqual(["◆ gpt-6.1-sol · high · ✓ complete", stats]);
+    // Extra width on the stats row goes to the meter, stats stay flush right.
+    const wide = rowsAt(59);
+    expect(wide[0]).toBe("◆ gpt-6.1-sol · high · ✓ complete");
+    expect(wide[1]).toMatch(/^ [━─]+ ◫ 20%\/1M · 123k tok · 85% cache · \$1\.234$/);
+    expect(visibleWidth(wide[1]!)).toBe(59);
     for (const width of [80, 120, 192]) {
       const output = rowsAt(width).join("\n");
-      expect(output.match(/[━─]/g)?.length ?? 0).toBeLessThanOrEqual(12);
+      // The meter fills the free space; stats stay flush right on one row.
+      expect(output.match(/[━─]/g)?.length ?? 0).toBeGreaterThanOrEqual(4);
+      expect(visibleWidth(output)).toBe(width);
+      expect(output.endsWith("$1.234")).toBe(true);
       expect(output).toContain("$1.234");
       expect(output).not.toContain("…");
     }
@@ -134,7 +136,7 @@ describe("responsive semantic rendering", () => {
 
   it("switches row count at the exact identity/metadata boundary", () => {
     const identity = rowsAt(59)[0]!;
-    const metadata = rowsAt(59)[1]!;
+    const metadata = rowsAt(59)[1]!.replace(/^ [━─]+ /, "");
     const boundary = visibleWidth(identity) + visibleWidth(metadata) + 1;
     expect(rowsAt(boundary - 1)).toHaveLength(2);
     expect(rowsAt(boundary)).toHaveLength(1);
@@ -227,7 +229,7 @@ describe("responsive semantic rendering", () => {
       for (const row of rows.slice(1)) {
         expect(row).not.toContain("…");
         expect(row).not.toMatch(/\$(?!1\.234(?: |$))/);
-        for (const atom of row.split(" ")) expect(["◫20%/1M", "123kt", "c85%", "$1.234", "◫20%/1M", "123k", "tok", "85%", "cache"]).toContain(atom);
+        for (const atom of row.split(" ").filter((a) => a && !/^[━─]+$/.test(a))) expect(["◫20%/1M", "123kt", "c85%", "$1.234", "◫20%/1M", "123k", "tok", "85%", "cache"]).toContain(atom);
       }
     }
     for (const width of [20, 24, 32]) {

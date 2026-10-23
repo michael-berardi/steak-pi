@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.3 (2026-10-23)
+
+- Restore the composer's context meter. It now stretches across the free space
+  between the model/status and the stats, so the stats sit flush right at any
+  width: one line when wide, and on the stats row when the pane is narrow.
+- Meter shows only when every metric already fits; tiny panes keep the compact
+  stats without it.
+
 ## 0.11.2 (2026-10-22)
 
 - Escape on a Claude Code turn no longer leaves the session stuck at "thinking".
