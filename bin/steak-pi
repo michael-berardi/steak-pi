@@ -54,7 +54,8 @@ pi_spec() {
 
 latest_tag() {
   command -v curl >/dev/null 2>&1 || return 1
-  curl -fsSL --max-time 20 "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null |
+  response=$(curl -fsSL --max-time 20 "https://api.github.com/repos/${REPO#github.com/}/releases/latest") || return 1
+  printf '%s\n' "$response" |
     grep -o '"tag_name": *"[^"]*"' | head -n 1 | cut -d '"' -f 4
 }
 
