@@ -21,7 +21,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     continue;
   }
   if (process.env.MODE.startsWith("relay")) {
-    const pulse = setInterval(() => console.log(JSON.stringify({ type: "rate_limit_event" })), 80);
+    const pulse = process.env.MODE === "relay-retries-silent" ? undefined : setInterval(() => console.log(JSON.stringify({ type: "rate_limit_event" })), 80);
     try {
     const response = await fetch(process.env.ANTHROPIC_BASE_URL + "/v1/messages", { method: "POST", body: "{}" });
     await response.text();
@@ -49,6 +49,11 @@ async function fixture(mode: string, check: (input: Parameters<typeof runClaudeR
   const upstream = http.createServer(async (request, response) => {
     for await (const _ of request) { /* consume */ }
     attempts++;
+    if (mode === "relay-retries-silent" && attempts < 3) {
+      const busy = setTimeout(() => response.writeHead(503).end("busy"), 600);
+      timers.add(busy);
+      return;
+    }
     if (mode === "relay-stuck" && attempts < 3) { response.writeHead(503).end("busy"); return; }
     response.writeHead(200, { "content-type": "text/event-stream" });
     if (mode === "relay-stuck") { response.write(": first byte\n\n"); return; }
@@ -59,7 +64,7 @@ async function fixture(mode: string, check: (input: Parameters<typeof runClaudeR
     const end = setTimeout(() => {
       send({ type: "message_delta", delta: { stop_reason: "end_turn" } });
       send({ type: "message_stop" }); response.end();
-    }, 2400);
+    }, mode === "relay-retries-silent" ? 50 : 2400);
     timers.add(end);
     response.on("close", () => { clearInterval(pulse); clearTimeout(end); });
   });
@@ -85,6 +90,13 @@ for (const mode of ["native", "relay"]) {
     assert.ok(Date.now() - started > 2_300);
   }));
 }
+
+test("relay retries reset the native idle budget without native stdout chatter", () => fixture("relay-retries-silent", async input => {
+  const started = Date.now();
+  const output = await runClaudeRequest(input);
+  assert.equal(output.message.stop_reason, "end_turn");
+  assert.ok(Date.now() - started > 2_300);
+}));
 
 test("silence fails with a visible non-retryable idle cause", () => fixture("silence", async input => {
   await assert.rejects(runClaudeRequest(input), error => {

@@ -44,11 +44,17 @@ HTTP idle budget (normally 300,000 ms); direct callers default to 180,000 ms
 and may set any positive, finite `timeoutMs`. Worker acquisition, history
 replay, response headers, first byte, drain and settlement each have bounded
 non-streaming waits. An idle-limit failure is terminal, so Pi does not keep
-replaying a genuinely stuck turn.
+replaying a genuinely stuck turn. Relay retry/backoff transitions reset the
+native stream's idle timer, so each bounded attempt can finish even if Claude
+Code emits no stdout while waiting.
 Escape stops a running turn immediately. Cleanup waits at most two seconds
 for inherited output pipes before dropping them, so an MCP process cannot
 keep the next message queued forever. A queued steering message is preserved
-when the failed turn ends and can be continued normally.
+when the failed turn ends and can be continued normally. On Windows, cleanup
+never invokes `taskkill` after the spawned leader has exited. On POSIX, only
+detached groups created by this transport are signalled; an exited leader's
+group is eligible for one second, then skipped because its ownership can no
+longer be verified. Non-detached auth probes are stopped individually.
 
 Every forwarded request is capped at four cache markers. Extra markers are
 removed from the oldest message first, preserving static prefixes and the

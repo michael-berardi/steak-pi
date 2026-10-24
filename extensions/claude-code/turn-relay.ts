@@ -351,6 +351,9 @@ export class TurnRelay {
       for (let attempt = 1; ; attempt += 1) {
         signal.throwIfAborted();
         this.attempts = attempt;
+        // A new bounded attempt gets its own idle budget, including after
+        // backoff when Claude Code has not emitted any stdout of its own.
+        this.onActivity?.();
         const retryable = attempt < this.retry.attempts && !this.cancelled;
         this.stage = "upstream-request";
         upstreamRequest = transport.request({
@@ -378,6 +381,7 @@ export class TurnRelay {
           continue;
         }
         this.stage = "streaming";
+        this.onActivity?.();
         this.sockets.add(upstreamResponse);
         this.status = upstreamResponse.statusCode;
         if (retryable && this.status !== undefined && RETRYABLE_STATUSES.has(this.status)) {
@@ -448,6 +452,7 @@ export class TurnRelay {
   }
 
   private noteRetry(cause: string): void {
+    this.onActivity?.();
     this.retries += 1;
     this.lastRetry = cause;
   }

@@ -7,6 +7,9 @@
   History replay, model discovery, process exit and relay traffic now have
   bounded waits; streaming uses an idle budget so long, active replies are not
   interrupted or repeatedly retried. An inactive turn ends with a terminal error.
+- Claude Code cleanup skips exited Windows PIDs and stale POSIX process groups
+  instead of risking an unrelated process tree. Relay retries refresh the idle
+  budget even when Claude Code is silent during backoff.
 - Requests stay within Anthropic's limit of four cache markers, keeping the
   system prompt, tools and newest message cached where possible.
 - Sessions whose managed runtime was replaced resolve worker modules again
