@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.7 (2026-10-24)
+
+- Bound pre-compaction snapshot retention per working directory: keep the
+  newest 10 files, with a maximum age of 14 days. Configure both limits with
+  `snapshot.maxCount` and `snapshot.maxAgeDays`; existing settings gain the
+  defaults automatically. Cleanup runs only after a successful snapshot write,
+  leaves unrelated files and symlinks alone, and logs failures without blocking
+  compaction or discarding the newly written snapshot.
+- Fix the non-Homebrew updater's GitHub API URL and preserve failed-request
+  diagnostics instead of misreporting an unreachable server as no release.
+
 ## 0.11.6 (2026-10-24)
 
 - A live pane can recover its primary-host link after a temporary proof timeout.

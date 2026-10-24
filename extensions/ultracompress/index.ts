@@ -214,7 +214,7 @@ export default function ultraCompressExtension(pi: ExtensionAPI): void {
     if (settings.snapshot.enabled) {
       try {
         const entries = ctx.sessionManager.getEntries() ?? [];
-        writeSnapEntries(process.cwd(), entries, ev.reason ?? "unknown", Date.now());
+        writeSnapEntries(process.cwd(), entries, ev.reason ?? "unknown", Date.now(), settings.snapshot);
       } catch (error) {
         console.error("[ultracompress] snapshot failed:", error);
       }

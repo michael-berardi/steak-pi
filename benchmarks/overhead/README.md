@@ -24,6 +24,26 @@ Idle multi-session memory uses PSS, following jcode's
 `scripts/bench_memory_cli.py`: N interactive TUI sessions in pseudo-terminals,
 summed `Pss` from `/proc/<pid>/smaps_rollup` over each process tree.
 
+## Steak Pi 0.11.7 on Pi 1.0.4 (macOS)
+
+October 24, 2026, Apple silicon, macOS. Same scripted local fixtures and
+Pi 1.0.4 dependency tree for stock Pi, the 0.11.6 release source, 0.11.7 and
+its launcher mode. Medians of five; all 80 synthetic runs passed. Every
+current-release median wall time stayed within 20% of 0.11.6 (largest
+increase: 11.8%). No provider inference or hardware input is tested.
+
+| Case: wall / peak RSS | Stock Pi | 0.11.6 | 0.11.7 | 0.11.7 via `steak-pi run` |
+| --- | ---: | ---: | ---: | ---: |
+| direct | 0.217 s / 130.3 MiB | 0.365 s / 161.4 MiB | 0.340 s / 161.4 MiB | 0.373 s / 134.4 MiB |
+| modules | 0.215 s / 131.2 MiB | 0.366 s / 162.1 MiB | 0.364 s / 161.5 MiB | 0.374 s / 134.5 MiB |
+| gate | 0.198 s / 131.3 MiB | 0.363 s / 146.9 MiB | 0.357 s / 161.4 MiB | 0.406 s / 134.7 MiB |
+| fanout | no subagents | 1.134 s / 215.9 MiB | 1.141 s / 216.3 MiB | 1.245 s / 190.4 MiB |
+
+Stock Pi passes the eight-file fixture without workers; its timing is not an
+orchestration comparison. Peak RSS is the platform's `getrusage` value
+converted to MiB, not PSS. These fixtures measure harness overhead, not
+snapshot cleanup throughput or model quality.
+
 ## Steak Pi 0.11.6 on Pi 1.0.4 (macOS)
 
 October 24, 2026, Apple silicon, macOS, Node 22.22.2. Same scripted local
