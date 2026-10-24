@@ -82,6 +82,7 @@ export function createPrimaryHostPublisher(exec: Exec, _appendEntry: (type: stri
   const token = {};
   let binding: { pane: string; manager: object; host: PrimaryHostIdentity } | undefined;
   let pending: typeof binding;
+  let stopped = false;
   let chain = Promise.resolve();
   const tmux = (args: string[]) => exec(deps.env.TMUX_BIN || "tmux", args, { timeout: 1000 });
   const enqueue = (fn: () => Promise<void>) => (chain = chain.then(fn).catch(() => {}));
@@ -128,26 +129,38 @@ export function createPrimaryHostPublisher(exec: Exec, _appendEntry: (type: stri
     pending = undefined;
     registry.set(next.manager, next.host);
   }
+  async function establish(ctx: HostContext, reload: boolean) {
+    if (state.owner && state.owner !== token) return;
+    const pane = await prove(ctx);
+    if (!pane || (state.owner && state.owner !== token)) return;
+    if (state.owner === token) { await clear(); pending = undefined; }
+    const file = ctx.sessionManager.getSessionFile();
+    const sessionId = ctx.sessionManager.getSessionId();
+    if (!file || !file.startsWith("/") || /[\r\n\0]/.test(file) || !sessionId || !deps.sessionPath(file)) return;
+    state.owner = token;
+    const previous = reload ? reloadIdentity.get(ctx.sessionManager) : undefined;
+    reloadIdentity.delete(ctx.sessionManager);
+    pending = { pane, manager: ctx.sessionManager, host: Object.freeze({ version: 1, pid: deps.pid,
+      sessionId, sessionFile: file, generation: previous?.sessionId === sessionId && previous.sessionFile === file ? previous.generation : deps.uuid() }) };
+    // A genuine SDK session may buffer until its first assistant. Publish
+    // the proven intended path; receipt ACK still requires real persistence.
+    await publish(ctx);
+  }
   return {
-    start(ctx: HostContext, reload = false) { return enqueue(async () => {
-      if (state.owner && state.owner !== token) return;
-      const pane = await prove(ctx);
-      if (!pane || (state.owner && state.owner !== token)) return;
-      if (state.owner === token) { await clear(); pending = undefined; }
-      const file = ctx.sessionManager.getSessionFile();
-      const sessionId = ctx.sessionManager.getSessionId();
-      if (!file || !file.startsWith("/") || /[\r\n\0]/.test(file) || !sessionId || !deps.sessionPath(file)) return;
-      state.owner = token;
-      const previous = reload ? reloadIdentity.get(ctx.sessionManager) : undefined;
-      reloadIdentity.delete(ctx.sessionManager);
-      pending = { pane, manager: ctx.sessionManager, host: Object.freeze({ version: 1, pid: deps.pid,
-        sessionId, sessionFile: file, generation: previous?.sessionId === sessionId && previous.sessionFile === file ? previous.generation : deps.uuid() }) };
-      // A genuine SDK session may buffer until its first assistant. Publish
-      // the proven intended path; receipt ACK still requires real persistence.
-      await publish(ctx);
+    start(ctx: HostContext, reload = false) { return enqueue(() => { stopped = false; return establish(ctx, reload); }); },
+    // A transient proof timeout must not leave a live pane unlinked forever.
+    // Retry the full start proof, but never replace another process's tuple or
+    // resurrect a publisher stopped for shutdown/reload.
+    retry(ctx: HostContext) { return enqueue(async () => {
+      if (stopped || state.owner || pending || binding) { await publish(ctx); return; }
+      const pane = deps.env.TMUX_PANE;
+      if (!pane) return;
+      const current = await tmux(["display-message", "-p", "-t", pane, "#{@pi-primary-host}"]);
+      if (current.code !== 0 || current.stdout.trim() !== "") return;
+      await establish(ctx, false);
     }); },
-    retry(ctx: HostContext) { return enqueue(() => publish(ctx)); },
     stop(reload = false) { return enqueue(async () => {
+      stopped = true;
       const current = binding ?? pending;
       if (reload && current) reloadIdentity.set(current.manager, current.host);
       pending = undefined;

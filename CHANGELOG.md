@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.6 (2026-10-24)
+
+- A live pane can recover its primary-host link after a temporary proof timeout.
+  Later turns repeat the full startup proof only if the pane is vacant; they
+  never replace another process's link or restart a stopped publisher.
+- Keep the Pi 1.0.4 development fixture on patched Undici 8.12.3. This changes
+  development dependencies only, not the Pi version used by installed packages.
+
 ## 0.11.5 (2026-10-24)
 
 - Every subagent's preamble now carries the process-listing safety rule, no
