@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.5 (2026-10-24)
+
+- Every subagent's preamble now carries the process-listing safety rule, no
+  matter what the parent wrote in its brief. On macOS a full process command
+  line can include the process environment, and with it API keys, so children
+  list processes by PID and name only and never print a full command line or
+  an environment listing.
+
 ## 0.11.4 (2026-10-23)
 
 - A subagent's findings are no longer lost when another subagent in the same
