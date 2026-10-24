@@ -4,6 +4,8 @@ import { randomBytes } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import type { AnthropicStreamEvent, NativeContentBlock, NativeMessage } from "./native-types.ts";
 
+import { transportTimeout, waitForOperation } from "./wait.ts";
+
 function copy<T>(value: T): T {
   return structuredClone(value);
 }
@@ -158,6 +160,7 @@ export class TurnRelay {
   private readonly server: http.Server;
   private readonly sockets = new Set<Destroyable>();
   private readonly active = new Set<Promise<void>>();
+  private controller = new AbortController();
   private cancelled = false;
   private closed = false;
   private baseUrl?: string;
@@ -172,6 +175,7 @@ export class TurnRelay {
     requestBetas: string[] = [],
     private readonly retry: RetryPolicy = DEFAULT_RETRY,
   ) {
+    transportTimeout(timeoutMs);
     this.upstream = new URL(upstream);
     const loopback = ["127.0.0.1", "::1", "localhost"].includes(this.upstream.hostname);
     if (
@@ -200,6 +204,7 @@ export class TurnRelay {
   ): void {
     if (this.closed) throw new Error("Claude Code turn relay is closed");
     if (this.active.size > 0) throw new Error("Claude Code turn relay still has an active request");
+    this.controller = new AbortController();
     this.capture = new AnthropicCapture(onEvent);
     this.used = false;
     this.denied = 0;
@@ -219,23 +224,27 @@ export class TurnRelay {
   }
 
   /** Disarm the current turn without closing the worker-scoped HTTP server. */
-  finishTurn(): void {
+  finishTurn(reason = new Error("Claude Code request aborted")): void {
     if (this.cancelled) return;
     this.cancelled = true;
-    for (const socket of this.sockets) socket.destroy(new Error("Claude Code request aborted"));
+    this.controller.abort(reason);
+    for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
     this.server.closeAllConnections?.();
   }
 
-  async start(): Promise<string> {
-    await new Promise<void>((resolve, reject) => {
-      const onError = (error: Error) => reject(error);
-      this.server.once("error", onError);
-      this.server.listen(0, "127.0.0.1", () => {
-        this.server.off("error", onError);
-        resolve();
-      });
-    });
+  async start(signal?: AbortSignal): Promise<string> {
+    const launch = new AbortController();
+    let onError: (error: Error) => void;
+    try {
+      await waitForOperation(new Promise<void>((resolve, reject) => {
+        onError = reject;
+        this.server.once("error", onError);
+        this.server.listen({ port: 0, host: "127.0.0.1", signal: launch.signal }, resolve);
+      }), this.timeoutMs, "Claude Code turn relay start", signal, () => launch.abort());
+    } finally {
+      this.server.off("error", onError!);
+    }
     const address = this.server.address() as AddressInfo;
     this.baseUrl = `http://127.0.0.1:${address.port}${this.prefix}`;
     return this.baseUrl;
@@ -257,16 +266,16 @@ export class TurnRelay {
   }
 
   async settled(): Promise<void> {
-    await Promise.allSettled([...this.active]);
+    await waitForOperation(Promise.allSettled([...this.active]), this.timeoutMs, "Claude Code turn relay settlement", undefined, () => this.abort());
   }
 
   async close(): Promise<void> {
     this.closed = true;
     this.abort();
-    await new Promise<void>((resolve) => {
+    await waitForOperation(new Promise<void>((resolve) => {
       if (!this.server.listening) return resolve();
       this.server.close(() => resolve());
-    });
+    }), 2_000, "Claude Code turn relay close", undefined, () => this.server.closeAllConnections());
     await this.settled();
   }
 
@@ -293,9 +302,13 @@ export class TurnRelay {
     this.sockets.add(response);
 
     let upstreamRequest: http.ClientRequest | undefined;
+    // request.setTimeout only emits an event; it does not close anything. A wall
+    // deadline also covers a partial request body, DNS/TLS, drain and trickling SSE.
+    const timer = setTimeout(() => this.finishTurn(new Error(`Claude Code turn relay timed out (stage ${this.stage})`)), this.timeoutMs);
+    const signal = this.controller.signal;
     try {
       this.stage = "read-body";
-      let body = await this.readBody(request);
+      let body = await waitForOperation(this.readBody(request), this.timeoutMs, "Claude Code relay request body", signal);
       this.stage = "upstream-request";
       this.originalRequestBody = Buffer.from(body);
       if (this.transformRequest) body = this.transformRequest(body);
@@ -332,6 +345,7 @@ export class TurnRelay {
       // that dies before its first byte. Anything after the first byte, 4xx and billing
       // errors surface as they are, with the real cause.
       for (let attempt = 1; ; attempt += 1) {
+        signal.throwIfAborted();
         this.attempts = attempt;
         const retryable = attempt < this.retry.attempts && !this.cancelled;
         this.stage = "upstream-request";
@@ -346,12 +360,13 @@ export class TurnRelay {
         });
         this.sockets.add(upstreamRequest);
         const current = upstreamRequest;
+        current.once("timeout", () => current.destroy(Object.assign(new Error("Claude Code upstream socket timed out"), { code: "ETIMEDOUT" })));
         try {
-          upstreamResponse = await new Promise<http.IncomingMessage>((resolve, reject) => {
+          upstreamResponse = await waitForOperation(new Promise<http.IncomingMessage>((resolve, reject) => {
             current.once("response", resolve);
             current.once("error", reject);
             current.end(body);
-          });
+          }), this.timeoutMs, "Claude Code upstream response headers", signal);
         } catch (error) {
           this.sockets.delete(current);
           current.destroy();
@@ -382,7 +397,7 @@ export class TurnRelay {
         // Read the first chunk before committing headers to Claude Code.
         const source = upstreamResponse[Symbol.asyncIterator]();
         try {
-          const first = await source.next();
+          const first = await waitForOperation(source.next(), this.timeoutMs, "Claude Code upstream first byte", signal);
           if (!first.done) pending = [Buffer.isBuffer(first.value) ? first.value : Buffer.from(first.value)];
         } catch (error) {
           this.sockets.delete(upstreamResponse);
@@ -408,7 +423,7 @@ export class TurnRelay {
       };
       for (const chunk of pending) await forward(chunk);
       for (;;) {
-        const next = await iterator!.next();
+        const next = await waitForOperation(iterator!.next(), this.timeoutMs, "Claude Code upstream stream", signal);
         if (next.done) break;
         await forward(next.value);
       }
@@ -421,6 +436,7 @@ export class TurnRelay {
       if (!response.headersSent) response.writeHead(this.cancelled ? 499 : 502).end();
       else response.destroy();
     } finally {
+      clearTimeout(timer);
       if (upstreamRequest) this.sockets.delete(upstreamRequest);
       this.sockets.delete(request);
       this.sockets.delete(response);
@@ -435,12 +451,15 @@ export class TurnRelay {
 
   private backoff(attempt: number): Promise<void> {
     const delay = this.retry.baseDelayMs * 2 ** (attempt - 1);
-    return new Promise((resolve) => setTimeout(resolve, delay));
+    let timer: NodeJS.Timeout;
+    return waitForOperation(new Promise<void>((resolve) => { timer = setTimeout(resolve, delay); }), this.timeoutMs, "Claude Code retry backoff", this.controller.signal, () => clearTimeout(timer));
   }
 
   private async waitForDrain(response: http.ServerResponse): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       const cleanup = () => {
+        clearTimeout(timer);
+        this.controller.signal.removeEventListener("abort", onAbort);
         response.off("drain", onDrain);
         response.off("close", onClose);
         response.off("error", onError);
@@ -457,9 +476,17 @@ export class TurnRelay {
         cleanup();
         reject(error);
       };
+      const onAbort = () => {
+        cleanup();
+        reject(this.controller.signal.reason);
+      };
+      const timer = setTimeout(() => onError(new Error("Claude Code turn relay drain timed out")), this.timeoutMs);
       response.once("drain", onDrain);
       response.once("close", onClose);
       response.once("error", onError);
+      this.controller.signal.addEventListener("abort", onAbort, { once: true });
+      if (this.controller.signal.aborted) onAbort();
+      else if (response.destroyed || response.writableEnded) onClose();
     });
   }
 

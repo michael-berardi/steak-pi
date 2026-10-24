@@ -36,6 +36,20 @@ picker, or pass `--model claude-code/<id>`. Ids: `claude-fable-5-1`,
   output) are retried a bounded number of times. Authentication, 4xx and
   billing errors are never retried, and every failure names its cause.
 
+## Stalled turns and cancellation
+
+A stalled request ends with a visible error after three minutes by default;
+callers can set a positive, finite `timeoutMs`. The deadline includes history
+replay and waiting for a worker, not just gaps between streamed events.
+Escape stops a running turn immediately. Cleanup waits at most two seconds
+for inherited output pipes before dropping them, so an MCP process cannot
+keep the next message queued forever. A queued steering message is preserved
+when the failed turn ends and can be continued normally.
+
+Every forwarded request is capped at four cache markers. Extra markers are
+removed from the oldest message first, preserving static prefixes and the
+newest message where possible; the first removal logs only the dropped count.
+
 ## Configuration
 
 - `PI_CLAUDE_CODE_COMMAND`: Claude Code executable (default `claude`).

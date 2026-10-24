@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { spawn, type ChildProcess } from "node:child_process";
 import { registerSessionResourceCleanup } from "@earendil-works/pi-ai";
+import { capCacheBreakpoints, MAX_CACHE_BREAKPOINTS } from "./cache-control.ts";
+import { transportTimeout, waitForOperation } from "./wait.ts";
 import { TurnRelay } from "./turn-relay.ts";
 import { usageCreditsAllowed, usageCreditsChargeError, type RateLimitInfo } from "./billing.ts";
 import { envFlagEnabled } from "./env.ts";
@@ -138,16 +140,17 @@ async function captureProcess(
   child.stdout?.on("data", (chunk: string) => (stdout = (stdout + chunk).slice(-1_000_000)));
   child.stderr?.on("data", (chunk: string) => (stderr = (stderr + chunk).slice(-65_536)));
 
-  const abort = () => killProcessTree(child);
-  signal?.addEventListener("abort", abort, { once: true });
-  const timer = setTimeout(abort, timeoutMs);
+  const abort = () => {
+    killProcessTree(child);
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+  };
   try {
-    const code = await childExit(child);
+    const code = await waitForOperation(childExit(child), transportTimeout(timeoutMs), "Claude Code auth status", signal, abort);
     signal?.throwIfAborted();
     return { code, stdout, stderr };
   } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener("abort", abort);
+    abort();
   }
 }
 
@@ -263,13 +266,18 @@ export async function discoverClaudeModels(
   child.stderr?.setEncoding("utf8");
   child.stderr?.on("data", (chunk: string) => (stderr = (stderr + chunk).slice(-65_536)));
 
-  const abort = () => killProcessTree(child);
-  signal?.addEventListener("abort", abort, { once: true });
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
+  const exit = childExit(child);
+  // Attach immediately: discovery may spend its entire lifetime waiting for stdout.
+  void exit.catch(() => {});
+  const reader = createInterface({ input: child.stdout!, crlfDelay: Infinity });
+  const stop = () => {
     killProcessTree(child);
-  }, timeoutMs);
+    child.stdin?.destroy();
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+    reader.close();
+  };
+  child.stdin?.on("error", () => stop());
 
   const requestId = `pi-models-${Date.now()}`;
   child.stdin?.write(
@@ -284,8 +292,7 @@ export async function discoverClaudeModels(
   );
 
   let models: DiscoveredClaudeModel[] | undefined;
-  try {
-    const reader = createInterface({ input: child.stdout!, crlfDelay: Infinity });
+  const discover = async () => {
     for await (const line of reader) {
       if (!line.trim()) continue;
       let event: Record<string, unknown>;
@@ -300,19 +307,16 @@ export async function discoverClaudeModels(
       const response = envelope.response as Record<string, unknown> | undefined;
       if (Array.isArray(response?.models)) models = response.models.filter(isDiscoveredModel);
     }
-    const exitCode = await childExit(child);
+    const exitCode = await exit;
     signal?.throwIfAborted();
-    if (timedOut) throw new Error("Claude Code model discovery timed out");
     if (exitCode !== 0) throw new Error(`Claude Code model discovery failed${stderr ? `: ${stderr.trim().slice(-500)}` : ""}`);
     if (!models?.length) throw new Error("Claude Code returned no selectable models");
     return models;
-  } catch (error) {
-    if (timedOut) throw new Error("Claude Code model discovery timed out", { cause: error });
-    throw error;
+  };
+  try {
+    return await waitForOperation(discover(), transportTimeout(timeoutMs), "Claude Code model discovery", signal, stop);
   } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener("abort", abort);
-    if (child.exitCode === null) killProcessTree(child);
+    stop();
   }
 }
 
@@ -330,6 +334,8 @@ function spawnCommand(
 }
 
 function childExit(child: ChildProcess): Promise<number> {
+  if (child.exitCode !== null) return Promise.resolve(child.exitCode);
+  if (child.signalCode !== null) return Promise.reject(new Error(`Claude Code exited from signal ${child.signalCode}`));
   return new Promise((resolve, reject) => {
     child.once("error", reject);
     child.once("exit", (code, signal) => {
@@ -340,7 +346,7 @@ function childExit(child: ChildProcess): Promise<number> {
 }
 
 export function killProcessTree(child: ChildProcess): void {
-  if (child.exitCode !== null || child.pid === undefined) return;
+  if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) return;
   if (process.platform === "win32") {
     const killer = spawn("taskkill", ["/F", "/T", "/PID", String(child.pid)], {
       stdio: "ignore",
@@ -367,24 +373,26 @@ class AsyncQueue<T> {
   private failure?: Error;
 
   push(value: T): void {
+    if (this.ended) return;
     const waiter = this.waiters.shift();
     if (waiter) waiter({ value, done: false });
     else this.values.push(value);
   }
 
   end(error?: Error): void {
+    if (this.ended) return;
     this.ended = true;
     this.failure = error;
     for (const waiter of this.waiters.splice(0)) waiter({ value: undefined, done: true });
   }
 
   async next(signal: AbortSignal | undefined, timeoutMs: number): Promise<T | undefined> {
+    signal?.throwIfAborted();
     if (this.values.length) return this.values.shift();
     if (this.ended) {
       if (this.failure) throw this.failure;
       return undefined;
     }
-    signal?.throwIfAborted();
 
     return new Promise<T | undefined>((resolve, reject) => {
       let settled = false;
@@ -444,7 +452,7 @@ function processEnvironment(
   return env;
 }
 
-async function writeFrame(child: ChildProcess, frame: NativeFrame, signal?: AbortSignal): Promise<void> {
+async function writeFrame(child: ChildProcess, frame: NativeFrame, timeoutMs: number, signal?: AbortSignal): Promise<void> {
   signal?.throwIfAborted();
   const stdin = child.stdin;
   if (!stdin?.writable) throw new Error("Claude Code stdin closed during history replay");
@@ -453,6 +461,7 @@ async function writeFrame(child: ChildProcess, frame: NativeFrame, signal?: Abor
   // is closed without an error never drains, and the turn would sit at "thinking" for good.
   await new Promise<void>((resolve, reject) => {
     const finish = (fn: () => void) => {
+      clearTimeout(timer);
       stdin.off("drain", onDrain);
       stdin.off("error", onError);
       stdin.off("close", onClose);
@@ -463,10 +472,13 @@ async function writeFrame(child: ChildProcess, frame: NativeFrame, signal?: Abor
     const onError = (error: Error) => finish(() => reject(error));
     const onClose = () => finish(() => reject(signal?.reason ?? new Error("Claude Code stdin closed during history replay")));
     const onAbort = () => finish(() => reject(signal?.reason ?? new Error("Claude Code request aborted")));
+    const timer = setTimeout(() => finish(() => reject(new Error("Claude Code history replay write timed out"))), timeoutMs);
     stdin.once("drain", onDrain);
     stdin.once("error", onError);
     stdin.once("close", onClose);
     signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+    else if (stdin.destroyed || !stdin.writable) onClose();
   });
 }
 
@@ -655,6 +667,7 @@ export function rewriteInitialRequest(
   const payload = JSON.parse(body.toString("utf8")) as {
     messages?: NativeRequestMessage[];
     system?: unknown;
+    tools?: unknown;
   };
   let messages = payload.messages;
   const first = messages?.[0];
@@ -686,7 +699,71 @@ export function rewriteInitialRequest(
   }
   if (initialSystemMessages?.length || nativeSystemInjections) setReplayCacheBreakpoints(messages!);
 
+  // The CLI's own markers plus the relay's marker can exceed Anthropic's limit
+  // of four. The oldest message marker goes first, so the system prompt, the
+  // tool definitions and the newest message keep their cache.
+  reportCacheCap(capCacheBreakpoints(payload).dropped);
+
   return Buffer.from(JSON.stringify(payload));
+}
+
+/// Keep every forwarded request inside Anthropic's four-breakpoint limit.
+///
+/// The relay forwards more than the first request of a turn, and a request that
+/// the agent did not shape (no saved system messages, no native injections)
+/// would otherwise reach the API with the CLI's markers untouched. The body is
+/// only re-serialized when a marker was actually dropped.
+/// The cap is reported once per process: the dropped-marker count is a fact
+/// about the request shape, not something the operator needs on every turn.
+let cacheCapReported = false;
+
+/// Report that markers were dropped, once per process and with a count only.
+function reportCacheCap(dropped: number): void {
+  if (dropped <= 0 || cacheCapReported) return;
+  cacheCapReported = true;
+  console.error(
+    `[claude-code] ${dropped} cache marker(s) dropped to stay inside Anthropic's limit of ${MAX_CACHE_BREAKPOINTS}`,
+  );
+}
+
+export function capRequestCacheBreakpoints(body: Buffer): Buffer {
+  let payload: { system?: unknown; tools?: unknown; messages?: unknown };
+  try {
+    payload = JSON.parse(body.toString("utf8")) as typeof payload;
+  } catch {
+    return body;
+  }
+  if (!payload || typeof payload !== "object") return body;
+  const { dropped } = capCacheBreakpoints(payload);
+  if (dropped === 0) return body;
+  reportCacheCap(dropped);
+  return Buffer.from(JSON.stringify(payload));
+}
+
+/// The request transform the relay uses for every request of a turn.
+///
+/// A request the agent shaped is rewritten first (the saved native environment
+/// and the relay's own markers are placed there), and every request, shaped or
+/// not, is then kept inside Anthropic's four-breakpoint limit.
+export function buildRequestTransform(input: {
+  initialUserPrefix?: unknown[];
+  initialSystemMessages?: NativeRequestMessage[];
+  nativeSystemInjections?: NativeSystemInjection[];
+  canonicalInitialUser: unknown[];
+}): (body: Buffer) => Buffer {
+  return (body) => {
+    const shaped =
+      input.initialUserPrefix || input.initialSystemMessages || input.nativeSystemInjections
+        ? rewriteInitialRequest(
+            body,
+            input.initialUserPrefix,
+            input.canonicalInitialUser,
+            input.initialSystemMessages,
+            input.nativeSystemInjections,
+          )
+        : body;
+    return capRequestCacheBreakpoints(shaped);
+  };
 }
 
 const CLAUDE_PROCESS_MAX_AGE_MS = 5 * 60 * 1_000;
@@ -723,7 +800,7 @@ function frameHistoryHash(frames: NativeFrame[]): string {
 }
 
 function launchPlan(input: RunClaudeInput): ClaudeLaunchPlan {
-  const timeoutMs = input.timeoutMs ?? 180_000;
+  const timeoutMs = transportTimeout(input.timeoutMs);
   const env = processEnvironment(input.env, input.extraBody);
   return {
     env,
@@ -762,6 +839,7 @@ class ClaudeProcess {
     private readonly exitOutcome: Promise<{ code?: number; error?: Error }>,
     private readonly timeoutMs: number,
   ) {
+    child.stdin?.on("error", (error) => queue.end(new Error("Claude Code stdin failed", { cause: error })));
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", (chunk: string) => (this.stderr = (this.stderr + chunk).slice(-65_536)));
   }
@@ -786,7 +864,7 @@ class ClaudeProcess {
       ]);
 
       relay = new TurnRelay(input.upstreamUrl ?? "https://api.anthropic.com", plan.timeoutMs);
-      const env = { ...plan.env, ANTHROPIC_BASE_URL: await relay.start() };
+      const env = { ...plan.env, ANTHROPIC_BASE_URL: await relay.start(input.signal) };
       const mcp = {
         mcpServers: {
           pi: { command: process.execPath, args: [inertMcpPath, toolsPath] },
@@ -821,6 +899,7 @@ class ClaudeProcess {
         JSON.stringify(mcp),
       ];
 
+      input.signal?.throwIfAborted();
       child = spawnCommand(command, args, {
         // Claude Code tells the model its process cwd. Keep transport files
         // private while exposing Pi's real working directory to the model.
@@ -916,16 +995,12 @@ class ClaudeProcess {
     const canonicalInitialUser = input.frames.find((frame) => frame.type === "user")?.message.content ?? [];
     this.relay.beginTurn(
       deliver,
-      input.initialUserPrefix || input.initialSystemMessages || input.nativeSystemInjections
-        ? (body) =>
-            rewriteInitialRequest(
-              body,
-              input.initialUserPrefix,
-              canonicalInitialUser,
-              input.initialSystemMessages,
-              input.nativeSystemInjections,
-            )
-        : undefined,
+      buildRequestTransform({
+        initialUserPrefix: input.initialUserPrefix,
+        initialSystemMessages: input.initialSystemMessages as NativeRequestMessage[] | undefined,
+        nativeSystemInjections: input.nativeSystemInjections,
+        canonicalInitialUser,
+      }),
       input.betas,
     );
 
@@ -942,11 +1017,11 @@ class ClaudeProcess {
     try {
       const frames = continuation ? input.frames.slice(-1) : input.frames;
       for (const frame of frames) {
-        await writeFrame(this.child, frame, input.signal);
+        await writeFrame(this.child, frame, this.timeoutMs, input.signal);
         if (frame.shouldQuery === false) {
           for (;;) {
             const event = await this.queue.next(input.signal, this.timeoutMs);
-            if (!event) throw await this.exitError("Claude Code exited before acknowledging history replay");
+            if (!event) throw await this.exitError("Claude Code exited before acknowledging history replay", input.signal);
             if (event.type === "result") {
               if (event.num_turns !== 0 || event.is_error) {
                 throw new Error("Claude Code rejected zero-turn history replay");
@@ -959,7 +1034,7 @@ class ClaudeProcess {
 
       for (;;) {
         const event = await this.queue.next(input.signal, this.timeoutMs);
-        if (!event) throw await this.exitError("Claude Code exited before completing its response");
+        if (!event) throw await this.exitError("Claude Code exited before completing its response", input.signal);
         if (event.type === "assistant") {
           const error = nativeErrorText(event);
           if (error !== undefined) nativeError = error;
@@ -992,14 +1067,17 @@ class ClaudeProcess {
         message = assistants.at(-1);
       }
 
+      // A native API error may have no ordinary assistant/message_stop at all.
+      // Keep the reported cause instead of replacing it with "incomplete".
+      const nativeFailureHandled = this.relay.denied > 0 || message?.stop_reason === "refusal";
+      if (nativeError !== undefined && !nativeFailureHandled) throw new Error(`Claude Code API error: ${nativeError || "unknown native error"}`);
+
       if (!message || !sawMessageStop || !result) {
         throw new Error(
           `Incomplete Claude Code response: assistant, message_stop and one result required${this.stderr ? ` (${this.stderr.trim().slice(-500)})` : ""}`,
         );
       }
 
-      const nativeFailureHandled = this.relay.denied > 0 || message.stop_reason === "refusal";
-      if (nativeError && !nativeFailureHandled) throw new Error(`Claude Code API error: ${nativeError}`);
       const hasTools = message.content.some((block) => block.type === "tool_use");
       const maxTurnsBoundary = hasTools && result.subtype === "error_max_turns";
       if (!maxTurnsBoundary && !nativeFailureHandled && (result.is_error || result.subtype !== "success")) {
@@ -1077,8 +1155,8 @@ class ClaudeProcess {
     if (this.child.exitCode === null) killProcessTree(this.child);
   }
 
-  private async exitError(fallback: string): Promise<Error> {
-    const outcome = await this.exitOutcome;
+  private async exitError(fallback: string, signal?: AbortSignal): Promise<Error> {
+    const outcome = await waitForOperation(this.exitOutcome, this.timeoutMs, "Claude Code process exit after stdout closed", signal);
     if (outcome.error) return outcome.error;
     const detail = this.stderr.trim().slice(-500);
     return new Error(`${fallback} (exit ${outcome.code ?? "unknown"}${detail ? `: ${detail}` : ""})`);
@@ -1096,13 +1174,22 @@ interface AcquiredProcess {
 const CLAUDE_PROCESS_CLOSE_GRACE_MS = 2_000;
 
 const processCache = new Map<string, ClaudeProcess>();
+// Abort settles the UI immediately, but session shutdown/tests must still be
+// able to await the bounded teardown of one-shot workers, not just warm ones.
+const pendingClosures = new Map<Promise<void>, string | undefined>();
 let managerTail: Promise<void> = Promise.resolve();
 
-async function withManagerLock<T>(operation: () => Promise<T> | T): Promise<T> {
+async function withManagerLock<T>(operation: () => Promise<T> | T, signal?: AbortSignal): Promise<T> {
   const previous = managerTail;
   let release!: () => void;
   managerTail = new Promise<void>((resolve) => (release = resolve));
-  await previous;
+  try {
+    await waitForOperation(previous, 180_000, "Claude Code process manager", signal);
+  } catch (error) {
+    // Keep the lock chain ordered even when a queued caller stops waiting.
+    void previous.then(release, release);
+    throw error;
+  }
   try {
     return await operation();
   } finally {
@@ -1164,11 +1251,15 @@ async function acquireProcess(input: RunClaudeInput, plan: ClaudeLaunchPlan): Pr
     }
 
     const worker = await ClaudeProcess.create(input, plan);
+    if (input.signal?.aborted) {
+      await worker.close();
+      input.signal.throwIfAborted();
+    }
     worker.busy = true;
     const retained = retain && processCache.size < MAX_CACHED_CLAUDE_PROCESSES;
     if (retained) processCache.set(sessionId!, worker);
     return { worker, retained, continuation: false, sessionId };
-  });
+  }, input.signal);
 }
 
 /** Close warm Claude processes for one Pi session, or all sessions. */
@@ -1183,7 +1274,8 @@ export async function closeClaudeProcesses(sessionId?: string): Promise<void> {
     processCache.clear();
     return all;
   });
-  await Promise.allSettled(workers.map((worker) => worker.close()));
+  const pending = [...pendingClosures].filter(([, owner]) => !sessionId || owner === sessionId).map(([closing]) => closing);
+  await Promise.allSettled([...workers.map((worker) => worker.close()), ...pending]);
 }
 
 /** Test/debug visibility without exposing child processes themselves. */
@@ -1196,6 +1288,17 @@ registerSessionResourceCleanup((sessionId) => {
 });
 
 export async function runClaudeRequest(input: RunClaudeInput): Promise<RunClaudeOutput> {
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(new Error("Claude Code request timed out")), transportTimeout(input.timeoutMs));
+  const signal = input.signal ? AbortSignal.any([input.signal, deadline.signal]) : deadline.signal;
+  try {
+    return await runClaudeRequestUntilStopped({ ...input, signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function runClaudeRequestUntilStopped(input: RunClaudeInput): Promise<RunClaudeOutput> {
   input.signal?.throwIfAborted();
   const plan = launchPlan(input);
   const acquired = await acquireProcess(input, plan);
@@ -1219,8 +1322,11 @@ export async function runClaudeRequest(input: RunClaudeInput): Promise<RunClaude
   } catch (error) {
     // An interrupted turn (Escape) settles at once: Pi must be ready for the next message even
     // while the old process is still being torn down.
-    if (input.signal?.aborted) void discardProcess(acquired).catch(() => {});
-    else await discardProcess(acquired);
+    if (input.signal?.aborted) {
+      const closing = discardProcess(acquired);
+      pendingClosures.set(closing, acquired.sessionId);
+      void closing.then(() => pendingClosures.delete(closing), () => pendingClosures.delete(closing));
+    } else await discardProcess(acquired);
     throw error;
   }
 }

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.11.8 (2026-10-24)
+
+- A Claude Code error after a failed tool no longer leaves the next message
+  stuck in the queue, even when an MCP process keeps the output pipe open.
+  History replay, model discovery, process exit and relay traffic now have
+  deadlines; a stalled turn ends with an error instead of waiting forever.
+- Requests stay within Anthropic's limit of four cache markers, keeping the
+  system prompt, tools and newest message cached where possible.
+- Sessions whose managed runtime was replaced resolve worker modules again
+  from a currently staged copy of the same package version. Missing or
+  incompatible copies fail with a clear cause and can be retried.
+
 ## 0.11.7 (2026-10-24)
 
 - Bound pre-compaction snapshot retention per working directory: keep the
