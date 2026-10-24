@@ -71,9 +71,11 @@ forbidden, including indirect attempts to invoke `ultraterm_subagents`,
 - Files and artifacts carry large context. Relay messages carry small
   coordination facts, not copied session histories.
 - A child uses its session's runtime while that tree exists. If it was replaced,
-  worker modules are resolved again from the current staged runtime of the same
-  package version. A missing or different-version runtime fails with the cause
-  and every candidate tried; the next dispatch retries resolution.
+  worker modules (including isolated Codex selection) prefer the exact same
+  content-addressed build. A different tree is allowed only when its package
+  version and all package modules are byte-identical to the original snapshot.
+  A missing or incompatible build fails with the cause and every candidate
+  tried; the next dispatch retries resolution.
 
 ## 3. Start-of-task routing
 

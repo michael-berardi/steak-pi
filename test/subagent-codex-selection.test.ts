@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as stagedRuntime from "../src/subagents/staged-runtime.ts";
 import { registryForSolSelection } from "../src/subagents/codex-selection.ts";
 import { resolveWorkerSelection } from "../src/subagents/model-selection.ts";
 import { isolatedAgentPaths, isolatedCodexAgentDir } from "../src/subagents/provider-accounts.ts";
@@ -69,4 +70,22 @@ describe("fresh Go parent isolated Codex Sol admission", () => {
       async () => runtime({ ...sol, input: ["text"] }));
     expect(() => resolveWorkerSelection(parent, "high", { profile: "steak-pi/gpt-6-1-sol", requireImages: true, tasks: [] }, registry, undefined, undefined, {}, {})).toThrow(/image input/);
   });
+});
+
+
+it("resolves the isolated Codex worker SDK through the staged-runtime resolver", async () => {
+  const model = JSON.stringify(sol);
+  const source = `export async function loadPiSdk() { return { ModelRuntime: { create: async () => ({
+    getModel: () => (${model}), getModels: () => [${model}], getAvailableSnapshot: () => [${model}],
+    isUsingOAuth: () => true, hasConfiguredAuth: () => true, getProvider: () => ({})
+  }) } }; }`;
+  const resolver = vi.spyOn(stagedRuntime, "resolveStagedModule").mockReturnValue({
+    url: `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`, runtime: "fixture", replaced: true, tried: [],
+  });
+  try {
+    const command = async () => ({ ok: true, account: { id: "primary", agentDir: isolatedCodexAgentDir("primary") } });
+    const registry = await registryForSolSelection(parent, { model: SOL_MODEL_ROUTE }, goRegistry(), command);
+    expect(resolver).toHaveBeenCalledWith("src/subagents/pi-worker.ts");
+    expect(registry.find("openai-codex", "gpt-6.1-sol")).toEqual(sol);
+  } finally { resolver.mockRestore(); }
 });

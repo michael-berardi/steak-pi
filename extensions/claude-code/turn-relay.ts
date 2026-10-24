@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import type { AnthropicStreamEvent, NativeContentBlock, NativeMessage } from "./native-types.ts";
 
-import { transportTimeout, waitForOperation } from "./wait.ts";
+import { ClaudeWaitLimitError, transportTimeout, waitForOperation } from "./wait.ts";
 
 function copy<T>(value: T): T {
   return structuredClone(value);
@@ -147,6 +147,7 @@ export class TurnRelay {
   requestId?: string;
   failure?: string;
   failureDetail?: string;
+  waitFailure?: ClaudeWaitLimitError;
   stage = "start";
   attempts = 0;
   retries = 0;
@@ -166,6 +167,7 @@ export class TurnRelay {
   private baseUrl?: string;
   private transformRequest?: (body: Buffer) => Buffer;
   private requestBetas: string[] = [];
+  private onActivity?: () => void;
 
   constructor(
     upstream = "https://api.anthropic.com",
@@ -201,10 +203,12 @@ export class TurnRelay {
     onEvent?: (event: AnthropicStreamEvent) => void,
     transformRequest?: (body: Buffer) => Buffer,
     requestBetas: string[] = [],
+    onActivity?: () => void,
   ): void {
     if (this.closed) throw new Error("Claude Code turn relay is closed");
     if (this.active.size > 0) throw new Error("Claude Code turn relay still has an active request");
     this.controller = new AbortController();
+    this.onActivity = onActivity;
     this.capture = new AnthropicCapture(onEvent);
     this.used = false;
     this.denied = 0;
@@ -212,6 +216,7 @@ export class TurnRelay {
     this.requestId = undefined;
     this.failure = undefined;
     this.failureDetail = undefined;
+    this.waitFailure = undefined;
     this.attempts = 0;
     this.retries = 0;
     this.lastRetry = undefined;
@@ -302,9 +307,8 @@ export class TurnRelay {
     this.sockets.add(response);
 
     let upstreamRequest: http.ClientRequest | undefined;
-    // request.setTimeout only emits an event; it does not close anything. A wall
-    // deadline also covers a partial request body, DNS/TLS, drain and trickling SSE.
-    const timer = setTimeout(() => this.finishTurn(new Error(`Claude Code turn relay timed out (stage ${this.stage})`)), this.timeoutMs);
+    // Each non-streaming wait is wall-bounded; each streaming read is idle-bounded.
+    // Never put a wall-clock cap on a healthy, continuously streaming response.
     const signal = this.controller.signal;
     try {
       this.stage = "read-body";
@@ -356,11 +360,9 @@ export class TurnRelay {
           method: "POST",
           path: `${pathPrefix}/v1/messages${requestUrl.search}`,
           headers,
-          timeout: this.timeoutMs,
         });
         this.sockets.add(upstreamRequest);
         const current = upstreamRequest;
-        current.once("timeout", () => current.destroy(Object.assign(new Error("Claude Code upstream socket timed out"), { code: "ETIMEDOUT" })));
         try {
           upstreamResponse = await waitForOperation(new Promise<http.IncomingMessage>((resolve, reject) => {
             current.once("response", resolve);
@@ -415,6 +417,7 @@ export class TurnRelay {
       response.writeHead(upstreamResponse!.statusCode ?? 502, responseHeaders);
       const forward = async (rawChunk: unknown) => {
         const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk as Uint8Array);
+        this.onActivity?.();
         if (this.status === 200) this.capture.feed(chunk);
         else if (this.errorBody.length < 65_536) {
           this.errorBody = Buffer.concat([this.errorBody, chunk]).subarray(0, 65_536);
@@ -423,7 +426,7 @@ export class TurnRelay {
       };
       for (const chunk of pending) await forward(chunk);
       for (;;) {
-        const next = await waitForOperation(iterator!.next(), this.timeoutMs, "Claude Code upstream stream", signal);
+        const next = await waitForOperation(iterator!.next(), this.timeoutMs, "Claude Code upstream stream idle", signal);
         if (next.done) break;
         await forward(next.value);
       }
@@ -431,12 +434,12 @@ export class TurnRelay {
       if (this.status === 200) this.capture.finish();
       response.end();
     } catch (error) {
+      if (error instanceof ClaudeWaitLimitError) this.waitFailure = error;
       this.failure = error instanceof Error ? error.name : "UnknownError";
       this.failureDetail = `${describeError(error)} (stage ${this.stage}, attempt ${this.attempts} of ${this.retry.attempts}${this.lastRetry ? `, last retry: ${this.lastRetry}` : ""})`;
       if (!response.headersSent) response.writeHead(this.cancelled ? 499 : 502).end();
       else response.destroy();
     } finally {
-      clearTimeout(timer);
       if (upstreamRequest) this.sockets.delete(upstreamRequest);
       this.sockets.delete(request);
       this.sockets.delete(response);
@@ -480,7 +483,7 @@ export class TurnRelay {
         cleanup();
         reject(this.controller.signal.reason);
       };
-      const timer = setTimeout(() => onError(new Error("Claude Code turn relay drain timed out")), this.timeoutMs);
+      const timer = setTimeout(() => onError(new ClaudeWaitLimitError("Claude Code turn relay drain exceeded its wait limit")), this.timeoutMs);
       response.once("drain", onDrain);
       response.once("close", onClose);
       response.once("error", onError);

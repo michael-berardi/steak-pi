@@ -38,9 +38,13 @@ picker, or pass `--model claude-code/<id>`. Ids: `claude-fable-5-1`,
 
 ## Stalled turns and cancellation
 
-A stalled request ends with a visible error after three minutes by default;
-callers can set a positive, finite `timeoutMs`. The deadline includes history
-replay and waiting for a worker, not just gaps between streamed events.
+Streaming turns are bounded by inactivity, not total duration: a reply that
+keeps sending bytes or events may run longer than `timeoutMs`. Pi supplies its
+HTTP idle budget (normally 300,000 ms); direct callers default to 180,000 ms
+and may set any positive, finite `timeoutMs`. Worker acquisition, history
+replay, response headers, first byte, drain and settlement each have bounded
+non-streaming waits. An idle-limit failure is terminal, so Pi does not keep
+replaying a genuinely stuck turn.
 Escape stops a running turn immediately. Cleanup waits at most two seconds
 for inherited output pipes before dropping them, so an MCP process cannot
 keep the next message queued forever. A queued steering message is preserved
@@ -48,7 +52,9 @@ when the failed turn ends and can be continued normally.
 
 Every forwarded request is capped at four cache markers. Extra markers are
 removed from the oldest message first, preserving static prefixes and the
-newest message where possible; the first removal logs only the dropped count.
+newest message where possible. If static markers alone exceed the cap, tools
+are dropped before system markers. The first removal reports only the count
+through the extension's notification UI, never directly to stderr.
 
 ## Configuration
 
