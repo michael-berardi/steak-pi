@@ -326,6 +326,12 @@ export async function discoverClaudeModels(
   }
 }
 
+// Detached POSIX launches create a group whose id is the spawned leader's PID.
+// Keep the proof on the ChildProcess object, not in a PID-keyed cache that can
+// accidentally transfer ownership to a later process with the same number.
+const ownedProcessGroups = new WeakMap<ChildProcess, { pid: number; exitedAt?: number }>();
+const EXITED_GROUP_GRACE_MS = 1_000;
+
 function spawnCommand(
   command: string,
   args: string[],
@@ -336,7 +342,13 @@ function spawnCommand(
     const quote = (value: string) => `"${value.replace(/"/gu, '""')}"`;
     return spawn(comspec, ["/d", "/s", "/c", [quote(command), ...args.map(quote)].join(" ")], options);
   }
-  return spawn(command, args, options);
+  const child = spawn(command, args, options);
+  if (process.platform !== "win32" && options?.detached && child.pid !== undefined) {
+    const group = { pid: child.pid, exitedAt: undefined as number | undefined };
+    ownedProcessGroups.set(child, group);
+    child.once("exit", () => { group.exitedAt = performance.now(); });
+  }
+  return child;
 }
 
 function childExit(child: ChildProcess): Promise<number> {
@@ -352,9 +364,12 @@ function childExit(child: ChildProcess): Promise<number> {
 }
 
 export function killProcessTree(child: ChildProcess): void {
-  // A signalled/exited leader can leave MCP children in its process group.
   if (child.pid === undefined) return;
+  const exited = child.exitCode !== null || child.signalCode !== null;
   if (process.platform === "win32") {
+    // taskkill resolves a numeric PID at execution time. Once our child has
+    // exited, that PID may already name an unrelated process and its tree.
+    if (exited) return;
     const killer = spawn("taskkill", ["/F", "/T", "/PID", String(child.pid)], {
       stdio: "ignore",
       windowsHide: true,
@@ -362,14 +377,26 @@ export function killProcessTree(child: ChildProcess): void {
     killer.unref();
     return;
   }
-  try {
-    process.kill(-child.pid, "SIGKILL");
-  } catch {
+  const group = ownedProcessGroups.get(child);
+  if (group?.pid === child.pid) {
+    // A freshly exited leader may leave MCP children holding its pipes. Only
+    // use the group we created, and only while its ownership proof is fresh.
+    // After the grace window we have no independently tracked live member to
+    // verify ownership: kill(-pgid, 0) proves existence, not that it is ours.
+    // Fail closed instead of signalling a potentially reused group id.
+    if (exited && (group.exitedAt === undefined || performance.now() - group.exitedAt >= EXITED_GROUP_GRACE_MS)) return;
     try {
-      child.kill("SIGKILL");
+      process.kill(-group.pid, "SIGKILL");
+      return;
     } catch {
-      // It exited between the checks.
+      // Fall back only to a still-live child; never reuse an exited leader PID.
     }
+  }
+  if (exited) return;
+  try {
+    child.kill("SIGKILL");
+  } catch {
+    // It exited between the checks.
   }
 }
 

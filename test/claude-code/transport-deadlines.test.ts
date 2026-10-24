@@ -3,7 +3,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, vi } from "vitest";
-import { closeClaudeProcesses, discoverClaudeModels, killProcessTree, runClaudeRequest } from "../../extensions/claude-code/claude-cli.ts";
+import { closeClaudeProcesses, discoverClaudeModels, runClaudeRequest } from "../../extensions/claude-code/claude-cli.ts";
 import { transportTimeout, waitForOperation } from "../../extensions/claude-code/wait.ts";
 
 const FAKE = `#!/usr/bin/env node
@@ -19,16 +19,17 @@ if (process.env.MODE === "discovery-holder") {
   holder.unref();
   process.exit(0);
 }
-if (process.env.MODE === "discovery-models-holder") {
+if (["discovery-models-holder", "discovery-models-signalled-holder"].includes(process.env.MODE)) {
   const readline = await import("node:readline");
   for await (const line of readline.createInterface({ input: process.stdin })) {
     const frame = JSON.parse(line);
     if (frame.type !== "control_request") continue;
     console.log(JSON.stringify({ type: "control_response", response: { request_id: frame.request_id, subtype: "success", response: { models: [{ value: "sonnet", displayName: "Sonnet", description: "fixture" }] } } }));
     const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: ["ignore", "inherit", "inherit"] });
-    appendFileSync(process.env.HOLDERS, JSON.stringify({ pid: holder.pid, started: Date.now(), cwd: process.cwd(), ports: [] }) + "\\n");
+    appendFileSync(process.env.HOLDERS, JSON.stringify({ pid: holder.pid, leader: process.pid, started: Date.now(), cwd: process.cwd(), ports: [] }) + "\\n");
     holder.unref();
-    process.exit(0);
+    if (process.env.MODE === "discovery-models-signalled-holder") process.kill(process.pid, "SIGTERM");
+    else process.exit(0);
   }
 }
 if (process.env.MODE === "closed-stdout") process.stdout.end();
@@ -106,11 +107,14 @@ test("discovery returns received models after Claude exits despite inherited std
   assert.equal(models[0]?.value, "sonnet");
 }));
 
-test("a signalled Claude leader still has its MCP process group killed", () => {
+test("a signalled Claude leader still has its MCP process group killed", async () => {
   if (process.platform === "win32") return;
-  const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
-  try {
-    killProcessTree({ pid: 1234567, exitCode: null, signalCode: "SIGTERM" } as any);
-    assert.deepEqual(kill.mock.calls, [[-1234567, "SIGKILL"]]);
-  } finally { kill.mockRestore(); }
+  await fixture(async (executable, _root, holders) => {
+    const kill = vi.spyOn(process, "kill");
+    try {
+      await assert.rejects(discoverClaudeModels({ PI_CLAUDE_CODE_COMMAND: executable, MODE: "discovery-models-signalled-holder", HOLDERS: holders }, undefined, 700), /exited from signal SIGTERM/);
+      const { leader } = JSON.parse((await readFile(holders, "utf8")).trim());
+      assert.ok(kill.mock.calls.some(([pid, signal]) => pid === -leader && signal === "SIGKILL"));
+    } finally { kill.mockRestore(); }
+  });
 });
