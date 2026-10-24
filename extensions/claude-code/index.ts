@@ -1,9 +1,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getClaudeStatus } from "./claude-cli.ts";
+import { getClaudeStatus, setClaudeCodeDiagnosticReporter } from "./claude-cli.ts";
 import { claudeCodeEnv, createClaudeCodeProvider } from "./provider.ts";
 
 export default function claudeCodeExtension(pi: ExtensionAPI): void {
   pi.registerProvider(createClaudeCodeProvider());
+  pi.on("session_start", (_event, ctx) => {
+    setClaudeCodeDiagnosticReporter((message) => ctx.ui.notify(message, "info"));
+  });
+  pi.on("session_shutdown", () => setClaudeCodeDiagnosticReporter(undefined));
 
   pi.registerCommand("claude-code-status", {
     description: "Check the Claude Code executable and subscription login",

@@ -115,7 +115,7 @@ for (const mode of ["error", "abort", "exit"] as const) {
       assert.equal(queued, true);
       assert.ok(starts.length >= 2, "failed tool must be followed by a new stream start");
       assert.equal(errors.length, 1, "the stalled stream must end with a visible error");
-      assert.match(errors[0]!, /fixture API error|fixture stopped|timed out/);
+      assert.match(errors[0]!, /fixture API error|fixture stopped|idle limit exceeded/);
       assert.ok((await readFile(holders, "utf8")).trim(), "fake must actually start its stdout-holding grandchild");
       assert.equal(agent.hasQueuedMessages(), true);
       // Pi resumes its existing steering queue after the error; no replacement text is injected.

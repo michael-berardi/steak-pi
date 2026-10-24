@@ -4,11 +4,12 @@ import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 import { createInterface } from "node:readline";
 import { spawn, type ChildProcess } from "node:child_process";
 import { registerSessionResourceCleanup } from "@earendil-works/pi-ai";
 import { capCacheBreakpoints, MAX_CACHE_BREAKPOINTS } from "./cache-control.ts";
-import { transportTimeout, waitForOperation } from "./wait.ts";
+import { ClaudeWaitLimitError, transportTimeout, waitForOperation } from "./wait.ts";
 import { TurnRelay } from "./turn-relay.ts";
 import { usageCreditsAllowed, usageCreditsChargeError, type RateLimitInfo } from "./billing.ts";
 import { envFlagEnabled } from "./env.ts";
@@ -305,7 +306,12 @@ export async function discoverClaudeModels(
       const envelope = event.response as Record<string, unknown> | undefined;
       if (envelope?.request_id !== requestId || envelope.subtype !== "success") continue;
       const response = envelope.response as Record<string, unknown> | undefined;
-      if (Array.isArray(response?.models)) models = response.models.filter(isDiscoveredModel);
+      if (Array.isArray(response?.models)) {
+        models = response.models.filter(isDiscoveredModel);
+        // Only the models and the leader's exit are required. An MCP grandchild
+        // may hold stdout indefinitely after Claude has exited.
+        break;
+      }
     }
     const exitCode = await exit;
     signal?.throwIfAborted();
@@ -346,7 +352,8 @@ function childExit(child: ChildProcess): Promise<number> {
 }
 
 export function killProcessTree(child: ChildProcess): void {
-  if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) return;
+  // A signalled/exited leader can leave MCP children in its process group.
+  if (child.pid === undefined) return;
   if (process.platform === "win32") {
     const killer = spawn("taskkill", ["/F", "/T", "/PID", String(child.pid)], {
       stdio: "ignore",
@@ -371,6 +378,11 @@ class AsyncQueue<T> {
   private readonly waiters: Array<(value: IteratorResult<T>) => void> = [];
   private ended = false;
   private failure?: Error;
+  private readonly activity = new Set<() => void>();
+
+  touch(): void {
+    for (const reset of this.activity) reset();
+  }
 
   push(value: T): void {
     if (this.ended) return;
@@ -400,6 +412,7 @@ class AsyncQueue<T> {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        this.activity.delete(reset);
         signal?.removeEventListener("abort", onAbort);
         const index = this.waiters.indexOf(waiter);
         if (index >= 0) this.waiters.splice(index, 1);
@@ -411,7 +424,13 @@ class AsyncQueue<T> {
           else resolve(item.done ? undefined : item.value);
         });
       const onAbort = () => finish(() => reject(signal?.reason ?? new Error("Claude Code request aborted")));
-      const timer = setTimeout(() => finish(() => reject(new Error("Claude Code stream timed out"))), timeoutMs);
+      let timer: NodeJS.Timeout;
+      const reset = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => finish(() => reject(new ClaudeWaitLimitError("Claude Code stream idle limit exceeded (no bytes or events)"))), timeoutMs);
+      };
+      this.activity.add(reset);
+      reset();
       this.waiters.push(waiter);
       signal?.addEventListener("abort", onAbort, { once: true });
     });
@@ -472,7 +491,7 @@ async function writeFrame(child: ChildProcess, frame: NativeFrame, timeoutMs: nu
     const onError = (error: Error) => finish(() => reject(error));
     const onClose = () => finish(() => reject(signal?.reason ?? new Error("Claude Code stdin closed during history replay")));
     const onAbort = () => finish(() => reject(signal?.reason ?? new Error("Claude Code request aborted")));
-    const timer = setTimeout(() => finish(() => reject(new Error("Claude Code history replay write timed out"))), timeoutMs);
+    const timer = setTimeout(() => finish(() => reject(new ClaudeWaitLimitError("Claude Code history replay write exceeded its wait limit"))), timeoutMs);
     stdin.once("drain", onDrain);
     stdin.once("error", onError);
     stdin.once("close", onClose);
@@ -485,10 +504,22 @@ async function writeFrame(child: ChildProcess, frame: NativeFrame, timeoutMs: nu
 function nativeErrorText(event: Extract<NativeOutputEvent, { type: "assistant" }>): string | undefined {
   const messageError = (event.message as Record<string, unknown>).error;
   if (!event.error && !messageError) return undefined;
-  return event.message.content
+  const text = event.message.content
     .filter((block): block is Extract<(typeof event.message.content)[number], { type: "text" }> => block.type === "text")
     .map((block) => block.text)
     .join("\n");
+  const detail = (value: unknown): string => {
+    if (typeof value === "string") return value;
+    if (value && typeof value === "object") {
+      const error = value as { type?: unknown; message?: unknown };
+      return [error.type, error.message].filter((part): part is string => typeof part === "string").join(": ");
+    }
+    return "";
+  };
+  return stripVTControlCharacters(text || detail(event.error) || detail(messageError))
+    .replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ")
+    .replace(/(?:sk-ant-[a-zA-Z0-9_-]+|Bearer\s+[^\s]+)/giu, "[redacted]")
+    .slice(0, 500);
 }
 
 function withoutCacheControl(value: unknown): unknown {
@@ -716,12 +747,18 @@ export function rewriteInitialRequest(
 /// The cap is reported once per process: the dropped-marker count is a fact
 /// about the request shape, not something the operator needs on every turn.
 let cacheCapReported = false;
+let diagnosticReporter: ((message: string) => void) | undefined;
+
+/** The extension supplies a TUI-safe notification sink; headless callers stay quiet. */
+export function setClaudeCodeDiagnosticReporter(reporter: ((message: string) => void) | undefined): void {
+  diagnosticReporter = reporter;
+}
 
 /// Report that markers were dropped, once per process and with a count only.
 function reportCacheCap(dropped: number): void {
-  if (dropped <= 0 || cacheCapReported) return;
+  if (dropped <= 0 || cacheCapReported || !diagnosticReporter) return;
   cacheCapReported = true;
-  console.error(
+  diagnosticReporter(
     `[claude-code] ${dropped} cache marker(s) dropped to stay inside Anthropic's limit of ${MAX_CACHE_BREAKPOINTS}`,
   );
 }
@@ -910,6 +947,7 @@ class ClaudeProcess {
         stdio: ["pipe", "pipe", "pipe"],
       });
       const queue = new AsyncQueue<NativeOutputEvent>();
+      child.stdout?.on("data", () => queue.touch());
       const reader = createInterface({ input: child.stdout!, crlfDelay: Infinity });
       const readTask = (async () => {
         try {
@@ -933,7 +971,7 @@ class ClaudeProcess {
       return new ClaudeProcess(plan.fingerprint, root, child, relay, queue, readTask, exitOutcome, plan.timeoutMs);
     } catch (error) {
       relay?.abort();
-      if (child && child.exitCode === null) killProcessTree(child);
+      if (child) killProcessTree(child);
       await relay?.close();
       await rm(root, { recursive: true, force: true });
       throw error;
@@ -1002,6 +1040,7 @@ class ClaudeProcess {
         canonicalInitialUser,
       }),
       input.betas,
+      () => this.queue.touch(),
     );
 
     const abort = () => {
@@ -1015,22 +1054,24 @@ class ClaudeProcess {
     let rateLimit: RateLimitInfo | undefined;
 
     try {
-      const frames = continuation ? input.frames.slice(-1) : input.frames;
-      for (const frame of frames) {
-        await writeFrame(this.child, frame, this.timeoutMs, input.signal);
-        if (frame.shouldQuery === false) {
-          for (;;) {
-            const event = await this.queue.next(input.signal, this.timeoutMs);
-            if (!event) throw await this.exitError("Claude Code exited before acknowledging history replay", input.signal);
-            if (event.type === "result") {
-              if (event.num_turns !== 0 || event.is_error) {
-                throw new Error("Claude Code rejected zero-turn history replay");
+      await waitForOperation((async () => {
+        const frames = continuation ? input.frames.slice(-1) : input.frames;
+        for (const frame of frames) {
+          await writeFrame(this.child, frame, this.timeoutMs, input.signal);
+          if (frame.shouldQuery === false) {
+            for (;;) {
+              const event = await this.queue.next(input.signal, this.timeoutMs);
+              if (!event) throw await this.exitError("Claude Code exited before acknowledging history replay", input.signal);
+              if (event.type === "result") {
+                if (event.num_turns !== 0 || event.is_error) {
+                  throw new Error("Claude Code rejected zero-turn history replay");
+                }
+                break;
               }
-              break;
             }
           }
         }
-      }
+      })(), this.timeoutMs, "Claude Code history replay", input.signal, abort);
 
       for (;;) {
         const event = await this.queue.next(input.signal, this.timeoutMs);
@@ -1050,6 +1091,7 @@ class ClaudeProcess {
       }
       await this.relay.settled();
       input.signal?.throwIfAborted();
+      if (this.relay.waitFailure) throw this.relay.waitFailure;
 
       let message: NativeMessage | undefined;
       if (this.relay.used) {
@@ -1120,6 +1162,9 @@ class ClaudeProcess {
           input.initialSystemMessages ?? deriveInitialSystemMessages(this.relay.originalRequestBody),
         rateLimit,
       };
+    } catch (error) {
+      if (!input.signal?.aborted && this.relay.waitFailure) throw this.relay.waitFailure;
+      throw error;
     } finally {
       input.signal?.removeEventListener("abort", abort);
       this.relay.finishTurn();
@@ -1152,7 +1197,7 @@ class ClaudeProcess {
     this.clearExpiryTimer();
     this.relay.abort();
     this.child.stdin?.destroy();
-    if (this.child.exitCode === null) killProcessTree(this.child);
+    killProcessTree(this.child);
   }
 
   private async exitError(fallback: string, signal?: AbortSignal): Promise<Error> {
@@ -1288,20 +1333,19 @@ registerSessionResourceCleanup((sessionId) => {
 });
 
 export async function runClaudeRequest(input: RunClaudeInput): Promise<RunClaudeOutput> {
+  input.signal?.throwIfAborted();
+  const plan = launchPlan(input);
+  // Acquisition (lock, auth, relay startup) is a non-streaming wait. Its deadline
+  // must be disarmed before running the turn: timeoutMs is an HTTP idle budget.
   const deadline = new AbortController();
-  const timer = setTimeout(() => deadline.abort(new Error("Claude Code request timed out")), transportTimeout(input.timeoutMs));
+  const timer = setTimeout(() => deadline.abort(new ClaudeWaitLimitError("Claude Code worker acquisition exceeded its wait limit")), plan.timeoutMs);
   const signal = input.signal ? AbortSignal.any([input.signal, deadline.signal]) : deadline.signal;
+  let acquired: AcquiredProcess;
   try {
-    return await runClaudeRequestUntilStopped({ ...input, signal });
+    acquired = await acquireProcess({ ...input, signal }, plan);
   } finally {
     clearTimeout(timer);
   }
-}
-
-async function runClaudeRequestUntilStopped(input: RunClaudeInput): Promise<RunClaudeOutput> {
-  input.signal?.throwIfAborted();
-  const plan = launchPlan(input);
-  const acquired = await acquireProcess(input, plan);
   try {
     const output = await acquired.worker.run(input, acquired.continuation);
     const stable = acquired.worker.commit(input, output.message);

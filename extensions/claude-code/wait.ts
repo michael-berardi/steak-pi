@@ -1,3 +1,8 @@
+/** A terminal local wait failure, not a suggestion to replay a charged turn. */
+export class ClaudeWaitLimitError extends Error {
+  override name = "ClaudeWaitLimitError";
+}
+
 /** A transport deadline must be finite: zero/Infinity must never disable it. */
 export function transportTimeout(value: number | undefined, fallback = 180_000): number {
   if (value === undefined) return fallback;
@@ -33,7 +38,7 @@ export function waitForOperation<T>(
       else resolve(value as T);
     };
     const abort = () => finish(signal?.reason ?? new Error("Claude Code request aborted"), undefined, true);
-    const timer = setTimeout(() => finish(new Error(`${label} timed out`), undefined, true), timeoutMs);
+    const timer = setTimeout(() => finish(new ClaudeWaitLimitError(`${label} exceeded its wait limit`), undefined, true), timeoutMs);
     operation.then((value) => finish(undefined, value), (error) => finish(error));
     signal?.addEventListener("abort", abort, { once: true });
     if (signal?.aborted) abort();

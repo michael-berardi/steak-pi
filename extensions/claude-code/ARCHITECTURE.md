@@ -83,23 +83,29 @@ tool execution. In particular, it:
   20-second deadline and abort cleanup that destroys local pipes.
 - `discoverClaudeModels`: the entire readline/exit operation is bounded
   (20 seconds by default). Closing stdout without exiting, or a detached
-  grandchild inheriting stdout, cannot strand discovery.
+  grandchild inheriting stdout, cannot strand discovery. Once the models arrive,
+  only the leader's exit is awaited, not inherited stdout EOF.
 - `writeFrame`: backpressure listens for drain, error, close and abort and
   also has a deadline, with pre-closed/aborted guards after listener setup.
   Non-backpressured stdin errors also terminate the output queue.
 - `AsyncQueue.next`: idle timeout, abort and queue end all settle a waiter;
   abort takes priority over buffered events, and terminal queues ignore late
-  pushes. A request-wide deadline also bounds endless non-final events.
+  pushes. Native stdout bytes and relayed upstream bytes reset the idle budget,
+  including SSE keepalives that do not yield model events. History replay still
+  has a wall bound even when the native process sends non-final events.
 - `exitError`: stdout EOF does not imply process exit; the exit wait is bounded.
 - `ClaudeProcess.close`: a two-second grace bounds readline, exit and relay
   cleanup; inherited stdout/stderr are destroyed afterward. Aborted requests
   do not wait for teardown before publishing their error.
 - Process-manager acquisition is abortable and bounded without releasing a
-  predecessor's lock early; auth/process creation uses the request signal.
+  predecessor's lock early; auth/process creation uses the acquisition signal.
+  This wall deadline is disarmed before response streaming starts.
 - Relay startup, body read, response headers, first/subsequent iterator reads,
-  drain, retry backoff, settlement and server close are bounded. Both a wall
-  deadline and a socket-timeout destruction handler cover silent and trickling
-  upstreams. A closed response is rejected even if close preceded registration.
+  drain, retry backoff, settlement and server close are bounded. Each streaming
+  read has an idle budget, not a turn-wide wall cap: steady trickles can outlive
+  `timeoutMs`. A closed response is rejected even if close preceded registration.
+  Local wait-limit errors retain a terminal cause without retryable status or
+  timeout wording, even if a native wrapper adds transient-looking text.
 - `streamClaudeCode` has one await, `runClaudeRequest`; it translates rejection
   into an error event and ends the Pi stream. It does not consume steering;
   Pi retains that queue until continuation after an error.

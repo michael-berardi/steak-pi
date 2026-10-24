@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { capCacheBreakpoints, collectCacheBreakpoints } from "../../extensions/claude-code/cache-control.ts";
 import { buildRequestTransform, capRequestCacheBreakpoints, rewriteInitialRequest } from "../../extensions/claude-code/claude-cli.ts";
 
@@ -290,4 +290,40 @@ describe("capRequestCacheBreakpoints", () => {
     const body = Buffer.from(JSON.stringify(payload, null, 2));
     expect(capRequestCacheBreakpoints(body).equals(body)).toBe(true);
   });
+});
+
+
+it("drops tools before system markers when static prefixes alone exceed the cap", () => {
+  const payload = {
+    tools: [{ name: "read", cache_control: marker }],
+    system: Array.from({ length: 4 }, (_, i) => ({ type: "text", text: `system-${i}`, cache_control: marker })),
+  };
+  capCacheBreakpoints(payload);
+  expect(payload.tools[0].cache_control).toBeUndefined();
+  expect(payload.system.every(block => block.cache_control)).toBe(true);
+});
+
+it("cache-cap diagnostics never write directly over the TUI", async () => {
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    vi.resetModules();
+    const cli = await import("../../extensions/claude-code/claude-cli.ts");
+    cli.capRequestCacheBreakpoints(Buffer.from(JSON.stringify(fiveMarkerRequest())));
+    expect(error).not.toHaveBeenCalled();
+  } finally { error.mockRestore(); }
+});
+
+
+it("reports a dropped-marker count once through a TUI-safe notification sink", async () => {
+  vi.resetModules();
+  const cli = await import("../../extensions/claude-code/claude-cli.ts");
+  const notify = vi.fn();
+  cli.setClaudeCodeDiagnosticReporter(notify);
+  try {
+    const body = Buffer.from(JSON.stringify(fiveMarkerRequest()));
+    cli.capRequestCacheBreakpoints(body);
+    cli.capRequestCacheBreakpoints(body);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith("[claude-code] 1 cache marker(s) dropped to stay inside Anthropic's limit of 4");
+  } finally { cli.setClaudeCodeDiagnosticReporter(undefined); }
 });

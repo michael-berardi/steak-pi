@@ -91,9 +91,9 @@ export function capCacheBreakpoints(payload: {
   const messages = markers.filter((marker) => marker.kind === "message");
   const system = markers.filter((marker) => marker.kind === "system");
   const tools = markers.filter((marker) => marker.kind === "tools");
-  // Oldest message marker first, then the system prompt, then the tools.
+  // Oldest message marker first, then tools, preserving the longer system prefix.
   for (const marker of messages) drop(marker);
-  for (const marker of system) drop(marker);
   for (const marker of tools) drop(marker);
+  for (const marker of system) drop(marker);
   return { remaining, dropped };
 }
