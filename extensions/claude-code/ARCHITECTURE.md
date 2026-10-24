@@ -77,6 +77,37 @@ tool execution. In particular, it:
 - ties cancellation to the active upstream socket as well as the Claude Code
   process.
 
+## Transport wait audit (0.11.6)
+
+- `captureProcess`: auth waits for **exit**, not inherited-pipe close, with a
+  20-second deadline and abort cleanup that destroys local pipes.
+- `discoverClaudeModels`: the entire readline/exit operation is bounded
+  (20 seconds by default). Closing stdout without exiting, or a detached
+  grandchild inheriting stdout, cannot strand discovery.
+- `writeFrame`: backpressure listens for drain, error, close and abort and
+  also has a deadline, with pre-closed/aborted guards after listener setup.
+  Non-backpressured stdin errors also terminate the output queue.
+- `AsyncQueue.next`: idle timeout, abort and queue end all settle a waiter;
+  abort takes priority over buffered events, and terminal queues ignore late
+  pushes. A request-wide deadline also bounds endless non-final events.
+- `exitError`: stdout EOF does not imply process exit; the exit wait is bounded.
+- `ClaudeProcess.close`: a two-second grace bounds readline, exit and relay
+  cleanup; inherited stdout/stderr are destroyed afterward. Aborted requests
+  do not wait for teardown before publishing their error.
+- Process-manager acquisition is abortable and bounded without releasing a
+  predecessor's lock early; auth/process creation uses the request signal.
+- Relay startup, body read, response headers, first/subsequent iterator reads,
+  drain, retry backoff, settlement and server close are bounded. Both a wall
+  deadline and a socket-timeout destruction handler cover silent and trickling
+  upstreams. A closed response is rejected even if close preceded registration.
+- `streamClaudeCode` has one await, `runClaudeRequest`; it translates rejection
+  into an error event and ends the Pi stream. It does not consume steering;
+  Pi retains that queue until continuation after an error.
+
+Ordinary local filesystem operations are not pipe/drain waits. The stdout
+reader may remain alive during a turn, but abort/close destroys its pipe and
+request/queue deadlines bound every caller waiting for its output.
+
 ## Tool schemas
 
 Tool schemas are normalized for Claude Code. Nullable variants and schema

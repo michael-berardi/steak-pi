@@ -1,3 +1,4 @@
+import { resolveStagedModule } from "../src/subagents/staged-runtime.ts";
 import { registryForSolSelection, type CreateIsolatedModelRuntime } from "../src/subagents/codex-selection.ts";
 import { noEligibleClaudeAccount, type AccountCommand } from "../src/subagents/provider-accounts.ts";
 import { canFallbackReview, isReadOnlyReviewWave, recordReviewFallback } from "../src/subagents/reviewer-fallback.ts";
@@ -689,7 +690,7 @@ export function defaultWorkerRunner(
   let claudeRunner: Promise<WorkerRunner> | undefined;
   return async (context) => {
     if (harnessOf(context.run.harness) === "claude-code") {
-      claudeRunner ??= import(new URL("../src/subagents/claude-worker.ts", import.meta.url).href)
+      claudeRunner ??= import(resolveStagedModule("src/subagents/claude-worker.ts").url)
         .then((module) => {
           const factory = (module as unknown as Partial<ClaudeWorkerModule>).createClaudeWorkerRunner;
           if (typeof factory !== "function") {
@@ -697,7 +698,8 @@ export function defaultWorkerRunner(
           }
           return factory({ ...(claudeSpawn ? { spawn: claudeSpawn } : {}), accountCommand });
         });
-      const result = await (await claudeRunner)(context);
+      const runner = await claudeRunner.catch((error) => { claudeRunner = undefined; throw error; });
+      const result = await runner(context);
       if (!canFallbackReview(context.run, result, context.signal)) return result;
       const fallback = workerRuntimes.get(`${context.run.id}:review-fallback`);
       if (!fallback) return result;
@@ -716,10 +718,10 @@ export function defaultWorkerRunner(
   };
   async function runPi(context: Parameters<WorkerRunner>[0], fallback?: PiWorkerRuntime) {
     if (fallback) {
-      const module = await import(new URL("../src/subagents/pi-worker.ts", import.meta.url).href);
+      const module = await import(resolveStagedModule("src/subagents/pi-worker.ts").url);
       return module.createPiWorkerRunner({ relay, accountCommand, sessionFactory, resolveRuntime: () => fallback })(context);
     }
-    piRunner ??= import(new URL("../src/subagents/pi-worker.ts", import.meta.url).href)
+    piRunner ??= import(resolveStagedModule("src/subagents/pi-worker.ts").url)
       .then((module) => {
         const factory = (module as unknown as Partial<PiWorkerModule>).createPiWorkerRunner;
         if (typeof factory !== "function") {
@@ -736,7 +738,8 @@ export function defaultWorkerRunner(
           },
         });
       });
-    return (await piRunner)(context);
+    const runner = await piRunner.catch((error) => { piRunner = undefined; throw error; });
+    return runner(context);
   }
 }
 
