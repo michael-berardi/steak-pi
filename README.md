@@ -35,6 +35,7 @@ Or from the release archive, without Git:
 ```sh
 shasum -a 256 -c steak-pi-0.11.6.tgz.sha256
 tar -xzf steak-pi-0.11.6.tgz
+npm install --ignore-scripts --prefix "$PWD/package"
 pi install "$PWD/package"
 ```
 
