@@ -50,8 +50,11 @@ routes are separate: the same headless worker on approved API credits, never a
 default or fallback, and never offered as an interactive profile (promotional API
 credits do not cover interactive Claude Code). See [CLAUDE-API-ROUTE.md](./CLAUDE-API-ROUTE.md).
 
-Before commit/push/deploy, weaker implementers request one bounded Opus Pass
-through the parent. USAP never grants permission to release. Explicit native Pi
+Only writable Go/Haiku leaves receive an implementation-review request through
+the parent: Sonnet 5.5 for Go implementation, Opus 5.5 for Haiku implementation.
+Sol work and read-only leaves receive no automatic end-gate. Explicit task or
+contract output formats override default report headings. USAP never grants
+permission to release. Explicit native Pi
 model/profile selections remain exact, including image-capable routes selected
 with `requireImages: true`. Pi's subscription fallback applies only to eligible
 failures before content or tool activity, never authentication/permission/region

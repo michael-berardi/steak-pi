@@ -336,6 +336,13 @@ counts accompany terminal evidence; all attempted tools failing makes a task
 failed rather than accepting a prose-only completion. A done task still needs
 parent acceptance. Examples and per-profile metadata: [PROFILES.md](./PROFILES.md).
 
+**Pi staged input reads.** Native Read can open an individual regular file
+explicitly named in the leaf text under `~/.cache/ut-overseer/<job>/`, outside
+cwd. Use an absolute or `~/` path, for example `Read
+~/.cache/ut-overseer/J-1234/inputs/review.md`. This grants no directory discovery,
+sibling-file access, symlink traversal or writes. Grep/Find/Ls stay under cwd;
+Claude CLI reads still require staging under cwd.
+
 Task labels are for people; stable task IDs assigned by the implementation are
 used for lifecycle and relay addressing. A dispatch with missing ownership,
 overlapping writers, invalid limits, or more than the supported task count
@@ -560,6 +567,13 @@ The Steak Pi implementation profile uses these ceilings:
 | Recipient mailbox | 100 retained envelopes |
 | Entire run relay traffic | 500 accepted envelopes |
 
+Machine admission is FIFO across parents among currently eligible requests.
+A provider-blocked waiter does not block another provider; once eligible, older
+waiters take priority over new arrivals. Cancellation and timeout remove their
+own tickets; provably dead waiters are ignored without stealing leases. Unknown
+records fail closed. Older binaries without the queue protocol still respect
+caps but cannot guarantee fairness during a rolling update.
+
 Capacity defaults come from `src/subagents/capacity.ts`, optionally overridden
 by the operator's capacity configuration. Provider overrides accept 1–64;
 session/global overrides accept 1–64 and machine/global 1–128. They do not
@@ -595,12 +609,14 @@ explicit-selection profiles only, never automatic workers. Explicit model/profil
 for reviewer defaults and route-specific fallback. Record the resolved
 provider/model on the run so results are auditable.
 
-**Expert-review end-gate.** USAP instructions never grant commit, push, or
-deploy permission. Before a weaker implementer's work is committed, pushed, or
-deployed, the leaf requests one bounded Opus 5.5/xhigh review through the parent.
-Implicit automatic text review may use the bounded, receipted GPT-6.1 Sol fallback described in [Model routing](./MODEL-ROUTING.md#automatic-review-exception). Explicit Claude routes and image reviews never silently fall back. If both eligible review routes are unavailable, report that
-honestly. No worker may claim, imply, or fabricate expert approval. A missing
-Opus Pass is a parent decision, not a silent pass.
+**Implementation review.** USAP never grants commit, push, or deploy permission.
+Only writable Go/Haiku leaves receive an implementation-review request: Go-produced
+implementation needs Sonnet 5.5 verification; Haiku-produced implementation needs
+Opus 5.5 verification, through the parent. GPT-6.1 Sol and read-only leaves receive
+no automatic end-gate. Never claim approval from a failed or unavailable review.
+An explicit task or shared-contract output format takes precedence over default
+report headings, including JSON-only output. Empty or placeholder-only output is
+a failed leaf, not a completed result.
 
 Model price is secondary to total trajectory cost. Escalate capability when a
 leaf has high ambiguity, large blast radius, repeated failure, or requires

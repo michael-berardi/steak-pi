@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.12.1 (2026-10-28)
+
+- Machine launch slots now admit the oldest eligible waiter across parents,
+  preventing later arrivals from repeatedly jumping the queue. Provider-blocked
+  waiters do not block other providers; cancellation and timeout release their
+  queue tickets without reclaiming live leases. Fairness requires upgraded peers.
+- Pi leaves can native-Read individual regular files explicitly assigned in
+  their task under the job cache, without exposing directories, unassigned files,
+  symlinks or writes. Empty and placeholder-only results now fail rather than
+  reporting completed.
+- Sol and read-only leaves no longer receive a Claude review end-gate. Only
+  Go/Haiku implementation leaves request Sonnet/Opus verification respectively.
+  Explicit output formats, including JSON-only contracts, override default
+  report headings on both harnesses.
+
 ## 0.12.0 (2026-10-28)
 
 - Subagents check plan quota before they launch. When the provider account

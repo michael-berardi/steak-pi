@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as realDelay } from "node:timers/promises";
 import { test, vi } from "vitest";
 import { closeClaudeProcesses, discoverClaudeModels, runClaudeRequest } from "../../extensions/claude-code/claude-cli.ts";
 import { transportTimeout, waitForOperation } from "../../extensions/claude-code/wait.ts";
@@ -68,10 +69,19 @@ for (const mode of ["unread-history", "closed-stdout", "chatter", "auth-wait"]) 
 }
 
 test("model discovery drops inherited stdout on timeout even after its parent exited", async () => fixture(async (executable, root, holders) => {
-  const started = Date.now();
-  await assert.rejects(discoverClaudeModels({ PI_CLAUDE_CODE_COMMAND: executable, MODE: "discovery-holder", HOLDERS: holders }, undefined, 300), /model discovery exceeded its wait limit/);
-  assert.ok(Date.now() - started < 1_500);
-  assert.ok((await readFile(holders, "utf8")).trim());
+  // Advance the deadline only after the child has created its pipe holder.
+  // A 300ms wall-clock startup race tested host load, not inherited-pipe cleanup.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const rejected = assert.rejects(discoverClaudeModels({ PI_CLAUDE_CODE_COMMAND: executable, MODE: "discovery-holder", HOLDERS: holders }, undefined, 300), /model discovery exceeded its wait limit/);
+    const readinessDeadline = Date.now() + 3_000;
+    while (!(await readFile(holders, "utf8")).trim()) {
+      assert.ok(Date.now() < readinessDeadline, "synthetic pipe holder failed to start");
+      await realDelay(10);
+    }
+    await vi.advanceTimersByTimeAsync(300);
+    await rejected;
+  } finally { vi.useRealTimers(); }
 }));
 
 test("model discovery handles stdout closing before the still-live process exits", async () => fixture(async executable => {
