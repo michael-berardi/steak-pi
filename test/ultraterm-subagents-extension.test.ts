@@ -5,10 +5,12 @@ import { normalizeDispatch } from "../src/subagents/policy.ts";
 import { BUILTIN_WORKER_PROFILES, claudeCodeModelOf, resolveClaudeCodeSelection, retiredRouteError } from "../src/subagents/model-selection.ts";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { isolatedCodexAgentDir, isolatedAgentPaths } from "../src/subagents/provider-accounts.ts";
+import { GO_ACCOUNT_ROUTER_TIMEOUT_MS, isolatedCodexAgentDir, isolatedAgentPaths } from "../src/subagents/provider-accounts.ts";
+import { createPiWorkerRunner } from "../src/subagents/pi-worker.ts";
 import type { ExtensionAPI, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  DEFAULT_STARTUP_WINDOW_MS,
   createUltratermSubagentsExtension,
   renderRunProgress,
   renderRunResult,
@@ -59,6 +61,8 @@ function harness(runnerFactory: (relay: RelayBroker) => WorkerRunner, durable?: 
     profiles: [],
     checkpointRoot: durable?.root,
     shutdownGraceMs,
+    // Legacy runners here hang without ever reporting a first turn; the startup window has its own tests.
+    startupWindowMs: 0,
     ...overrides,
   })(pi);
   const cwd = mkdtempSync(join(tmpdir(), "steak-usap-extension-"));
@@ -1716,5 +1720,1058 @@ describe("fresh Go parent dispatch to isolated authenticated Sol", () => {
     expect(registry.getAll()).toEqual([go]);
     expect(registry.isUsingOAuth()).toBe(false);
     await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+});
+
+// Quota routing: an implicit wave used to resolve Go or Sol without asking the account router, the worker's
+// router refusal surfaced only at launch (turns=0) and the parent was told `Started`. Every fixture below is a
+// router `status` shape; nothing is credential-bearing.
+describe("quota-aware implicit routing and synchronous launch failure", () => {
+  const NOW = 1_793_164_649;
+  const SOL_ROUTE = "openai-codex/gpt-6.1-sol";
+  const GO_ROUTE = "opencode-go/deepseek-v4.1-flash";
+  const OPUS_ROUTE = "claude-code/claude-opus-5-5";
+  const solModel = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text", "image"] };
+  const goModel = { provider: "opencode-go", id: "deepseek-v4.1-flash", api: "openai-completions", baseUrl: "https://opencode.ai/zen/go/v1", input: ["text"] };
+  // A profile default that names the exact Sol profile instead of the automatic Go -> Sol chain.
+  const solFirstProfiles = BUILTIN_WORKER_PROFILES.map(profile => profile.model === SOL_ROUTE ? { ...profile, workerDefault: { profile: profile.id } } : profile);
+  const cooling = (id: string, label: string) => ({
+    configured: true, eligible: false, id, label, state: "cooling-down", stateText: "cooling down until Mon 02:59", ineligibleReason: "cooling down",
+    cooldown: { kind: "usage", reason: "a plan usage window is at 100%", source: "usage", until: NOW + 434_000 }, resetAt: NOW + 434_000,
+    usedPercent: 100, windows: [{ name: "Weekly", resetAt: NOW + 434_000, usedPercent: 100 }],
+  });
+  const usable = (id: string, label: string) => ({ configured: true, eligible: true, id, label, state: "balancing", usageKnown: true, usedPercent: 10, windows: [] });
+  const busy = (id: string, label: string) => ({ configured: true, eligible: false, id, label, state: "balancing", leases: 64, limit: 64, ineligibleReason: "all slots busy", windows: [] });
+  const proven = (id: string, label: string) => ({ configured: true, eligible: false, id, label, ineligibleReason: "signed out", windows: [] });
+  const status = (providers: { codex?: unknown[]; go?: unknown[]; claude?: unknown[] }) => ({
+    ok: true, time: NOW,
+    providers: {
+      ...(providers.codex ? { codex: { accounts: providers.codex } } : {}),
+      ...(providers.go ? { "opencode-go": { accounts: providers.go } } : {}),
+      ...(providers.claude ? { claude: { accounts: providers.claude } } : {}),
+    },
+  });
+  const solOut = [cooling("primary", "GPT 1"), cooling("fallback", "GPT 2")];
+  const solUp = [usable("primary", "GPT 1")];
+  const goOut = [cooling("primary", "Go 1"), cooling("b", "Go 2")];
+  const goUp = [usable("primary", "Go 1"), usable("b", "Go 2")];
+  const claudeUp = [usable("primary", "Claude 1"), usable("b", "Claude 2")];
+  const claudeOut = [proven("primary", "Claude 1"), proven("b", "Claude 2")];
+  const done = () => vi.fn(async (_context: Parameters<WorkerRunner>[0]): ReturnType<WorkerRunner> => ({ state: "done" as const, output: "ok", turns: 1, usage: emptyUsage() }));
+
+  function quotaHarness(answer: unknown, runner: ReturnType<typeof done>, overrides: Partial<UltratermSubagentsDependencies> = {}, durable?: { root: string; parent: string; prefix: string }) {
+    // Claude accounts the dispatch asked the router to select (`select --provider claude --account <id>`).
+    const selected: string[] = [];
+    const accountCommand = vi.fn(async (args: string[]) => {
+      if (args[0] === "select" && args[2] === "claude") {
+        selected.push(args[4]);
+        return syntheticClaudeSelection(args[4] as "primary" | "b");
+      }
+      if (args[0] !== "status") throw new Error(`unexpected router command ${args[0]}`);
+      if (answer instanceof Error) throw answer;
+      return answer;
+    });
+    const h = harness(() => runner, durable, undefined, { accountCommand: accountCommand as never, profiles: BUILTIN_WORKER_PROFILES, ...overrides });
+    const models = [solModel, goModel];
+    h.ctx.modelRegistry = {
+      find: (provider: string, id: string) => models.find(model => model.provider === provider && model.id === id),
+      getAll: () => models, getAvailable: () => models, hasConfiguredAuth: () => true,
+      isUsingOAuth: (candidate: { provider: string }) => candidate.provider === "openai-codex",
+      getProvider: () => ({ streamSimple() {} }),
+    };
+    return { h, accountCommand, selected };
+  }
+  const dispatch = (h: ReturnType<typeof harness>, params: Record<string, unknown>) =>
+    h.tools.get("ultraterm_subagents").execute("quota", { goal: "Quota routing", ...params }, undefined, undefined, h.ctx);
+  const plain = [{ label: "scout", task: "Read the routing module and report", role: "scout" }];
+  const shutdown = (h: ReturnType<typeof harness>) => h.handlers.get("session_shutdown")!({}, h.ctx);
+
+  describe("quota preflight for an implicit route", () => {
+    it("does not select an exhausted Go: the default chain continues to Sol", async () => {
+      const runner = done();
+      const { h, accountCommand } = quotaHarness(status({ codex: solUp, go: goOut, claude: claudeUp }), runner);
+      try {
+        const result = await dispatch(h, { tasks: [{ label: "leaf", task: "Implement the leaf" }] });
+        expect(result.details.run.model).toBe(SOL_ROUTE);
+        expect(result.details.run.selection).toMatchObject({ provider: "openai-codex", source: "chain", chainRoutes: [GO_ROUTE, SOL_ROUTE] });
+        expect(result.details.run.selection.fallbackReason).toMatch(/OpenCode Go: every Go account is unavailable \(Go 1: cooling down until Mon 02:59; Go 2: cooling down until Mon 02:59\)/);
+        expect(result.content[0].text).toMatch(/Route note: OpenCode Go: every Go account is unavailable.*continues down the default chain on openai-codex\/gpt-6\.1-sol/);
+        expect(runner.mock.calls[0][0].run.model).toBe(SOL_ROUTE);
+        expect(accountCommand.mock.calls).toEqual([[["status"]]]);
+      } finally { await shutdown(h); }
+    });
+
+    it("does not select an exhausted Sol named by the profile default: the default chain continues to Go", async () => {
+      const runner = done();
+      const { h, accountCommand } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeUp }), runner, { profiles: solFirstProfiles as never });
+      try {
+        const result = await dispatch(h, { tasks: [{ label: "leaf", task: "Implement the leaf" }] });
+        expect(result.details.run.model).toBe(GO_ROUTE);
+        expect(result.details.run.selection).toMatchObject({ provider: "opencode-go", source: "chain", chainRoutes: [GO_ROUTE, SOL_ROUTE] });
+        expect(result.details.run.selection.fallbackReason).toMatch(/GPT-6\.1 Sol: every GPT account is unavailable \(GPT 1: cooling down until Mon 02:59; GPT 2: cooling down until Mon 02:59\)/);
+        expect(result.content[0].text).toMatch(/Route note: GPT-6\.1 Sol: every GPT account is unavailable.*continues down the default chain on opencode-go\/deepseek-v4\.1-flash/);
+        expect(accountCommand.mock.calls).toEqual([[["status"]]]);
+      } finally { await shutdown(h); }
+    });
+
+    it.each([
+      ["a plain read/scout leaf", { tasks: plain }, "claude-code/claude-haiku-5-5", /^Haiku 5\.5: ordinary leaves/],
+      ["a worker leaf that edits without a shell", { tasks: [{ label: "doc", task: "Edit the doc", role: "worker", mayEdit: true, ownedPaths: ["docs/x.md"] }] }, "claude-code/claude-haiku-5-5", /ordinary leaves/],
+      ["a mayEdit + allowBash leaf", { tasks: [{ label: "build", task: "Implement and test", role: "worker", mayEdit: true, ownedPaths: ["src/x.ts"], allowBash: true }] }, "claude-code/claude-sonnet-5-5", /^Sonnet 5\.5: substantial code work/],
+      ["a requested xhigh effort", { tasks: plain, thinking: "xhigh", thinkingReason: "Cross-module reasoning is required here" }, "claude-code/claude-sonnet-5-5", /thinking xhigh was requested/],
+    ])("falls to the claude-code subscription route for %s when Go and Sol are both exhausted", async (_name, wave, expected, tierText) => {
+      const runner = done();
+      const { h, selected } = quotaHarness(status({ codex: solOut, go: goOut, claude: claudeUp }), runner);
+      try {
+        const result = await dispatch(h, wave);
+        const run = result.details.run;
+        expect(run).toMatchObject({ model: expected, harness: "claude-code", thinkingLevel: "xhigh", claudeAccount: "primary" });
+        expect(runner.mock.calls[0][0].run.claudeAccount).toBe("primary"); // pinned on an account the snapshot shows eligible
+        expect(selected).toEqual(["primary"]);
+        expect(run.model.startsWith("claude-code/")).toBe(true); // never the paid claude-code-api route
+        expect(run.selection).toMatchObject({ provider: "claude-code", source: "chain", independence: "requires-opus", chainRoutes: [GO_ROUTE, SOL_ROUTE, expected] });
+        expect(run.selection.fallbackReason).toMatch(tierText);
+        expect(run.selection.fallbackReason).toMatch(/OpenCode Go: every Go account is unavailable.*GPT-6\.1 Sol: every GPT account is unavailable/);
+        expect(result.content[0].text).toMatch(/Route note: neither OpenCode Go nor GPT-6\.1 Sol could launch/);
+        expect(result.content[0].text).toContain(`work needs verification: review it with an Opus 5.5 reviewer wave (all-reviewer waves default to model ${OPUS_ROUTE})`);
+        expect(result.content[0].text).toContain(`${expected.endsWith("haiku-5-5") ? "Haiku" : "Sonnet"} 5.5 work needs verification`);
+        expect(renderRunResult(run)).toContain("tier: requires Opus 5.5 verification");
+        expect(runner.mock.calls[0][0].run).toMatchObject({ model: expected, harness: "claude-code", thinkingLevel: "xhigh" });
+        expect(run.tasks[0].apiReceipt).toBeUndefined();
+      } finally { await shutdown(h); }
+    });
+
+    it("treats an unconfigured Go like an exhausted one", async () => {
+      const runner = done();
+      const { h } = quotaHarness(status({ codex: solOut, go: [], claude: claudeUp }), runner);
+      try {
+        const result = await dispatch(h, { tasks: plain });
+        expect(result.details.run.model).toBe("claude-code/claude-haiku-5-5");
+        expect(result.details.run.selection.fallbackReason).toMatch(/OpenCode Go: Go has no configured account in the provider account router/);
+      } finally { await shutdown(h); }
+    });
+
+    it.each([
+      ["Go with one usable account", status({ codex: solOut, go: [cooling("primary", "Go 1"), usable("b", "Go 2")] })],
+      ["Go busy at its session limit", status({ codex: solOut, go: [busy("primary", "Go 1"), busy("b", "Go 2")] })],
+      ["an unreadable router", new Error("spawn ut-provider-accounts ENOENT")],
+      ["a router that omits Go", status({ codex: solOut })],
+    ])("keeps Go for %s: busy and unknown are not exhaustion", async (_name, answer) => {
+      const runner = done();
+      const { h } = quotaHarness(answer, runner);
+      try {
+        const result = await dispatch(h, { tasks: plain });
+        expect(result.details.run.model).toBe(GO_ROUTE);
+        expect(result.details.run.selection).toMatchObject({ source: "chain", provider: "opencode-go" });
+        expect(result.details.run.selection.fallbackReason).toBeUndefined();
+        expect(result.content[0].text).not.toContain("Route note");
+      } finally { await shutdown(h); }
+    });
+
+    it("refuses synchronously, naming every cause, when no route can launch", async () => {
+      const runner = done();
+      const { h } = quotaHarness(status({ codex: solOut, go: goOut, claude: claudeOut }), runner);
+      try {
+        await expect(dispatch(h, { tasks: plain })).rejects.toThrow(
+          /no route that can launch this wave \(OpenCode Go: every Go account is unavailable \(Go 1: cooling down until Mon 02:59; Go 2: cooling down until Mon 02:59\).*\| GPT-6\.1 Sol: every GPT account is unavailable \(GPT 1: cooling down.*\| Claude subscription tier: every Claude account is ineligible \(Claude 1: signed out; Claude 2: signed out\)\)\. No route was started and no fallback was selected/);
+        expect(runner).not.toHaveBeenCalled();
+        const list = await h.tools.get("ultraterm_hub").execute("list", { action: "list" }, undefined, undefined, h.ctx);
+        expect(list.details.runs).toEqual([]);
+        expect(h.messages).toEqual([]);
+      } finally { await shutdown(h); }
+    });
+
+    it("serves from Sol without touching Claude when Sol still launches, even if every Claude account is out", async () => {
+      const runner = done();
+      const { h, selected } = quotaHarness(status({ codex: solUp, go: goOut, claude: claudeOut }), runner);
+      try {
+        const result = await dispatch(h, { tasks: plain });
+        expect(result.details.run.model).toBe(SOL_ROUTE);
+        expect(runner.mock.calls[0][0].run.claudeAccount).toBeUndefined();
+        expect(selected).toEqual([]); // Claude is not consulted for the route
+      } finally { await shutdown(h); }
+    });
+
+    it.each([
+      ["Claude 1 cooling down, Claude 2 eligible", [cooling("primary", "Claude 1"), usable("b", "Claude 2")], "b", "primary", "Claude 2"],
+      ["Claude 1 eligible, Claude 2 cooling down", [usable("primary", "Claude 1"), cooling("b", "Claude 2")], "primary", "b", "Claude 1"],
+      ["Claude 1 busy, Claude 2 eligible", [busy("primary", "Claude 1"), usable("b", "Claude 2")], "b", "primary", "Claude 2"],
+      ["Claude 1 signed out, Claude 2 eligible", [proven("primary", "Claude 1"), usable("b", "Claude 2")], "b", "primary", "Claude 2"],
+    ])("never passes a proven-ineligible Claude account: %s -> the worker runs on the eligible one", async (_name, claude, account, skipped, label) => {
+      const runner = done();
+      const { h, selected } = quotaHarness(status({ codex: solOut, go: goOut, claude }), runner);
+      try {
+        const result = await dispatch(h, { tasks: plain });
+        // The account the worker actually launched with, not just the route.
+        expect(runner.mock.calls[0][0].run).toMatchObject({ harness: "claude-code", model: "claude-code/claude-haiku-5-5", claudeAccount: account });
+        expect(result.details.run.claudeAccount).toBe(account);
+        expect(selected).toEqual([account]);
+        expect(selected).not.toContain(skipped);
+        expect(result.content[0].text).toContain(`Claude account: ${label}`);
+        expect(result.details.run.selection.fallbackReason).toContain(`Claude account ${label}`);
+      } finally { await shutdown(h); }
+    });
+
+    it.each([
+      ["Claude 2 has the lighter window", 60, 20, "b"],
+      ["Claude 1 has the lighter window", 15, 70, "primary"],
+      ["equal windows keep router order", 30, 30, "primary"],
+    ])("balances across eligible Claude accounts by the least-used window: %s", async (_name, primaryUsed, bUsed, account) => {
+      const runner = done();
+      const claude = [{ ...usable("primary", "Claude 1"), usedPercent: primaryUsed }, { ...usable("b", "Claude 2"), usedPercent: bUsed }];
+      const { h, selected } = quotaHarness(status({ codex: solOut, go: goOut, claude }), runner);
+      try {
+        await dispatch(h, { tasks: plain });
+        expect(runner.mock.calls[0][0].run.claudeAccount).toBe(account);
+        expect(selected).toEqual([account]);
+      } finally { await shutdown(h); }
+    });
+
+    it("refuses with the cause when the router lists Claude accounts but none is reported eligible", async () => {
+      const runner = done();
+      const unreported = [{ configured: true, id: "primary", label: "Claude 1", windows: [] }, cooling("b", "Claude 2")];
+      const { h, selected } = quotaHarness(status({ codex: solOut, go: goOut, claude: unreported }), runner);
+      try {
+        await expect(dispatch(h, { tasks: plain })).rejects.toThrow(
+          /Claude subscription tier: the router shows no eligible Claude account \(Claude 1: the router did not report it eligible; Claude 2: cooling down until Mon 02:59\)\)\. No route was started and no fallback was selected/);
+        expect(runner).not.toHaveBeenCalled();
+        expect(selected).toEqual([]);
+      } finally { await shutdown(h); }
+    });
+
+    it("names the account and the router's refusal when the router will not select the picked account", async () => {
+      const runner = done();
+      const { h, accountCommand } = quotaHarness(status({ codex: solOut, go: goOut, claude: claudeUp }), runner);
+      const answer = accountCommand.getMockImplementation()!;
+      accountCommand.mockImplementation(async (args: string[]) => {
+        if (args[0] === "select") throw new Error("Claude 1 is cooling down");
+        return answer(args);
+      });
+      try {
+        await expect(dispatch(h, { tasks: plain })).rejects.toThrow(
+          /picked Claude 1 for the Haiku 5\.5 tier, but the router would not select it now \(Claude 1 is cooling down\)\. No worker was started and no fallback was selected/);
+        expect(runner).not.toHaveBeenCalled();
+      } finally { await shutdown(h); }
+    });
+
+    it("refuses, naming the effort, when the Claude tier is needed but a non-xhigh effort was requested", async () => {
+      const runner = done();
+      const { h } = quotaHarness(status({ codex: solOut, go: goOut, claude: claudeUp }), runner);
+      try {
+        await expect(dispatch(h, { tasks: plain, thinking: "high", thinkingReason: "Careful reasoning is needed for this leaf" }))
+          .rejects.toThrow(/Claude subscription tier: the Claude subscription tier runs only at xhigh effort and thinking high is not silently overridden/);
+        expect(runner).not.toHaveBeenCalled();
+      } finally { await shutdown(h); }
+    });
+
+    it("refuses an implicit review synchronously when Claude is ineligible and the Sol review fallback is exhausted", async () => {
+      const runner = done();
+      const { h } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeOut }), runner);
+      try {
+        await expect(dispatch(h, { tasks: [{ label: "review", task: "Review", role: "reviewer" }] }))
+          .rejects.toThrow(/implicit review cannot run: Claude subscription tier: every Claude account is ineligible.*GPT-6\.1 Sol review fallback: every GPT account is unavailable/);
+        expect(runner).not.toHaveBeenCalled();
+      } finally { await shutdown(h); }
+    });
+
+    it("keeps Haiku an internal tier: an explicit Haiku route is refused like any unlisted model", async () => {
+      const runner = done();
+      const { h } = quotaHarness(status({ codex: solOut }), runner);
+      try {
+        await expect(dispatch(h, { harness: "claude-code", model: "claude-code/claude-haiku-5-5", tasks: plain }))
+          .rejects.toThrow(/runs only claude-code\/claude-sonnet-5-5 or claude-code\/claude-opus-5-5/);
+        expect(runner).not.toHaveBeenCalled();
+      } finally { await shutdown(h); }
+    });
+
+    describe("a Go parent whose own store has no Codex login", () => {
+      const sol = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text"] } as any;
+      const isolatedRuntime = () => ({ getModel: (provider: string) => provider === "openai-codex" ? sol : undefined, getModels: () => [sol], getAvailableSnapshot: () => [sol],
+        hasConfiguredAuth: () => true, isUsingOAuth: () => true, getProvider: () => ({ streamSimple() {} }) }) as unknown as ModelRuntime;
+      function goParent(answer: unknown) {
+        const createRuntime = vi.fn(async () => isolatedRuntime());
+        const runner = done();
+        const base = quotaHarness(answer, runner, { createModelRuntime: createRuntime });
+        const status = base.accountCommand.getMockImplementation()!;
+        base.accountCommand.mockImplementation(async (args: string[]) => args[0] === "select" && args[2] === "codex"
+          ? { ok: true, account: { id: "fallback", agentDir: isolatedCodexAgentDir("fallback") } } : status(args));
+        base.h.ctx.model = goModel;
+        const registry = { find: (provider: string) => provider === "opencode-go" ? goModel : undefined, getAll: () => [goModel], getAvailable: () => [goModel],
+          hasConfiguredAuth: (model: any) => model.provider === "opencode-go", isUsingOAuth: () => false, getProvider: () => ({ streamSimple() {} }) };
+        base.h.ctx.modelRegistry = registry;
+        return { ...base, createRuntime, runner, registry };
+      }
+
+      it("continues from an exhausted Go to Sol on the isolated Codex store, without registering Codex auth in the Go registry", async () => {
+        const { h, createRuntime, runner, registry } = goParent(status({ codex: solUp, go: goOut, claude: claudeUp }));
+        try {
+          const result = await dispatch(h, { tasks: plain });
+          expect(result.details.run.model).toBe(SOL_ROUTE);
+          expect(result.details.run.selection).toMatchObject({ source: "chain", chainRoutes: [GO_ROUTE, SOL_ROUTE] });
+          expect(result.details.run.selection.fallbackReason).toMatch(/OpenCode Go: every Go account is unavailable/);
+          expect(createRuntime).toHaveBeenCalledWith(isolatedAgentPaths(isolatedCodexAgentDir("fallback")));
+          expect(runner.mock.calls[0][0].run.model).toBe(SOL_ROUTE);
+          expect(registry.getAll()).toEqual([goModel]);
+        } finally { await shutdown(h); }
+      });
+
+      it("goes straight to the Claude tier, never opening the Codex store, when Sol is exhausted too", async () => {
+        const { h, createRuntime } = goParent(status({ codex: solOut, go: goOut, claude: claudeUp }));
+        try {
+          const result = await dispatch(h, { tasks: plain });
+          expect(result.details.run.model).toBe("claude-code/claude-haiku-5-5");
+          expect(createRuntime).not.toHaveBeenCalled();
+        } finally { await shutdown(h); }
+      });
+
+      it("keeps Go, and never opens the Codex store, while Go can launch", async () => {
+        const { h, createRuntime } = goParent(status({ codex: solUp, go: goUp, claude: claudeUp }));
+        try {
+          const result = await dispatch(h, { tasks: plain });
+          expect(result.details.run.model).toBe(GO_ROUTE);
+          expect(createRuntime).not.toHaveBeenCalled();
+        } finally { await shutdown(h); }
+      });
+    });
+  });
+
+  describe("explicit routes stay exact", () => {
+    it.each([
+      ["Sol by model", { model: SOL_ROUTE }, status({ codex: solOut, go: goUp, claude: claudeUp }), SOL_ROUTE, /every GPT account is unavailable \(GPT 1: cooling down until Mon 02:59; GPT 2: cooling down until Mon 02:59\)/],
+      ["Sol by profile", { profile: "steak-pi/gpt-6-1-sol" }, status({ codex: solOut, go: goUp, claude: claudeUp }), SOL_ROUTE, /every GPT account is unavailable/],
+      ["Go by model", { model: GO_ROUTE }, status({ codex: solUp, go: goOut, claude: claudeUp }), GO_ROUTE, /every Go account is unavailable/],
+      ["the chain head, named only by harness", { harness: "pi" }, status({ codex: solUp, go: goOut, claude: claudeUp }), GO_ROUTE, /every Go account is unavailable/],
+    ])("refuses an exhausted provider synchronously with the router cause and never reroutes (%s)", async (_name, selector, answer, route, cause) => {
+      const runner = done();
+      const { h, accountCommand } = quotaHarness(answer, runner);
+      try {
+        const attempt = dispatch(h, { ...selector, tasks: plain });
+        await expect(attempt).rejects.toThrow(new RegExp(`USAP explicit route ${route.replace(/[./]/g, "\\$&")} cannot launch: `));
+        await expect(attempt).rejects.toThrow(cause);
+        await expect(attempt).rejects.toThrow(/Explicit routes are never rerouted, so no worker was started and no fallback was selected/);
+        expect(runner).not.toHaveBeenCalled();
+        expect(accountCommand.mock.calls.every(([args]) => args[0] === "status")).toBe(true);
+        const list = await h.tools.get("ultraterm_hub").execute("list", { action: "list" }, undefined, undefined, h.ctx);
+        expect(list.details.runs).toEqual([]);
+      } finally { await shutdown(h); }
+    });
+
+    it("still launches an explicit route whose provider is merely busy or unreadable", async () => {
+      const runner = done();
+      const busyGo = quotaHarness(status({ go: [busy("primary", "Go 1"), busy("b", "Go 2")] }), runner);
+      try {
+        const result = await dispatch(busyGo.h, { model: GO_ROUTE, tasks: plain });
+        expect(result.details.run).toMatchObject({ model: GO_ROUTE });
+        expect(result.details.run.selection.source).toBe("override");
+      } finally { await shutdown(busyGo.h); }
+      const unreadable = quotaHarness(new Error("router offline"), runner);
+      try {
+        const result = await dispatch(unreadable.h, { model: SOL_ROUTE, tasks: plain });
+        expect(result.details.run).toMatchObject({ model: SOL_ROUTE });
+      } finally { await shutdown(unreadable.h); }
+    });
+  });
+
+  describe("a worker that fails before its first model output fails the dispatch", () => {
+    // A plain route failure, not a quota cause: these tests are about the startup gate itself (cancel, durable
+    // delivery, the window), so the failure must be one the gate surfaces and never falls through on.
+    const cause = "Reserved Codex account has no exact Sol model with configured OAuth authentication";
+    const refused = () => vi.fn(async (_context: Parameters<WorkerRunner>[0]) => ({ state: "failed" as const, output: "", turns: 0, usage: emptyUsage(), error: cause }));
+    const two = [{ label: "one", task: "First leaf" }, { label: "two", task: "Second leaf" }];
+    type Settled = Awaited<ReturnType<WorkerRunner>>;
+    const idleUntilAborted = (signal: AbortSignal, turns = 0) =>
+      new Promise<Settled>((resolve) => signal.addEventListener("abort", () => resolve({ state: "aborted", output: "", turns, usage: emptyUsage(), error: String(signal.reason?.message ?? "cancelled") }), { once: true }));
+    // What both real workers report once the model has answered: the launch-proof a dispatch waits for.
+    const streaming = () => vi.fn(async ({ onProgress, signal }: Parameters<WorkerRunner>[0]) => {
+      onProgress({ turns: 1, outputStarted: true });
+      return await idleUntilAborted(signal, 1);
+    });
+    const startupMessage = (promise: Promise<unknown>) => promise.then(() => "", (error: Error) => error.message);
+    const runIdOf = (message: string) => /\(run (\S+) · /.exec(message)![1];
+    const durableAt = (prefix: string) => {
+      const root = mkdtempSync(join(tmpdir(), "usap-startup-")); dirs.push(root);
+      return { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix };
+    };
+
+    it.each([true, false])("rejects with the named cause and records it on the run (background=%s)", async (background) => {
+      const runner = refused();
+      const h = harness(() => runner, undefined, undefined, { startupWindowMs: 2_000 });
+      try {
+        const attempt = dispatch(h, { background, tasks: two });
+        await expect(attempt).rejects.toThrow(/USAP dispatch failed before any worker produced model output \(run run-fixed-\d+ · /);
+        await expect(attempt).rejects.toThrow(new RegExp(`\\[one\\] ${cause.replace(/[()]/g, "\\$&")}`));
+        await expect(attempt).rejects.toThrow(/The run record is failed with these causes and no worker is left running\. No fallback was selected/);
+        const runId = runIdOf(String(await attempt.catch((error: Error) => error.message)));
+        const recorded = await h.tools.get("ultraterm_hub").execute("status", { action: "status", runId }, undefined, undefined, h.ctx);
+        expect(recorded.details.run.state).toBe("failed");
+        expect(recorded.details.run.tasks.some((task: any) => task.state === "failed" && String(task.error).includes(cause))).toBe(true);
+        await flush();
+        expect(h.messages).toEqual([]); // the thrown error is the one notification: no completion chatter follows
+      } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+    });
+
+    it("cancels a healthy sibling instead of leaving half a wave running, and says why", async () => {
+      const runner = vi.fn(async ({ task, signal }: Parameters<WorkerRunner>[0]) => task.label === "bad"
+        ? { state: "failed" as const, output: "", turns: 0, usage: emptyUsage(), error: cause }
+        : await idleUntilAborted(signal));
+      const h = harness(() => runner, undefined, undefined, { startupWindowMs: 2_000 });
+      try {
+        const message = await startupMessage(dispatch(h, { background: true, tasks: [{ label: "ok", task: "Healthy leaf" }, { label: "bad", task: "Doomed leaf" }] }));
+        expect(message).toContain("[bad]");
+        expect(message).toContain("no worker is left running");
+        const recorded = await h.tools.get("ultraterm_hub").execute("status", { action: "status", runId: runIdOf(message) }, undefined, undefined, h.ctx);
+        const byLabel = Object.fromEntries(recorded.details.run.tasks.map((task: any) => [task.label, task]));
+        expect(byLabel.bad.state).toBe("failed");
+        expect(byLabel.ok.state).toBe("aborted");
+        expect(String(byLabel.ok.error)).toMatch(/Run cancelled: worker .* failed before its first model output/);
+      } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+    });
+
+    it("does not claim a sibling was cancelled when it had not stopped inside the settle wait, and names it", async () => {
+      vi.useFakeTimers();
+      let release = () => {};
+      const runner = vi.fn(async ({ task }: Parameters<WorkerRunner>[0]) => task.label === "bad"
+        ? { state: "failed" as const, output: "", turns: 0, usage: emptyUsage(), error: cause }
+        // A worker that ignores the cancel until the test releases it: it cannot settle inside the wait.
+        : await new Promise<Settled>((resolve) => { release = () => resolve({ state: "aborted", output: "", turns: 0, usage: emptyUsage(), error: "released late" }); }));
+      const h = harness(() => runner, undefined, undefined, { startupWindowMs: 2_000 });
+      try {
+        const attempt = startupMessage(dispatch(h, { background: true, tasks: [{ label: "stuck", task: "Ignores cancel" }, { label: "bad", task: "Doomed leaf" }] }));
+        await vi.advanceTimersByTimeAsync(5_100);
+        const message = await attempt;
+        expect(message).toContain("[bad]");
+        expect(message).toMatch(/Cancellation was requested for the whole run, but \[stuck\] had not stopped within 5000 ms and may still be shutting down; the run record is still running \(inspect it with ultraterm_hub status /);
+        expect(message).not.toMatch(/no worker is left running|every sibling|nothing was left running/);
+        // Its late settlement queues no completion either: the thrown error was the one notification.
+        release();
+        await vi.advanceTimersByTimeAsync(50);
+        await flush();
+        expect(h.messages).toEqual([]);
+      } finally { release(); await vi.advanceTimersByTimeAsync(50); await h.handlers.get("session_shutdown")!({}, h.ctx); }
+    });
+
+    it("reports Started once every launched worker produced output, without waiting out the window", async () => {
+      const runner = streaming();
+      const h = harness(() => runner, undefined, undefined, { startupWindowMs: 5_000 });
+      const began = Date.now();
+      try {
+        const started = await dispatch(h, { background: true, tasks: two });
+        expect(Date.now() - began).toBeLessThan(2_500);
+        expect(started.content[0].text).toMatch(/Started USAP run run-fixed-\d+/);
+        expect(started.details.run.state).toBe("running");
+      } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+    });
+
+    it("stops waiting at the bounded window for a worker that is still launching, and reports Started", async () => {
+      const runner = vi.fn(async ({ signal }: Parameters<WorkerRunner>[0]) => await idleUntilAborted(signal));
+      const h = harness(() => runner, undefined, undefined, { startupWindowMs: 60 });
+      const began = Date.now();
+      try {
+        const started = await dispatch(h, { background: true, tasks: [{ label: "slow", task: "Slow leaf" }] });
+        expect(Date.now() - began).toBeGreaterThanOrEqual(50);
+        expect(started.content[0].text).toMatch(/Started USAP run run-fixed-\d+/);
+      } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+    });
+
+    it("does not treat a failure after model output as a launch failure", async () => {
+      const failedLater = vi.fn(async ({ onProgress }: Parameters<WorkerRunner>[0]) => {
+        onProgress({ turns: 2, outputStarted: true });
+        return { state: "failed" as const, output: "partial", turns: 2, usage: emptyUsage(), error: "tests failed" };
+      });
+      const h = harness(() => failedLater, undefined, undefined, { startupWindowMs: 2_000 });
+      try {
+        const result = await dispatch(h, { tasks: [{ label: "late", task: "Fails on turn two" }] });
+        expect(result.details.run.state).toBe("failed");
+        expect(result.content[0].text).toContain("[late] failed");
+      } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+    });
+
+    it("rejects an invalid startup window at construction", () => {
+      for (const startupWindowMs of [-1, 1.5, 30_001, Number.NaN]) {
+        expect(() => harness(() => done(), undefined, undefined, { startupWindowMs })).toThrow(/startupWindowMs must be a safe integer from 0 to 30000/);
+      }
+    });
+
+    describe("a real, nonzero startup window", () => {
+      // Fake timers drive the window itself; the worker settles `failed` with no output after `delayMs`.
+      const failsAfter = (delayMs: number) => vi.fn(async (_context: Parameters<WorkerRunner>[0]) => {
+        await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+        return { state: "failed" as const, output: "", turns: 0, usage: emptyUsage(), error: cause };
+      });
+
+      it("rejects with the cause for a failure just inside the window", async () => {
+        vi.useFakeTimers();
+        const h = harness(() => failsAfter(900), undefined, undefined, { startupWindowMs: 1_000 });
+        try {
+          const attempt = startupMessage(dispatch(h, { background: true, tasks: [{ label: "late", task: "Fails just inside" }] }));
+          await vi.advanceTimersByTimeAsync(950);
+          expect(await attempt).toContain(`[late] ${cause}`);
+          await flush();
+          expect(h.messages).toEqual([]);
+        } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+      });
+
+      it("reports Started for a failure just past the window, then delivers it once as the ordinary completion", async () => {
+        vi.useFakeTimers();
+        const h = harness(() => failsAfter(1_100), undefined, undefined, { startupWindowMs: 1_000 });
+        try {
+          const attempt = dispatch(h, { background: true, tasks: [{ label: "late", task: "Fails just past" }] });
+          await vi.advanceTimersByTimeAsync(1_050);
+          const started = await attempt; // resolved, not rejected: the window closed first
+          expect(started.content[0].text).toMatch(/Started USAP run run-fixed-\d+/);
+          expect(h.messages).toEqual([]);
+          await vi.advanceTimersByTimeAsync(100);
+          await flush();
+          expect(h.messages).toHaveLength(1);
+          expect(h.messages[0].message.content).toMatch(/1\/1 settled · failed/);
+          const runId = /Started USAP run (\S+) /.exec(started.content[0].text)![1];
+          const recorded = await h.tools.get("ultraterm_hub").execute("status", { action: "status", runId }, undefined, undefined, h.ctx);
+          expect(recorded.details.run.tasks[0]).toMatchObject({ state: "failed", error: cause });
+        } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+      });
+
+      it("outlasts a slow router: the default window exceeds the router timeout plus the bind call, so the refusal still names its cause", async () => {
+        expect(DEFAULT_STARTUP_WINDOW_MS).toBeGreaterThan(2 * GO_ACCOUNT_ROUTER_TIMEOUT_MS);
+        vi.useFakeTimers();
+        // A Sol worker's account phase: `reserve` answers at the router timeout, `bind` just under it,
+        // and only then does the router's refusal fail the leaf: well past the old 8 s window.
+        const accountPhaseMs = 2 * GO_ACCOUNT_ROUTER_TIMEOUT_MS - 1_000;
+        const h = harness(() => failsAfter(accountPhaseMs), undefined, undefined, { startupWindowMs: undefined });
+        try {
+          let outcome: string | undefined;
+          const attempt = startupMessage(dispatch(h, { background: true, tasks: [{ label: "sol", task: "Waits on a slow router" }] })).then((message) => { outcome = message || "started"; });
+          await vi.advanceTimersByTimeAsync(accountPhaseMs - 500);
+          expect(outcome).toBeUndefined(); // still inside its account phase: no `Started` has been reported
+          await vi.advanceTimersByTimeAsync(1_000);
+          await attempt;
+          expect(outcome).toContain(`[sol] ${cause}`);
+        } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+      });
+    });
+
+    describe("a failed background startup is delivered durably", () => {
+      it("is not queued again after the session reloads its checkpoint store", async () => {
+        const durable = durableAt("startup-fail");
+        const mark = vi.spyOn(CheckpointStore.prototype, "markDelivered");
+        const h = harness(() => refused(), durable, undefined, { startupWindowMs: 2_000 });
+        let next: ReturnType<typeof harness> | undefined;
+        try {
+          const message = await startupMessage(dispatch(h, { background: true, tasks: two }));
+          expect(message).toMatch(/failed before any worker produced model output/);
+          const runId = runIdOf(message);
+          await flush();
+          expect(h.messages).toEqual([]);
+          expect(mark).toHaveBeenCalledWith(runId);
+          await h.handlers.get("session_shutdown")!({}, h.ctx);
+          const reopened = vi.fn(async () => ({ state: "done" as const, output: "must not run", turns: 1, usage: emptyUsage() }));
+          // No native receipt is supplied: only the committed delivered bit can stop the replay.
+          next = harness(() => reopened, { ...durable, prefix: "reopened" });
+          await next.handlers.get("session_start")!({}, next.ctx);
+          await next.handlers.get("agent_settled")!({}, next.ctx);
+          await flush();
+          expect(next.messages).toEqual([]);
+          expect(reopened).not.toHaveBeenCalled();
+          const status = await next.tools.get("ultraterm_hub").execute("s", { action: "status", runId }, undefined, undefined, next.ctx);
+          expect(status.details.run.state).toBe("failed"); // the run was adopted, so the silence is not vacuous
+        } finally {
+          mark.mockRestore();
+          await h.handlers.get("session_shutdown")!({}, h.ctx);
+          if (next) await next.handlers.get("session_shutdown")!({}, next.ctx);
+        }
+      });
+
+      it("holds even when a sibling had not stopped inside the settle wait", async () => {
+        vi.useFakeTimers();
+        const durable = durableAt("startup-stuck");
+        let release = () => {};
+        const runner = vi.fn(async ({ task }: Parameters<WorkerRunner>[0]) => task.label === "bad"
+          ? { state: "failed" as const, output: "", turns: 0, usage: emptyUsage(), error: cause }
+          : await new Promise<Settled>((resolve) => { release = () => resolve({ state: "aborted", output: "", turns: 0, usage: emptyUsage(), error: "released late" }); }));
+        const h = harness(() => runner, durable, undefined, { startupWindowMs: 2_000 });
+        let next: ReturnType<typeof harness> | undefined;
+        try {
+          const attempt = startupMessage(dispatch(h, { background: true, tasks: [{ label: "stuck", task: "Ignores cancel" }, { label: "bad", task: "Doomed leaf" }] }));
+          await vi.advanceTimersByTimeAsync(5_100);
+          expect(await attempt).toContain("had not stopped within 5000 ms");
+          release();
+          await vi.advanceTimersByTimeAsync(50);
+          await h.handlers.get("session_shutdown")!({}, h.ctx);
+          next = harness(() => runner, { ...durable, prefix: "reopened" });
+          await next.handlers.get("session_start")!({}, next.ctx);
+          await next.handlers.get("agent_settled")!({}, next.ctx);
+          await flush();
+          expect(next.messages).toEqual([]);
+        } finally {
+          release();
+          await h.handlers.get("session_shutdown")!({}, h.ctx);
+          if (next) await next.handlers.get("session_shutdown")!({}, next.ctx);
+        }
+      });
+
+      it("retries a failed delivered-mark write with the next save instead of losing it", async () => {
+        const durable = durableAt("startup-retry");
+        const originalMark = CheckpointStore.prototype.markDelivered;
+        let failing = true;
+        const mark = vi.spyOn(CheckpointStore.prototype, "markDelivered").mockImplementation(function (this: CheckpointStore, id) {
+          if (failing) throw Object.assign(new Error("synthetic write failure"), { code: "ENOSPC", syscall: "write" });
+          return originalMark.call(this, id);
+        });
+        const h = harness(() => refused(), durable, undefined, { startupWindowMs: 2_000 });
+        let next: ReturnType<typeof harness> | undefined;
+        try {
+          const message = await startupMessage(dispatch(h, { background: true, tasks: [{ label: "one", task: "First leaf" }] }));
+          expect(message).toMatch(/failed before any worker produced model output/);
+          failing = false;
+          await h.handlers.get("session_shutdown")!({}, h.ctx);
+          next = harness(() => refused(), { ...durable, prefix: "reopened" });
+          await next.handlers.get("session_start")!({}, next.ctx);
+          await next.handlers.get("agent_settled")!({}, next.ctx);
+          await flush();
+          expect(next.messages).toEqual([]);
+        } finally {
+          failing = false;
+          mark.mockRestore();
+          await h.handlers.get("session_shutdown")!({}, h.ctx);
+          if (next) await next.handlers.get("session_shutdown")!({}, next.ctx);
+        }
+      });
+    });
+
+    describe("a real Pi worker whose first request fails with no output", () => {
+      const failedMessage = { role: "assistant", content: [], api: "test", provider: "test", model: "test", usage: emptyUsage(), stopReason: "error", errorMessage: "429 rate_limit_exceeded: too many requests", timestamp: Date.now() };
+      /** The session Pi hands a worker: a turn starts, then the provider refuses the request. */
+      function refusedSession() {
+        const listeners = new Set<(event: any) => void>();
+        const emit = (event: unknown) => { for (const listener of listeners) listener(event); };
+        return {
+          isStreaming: false,
+          subscribe(listener: (event: any) => void) { listeners.add(listener); return () => listeners.delete(listener); },
+          async prompt() {
+            emit({ type: "turn_start" });
+            emit({ type: "message_start", message: failedMessage });
+            emit({ type: "message_end", message: failedMessage });
+            emit({ type: "turn_end", message: failedMessage, toolResults: [] });
+          },
+          async steer() {}, async abort() {}, dispose() {},
+        };
+      }
+      /** A session that answers (first delta) and then keeps working until aborted. */
+      function answeringSession() {
+        const listeners = new Set<(event: any) => void>();
+        let finish = () => {};
+        return {
+          isStreaming: false,
+          subscribe(listener: (event: any) => void) { listeners.add(listener); return () => listeners.delete(listener); },
+          async prompt() {
+            const partial = { role: "assistant", content: [{ type: "text", text: "working" }], api: "test", provider: "test", model: "test", usage: emptyUsage(), stopReason: "stop", timestamp: Date.now() };
+            for (const event of [{ type: "turn_start" }, { type: "message_update", message: partial }]) for (const listener of listeners) listener(event);
+            await new Promise<void>((resolve) => { finish = resolve; });
+          },
+          async steer() {}, async abort() { finish(); }, dispose() {},
+        };
+      }
+      const piHarness = (session: () => unknown) => harness((relay) => createPiWorkerRunner({
+        relay,
+        resolveRuntime: () => ({ model: { provider: "test", id: "model" } as never, thinkingLevel: "off" }),
+        sessionFactory: async () => ({ session: session() as never }),
+      }), undefined, undefined, { startupWindowMs: 3_000 });
+
+      it.each([true, false])("rejects the dispatch with the provider's cause, though its turn had started (background=%s)", async (background) => {
+        const h = piHarness(refusedSession);
+        try {
+          const attempt = dispatch(h, { background, tasks: [{ label: "sol", task: "First request is refused" }] });
+          await expect(attempt).rejects.toThrow(/USAP dispatch failed before any worker produced model output \(run run-fixed-\d+ · .*\[sol\] .*429 rate_limit_exceeded: too many requests/);
+          const message = String(await attempt.catch((error: Error) => error.message));
+          const recorded = await h.tools.get("ultraterm_hub").execute("status", { action: "status", runId: runIdOf(message) }, undefined, undefined, h.ctx);
+          const [task] = recorded.details.run.tasks;
+          expect(task).toMatchObject({ state: "failed" });
+          expect(task.turns).toBeGreaterThanOrEqual(1); // the very case a turn counter cannot see
+          await flush();
+          expect(h.messages).toEqual([]);
+        } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+      });
+
+      it("reports Started as soon as the real worker streams its first output", async () => {
+        const h = piHarness(answeringSession);
+        const began = Date.now();
+        try {
+          const started = await dispatch(h, { background: true, tasks: [{ label: "sol", task: "Answers" }] });
+          expect(Date.now() - began).toBeLessThan(2_500);
+          expect(started.content[0].text).toMatch(/Started USAP run run-fixed-\d+/);
+          expect(started.details.run.tasks[0].state).not.toBe("failed");
+        } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+      });
+    });
+  });
+
+  // Go has no usage API, so a spent Go plan reads as an eligible account until its first request answers 429
+  // GoUsageLimitError. An implicit wave must then re-run on the next tier by itself instead of failing with
+  // "No fallback was selected".
+  describe("an implicit wave refused on a usage limit before any output falls through to the next tier", () => {
+    const HAIKU = "claude-code/claude-haiku-5-5";
+    const SONNET = "claude-code/claude-sonnet-5-5";
+    const GO_LIMIT = '429: {"type":"GoUsageLimitError","message":"Go usage limit exceeded"}';
+    const SOL_LIMIT = "The usage limit has been reached";
+    const CLAUDE_LIMIT = "quota limit reached; resets Oct 29 at 5pm (UTC); check Claude usage and retry the same route only after reset";
+    const build = [{ label: "build", task: "Implement and test", role: "worker", mayEdit: true, ownedPaths: ["src/x.ts"], allowBash: true }];
+    type Context = Parameters<WorkerRunner>[0];
+    const refusal = (error: string) => ({ state: "failed" as const, output: "", turns: 0, usage: emptyUsage(), error });
+    /** A worker per route: a route in `refused` dies before any output with its text, every other route answers. */
+    const routed = (refused: Record<string, string>) => vi.fn(async ({ run }: Context): ReturnType<WorkerRunner> => run.model in refused
+      ? refusal(refused[run.model]) : { state: "done" as const, output: "ok", turns: 1, usage: emptyUsage() });
+    const open = { startupWindowMs: 2_000 };
+    const statusCalls = (accountCommand: { mock: { calls: unknown[][] } }) => accountCommand.mock.calls.filter(([args]) => (args as string[])[0] === "status").length;
+    const recordOf = async (h: ReturnType<typeof harness>, runId: string) =>
+      (await h.tools.get("ultraterm_hub").execute("status", { action: "status", runId }, undefined, undefined, h.ctx)).details.run;
+    const durableRoot = (prefix: string) => {
+      const root = mkdtempSync(join(tmpdir(), "usap-fall-through-")); dirs.push(root);
+      return { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix };
+    };
+    const messageOf = (promise: Promise<unknown>) => promise.then(() => "", (error: Error) => error.message);
+
+    it("an Esc during the next tier's router reads never launches it", async () => {
+      const runner = routed({ [GO_ROUTE]: GO_LIMIT });
+      const controller = new AbortController();
+      const { h, accountCommand } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeUp }), runner, open);
+      // Abort the moment the second tier asks the router for status, before it selects or launches anything.
+      const real = accountCommand.getMockImplementation()!;
+      let statuses = 0;
+      accountCommand.mockImplementation(async (args: string[]) => {
+        if (args[0] === "status" && ++statuses === 2) controller.abort();
+        return real(args);
+      });
+      try {
+        const message = await messageOf(h.tools.get("ultraterm_subagents").execute("t", { goal: "g", background: true, tasks: plain }, controller.signal, undefined, h.ctx));
+        expect(message).toMatch(/cancelled before the fall-through to the next tier launched/);
+        expect(runner.mock.calls.map(([context]) => context.run.model)).toEqual([GO_ROUTE]);
+      } finally { await shutdown(h); }
+    });
+
+    describe.each([false, true])("Go refuses at its first request with GoUsageLimitError and Sol is out (background=%s)", (background) => {
+      it.each([
+        ["a plain scout leaf", plain, HAIKU, /^automatic fall-through after a usage-limit refusal before any output; Haiku 5\.5: ordinary leaves/],
+        ["a mayEdit + allowBash leaf", build, SONNET, /^automatic fall-through after a usage-limit refusal before any output; Sonnet 5\.5: substantial code work/],
+      ])("re-runs %s on its Claude tier with no parent re-dispatch", async (_name, wave, tier, reason) => {
+        const runner = routed({ [GO_ROUTE]: GO_LIMIT });
+        const { h, accountCommand, selected } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeUp }), runner, open);
+        try {
+          const result = await dispatch(h, { background, tasks: wave });
+          // Exactly two launches from ONE tool call: Go (refused), then the Claude tier on the same tasks.
+          expect(runner.mock.calls.map(([context]) => context.run.model)).toEqual([GO_ROUTE, tier]);
+          expect(runner.mock.calls[1][0].run).toMatchObject({ harness: "claude-code", thinkingLevel: "xhigh", claudeAccount: "primary" });
+          expect(runner.mock.calls[1][0].run.tasks.map((task) => [task.label, task.task])).toEqual(runner.mock.calls[0][0].run.tasks.map((task) => [task.label, task.task]));
+          expect(selected).toEqual(["primary"]); // pinned to a router-eligible account
+          expect(statusCalls(accountCommand)).toBe(2); // the second tier decided on a fresh router read
+          // The failed first run is recorded failed, with its cause named, and its completion is not delivered.
+          const first = await recordOf(h, "run-fixed-1");
+          expect(first.state).toBe("failed");
+          expect(first.model).toBe(GO_ROUTE);
+          expect(first.tasks[0]).toMatchObject({ state: "failed" });
+          expect(String(first.tasks[0].error)).toContain("GoUsageLimitError");
+          // The second run's receipt names the fall-through and why.
+          const second = background ? await recordOf(h, "run-fixed-2") : result.details.run;
+          expect(second).toMatchObject({ model: tier, harness: "claude-code" });
+          expect(second.selection).toMatchObject({ provider: "claude-code", source: "chain", independence: "requires-opus", chainRoutes: [GO_ROUTE, SOL_ROUTE, tier] });
+          expect(second.selection.fallbackReason).toMatch(reason);
+          expect(second.selection.fallbackReason).toMatch(/OpenCode Go: run run-fixed-1 was refused on a usage limit before any output \(\[[a-z]+\] 429: .*GoUsageLimitError.*Go usage limit exceeded/);
+          expect(second.selection.fallbackReason).toMatch(/GPT-6\.1 Sol: every GPT account is unavailable/);
+          const text = result.content[0].text;
+          expect(text).toMatch(/Fall-through: run run-fixed-1 · opencode-go\/deepseek-v4\.1-flash was refused on a provider usage limit before any worker produced output \(\[[a-z]+\] 429: .*GoUsageLimitError.*\)\. The same tasks were re-run here on the next tier, with no parent re-dispatch\./);
+          expect(text).toMatch(/Route note: neither OpenCode Go nor GPT-6\.1 Sol could launch/);
+          if (background) {
+            expect(text).toMatch(new RegExp(`Started USAP run run-fixed-2 · ${tier}`));
+            await flush();
+          } else {
+            expect(result.details.run.state).toBe("done");
+          }
+          // One completion for the whole dispatch, never one for the refused first run.
+          await expect.poll(() => h.messages.length).toBe(background ? 1 : 0);
+          if (background) {
+            expect(String(h.messages[0].message.content)).toContain("run-fixed-2");
+            expect(String(h.messages[0].message.content)).not.toContain("run-fixed-1");
+          }
+          const list = await h.tools.get("ultraterm_hub").execute("list", { action: "list" }, undefined, undefined, h.ctx);
+          expect(list.details.runs.map((run: any) => [run.runId, run.state])).toEqual([["run-fixed-1", "failed"], ["run-fixed-2", "done"]]);
+        } finally { await shutdown(h); }
+      });
+
+      it("fails synchronously naming both causes when the Claude tier is refused too, without claiming no fallback was tried", async () => {
+        const runner = routed({ [GO_ROUTE]: GO_LIMIT, [HAIKU]: CLAUDE_LIMIT });
+        const { h } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeUp }), runner, open);
+        try {
+          const message = await messageOf(dispatch(h, { background, tasks: plain }));
+          expect(message).toMatch(/^USAP dispatch failed before any worker produced model output \(run run-fixed-2 · claude-code\/claude-haiku-5-5\): \[scout\] quota limit reached; resets Oct 29 at 5pm/);
+          expect(message).toMatch(/This was the automatic fall-through after run run-fixed-1 · opencode-go\/deepseek-v4\.1-flash was refused on a provider usage limit before any worker produced output \(\[scout\] 429: .*GoUsageLimitError.*\): no further fall-through applies, so the dispatch fails with both causes\./);
+          expect(message).not.toContain("No fallback was selected");
+          expect(runner).toHaveBeenCalledTimes(2); // each tier once, never a loop
+          const list = await h.tools.get("ultraterm_hub").execute("list", { action: "list" }, undefined, undefined, h.ctx);
+          expect(list.details.runs.map((run: any) => [run.runId, run.state])).toEqual([["run-fixed-1", "failed"], ["run-fixed-2", "failed"]]);
+          await flush();
+          expect(h.messages).toEqual([]); // the thrown error is the one notification
+        } finally { await shutdown(h); }
+      });
+
+      it("fails synchronously naming both causes when no Claude account can take the next tier", async () => {
+        const runner = routed({ [GO_ROUTE]: GO_LIMIT });
+        const { h } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeOut }), runner, open);
+        try {
+          const message = await messageOf(dispatch(h, { background, tasks: plain }));
+          expect(message).toMatch(/no route that can launch this wave \(OpenCode Go: run run-fixed-1 was refused on a usage limit before any output \(\[scout\] 429: .*GoUsageLimitError.*\) \| GPT-6\.1 Sol: every GPT account is unavailable.*\| Claude subscription tier: every Claude account is ineligible \(Claude 1: signed out; Claude 2: signed out\)\)\./);
+          expect(message).toContain("The tier that launched was refused before any output (run run-fixed-1) and no further route was started");
+          expect(message).not.toContain("no fallback was selected");
+          expect(runner).toHaveBeenCalledTimes(1);
+          expect((await recordOf(h, "run-fixed-1")).state).toBe("failed");
+        } finally { await shutdown(h); }
+      });
+    });
+
+    it("falls through when the router reads a spent Go plan as usable: GPT cooling down, Go usage unknown, Go answers GoUsageLimitError", async () => {
+      // Go has no usage API: its accounts are eligible with no measured window, so the preflight selects it.
+      const unknown = (id: string, label: string) => ({ configured: true, eligible: true, id, label, state: "balancing", usageKnown: false, windows: [] });
+      const runner = routed({ [GO_ROUTE]: GO_LIMIT });
+      const { h } = quotaHarness(status({ codex: solOut, go: [unknown("primary", "Go 1"), unknown("b", "Go 2")], claude: claudeUp }), runner, open);
+      try {
+        const result = await dispatch(h, { tasks: [{ label: "echo", task: "Reply pong", role: "scout" }] });
+        expect(runner.mock.calls.map(([context]) => context.run.model)).toEqual([GO_ROUTE, HAIKU]);
+        expect(result.details.run).toMatchObject({ model: HAIKU, state: "done" });
+        expect(result.content[0].text).toContain("with no parent re-dispatch");
+        expect(result.content[0].text).not.toContain("No fallback was selected");
+      } finally { await shutdown(h); }
+    });
+
+    describe("the chain is walked once, in order", () => {
+      it("Go refused with GoUsageLimitError falls through to Sol, not to the parent", async () => {
+        const runner = routed({ [GO_ROUTE]: GO_LIMIT });
+        const { h, selected } = quotaHarness(status({ codex: solUp, go: goUp, claude: claudeUp }), runner, open);
+        try {
+          const result = await dispatch(h, { tasks: plain });
+          expect(runner.mock.calls.map(([context]) => context.run.model)).toEqual([GO_ROUTE, SOL_ROUTE]);
+          expect(result.details.run).toMatchObject({ model: SOL_ROUTE, state: "done" });
+          expect(result.details.run.selection).toMatchObject({ provider: "openai-codex", source: "chain", chainRoutes: [GO_ROUTE, SOL_ROUTE] });
+          expect(result.details.run.selection.fallbackReason).toMatch(/^automatic fall-through after a usage-limit refusal before any output; OpenCode Go: run run-fixed-1 was refused on a usage limit before any output \(\[scout\] /);
+          expect(result.content[0].text).toMatch(/Fall-through: run run-fixed-1 · opencode-go\/deepseek-v4\.1-flash was refused/);
+          expect(result.content[0].text).toMatch(/this implicit wave continues down the default chain on openai-codex\/gpt-6\.1-sol/);
+          expect(selected).toEqual([]); // Claude is never consulted while Sol can launch
+          expect((await recordOf(h, "run-fixed-1")).state).toBe("failed");
+        } finally { await shutdown(h); }
+      });
+
+      it.each([
+        ["the Codex usage-limit wording", SOL_LIMIT],
+        ["subscription_quota_exceeded", "subscription_quota_exceeded"],
+        ["a router refusal that says cooling down", "Provider account router refused: every GPT account is cooling down (GPT 1, GPT 2); the earliest returns at Mon 02:59"],
+      ])("Sol refused with %s falls through to the Claude tier, not back to Go", async (_name, error) => {
+        // Go is exhausted by the snapshot, so Sol is the route; its refusal leaves nothing but Claude.
+        const runner = routed({ [SOL_ROUTE]: error });
+        const { h } = quotaHarness(status({ codex: solUp, go: goOut, claude: claudeUp }), runner, open);
+        try {
+          const result = await dispatch(h, { tasks: plain });
+          expect(runner.mock.calls.map(([context]) => context.run.model)).toEqual([SOL_ROUTE, HAIKU]);
+          expect(result.details.run.selection).toMatchObject({ source: "chain", chainRoutes: [GO_ROUTE, SOL_ROUTE, HAIKU] });
+          expect(result.details.run.selection.fallbackReason).toMatch(/GPT-6\.1 Sol: run run-fixed-1 was refused on a usage limit before any output/);
+          expect((await recordOf(h, "run-fixed-1")).state).toBe("failed");
+        } finally { await shutdown(h); }
+      });
+
+      it("Go, then Sol, then Claude: each tier once, one completion", async () => {
+        const runner = routed({ [GO_ROUTE]: GO_LIMIT, [SOL_ROUTE]: SOL_LIMIT });
+        const { h, accountCommand } = quotaHarness(status({ codex: solUp, go: goUp, claude: claudeUp }), runner, open);
+        try {
+          const result = await dispatch(h, { tasks: plain });
+          expect(runner.mock.calls.map(([context]) => context.run.model)).toEqual([GO_ROUTE, SOL_ROUTE, HAIKU]);
+          expect(result.details.run.selection).toMatchObject({ source: "chain", chainRoutes: [GO_ROUTE, SOL_ROUTE, HAIKU] });
+          expect(result.details.run.selection.fallbackReason).toMatch(/^automatic fall-through after a usage-limit refusal before any output; Haiku 5\.5: .*OpenCode Go: run run-fixed-1 was refused on a usage limit .*GPT-6\.1 Sol: run run-fixed-2 was refused on a usage limit/);
+          expect(result.content[0].text).toMatch(/Fall-through: run run-fixed-1 · opencode-go\/deepseek-v4\.1-flash was refused .*; run run-fixed-2 · openai-codex\/gpt-6\.1-sol was refused/);
+          expect(statusCalls(accountCommand)).toBe(3);
+          expect(h.messages).toEqual([]);
+        } finally { await shutdown(h); }
+      });
+
+      it("Go, Sol and Claude all refused: three runs, one error naming all three causes, no fourth launch", async () => {
+        const runner = routed({ [GO_ROUTE]: GO_LIMIT, [SOL_ROUTE]: SOL_LIMIT, [HAIKU]: CLAUDE_LIMIT });
+        const { h } = quotaHarness(status({ codex: solUp, go: goUp, claude: claudeUp }), runner, open);
+        try {
+          const message = await messageOf(dispatch(h, { tasks: plain }));
+          expect(runner).toHaveBeenCalledTimes(3);
+          expect(message).toMatch(/\(run run-fixed-3 · claude-code\/claude-haiku-5-5\): \[scout\] quota limit reached/);
+          expect(message).toMatch(/after run run-fixed-1 · opencode-go\/deepseek-v4\.1-flash was refused on a provider usage limit.*GoUsageLimitError.*; run run-fixed-2 · openai-codex\/gpt-6\.1-sol was refused on a provider usage limit.*The usage limit has been reached/);
+          expect(message).not.toContain("No fallback was selected");
+        } finally { await shutdown(h); }
+      });
+    });
+
+    describe("what does not fall through", () => {
+      it.each([
+        ["an explicit Go model", { model: GO_ROUTE }, status({ go: goUp }), { [GO_ROUTE]: GO_LIMIT }],
+        ["an explicit Sol model", { model: SOL_ROUTE }, status({ codex: solUp, go: goUp }), { [SOL_ROUTE]: SOL_LIMIT }],
+        ["an explicit Sol profile", { profile: "steak-pi/gpt-6-1-sol" }, status({ codex: solUp, go: goUp }), { [SOL_ROUTE]: SOL_LIMIT }],
+      ])("%s with a usage-limit refusal fails as it always did: explicit routes never fall back", async (_name, selector, answer, refused) => {
+        const runner = routed(refused);
+        const { h, accountCommand } = quotaHarness(answer, runner, open);
+        try {
+          const message = await messageOf(dispatch(h, { ...selector, tasks: plain }));
+          expect(message).toMatch(/^USAP dispatch failed before any worker produced model output \(run run-fixed-1 · /);
+          expect(message).toMatch(/The run record is failed with these causes and no worker is left running\. No fallback was selected\.$/);
+          expect(message).not.toContain("fall-through");
+          expect(runner).toHaveBeenCalledTimes(1);
+          expect(statusCalls(accountCommand)).toBe(1); // only the explicit-route preflight read
+          const list = await h.tools.get("ultraterm_hub").execute("list", { action: "list" }, undefined, undefined, h.ctx);
+          expect(list.details.runs.map((run: any) => run.runId)).toEqual(["run-fixed-1"]);
+        } finally { await shutdown(h); }
+      });
+
+      it.each([
+        ["a route failure", "Reserved Codex account has no exact Sol model with configured OAuth authentication"],
+        ["an expired login", "OAuth access token expired; sign in again"],
+        ["a spawn failure", "spawn ut-provider-accounts ENOENT"],
+        ["a bare 429 rate limit", "429 Too Many Requests"],
+        ["a router that is merely unavailable", "Provider account router unavailable or no account eligible (exit 1)"],
+      ])("an implicit launch failure that is %s is not a quota cause and still fails synchronously", async (_name, error) => {
+        const runner = routed({ [GO_ROUTE]: error });
+        const { h, selected } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeUp }), runner, open);
+        try {
+          const message = await messageOf(dispatch(h, { tasks: plain }));
+          expect(message).toContain(`[scout] ${error}`);
+          expect(message).toMatch(/No fallback was selected\.$/);
+          expect(message).not.toContain("fall-through");
+          expect(runner).toHaveBeenCalledTimes(1);
+          expect(selected).toEqual([]);
+        } finally { await shutdown(h); }
+      });
+
+      it("a wave where one leaf hit the usage limit but another failed for a plain cause fails synchronously", async () => {
+        const runner = vi.fn(async ({ task }: Context): ReturnType<WorkerRunner> => refusal(task.label === "quota" ? GO_LIMIT : "OAuth access token expired; sign in again"));
+        const { h } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeUp }), runner, open);
+        try {
+          const message = await messageOf(dispatch(h, { tasks: [{ label: "quota", task: "First leaf" }, { label: "auth", task: "Second leaf" }] }));
+          expect(message).toMatch(/\[quota\] 429: .*GoUsageLimitError/);
+          expect(message).toContain("[auth] OAuth access token expired");
+          expect(message).toMatch(/No fallback was selected\.$/);
+          expect(runner).toHaveBeenCalledTimes(2); // both leaves of the one run, no second run
+        } finally { await shutdown(h); }
+      });
+
+      it("a lease release that could not be proven never falls through, whatever quota wording it quotes", async () => {
+        const runner = routed({ [GO_ROUTE]: `Go account lease release failed (Go 1, lease=abc); router TTL retains a bounded lease; earlier failure: ${GO_LIMIT}` });
+        const { h } = quotaHarness(status({ codex: solUp, go: goUp, claude: claudeUp }), runner, open);
+        try {
+          const message = await messageOf(dispatch(h, { tasks: plain }));
+          expect(message).toMatch(/lease release failed/);
+          expect(message).not.toContain("fall-through");
+          expect(runner).toHaveBeenCalledTimes(1);
+        } finally { await shutdown(h); }
+      });
+
+      it("a wave where a sibling already produced output is never re-run", async () => {
+        const runner = vi.fn(async ({ task, onProgress, signal }: Context): ReturnType<WorkerRunner> => {
+          if (task.label === "quota") return refusal(GO_LIMIT);
+          onProgress({ turns: 1, outputStarted: true });
+          return await new Promise<Awaited<ReturnType<WorkerRunner>>>((resolve) => signal.addEventListener("abort", () => resolve({ state: "aborted", output: "", turns: 1, usage: emptyUsage(), error: "cancelled" }), { once: true }));
+        });
+        const { h } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeUp }), runner, open);
+        try {
+          const message = await messageOf(dispatch(h, { tasks: [{ label: "writer", task: "Streams output" }, { label: "quota", task: "Refused" }] }));
+          expect(message).toMatch(/\[quota\] 429: .*GoUsageLimitError/);
+          expect(message).toMatch(/No fallback was selected\.$/);
+          expect(runner).toHaveBeenCalledTimes(2);
+        } finally { await shutdown(h); }
+      });
+
+      it("an implicit reviewer wave refused on Claude's quota keeps its exact route and never falls through to Go, Sol or Haiku", async () => {
+        const runner = routed({ [OPUS_ROUTE]: CLAUDE_LIMIT });
+        const { h } = quotaHarness(status({ codex: solUp, go: goUp, claude: claudeUp }), runner, open);
+        try {
+          const message = await messageOf(dispatch(h, { tasks: [{ label: "review", task: "Review the diff", role: "reviewer" }] }));
+          expect(message).toMatch(/^USAP dispatch failed before any worker produced model output \(run run-fixed-1 · claude-code\/claude-opus-5-5\): \[review\] quota limit reached/);
+          expect(message).toMatch(/No fallback was selected\.$/);
+          expect(runner).toHaveBeenCalledTimes(1);
+        } finally { await shutdown(h); }
+      });
+    });
+
+    it("marks the refused first run delivered durably, so a reload never queues it", async () => {
+      const durable = durableRoot("fall-through");
+      const mark = vi.spyOn(CheckpointStore.prototype, "markDelivered");
+      const runner = routed({ [GO_ROUTE]: GO_LIMIT });
+      const { h } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeUp }), runner, open, durable);
+      let next: ReturnType<typeof harness> | undefined;
+      try {
+        const started = await dispatch(h, { background: true, tasks: plain });
+        expect(started.content[0].text).toMatch(/Started USAP run run-fall-through-2 · claude-code\/claude-haiku-5-5/);
+        expect(mark).toHaveBeenCalledWith("run-fall-through-1");
+        await flush();
+        expect(h.messages).toHaveLength(1);
+        expect(String(h.messages[0].message.content)).not.toContain("run-fall-through-1");
+        await h.handlers.get("session_shutdown")!({}, h.ctx);
+        const reopened = vi.fn(async () => ({ state: "done" as const, output: "must not run", turns: 1, usage: emptyUsage() }));
+        next = harness(() => reopened, { ...durable, prefix: "reopened" });
+        await next.handlers.get("session_start")!({}, next.ctx);
+        await next.handlers.get("agent_settled")!({}, next.ctx);
+        await flush();
+        expect(next.messages.every((entry) => !String(entry.message.content).includes("run-fall-through-1"))).toBe(true);
+        expect(reopened).not.toHaveBeenCalled();
+        const first = await next.tools.get("ultraterm_hub").execute("s", { action: "status", runId: "run-fall-through-1" }, undefined, undefined, next.ctx);
+        expect(first.details.run.state).toBe("failed"); // adopted, so the silence is not vacuous
+      } finally {
+        mark.mockRestore();
+        await h.handlers.get("session_shutdown")!({}, h.ctx);
+        if (next) await next.handlers.get("session_shutdown")!({}, next.ctx);
+      }
+    });
+  });
+
+  describe("implicit review, Claude-tier work and the Sol review fallback", () => {
+    const review = [{ label: "review", task: "Review the diff", role: "reviewer" }];
+
+    it.each([
+      ["Haiku-tier work", { tasks: plain }, "claude-code/claude-haiku-5-5"],
+      ["Sonnet-tier work", { tasks: [{ label: "build", task: "Implement and test", role: "worker", mayEdit: true, ownedPaths: ["src/x.ts"], allowBash: true }] }, "claude-code/claude-sonnet-5-5"],
+    ])("an implicit review in a session that ran %s goes to Opus 5.5, the verification that work requires", async (_name, wave, workModel) => {
+      const runner = done();
+      const { h } = quotaHarness(status({ codex: solOut, go: goOut, claude: claudeUp }), runner);
+      try {
+        const work = await dispatch(h, wave);
+        expect(work.details.run).toMatchObject({ model: workModel });
+        expect(work.details.run.selection.independence).toBe("requires-opus");
+        const verdict = await dispatch(h, { tasks: review });
+        expect(verdict.details.run).toMatchObject({ model: OPUS_ROUTE, harness: "claude-code" });
+        expect(verdict.details.run.selection).toMatchObject({ source: "automatic-review" });
+        expect(verdict.details.run.selection.independence).toBeUndefined();
+      } finally { await shutdown(h); }
+    });
+
+    it("installs no Sol review fallback when every GPT account is unavailable, and says why", async () => {
+      let relay!: RelayBroker;
+      const runner = done();
+      const { h } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeUp }), runner, { createRunner: (_pi: unknown, broker: RelayBroker) => { relay = broker; return runner; } });
+      try {
+        const result = await dispatch(h, { tasks: review });
+        expect(result.details.run).toMatchObject({ model: OPUS_ROUTE, harness: "claude-code" });
+        expect(result.content[0].text).toMatch(/Review note: the GPT-6\.1 Sol review fallback is unavailable \(every GPT account is unavailable \(GPT 1: cooling down until Mon 02:59; GPT 2: cooling down until Mon 02:59\).*\); a Claude quota or auth failure ends this review without falling back/);
+        // No Sol review fallback runtime: the run binds the parent peer only, no worker peer for a Sol leg.
+        expect(relay.listPeers(result.details.run.runId)).toEqual(["parent"]);
+      } finally { await shutdown(h); }
+    });
+
+    it("keeps the Sol review fallback when GPT can launch", async () => {
+      let relay!: RelayBroker;
+      const runner = done();
+      const { h } = quotaHarness(status({ codex: solUp, go: goUp, claude: claudeUp }), runner, { createRunner: (_pi: unknown, broker: RelayBroker) => { relay = broker; return runner; } });
+      try {
+        const result = await dispatch(h, { tasks: review });
+        expect(result.content[0].text).not.toContain("Sol review fallback is unavailable");
+        expect(relay.listPeers(result.details.run.runId)).toEqual(["parent", expect.stringContaining("task")]);
+      } finally { await shutdown(h); }
+    });
+
+    it("switches an implicit review to the Sol fallback when the router shows every Claude account cooling down", async () => {
+      const runner = done();
+      const { h } = quotaHarness(status({ codex: solUp, go: goUp, claude: [cooling("primary", "Claude 1"), cooling("b", "Claude 2")] }), runner);
+      try {
+        const result = await dispatch(h, { tasks: review });
+        expect(result.details.run).toMatchObject({ model: SOL_ROUTE });
+        expect(result.details.run.selection).toMatchObject({ source: "automatic-review-fallback" });
+      } finally { await shutdown(h); }
+    });
   });
 });

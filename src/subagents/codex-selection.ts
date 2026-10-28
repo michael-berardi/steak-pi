@@ -1,4 +1,5 @@
 import type { ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { resolveStagedModule } from "./staged-runtime.ts";
 import { assertSubscriptionRequest } from "../model-route-policy.ts";
 import { SOL_MODEL_ID, SOL_MODEL_ROUTE, SOL_PROFILE } from "../retired-model-selection.ts";
 import { isolatedAgentPaths, selectCodexAccount, type AccountCommand } from "./provider-accounts.ts";
@@ -23,7 +24,7 @@ export async function registryForSolSelection(
   const existing = registry.find("openai-codex", SOL_MODEL_ID);
   if (existing && registry.hasConfiguredAuth(existing) && registry.isUsingOAuth(existing)) return registry;
   const account = await selectCodexAccount(command);
-  const create = createRuntime ?? (await (await import("./pi-worker.ts")).loadPiSdk()).ModelRuntime.create;
+  const create = createRuntime ?? (await (await import(resolveStagedModule("src/subagents/pi-worker.ts").url)).loadPiSdk()).ModelRuntime.create;
   const runtime = await create(isolatedAgentPaths(account.agentDir));
   const model = runtime.getModel("openai-codex", SOL_MODEL_ID);
   if (!model || `${model.provider}/${model.id}` !== SOL_MODEL_ROUTE) throw new Error(`USAP model ${SOL_MODEL_ROUTE} is unavailable in the isolated Codex runtime; no fallback was selected.`);

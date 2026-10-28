@@ -21,20 +21,20 @@ serious sessions need: parallel subagents with hard limits, compaction that
 costs no model calls, checks that run after every edit, and a status line that
 tells you what the agent is doing.
 
-Current release: **0.11.6**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
+Current release: **0.11.7**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
 [UltraTerm](https://paretocybernetics.com/software/).
 
 ## Install
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.11.6
+pi install git:github.com/michael-berardi/steak-pi@v0.11.7
 ```
 
 Or from the release archive, without Git:
 
 ```sh
-shasum -a 256 -c steak-pi-0.11.6.tgz.sha256
-tar -xzf steak-pi-0.11.6.tgz
+shasum -a 256 -c steak-pi-0.11.7.tgz.sha256
+tar -xzf steak-pi-0.11.7.tgz
 npm install --ignore-scripts --prefix "$PWD/package"
 pi install "$PWD/package"
 ```
@@ -200,6 +200,13 @@ Settings live in `~/.pi/agent/ultracompress.json`; see the
 [UltraCompress docs](https://github.com/michael-berardi/ultracompress) for
 thresholds and recall budgets.
 
+Pre-compaction snapshots contain full conversation text in `.steak-pi/snaps/`
+in each working directory. After a successful snapshot write, Steak Pi keeps
+only the newest 10 files and removes files older than 14 days. Configure
+`snapshot.maxCount` and `snapshot.maxAgeDays` in the settings file; see the
+[extension settings](./extensions/ultracompress/README.md). Idle directories
+are not swept. Copy snapshots elsewhere to preserve them beyond these limits.
+
 ## Verify after edit
 
 ```json
@@ -226,14 +233,15 @@ For language-server diagnostics, pair it with
 Measured October 24, 2026 on Pi 1.0.4 (Apple silicon, macOS) with the
 [overhead benchmark](./benchmarks/overhead/README.md): a scripted local model
 runs identical fixtures, so these numbers show harness overhead, not model
-quality. Medians of 5; all 80 fixture runs passed across stock Pi, 0.11.5 and
-both current launch modes. Median wall times stayed within 20% of 0.11.5.
+quality. Medians of 5; all 80 synthetic fixture runs passed across stock Pi,
+0.11.6 and both current launch modes. Median wall times stayed within 20% of
+0.11.6.
 
-| | Stock Pi | Steak Pi 0.11.6 | Via `steak-pi run` |
+| | Stock Pi | Steak Pi 0.11.7 | Via `steak-pi run` |
 | --- | ---: | ---: | ---: |
-| One-shot edit, peak memory | 131 MiB | 161 MiB | 134 MiB |
-| One-shot edit, wall time | 0.19 s | 0.33 s | 0.32 s |
-| Eight-worker fan-out, wall time | no subagents | 1.06 s | 1.13 s |
+| One-shot edit, peak memory | 130 MiB | 161 MiB | 134 MiB |
+| One-shot edit, wall time | 0.22 s | 0.34 s | 0.37 s |
+| Eight-worker fan-out, wall time | no subagents | 1.14 s | 1.25 s |
 
 Steak Pi adds orchestration overhead; the launcher lowers its peak memory.
 Workers share the host's Pi code instead of loading their own copy. Stock Pi

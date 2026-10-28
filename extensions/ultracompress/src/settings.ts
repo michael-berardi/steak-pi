@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { DEFAULT_SNAPSHOT_RETENTION, normalizeSnapshotRetention, type SnapshotRetention } from "./snapshot";
 
 export interface SnapSettings {
   enabled: boolean;
@@ -19,7 +20,7 @@ export interface UltraCompressSettings {
   keepUserTurns: number | null;
   ultracompressBin: string;
   snap: SnapSettings;
-  snapshot: { enabled: boolean };
+  snapshot: { enabled: boolean } & SnapshotRetention;
   summaryMaxBytes: number;
   debug: boolean;
 }
@@ -31,7 +32,7 @@ export const DEFAULT_SETTINGS: UltraCompressSettings = {
   keepUserTurns: null,
   ultracompressBin: "",
   snap: { enabled: true, minChars: 8192, placement: "nextUser", imageTokensPerFrame: null, providers: ["anthropic", "google"] },
-  snapshot: { enabled: true },
+  snapshot: { enabled: true, ...DEFAULT_SNAPSHOT_RETENTION },
   summaryMaxBytes: 16384,
   debug: false,
 };
@@ -71,6 +72,7 @@ export function mergeSettings(raw: unknown): UltraCompressSettings {
   if (obj.snapshot && typeof obj.snapshot === "object") {
     const sn = obj.snapshot as Record<string, unknown>;
     if (typeof sn.enabled === "boolean") out.snapshot.enabled = sn.enabled;
+    Object.assign(out.snapshot, normalizeSnapshotRetention(sn));
   }
   return out;
 }

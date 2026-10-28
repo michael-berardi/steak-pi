@@ -144,6 +144,13 @@ export interface ModelSelection {
   chainRoutes?: string[];
   automaticReview?: boolean;
   reviewRequiresImages?: boolean;
+  /** `requires-opus`: a Claude-tier worker run (Haiku 5.5 or Sonnet 5.5 after the Go and Sol routes ran
+   * out of quota), whose work needs an explicit Opus 5.5 verification. */
+  independence?: "requires-opus";
+  /** Why an implicit wave left its default route (bounded text, for the dispatch note and every
+   * receipt): the router cause of each exhausted provider it skipped and, on the Claude tier, which
+   * tier it chose and why. Present only on a quota-fallback run. */
+  fallbackReason?: string;
   /** Foreign runners keep their harness identity instead of a native route. */
   harness?: HarnessId;
   images: boolean;
@@ -212,6 +219,11 @@ export interface TaskRecord extends NormalizedTask {
   toolErrors?: number;
   toolSuccesses?: number;
   turns: number;
+  /** Set once the worker received its first model output (text, a tool call or a billed message).
+   * `turns` cannot say this: a Pi worker counts a turn when its request starts, so a first request
+   * that fails (429, expired OAuth) still ends with `turns >= 1`. A task that fails without this
+   * flag died at launch, which is what a dispatch holds `Started` for. */
+  outputStarted?: true;
   usage: UsageTotals;
   relaySent: number;
   relayReceived: number;
@@ -296,6 +308,8 @@ export interface WorkerProgress {
   toolErrors?: number;
   toolSuccesses?: number;
   turns?: number;
+  /** The worker received its first model output; see {@link TaskRecord.outputStarted}. */
+  outputStarted?: true;
   usage?: UsageTotals;
   /** Checkpoint path when the worker session is persisted to disk. */
   sessionFile?: string;

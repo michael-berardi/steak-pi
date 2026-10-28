@@ -644,6 +644,7 @@ export class SubagentCoordinator {
     if (progress.toolErrors !== undefined) task.toolErrors = safeTurns(progress.toolErrors, task.toolErrors ?? 0);
     if (progress.toolSuccesses !== undefined) task.toolSuccesses = safeTurns(progress.toolSuccesses, task.toolSuccesses ?? 0);
     if (progress.turns !== undefined) task.turns = safeTurns(progress.turns, task.turns);
+    if (progress.outputStarted === true) task.outputStarted = true;
     if (progress.usage !== undefined) task.usage = cloneUsage(progress.usage);
     for (const field of ["retryAttempt", "retryDelayMs", "compactions"] as const) {
       if (progress[field] !== undefined) task[field] = safeTurns(progress[field], task[field] ?? 0);
