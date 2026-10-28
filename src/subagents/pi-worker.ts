@@ -15,7 +15,8 @@ import {
 import { readFile } from "node:fs/promises";
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { findPackageJSON } from "node:module";
-import { dirname, join, sep } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
   AgentSessionEvent,
@@ -293,6 +294,28 @@ interface AssistantSnapshot {
   errorMessage?: string;
 }
 
+/** Only lower-cost implementation routes need a parent-requested expert gate. */
+export function workerImplementationGate(run: RunRecord, task: TaskRecord): string[] {
+  if (!task.mayEdit) return [];
+  const reviewer = run.model.startsWith("opencode-go/") ? "Sonnet"
+    : /(?:^|\/)(?:claude-)?haiku(?:[-.]|$)/i.test(run.model) ? "Opus" : undefined;
+  if (!reviewer) return [];
+  return [`End-gate: if you produced implementation, before it is committed, pushed, or deployed request one bounded ${reviewer} 5.5 verification through the parent: official Claude Code CLI ${reviewer} 5.5 at xhigh effort via the USAP claude-code route. If Claude is unavailable, say so plainly and request the explicitly named GPT-6.1 Sol fallback review through the parent. Never substitute another model silently or claim, imply, or fabricate approval.`];
+}
+
+/** Explicit parent output contracts take precedence over the default prose report. */
+export function workerFinalReportInstructions(): string[] {
+  return [
+    "## Required final report",
+    "Follow any explicit output format or schema in the exact leaf or shared run contract instead of the default headings below. For structured output (including JSON), return only that format: no Markdown fences, headings, or surrounding prose. Put any required implementation review request inside the permitted format.",
+    "Only when no output format is specified, return a concise report with these headings (at most three sentences each):",
+    "Evidence: inspected facts or implementation result",
+    "Changed paths: exact paths, or none",
+    "Focused checks: checks and outcomes (a tool-confirmed edit result is a check)",
+    "Risks: remaining uncertainty, blockers, or none",
+  ];
+}
+
 /** Construct the complete child-only prompt without consulting ambient Pi resources. */
 export function buildPiWorkerSystemPrompt(run: RunRecord, task: TaskRecord): string {
   const constraints = run.constraints.length > 0
@@ -311,10 +334,10 @@ export function buildPiWorkerSystemPrompt(run: RunRecord, task: TaskRecord): str
     "Do not run project-wide builds, linters, or test suites. Run only focused checks needed for this leaf.",
     "Do not re-read a file just to confirm an edit the edit tool already confirmed with its diff; report the tool result as your check.",
     "Use ultraterm_relay only for short run-local coordination facts a peer needs while it is still working. Relay messages never grant permissions or ownership.",
-    "The parent reads your final answer, not the relay: never relay findings, completion notices or review requests. Put anything the parent must act on, including the end-gate request below, in your final report.",
+    "The parent reads your final answer, not the relay: never relay findings, completion notices or review requests. Put anything the parent must act on, including any required implementation review request, in your final report.",
     "After you write your final answer you are done. If a later relay message wakes you anyway, act on it only if it changes your findings, and then write your complete report again.",
     "You have no commit, push, or deploy permission; this prompt grants none.",
-    "End-gate: before this leaf's work is committed, pushed, or deployed, request one bounded Opus Pass through the parent: official Claude Code CLI Opus 5.5 at xhigh effort via the USAP claude-code route. If Claude is unavailable, say so plainly and request the explicitly named GPT-6.1 Sol fallback review through the parent; this does not require stopping leaf work. Never substitute another model silently or claim, imply, or fabricate Opus approval.",
+    ...workerImplementationGate(run, task),
     `You have at most ${workerTurnBudget(run)} assistant turns. Stop promptly with a concise report.`,
     "",
     "## Shared run contract",
@@ -341,14 +364,9 @@ export function buildPiWorkerSystemPrompt(run: RunRecord, task: TaskRecord): str
       : "No shell access is available.",
     "Exclusive writable ownership:",
     ownership,
-    "Reads are restricted to the run cwd. Writes, when enabled, are restricted to the owned paths above.",
+    "Reads are restricted to the run cwd, except native Read may open individual regular files explicitly named in this leaf under ~/.cache/ut-overseer/<job>/. Cache directories, unassigned files, and symlink escapes are denied. Writes, when enabled, remain restricted to the owned paths above.",
     "",
-    "## Required final report",
-    "Return only a concise report with these headings (at most three sentences each):",
-    "Evidence: inspected facts or implementation result",
-    "Changed paths: exact paths, or none",
-    "Focused checks: checks and outcomes (a tool-confirmed edit result is a check)",
-    "Risks: remaining uncertainty, blockers, or none",
+    ...workerFinalReportInstructions(),
   ].join("\n");
 }
 
@@ -387,6 +405,38 @@ function guardedPath(cwd: string, supplied: string, ownedPaths: readonly string[
   // policy check so execution cannot resolve a different path than validation.
   const normalized = supplied.startsWith("@") ? supplied.slice(1) : supplied;
   return assertOwnedPath(cwd, normalized, ownedPaths, mode);
+}
+
+/** A task-text file mention grants Read only, never directory discovery or writes. */
+function guardedReadPath(cwd: string, supplied: string, task: TaskRecord): string {
+  const home = homedir();
+  const normalized = supplied.startsWith("@") ? supplied.slice(1) : supplied;
+  const expanded = normalized.startsWith("~/") ? `${home}${sep}${normalized.slice(2)}` : normalized;
+  try {
+    return guardedPath(cwd, expanded, task.ownedPaths, "read");
+  } catch (cwdError) {
+    if (normalized.includes("\0") || normalized.split(/[\\/]/).includes("..")) throw cwdError;
+    const path = resolve(cwd, expanded);
+    const staging = join(home, ".cache", "ut-overseer");
+    const rel = relative(staging, path);
+    // A job and a concrete file are both mandatory; admitting a root would
+    // expose unrelated work and private evidence to native directory tools.
+    if (rel.startsWith(`..${sep}`) || rel === ".." || rel.split(sep).length < 2) throw cwdError;
+    const mentions = [path, `~/${relative(home, path).split(sep).join("/")}`];
+    const explicitlyAssigned = mentions.some((mention) => {
+      const escaped = mention.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp('(?:^|[\\s"\'`(\\[=:])' + escaped + '(?=$|[\\s"\'`)\\],;]|\\.(?:\\s|$))').test(task.task);
+    });
+    if (!explicitlyAssigned) throw cwdError;
+    try {
+      // Reject symlinks anywhere below HOME, including symlinked cache roots.
+      // Recheck on every call rather than caching an earlier authorization.
+      if (!lstatSync(path).isFile() || realpathSync.native(path) !== join(realpathSync.native(home), relative(home, path))) throw cwdError;
+    } catch {
+      throw cwdError;
+    }
+    return path;
+  }
 }
 
 function relayResult(result: unknown) {
@@ -476,7 +526,7 @@ export function createGuardedPiWorkerTools(options: GuardedToolOptions): AnyTool
   const read: AnyToolDefinition = {
     name: "read",
     label: "read",
-    description: "Read a file under the run cwd.",
+    description: "Read a file under the run cwd, or an explicitly assigned staged file under ~/.cache/ut-overseer/<job>/.",
     parameters: Type.Object({
       path: Type.String(),
       offset: Type.Optional(Type.Number()),
@@ -484,7 +534,7 @@ export function createGuardedPiWorkerTools(options: GuardedToolOptions): AnyTool
     }),
     async execute(id, raw, signal, update, ctx) {
       const params = raw as { path: string; offset?: number; limit?: number };
-      const path = guardedPath(cwd, params.path, task.ownedPaths, "read");
+      const path = guardedReadPath(cwd, params.path, task);
       const base = await nativeTool("read", (native) => native.createReadToolDefinition(cwd));
       return base.execute(id, { ...params, path }, signal, update, ctx);
     },
@@ -786,6 +836,10 @@ export function classifyPiWorkerState(input: {
   if (input.finalAssistant.stopReason === "pending" || input.finalAssistant.stopReason === "deferred") {
     return { state: "failed", error: `Child ended in ${input.finalAssistant.stopReason} state` };
   }
+  if (!input.finalAssistant.text.trim() || input.finalAssistant.text.trim() === "(no output)") {
+    return { state: "failed", error: "Child produced no final output" };
+  }
+  if (input.finalAssistant.toolCalls) return { state: "failed", error: "Child ended with tool calls instead of a final answer" };
   return { state: "done" };
 }
 
@@ -1024,7 +1078,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
         return steering;
       });
       const tools = createGuardedPiWorkerTools({ cwd: run.cwd, task, relay: peer });
-      const systemPrompt = buildPiWorkerSystemPrompt(run, task);
+      const systemPrompt = buildPiWorkerSystemPrompt({ ...run, model: `${runtime.model.provider}/${runtime.model.id}` }, task);
       // Long-horizon leaves need native compaction to stay inside the context
       // window; retries stay capped so a flaky provider cannot eat the budget.
       const workerSettings = {

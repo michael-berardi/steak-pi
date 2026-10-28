@@ -233,7 +233,10 @@ describe("claude-code worker CLI surface", () => {
 
   it("passes the leaf prompt on stdin and never inherits API-key/billing override env", async () => {
     const { spawn, calls } = fakeSpawn((child) => child.exit(0));
-    const runner = createClaudeWorkerRunner(runnerOptions(spawn));
+    const runner = createClaudeWorkerRunner({ ...runnerOptions(spawn), env: {
+      PATH: process.env.PATH, HOME: homedir(),
+      ANTHROPIC_API_KEY: "synthetic-key", CLAUDE_CODE_USE_BEDROCK: "1",
+    } });
     await runner({ run: run(), task: task(), signal: new AbortController().signal, onProgress: () => {} });
     expect(calls).toHaveLength(1);
     const { command, args, env, cwd, child } = calls[0];

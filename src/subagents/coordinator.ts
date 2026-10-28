@@ -704,6 +704,14 @@ export class SubagentCoordinator {
   ): void {
     if (isTerminal(task.state)) return;
 
+    // A transport resolving successfully is not a completed leaf. Check the
+    // child body, not the host-generated FINAL REPORT header.
+    if (state === "done" && !reportBody(result.output)) {
+      state = "failed";
+      result = { ...result, error: "Child produced no final output" };
+      // Rebuild host framing so an empty preframed success cannot survive.
+      result.output = finalWorkerReport(task, state, "", result.error);
+    }
     const safeUsage = sanitizeUsage(result.usage);
     task.state = state;
     if (task.launchQueue) task.lastLaunchQueue = structuredClone(task.launchQueue);
