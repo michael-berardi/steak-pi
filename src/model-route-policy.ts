@@ -351,6 +351,28 @@ export function recordedWorkerChain(routes: readonly string[] | undefined, requi
 export const noChainRouteError = (multimodal: boolean) =>
   `No authenticated route in the default ${multimodal ? "multimodal" : "text"} worker chain; no fallback was selected.`;
 
+/** Typed "no step of the chain resolved" result. It carries the steps actually examined, so a
+ * caller (the dispatch boundary's Claude subscription tier) decides from evidence about *which*
+ * chain failed rather than from message equality, and records only routes really tried. */
+export class NoChainRouteError extends Error {
+  readonly multimodal: boolean;
+  readonly tried: readonly WorkerRouteStep[];
+  constructor(multimodal: boolean, tried: readonly WorkerRouteStep[]) {
+    super(noChainRouteError(multimodal));
+    this.name = "NoChainRouteError";
+    this.multimodal = multimodal;
+    this.tried = tried.map((step) => ({ provider: step.provider, id: step.id }));
+  }
+}
+
+/** True when `error` is exactly "the built-in default chain resolved nowhere": the text
+ * default (Go, Sol) and nothing else. A profile-default or reviewer chain that names MiMo
+ * (Flash/Pro, Sol) is a different chain whose head was never the default's Go step. */
+export function isDefaultTextChainExhausted(error: unknown): error is NoChainRouteError {
+  return error instanceof NoChainRouteError && !error.multimodal && error.tried.length === DEFAULT_TEXT_WORKER_CHAIN.length &&
+    error.tried.every((step, index) => sameStep(step, DEFAULT_TEXT_WORKER_CHAIN[index]));
+}
+
 /** Astra (openai-codex/gpt-6-astra) is the scarce expert reviewer: hard planning and
  * debugging plus review/validation. It is never routine implementation or
  * orchestration, so it is deliberately absent from the routine worker chains above.
@@ -372,7 +394,18 @@ export const expertReviewChain = (requireImages: boolean): readonly WorkerRouteS
 export const isExpertReviewModel = (model: Pick<Model, "provider" | "id">): boolean =>
   model.provider === EXPERT_REVIEW_MODEL.provider && model.id === EXPERT_REVIEW_MODEL.id;
 
-export type ChainOptions = { requireImages?: boolean; approvePaidRoute?: (model: Model) => boolean };
+export type ChainOptions = {
+  requireImages?: boolean;
+  approvePaidRoute?: (model: Model) => boolean;
+  /** Dispatch-time quota veto: a step whose provider the account router has proven
+   * exhausted is skipped, so selection never lands on a route that cannot launch. A
+   * skipped step is still part of the chain that was tried (see {@link NoChainRouteError}). */
+  skipRoute?: (step: WorkerRouteStep) => boolean;
+  /** Resolve the built-in default text chain (Go -> Sol) instead of a profile default or
+   * the legacy parent route. Only an implicit dispatch that must leave an exhausted
+   * provider sets it; an explicit selector never does. */
+  forceDefaultChain?: boolean;
+};
 
 /** The user allowlist is the only spending grant for automatic chain routing: a
  * reviewed Token Plan step is reachable without inheriting a launch profile's paid
@@ -508,10 +541,11 @@ export function withPreOutputChainFallback(
 export function selectChainedWorkerModel(registry: Registry, chain: readonly WorkerRouteStep[], options: ChainOptions = {}): Model {
   const approve = options.approvePaidRoute ?? AUTOMATIC_CHAIN_APPROVAL;
   for (const step of chain) {
+    if (options.skipRoute?.(step)) continue;
     const model = eligibleChainRoute(registry, step, options.requireImages === true, approve);
     if (model) return model;
   }
-  throw new Error(noChainRouteError(options.requireImages === true));
+  throw new NoChainRouteError(options.requireImages === true, chain);
 }
 
 /** Runs retain one explicit model for accurate telemetry; mixed/review runs stay frontier.

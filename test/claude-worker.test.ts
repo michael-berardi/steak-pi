@@ -1127,3 +1127,45 @@ describe("claude-code stream-json parsing", () => {
     expect(prompt).toContain("Required final report");
   });
 });
+
+describe("claude-code first-turn signal and the Haiku fallback tier (offline stream envelopes)", () => {
+  const haiku = "claude-haiku-5-5";
+  const genuine = (model: string) => line({ type: "assistant", message: { id: `turn-${model}`, model, content: [{ type: "text", text: "report" }] } });
+  const final = (model: string) => line({ type: "result", subtype: "success", is_error: false, result: "report", num_turns: 1, modelUsage: { [model]: {} } });
+
+  it("reports first model output through progress as soon as the CLI starts its first turn, so a dispatch can tell a launched worker from a dead one", async () => {
+    const progress: WorkerProgress[] = [];
+    const { spawn } = fakeSpawn((child) => { child.stdout(genuine("claude-sonnet-5-5")); child.stdout(final("claude-sonnet-5-5")); child.exit(0); });
+    const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run({ model: "claude-code/claude-sonnet-5-5" }), task: task(), signal: new AbortController().signal, onProgress: (value) => progress.push(value) });
+    expect(result.state).toBe("done");
+    expect(progress.filter((value) => value.turns !== undefined)).toEqual([{ turns: 1, outputStarted: true }]);
+  });
+
+  it("never reports a turn for a worker that dies before its first one", async () => {
+    const progress: WorkerProgress[] = [];
+    const { spawn } = fakeSpawn((child) => { child.exit(1); });
+    const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run({ model: "claude-code/claude-sonnet-5-5" }), task: task(), signal: new AbortController().signal, onProgress: (value) => progress.push(value) });
+    expect(result.state).toBe("failed");
+    expect(result.turns).toBe(0);
+    expect(progress.some((value) => value.turns !== undefined || value.outputStarted !== undefined)).toBe(false);
+  });
+
+  it("runs the Haiku tier on its exact pinned route at the same effort and accepts only Haiku turns", async () => {
+    const { spawn, calls } = fakeSpawn((child) => { child.stdout(genuine(haiku)); child.stdout(final(haiku)); child.exit(0); });
+    const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run({ model: `claude-code/${haiku}` }), task: task(), signal: new AbortController().signal, onProgress() {} });
+    expect(result.state).toBe("done");
+    expect(calls[0].args.join(" ")).toContain(`--model ${haiku} --effort xhigh`);
+    expect(calls[0].args.join(" ")).not.toContain("--bare");
+    const other = fakeSpawn((child) => { child.stdout(genuine("claude-sonnet-5-5")); child.stdout(final("claude-sonnet-5-5")); child.exit(0); });
+    const wrong = await createClaudeWorkerRunner(runnerOptions(other.spawn))({ run: run({ model: `claude-code/${haiku}` }), task: task(), signal: new AbortController().signal, onProgress() {} });
+    expect(wrong.state).toBe("failed");
+    expect(wrong.error).toMatch(/claude-sonnet-5-5, not the pinned Haiku 5\.5 route/);
+  });
+
+  it("does not let the paid API route address Haiku", async () => {
+    const { spawn, calls } = fakeSpawn((child) => { child.exit(0); });
+    const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run({ model: `claude-code-api/${haiku}` }), task: task(), signal: new AbortController().signal, onProgress() {} });
+    expect(result.state).toBe("failed");
+    expect(calls).toHaveLength(0);
+  });
+});

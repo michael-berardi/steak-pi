@@ -1,5 +1,7 @@
+import { resolveStagedModule } from "../src/subagents/staged-runtime.ts";
 import { registryForSolSelection, type CreateIsolatedModelRuntime } from "../src/subagents/codex-selection.ts";
-import { noEligibleClaudeAccount, type AccountCommand } from "../src/subagents/provider-accounts.ts";
+import { GO_ACCOUNT_ROUTER_TIMEOUT_MS, type AccountCommand } from "../src/subagents/provider-accounts.ts";
+import { claudeQuotaBlock, isQuotaLaunchFailure, pickClaudeAccount, quotaProviderOf, readProviderQuota, routeQuotaBlock, type ClaudeAccountPick, type QuotaProvider, type QuotaSnapshot } from "../src/subagents/provider-quota.ts";
 import { canFallbackReview, isReadOnlyReviewWave, recordReviewFallback } from "../src/subagents/reviewer-fallback.ts";
 import { SOL_MODEL_ROUTE } from "../src/retired-model-selection.ts";
 import { statSync } from "node:fs";
@@ -12,9 +14,9 @@ import { SubagentCoordinator, CoordinatorWaitTimeoutError } from "../src/subagen
 import { normalizeDispatch, SubagentPolicyError } from "../src/subagents/policy.ts";
 import { assertClaudeAccountId, resolveClaudeAccount } from "../src/subagents/claude-account.ts";
 import { assertActiveModelSelector } from "../src/retired-model-selection.ts";
-import { resolveWorkerSelection, resolveClaudeCodeSelection, assertClaudeCodeImageAdmission, claudeCodeModelOf, claudeCodeModelName, defaultClaudeCodeRoute, CLAUDE_CODE_ROUTES, type WorkerProfile } from "../src/subagents/model-selection.ts";
+import { resolveWorkerSelection, resolveClaudeCodeSelection, assertClaudeCodeImageAdmission, claudeCodeModelOf, claudeCodeModelName, claudeFallbackTier, defaultClaudeCodeRoute, CLAUDE_CODE_HAIKU_ROUTE, CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_ROUTES, type ClaudeFallbackTier, type WorkerProfile } from "../src/subagents/model-selection.ts";
 import { admitClaudeApiRoute, anyClaudeRouteModelOf, claudeApiConcurrency, claudeApiModelOf, CLAUDE_API_ROUTES, formatClaudeApiReceipt, isClaudeApiRoute, resolveClaudeApiSelection, stampClaudeApiRun } from "../src/subagents/claude-api-route.ts";
-import { AUTOMATIC_CHAIN_APPROVAL, type ChainOptions } from "../src/model-route-policy.ts";
+import { AUTOMATIC_CHAIN_APPROVAL, NoChainRouteError, isDefaultTextChainExhausted, type ChainOptions, type WorkerRouteStep } from "../src/model-route-policy.ts";
 import { isSubscriptionOrLocalRoute } from "../src/subscription-first-routing.ts";
 import {
   RelayBroker,
@@ -58,6 +60,21 @@ export const USAP_TELEMETRY_VERSION = 1; // Additive route metadata preserves ex
  * `coordinator.shutdown()` promise settles: a worker that never settles must
  * never be able to write after its lease was released. */
 export const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
+/** How long a dispatch waits for each launched worker to produce its first model output or fail
+ * before it may report `Started`. A worker that dies before that (router refusal, auth, route,
+ * spawn, a first request that errors) fails the dispatch call itself, background or not, with its
+ * named cause. The window must outlast the worker's own account phase: a Go or Sol worker makes two
+ * bounded router calls before any request (reserve, then bind), each up to the router timeout, so a
+ * slow router answers its refusal inside the window instead of after `Started`. Known limit: a first
+ * request that fails with a 429 also reports the cooldown and releases the lease (two more router
+ * calls) before it settles; with a router answering near its timeout that settle can land after the
+ * window, and the failure then arrives as an ordinary completion naming the cause. */
+export const DEFAULT_STARTUP_WINDOW_MS = 2 * GO_ACCOUNT_ROUTER_TIMEOUT_MS + 5_000;
+export const MAX_STARTUP_WINDOW_MS = 30_000;
+/** An implicit dispatch whose worker is refused on a provider quota or usage limit before any output re-runs
+ * the same tasks on the next tier of Go -> Sol -> Claude. Each tier is tried at most once, so a wave makes at
+ * most this many fall-throughs (Go -> Sol, Sol -> Claude): there is no loop. */
+export const MAX_QUOTA_FALL_THROUGHS = 2;
 
 /** Operator-visible warning retained until a bounded teardown really settles. */
 export const RETAINED_LEASE_WARNING = "USAP checkpoint lease retained until an unsettled worker exits; new dispatch and resume are refused";
@@ -271,6 +288,8 @@ export interface UltratermSubagentsDependencies {
    * the real official CLI once per task. Never used for harness "pi" runs. */
   claudeSpawn?: ClaudeSpawn;
   accountCommand?: AccountCommand;
+  /** Bounded startup window (default {@link DEFAULT_STARTUP_WINDOW_MS}); 0 disables the wait. */
+  startupWindowMs?: number;
   createModelRuntime?: CreateIsolatedModelRuntime;
   now?: () => number;
   idFactory?: () => string;
@@ -299,16 +318,251 @@ async function resolvePiSelection(
   }
 }
 
-async function resolveNativeSelection(ctx: ExtensionContext, input: Parameters<typeof resolveWorkerSelection>[2], dependencies: UltratermSubagentsDependencies) {
+async function resolveNativeSelection(ctx: ExtensionContext, input: Parameters<typeof resolveWorkerSelection>[2], dependencies: UltratermSubagentsDependencies,
+  quota: Pick<ChainOptions, "skipRoute" | "forceDefaultChain"> = {}) {
   const registry = await registryForSolSelection(ctx.model!, input, ctx.modelRegistry,
     dependencies.accountCommand, dependencies.createModelRuntime, dependencies.profiles);
-  const resolved = await resolvePiSelection(() => resolveWorkerSelection(ctx.model!, ctx.thinkingLevel, input,
-    registry, dependencies.profiles, undefined, automaticChainOptions(dependencies)), registry);
-  return { ...resolved, registry };
+  const resolve = (from: ExtensionContext["modelRegistry"]) => resolvePiSelection(() => resolveWorkerSelection(ctx.model!, ctx.thinkingLevel, input,
+    from, dependencies.profiles, undefined, { ...automaticChainOptions(dependencies), ...quota }), from);
+  try { return { ...await resolve(registry), registry }; }
+  catch (failure) {
+    // A Go parent's own store has no Codex login, so the default chain's Sol step cannot resolve there.
+    // When the chain found nothing else (Go skipped or unavailable), offer Sol the same isolated Codex
+    // store an explicit Sol dispatch gets. No eligible account, runtime or Sol model there leaves the
+    // original no-route error unchanged. A Sol step already vetoed for quota is not offered at all.
+    if (ctx.model!.provider === "opencode-go" && isDefaultTextChainExhausted(failure) && quota.skipRoute?.(SOL_REVIEW_STEP) !== true &&
+        failure.tried.some((step) => routeOfStep(step) === SOL_MODEL_ROUTE)) {
+      try {
+        const isolated = await registryForSolSelection(ctx.model!, { model: SOL_MODEL_ROUTE }, ctx.modelRegistry,
+          dependencies.accountCommand, dependencies.createModelRuntime, dependencies.profiles);
+        if (isolated !== ctx.modelRegistry) {
+          const sol = await resolve(isolated);
+          if (`${sol.selection.provider}/${sol.selection.modelId}` === SOL_MODEL_ROUTE) return { ...sol, registry: isolated };
+        }
+      } catch { /* Codex is unavailable for this parent: the original outcome stands. */ }
+    }
+    throw failure;
+  }
 }
 
 function automaticChainOptions(dependencies: UltratermSubagentsDependencies): ChainOptions {
   return { approvePaidRoute: dependencies.approvePaidRoute ?? AUTOMATIC_CHAIN_APPROVAL };
+}
+
+type NativeSelection = Awaited<ReturnType<typeof resolveNativeSelection>>;
+
+/** Product names for the chain steps a dispatch note reports on. */
+function routeStepLabel(step: WorkerRouteStep): string {
+  return step.provider === "openai-codex" && step.id === "gpt-6.1-sol" ? "GPT-6.1 Sol"
+    : step.provider === "opencode-go" ? "OpenCode Go" : `${step.provider}/${step.id}`;
+}
+/** The router-gated step the automatic Sol review fallback would launch on. */
+const SOL_REVIEW_STEP: WorkerRouteStep = { provider: "openai-codex", id: "gpt-6.1-sol" };
+const stepOfSelection = (selection: { provider: string; modelId: string }): WorkerRouteStep => ({ provider: selection.provider, id: selection.modelId });
+const routeOfStep = (step: WorkerRouteStep): string => `${step.provider}/${step.id}`;
+/** Receipts stay bounded: a router cause is echoed, never an unbounded blob. */
+const boundedReason = (text: string, limit = 480): string => text.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, limit);
+
+/** The router-gated tiers of the default implicit chain, in order. The Claude subscription tier follows
+ * them and is not router-gated here. */
+const QUOTA_CHAIN: readonly QuotaProvider[] = ["opencode-go", "codex"];
+/** A fall-through receipt carries the refused tier's cause beside the router's, so it may be longer than a plain one. */
+const FALLBACK_REASON_LIMIT = 720;
+
+/**
+ * One tier of an implicit dispatch that launched and died on a provider quota or usage limit before any
+ * worker produced output. The same tasks are re-run on the next tier; a tier a failed run reached, and
+ * every tier ahead of it, is never retried.
+ */
+interface QuotaFallThrough {
+  runId: string;
+  /** The route the failed run was recorded on. */
+  route: string;
+  /** Router-gated providers the run reached. */
+  providers: readonly QuotaProvider[];
+  /** Bounded, named cause of each worker that failed. */
+  cause: string;
+}
+
+/** Providers a fall-through must not revisit: the furthest tier a failed run reached and everything before it. */
+function spentProviders(fallThroughs: readonly QuotaFallThrough[]): ReadonlySet<QuotaProvider> {
+  const furthest = Math.max(-1, ...fallThroughs.flatMap((item) => item.providers.map((provider) => QUOTA_CHAIN.indexOf(provider))));
+  return new Set(QUOTA_CHAIN.slice(0, furthest + 1));
+}
+
+/** Router-gated providers a run launched on. */
+function reachedProviders(run: RunRecord): QuotaProvider[] {
+  const slash = run.model.indexOf("/");
+  const provider = slash > 0 ? quotaProviderOf({ provider: run.model.slice(0, slash), id: run.model.slice(slash + 1) }) : undefined;
+  return provider ? [provider] : [];
+}
+
+/** The text a worker's launch failure is classified on. */
+const launchFailureText = (task: TaskRecord): string => task.error ?? "";
+
+/**
+ * The tiers a run reached, when its pre-output failure may fall through to the next tier: every worker
+ * that failed at launch (`failures`) died on a provider quota or usage limit, and no worker anywhere in
+ * the run (`seen`, the settled snapshot) produced output or finished, since re-running would repeat work.
+ * A plain auth, route or spawn failure, or any mix with one, is not a quota cause and stays a
+ * synchronous failure.
+ */
+function quotaFallThroughProviders(seen: RunRecord | undefined, failures: readonly TaskRecord[]): QuotaProvider[] | undefined {
+  if (!seen || seen.tasks.some((task) => task.outputStarted === true || task.state === "done")) return undefined;
+  if (failures.length === 0 || !failures.every((task) => isQuotaLaunchFailure(launchFailureText(task)))) return undefined;
+  const providers = reachedProviders(seen);
+  return providers.length > 0 ? providers : undefined;
+}
+
+/** What the dispatch tells a parent about the tiers that were refused before it, in the words of a receipt. */
+const fallThroughSummary = (fallThroughs: readonly QuotaFallThrough[]): string =>
+  fallThroughs.map((item) => `run ${item.runId} · ${item.route} was refused on a provider usage limit before any worker produced output (${item.cause})`).join("; ");
+
+interface ImplicitWorkerRoute {
+  /** The Pi selection the wave launches on; absent when it moves to the Claude tier. */
+  resolved?: NativeSelection;
+  /** The Claude tier an exhausted default chain falls to, with the chain steps that were tried. */
+  tier?: ClaudeFallbackTier;
+  tried: readonly WorkerRouteStep[];
+  /** Why each skipped or untried route could not launch, in chain order (named router causes). */
+  causes: string[];
+  /** The Claude subscription account the tier worker is pinned on: one the router snapshot shows
+   * eligible. Absent when the router could not be read or lists no Claude account, so nothing
+   * could be pinned (the launch then uses the parent's own Claude login). */
+  claudeAccount?: NonNullable<ClaudeAccountPick["account"]>;
+}
+
+/**
+ * Quota-aware route for an IMPLICIT routine text wave (no harness, model, profile or Claude
+ * account from the caller). Selection used to resolve Go or Sol without asking the account router,
+ * so an exhausted provider was only discovered at worker launch, after `Started`. Now, before a
+ * selection is returned:
+ *
+ *  1. resolve exactly as before; a route the router does not gate (MiMo, local, ...) is final;
+ *  2. a router-gated Go/Sol route is kept unless the router proves EVERY configured account of
+ *     that provider unavailable (cooling down, signed out, or a 100% window). Busy, unknown and
+ *     unreadable are not exhaustion, so a busy Go stays Go;
+ *  3. an exhausted route is never selected: the built-in default chain (Go -> Sol) is walked
+ *     with the exhausted providers skipped;
+ *  4. when both are out (or neither is configured), the wave goes to the official claude-code
+ *     subscription route on the cheapest capable tier (Haiku 5.5 or Sonnet 5.5), never to the
+ *     paid claude-code-api route and never past a proven-ineligible Claude account. If no
+ *     route can launch, the dispatch refuses synchronously naming every cause.
+ *
+ * `fallThroughs` is the same walk after a launched tier was refused on a usage limit before any
+ * output: every tier that run reached, and everything ahead of it, is out whatever the router says,
+ * so the wave moves strictly down the chain and a tier is never tried twice.
+ */
+async function resolveImplicitWorkerRoute(
+  ctx: ExtensionContext,
+  requested: UltratermSubagentsParams,
+  dependencies: UltratermSubagentsDependencies,
+  readQuota: () => Promise<QuotaSnapshot>,
+  fallThroughs: readonly QuotaFallThrough[] = [],
+): Promise<ImplicitWorkerRoute> {
+  const spent = spentProviders(fallThroughs);
+  const tierBlock = (snapshot: QuotaSnapshot, step: WorkerRouteStep): string | undefined => {
+    const provider = quotaProviderOf(step);
+    if (provider === undefined || !spent.has(provider)) return routeQuotaBlock(snapshot, step);
+    const failed = fallThroughs.find((item) => item.providers.includes(provider));
+    return failed ? `run ${failed.runId} was refused on a usage limit before any output (${failed.cause})`
+      : routeQuotaBlock(snapshot, step) ?? "an earlier tier of this chain was refused on a usage limit, so it is not retried";
+  };
+  let first: NativeSelection | undefined;
+  let failure: unknown;
+  try { first = await resolveNativeSelection(ctx, requested, dependencies); } catch (error) { failure = error; }
+  if (!first && !isDefaultTextChainExhausted(failure)) throw failure;
+  let quota: QuotaSnapshot | undefined;
+  if (first) {
+    const step = stepOfSelection(first.selection);
+    if (quotaProviderOf(step) === undefined) return { resolved: first, tried: [], causes: [] };
+    quota = await readQuota();
+    const cause = tierBlock(quota, step);
+    if (cause === undefined) return { resolved: first, tried: [], causes: [] };
+    // The resolved route is out of quota: leave it, continue down the default chain.
+    const skip = (candidate: WorkerRouteStep) => tierBlock(quota!, candidate) !== undefined;
+    try {
+      const next = await resolveNativeSelection(ctx, requested, dependencies, { forceDefaultChain: true, skipRoute: skip });
+      return { resolved: next, tried: [], causes: [`${routeStepLabel(step)}: ${cause}`] };
+    } catch (error) {
+      if (!isDefaultTextChainExhausted(error)) throw error;
+      failure = error;
+    }
+  }
+  quota ??= await readQuota();
+  const exhausted = failure as NoChainRouteError;
+  const causes = exhausted.tried.map((step) =>
+    `${routeStepLabel(step)}: ${tierBlock(quota!, step) ?? "no authenticated route is available in this session"}`);
+  const claudeBlock = claudeQuotaBlock(quota);
+  const effortBlock = requested.thinking !== undefined && requested.thinking !== "xhigh"
+    ? `the Claude subscription tier runs only at xhigh effort and thinking ${requested.thinking} is not silently overridden` : undefined;
+  // A tier worker launched without a pinned account would run on the parent's default login, which
+  // the same snapshot may show cooling down while the other account is eligible: pin an eligible one.
+  const pick = claudeBlock === undefined ? pickClaudeAccount(quota) : {};
+  const accountBlock = claudeBlock ?? pick.cause;
+  if (accountBlock !== undefined || effortBlock !== undefined) {
+    throw new Error(`USAP implicit routing found no route that can launch this wave (${[...causes,
+      ...(accountBlock !== undefined ? [`Claude subscription tier: ${accountBlock}`] : []),
+      ...(effortBlock !== undefined ? [`Claude subscription tier: ${effortBlock}`] : [])].join(" | ")}). ${fallThroughs.length > 0
+      ? `The tier that launched was refused before any output (run ${fallThroughs.map((item) => item.runId).join(", ")}) and no further route was started; wait for a window to return or name a route explicitly.`
+      : "No route was started and no fallback was selected; wait for a window to return or name a route explicitly."}`);
+  }
+  return { tier: claudeFallbackTier({ tasks: requested.tasks, thinking: requested.thinking }), tried: exhausted.tried, causes, ...(pick.account ? { claudeAccount: pick.account } : {}) };
+}
+
+const taskLabel = (task: TaskRecord): string => task.label.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 40);
+
+/** Cause-bearing text of one worker that failed before its first model output. */
+function startupCause(task: TaskRecord): string {
+  return `[${taskLabel(task)}] ${boundedReason(task.error ?? "failed before its first model output (no cause was recorded)", 400)}`;
+}
+
+/** Tasks that settled `failed` without ever receiving model output: the launch itself died. `turns`
+ * cannot decide this (a Pi worker counts a turn when its request starts, and a first request that
+ * fails with a 429 or an expired login still ends with turns >= 1); the worker's own first-output
+ * signal does. A budget stop (`outcome`) is partial work, not a launch failure. */
+function preFirstTurnFailures(run: RunRecord | undefined): TaskRecord[] {
+  return (run?.tasks ?? []).filter((task) => task.state === "failed" && task.outputStarted !== true && task.outcome === undefined);
+}
+
+const SETTLED_TASK_STATES: readonly string[] = ["done", "failed", "aborted", "timed_out"];
+/** How long a failed dispatch waits for the cancelled siblings to stop before it says so. */
+const STARTUP_CANCEL_SETTLE_MS = 5_000;
+
+/**
+ * Hold a dispatch for at most `windowMs` while its launched workers reach their first model
+ * output or fail. A task waiting for run width, session or machine capacity is not launching and is
+ * not waited on. Resolves with the run as last seen; the caller decides what a failure means.
+ */
+async function awaitWorkerStartup(current: SessionRuntime, runId: string, windowMs: number, signal?: AbortSignal): Promise<RunRecord | undefined> {
+  // Let the coordinator hand its first launch slots out: until then every task still reads
+  // `queued`, which would be mistaken for "waiting on capacity".
+  if (windowMs > 0) for (let turn = 0; turn < 25; turn += 1) await Promise.resolve();
+  const inspect = () => {
+    const run = current.coordinator.snapshot(runId);
+    const waiting = (run?.tasks ?? []).some((task) => !SETTLED_TASK_STATES.includes(task.state) && task.state !== "queued"
+      && task.launchQueue?.tier !== "machine" && task.outputStarted !== true);
+    return { run, failed: preFirstTurnFailures(run), waiting };
+  };
+  const initial = inspect();
+  // An already-aborted signal never fires its listener: return at once instead of holding the window.
+  if (windowMs <= 0 || signal?.aborted || initial.failed.length > 0 || !initial.waiting) return Promise.resolve(initial.run);
+  return new Promise((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => {
+      if (timer !== undefined) clearTimeout(timer);
+      current.startupWatchers.delete(check);
+      signal?.removeEventListener("abort", finish);
+      resolve(current.coordinator.snapshot(runId));
+    };
+    const check = () => {
+      const seen = inspect();
+      if (seen.failed.length > 0 || !seen.waiting) finish();
+    };
+    current.startupWatchers.add(check);
+    signal?.addEventListener("abort", finish, { once: true });
+    timer = setTimeout(finish, windowMs);
+  });
 }
 
 interface RunBinding {
@@ -363,6 +617,8 @@ interface SessionRuntime {
   attachStore?: (store: CheckpointStore, ctx?: ExtensionContext) => void;
   /** True until an agent run starts; cleared/refreshed by agent lifecycle events. */
   agentIdle: boolean;
+  /** Dispatches holding for a worker's first model output; called on every coordinator change. */
+  startupWatchers: Set<() => void>;
 }
 
 function sessionOwner(ctx?: ExtensionContext): string | undefined {
@@ -589,7 +845,9 @@ export function reviewFallbackReceipt(run: RunRecord, directory?: string): strin
 
 export function renderRunResult(run: RunRecord, limit = MAX_TOOL_CONTENT): string {
   if (!Number.isSafeInteger(limit) || limit < 0) throw new RangeError("render limit must be a non-negative integer");
-  let text = `${renderRunProgress(run)}\nmodel ${run.model} · thinking ${run.thinkingLevel}${run.selection ? ` · ${run.selection.source}${run.selection.profile ? ` · ${run.selection.profile}` : ""}` : ""}`.slice(0, limit);
+  const independence = run.selection?.independence === "requires-opus"
+    ? ` · ${run.model === CLAUDE_CODE_HAIKU_ROUTE ? "Haiku 5.5" : "Sonnet 5.5"} tier: requires Opus 5.5 verification${run.selection.fallbackReason ? ` · ${run.selection.fallbackReason}` : ""}` : "";
+  let text = `${renderRunProgress(run)}\nmodel ${run.model} · thinking ${run.thinkingLevel}${run.selection ? ` · ${run.selection.source}${run.selection.profile ? ` · ${run.selection.profile}` : ""}` : ""}${independence}`.slice(0, limit);
   let wasTruncated = false;
   for (const task of run.tasks) {
     // A budget stop is named explicitly (with its role) so it cannot be mistaken for a finished leaf.
@@ -689,7 +947,7 @@ export function defaultWorkerRunner(
   let claudeRunner: Promise<WorkerRunner> | undefined;
   return async (context) => {
     if (harnessOf(context.run.harness) === "claude-code") {
-      claudeRunner ??= import(new URL("../src/subagents/claude-worker.ts", import.meta.url).href)
+      claudeRunner ??= import(resolveStagedModule("src/subagents/claude-worker.ts").url)
         .then((module) => {
           const factory = (module as unknown as Partial<ClaudeWorkerModule>).createClaudeWorkerRunner;
           if (typeof factory !== "function") {
@@ -697,7 +955,8 @@ export function defaultWorkerRunner(
           }
           return factory({ ...(claudeSpawn ? { spawn: claudeSpawn } : {}), accountCommand });
         });
-      const result = await (await claudeRunner)(context);
+      const runner = await claudeRunner.catch((error) => { claudeRunner = undefined; throw error; });
+      const result = await runner(context);
       if (!canFallbackReview(context.run, result, context.signal)) return result;
       const fallback = workerRuntimes.get(`${context.run.id}:review-fallback`);
       if (!fallback) return result;
@@ -716,10 +975,10 @@ export function defaultWorkerRunner(
   };
   async function runPi(context: Parameters<WorkerRunner>[0], fallback?: PiWorkerRuntime) {
     if (fallback) {
-      const module = await import(new URL("../src/subagents/pi-worker.ts", import.meta.url).href);
+      const module = await import(resolveStagedModule("src/subagents/pi-worker.ts").url);
       return module.createPiWorkerRunner({ relay, accountCommand, sessionFactory, resolveRuntime: () => fallback })(context);
     }
-    piRunner ??= import(new URL("../src/subagents/pi-worker.ts", import.meta.url).href)
+    piRunner ??= import(resolveStagedModule("src/subagents/pi-worker.ts").url)
       .then((module) => {
         const factory = (module as unknown as Partial<PiWorkerModule>).createPiWorkerRunner;
         if (typeof factory !== "function") {
@@ -736,7 +995,8 @@ export function defaultWorkerRunner(
           },
         });
       });
-    return (await piRunner)(context);
+    const runner = await piRunner.catch((error) => { piRunner = undefined; throw error; });
+    return runner(context);
   }
 }
 
@@ -745,6 +1005,10 @@ export function createUltratermSubagentsExtension(
 ): (pi: ExtensionAPI) => void {
   // Validated once at construction: a bad value must never reach a live teardown.
   const shutdownGraceMs = shutdownGraceMsOrThrow(dependencies.shutdownGraceMs);
+  const startupWindow = dependencies.startupWindowMs;
+  if (startupWindow !== undefined && (!Number.isSafeInteger(startupWindow) || startupWindow < 0 || startupWindow > MAX_STARTUP_WINDOW_MS)) {
+    throw new RangeError(`startupWindowMs must be a safe integer from 0 to ${MAX_STARTUP_WINDOW_MS}`);
+  }
   return function ultratermSubagentsExtension(pi: ExtensionAPI): void {
     let runtime: SessionRuntime | undefined;
     let clearedStatusUi: ExtensionContext["ui"] | undefined;
@@ -1031,6 +1295,21 @@ export function createUltratermSubagentsExtension(
       }
     };
 
+    /** Record durably that a run's completion has been delivered some other way (a dispatch that threw its
+     * cause): without it a reload would queue that run's completion again. A failed write is retried with
+     * the next successful save, like every other receipt. */
+    const markDeliveredDurably = (current: SessionRuntime, runId: string): void => {
+      if (!current.store) return;
+      current.checkpointReceipts.add(runId);
+      try {
+        current.store.markDelivered(runId);
+        current.checkpointReceipts.delete(runId);
+      } catch (error) {
+        const run = readRun(current, runId);
+        if (run) checkpointFailed(current, run, error, "receipt");
+      }
+    };
+
     /** A degraded runtime must never launch work that only exists in memory: the
      * operator would have no durable recovery path. Chat, list and diagnose stay
      * available read-only until the live owner releases the lease. */
@@ -1088,6 +1367,9 @@ export function createUltratermSubagentsExtension(
           if (run.state !== "running") created.checkpointStopping.delete(run.id);
           persistTelemetry(created, run);
           setStatus(created);
+          for (const watcher of [...created.startupWatchers]) {
+            try { watcher(); } catch { /* a startup observer never owns execution */ }
+          }
         },
         onProgress: (event) => {
           if (created.closed || !ownsContext(created, created.statusContext)) return;
@@ -1149,6 +1431,7 @@ export function createUltratermSubagentsExtension(
         shutdownWarning: lastShutdownWarning?.owner === owner ? lastShutdownWarning.message : undefined,
         attachStore: (candidate: CheckpointStore, adoptCtx?: ExtensionContext) => adoptStore(candidate, adoptCtx),
         agentIdle: true,
+        startupWatchers: new Set(),
       };
       runtime = created;
       if (store) adoptStore(store, ctx);
@@ -1345,18 +1628,336 @@ export function createUltratermSubagentsExtension(
     // Shutdown is the committed boundary, while the outgoing context is still valid.
     pi.on("session_shutdown", leaveSession);
 
+    /**
+     * One dispatch attempt. An implicit routine wave whose launched worker is refused on a provider
+     * quota or usage limit before any worker produced output does not throw: it returns the failed tier
+     * so `execute` can re-run the same tasks on the next one. Everything else returns the tool result or
+     * throws, exactly as a single dispatch always did.
+     */
+    const dispatchWave = async (rawParams: unknown, signal: AbortSignal | undefined, onUpdate: RunBinding["onUpdate"], ctx: ExtensionContext, fallThroughs: readonly QuotaFallThrough[]) => {
+      const requested = rawParams as UltratermSubagentsParams;
+      const startupWindowMs = dependencies.startupWindowMs ?? DEFAULT_STARTUP_WINDOW_MS;
+      // Do not let a mixed implicit wave silently bypass the Opus review
+      // standard or spend expert quota on routine implementation leaves.
+      if (requested.claudeAccount !== undefined) {
+        assertClaudeAccountId(requested.claudeAccount);
+        if (requested.profile !== undefined || (requested.harness !== undefined && requested.harness !== "claude-code") || (requested.harness !== "claude-code" && !CLAUDE_CODE_ROUTES.includes(requested.model ?? "")) || (requested.model !== undefined && !CLAUDE_CODE_ROUTES.includes(requested.model))) {
+          throw new Error("claudeAccount requires an explicit Claude subscription harness or exact model; Pi, API and profile routes are refused");
+        }
+      }
+      const implicitRoute = requested.claudeAccount === undefined && requested.harness === undefined && requested.model === undefined && requested.profile === undefined;
+      const hasReviewer = requested.tasks.some((task) => task.role === "reviewer");
+      const allReviewers = requested.tasks.length > 0 && requested.tasks.every((task) => task.role === "reviewer");
+      if (implicitRoute && hasReviewer && !allReviewers) {
+        throw new Error("Mixed worker/reviewer waves need an explicit route; split routine workers from the Opus review wave. No fallback was selected.");
+      }
+      // Explicit Pi/model/profile selections win; only implicit all-reviewer
+      // waves select the official Opus Pass CLI route automatically.
+      const opusReviewDefault = implicitRoute && allReviewers;
+      if (opusReviewDefault && requested.thinking !== undefined && requested.thinking !== "xhigh") throw new Error("Automatic Opus review requires xhigh effort; a different explicit effort is not silently overridden.");
+      // A fallback may change the harness only for permission-free reviewers.
+      // Keep privileged leaves on Claude so exact path admission and reviewer
+      // shell denial cannot be bypassed when its subscription is unavailable.
+      const readOnlyReviewFallback = opusReviewDefault && isReadOnlyReviewWave(requested.tasks);
+      // One router `status` read per dispatch, taken only where a route decision needs it. An
+      // unreadable router is "unknown" and never proves exhaustion.
+      let quotaRead: Promise<QuotaSnapshot> | undefined;
+      const readQuota = (): Promise<QuotaSnapshot> => quotaRead ??= readProviderQuota(dependencies.accountCommand, dependencies.now?.());
+      const reviewQuota = readOnlyReviewFallback && requested.requireImages !== true ? await readQuota() : undefined;
+      const claudeBlock = reviewQuota ? claudeQuotaBlock(reviewQuota) : undefined;
+      const claudeUnavailable = claudeBlock !== undefined;
+      if (!ctx.model) throw new Error("ultraterm_subagents requires a resolved current model");
+      if (claudeUnavailable) {
+        // The Sol review fallback launches on a reserved GPT account: refuse now, naming both
+        // causes, instead of dying at launch after `Started`.
+        const solBlock = routeQuotaBlock(reviewQuota!, SOL_REVIEW_STEP);
+        if (solBlock !== undefined) {
+          throw new Error(`USAP implicit review cannot run: Claude subscription tier: ${claudeBlock} | GPT-6.1 Sol review fallback: ${solBlock}. No review was started and no fallback was selected; wait for a window to return or name a route explicitly.`);
+        }
+      }
+      // Quota-aware default route for an implicit routine text wave (Go -> Sol -> Claude Haiku/Sonnet
+      // 5.5). A Claude Code CLI route is not a Pi provider, so it cannot be a step of the Pi chain
+      // and is reached here instead, only when the default chain cannot launch, never past a
+      // proven-ineligible Claude account and never on the paid claude-code-api route. Explicit
+      // selections and image waves stay exact.
+      let nativeResolved: NativeSelection | undefined;
+      let claudeTier: ClaudeFallbackTier | undefined;
+      let tierTried: readonly WorkerRouteStep[] = [];
+      let quotaCauses: string[] = [];
+      let tierAccount: ImplicitWorkerRoute["claudeAccount"];
+      const quotaRouted = implicitRoute && !hasReviewer && requested.requireImages !== true;
+      if (quotaRouted) {
+        const route = await resolveImplicitWorkerRoute(ctx, requested, dependencies, readQuota, fallThroughs);
+        nativeResolved = route.resolved;
+        claudeTier = route.tier;
+        tierTried = route.tried;
+        quotaCauses = route.causes;
+        tierAccount = route.claudeAccount;
+      }
+      const claudeWorkerTier = claudeTier !== undefined;
+      const params: UltratermSubagentsParams = {
+        ...requested,
+        ...(tierAccount ? { claudeAccount: tierAccount.id } : {}),
+        ...(claudeUnavailable ? { harness: "pi" as const, model: SOL_MODEL_ROUTE, thinking: "high" as const, thinkingReason: "Automatic expert text review fallback after proven Claude unavailability." } : {}),
+        ...((!claudeUnavailable && opusReviewDefault || claudeWorkerTier || (requested.harness === undefined && (CLAUDE_CODE_ROUTES.includes(requested.model ?? "") || CLAUDE_API_ROUTES.includes(requested.model ?? "")))) ? { harness: "claude-code" as const } : {}),
+      };
+      const current = ensureRuntime(ctx);
+      // Never launch a run this session could not recover from its durable store.
+      assertDurableForNewWork(current);
+      const persistence = persistenceOf(current);
+      const persistenceNote = current.store
+        ? ""
+        : `USAP checkpoints are unavailable in this session (${current.checkpointError ?? "no native session file"}): this run is memory-only and cannot be resumed.\n`;
+      // The Sol review fallback launches on a reserved GPT account too: when the router proves every
+      // GPT account unavailable it is not installed (a Claude quota/auth failure would only trade one
+      // refusal for another after `Started`), and the dispatch says so.
+      const reviewFallbackBlock = reviewQuota && !claudeUnavailable ? routeQuotaBlock(reviewQuota, SOL_REVIEW_STEP) : undefined;
+      const reviewFallbackSkipNote = reviewFallbackBlock !== undefined
+        ? `Review note: the GPT-6.1 Sol review fallback is unavailable (${reviewFallbackBlock}); a Claude quota or auth failure ends this review without falling back.\n` : "";
+      const tierName = claudeTier ? claudeCodeModelName(claudeTier.model) : "";
+      const fallThroughReason = fallThroughs.length > 0 ? "automatic fall-through after a usage-limit refusal before any output; " : "";
+      const fallThroughNote = fallThroughs.length > 0
+        ? `Fall-through: ${fallThroughSummary(fallThroughs)}. The same tasks were re-run here on the next tier, with no parent re-dispatch.\n` : "";
+      const routeNote = fallThroughNote + (claudeTier
+        ? `Route note: neither ${tierTried.map(routeStepLabel).join(" nor ")} could launch (${quotaCauses.join(" | ")}), so this implicit wave runs ${claudeTier.route} at xhigh (subscription) on the ${tierName} tier: ${claudeTier.reason}. `
+          + `Claude account: ${tierAccount ? `${tierAccount.label} (an eligible account in the router snapshot, the least used)` : "the parent's own Claude login (the router listed no Claude account to pin)"}. `
+          + `${tierName} work needs verification: review it with an Opus 5.5 reviewer wave (all-reviewer waves default to model ${CLAUDE_CODE_OPUS_ROUTE}).\n`
+        : nativeResolved && quotaCauses.length > 0
+          ? `Route note: ${quotaCauses.join(" | ")}; this implicit wave continues down the default chain on ${nativeResolved.model.provider}/${nativeResolved.model.id}.\n`
+          : "") + reviewFallbackSkipNote;
+      // Foreign-harness routing happens before native selection: the claude-code
+      // CLI route is explicit and fixed, and the native Pi registry is never
+      // consulted for it (it cannot resolve, and must not appear to).
+      const foreignHarness = params.harness === "claude-code";
+      if (foreignHarness && ((params.model !== undefined && !CLAUDE_CODE_ROUTES.includes(params.model) && !CLAUDE_API_ROUTES.includes(params.model)) || params.profile !== undefined)) {
+        throw new Error("USAP harness claude-code runs only claude-code/claude-sonnet-5-5 or claude-code/claude-opus-5-5 at xhigh (subscription), or the explicitly approved claude-code-api/claude-sonnet-5-5 or claude-code-api/claude-opus-5-5; other model/profile selectors are refused.");
+      }
+      // Sonnet 5.5 is the default Claude worker; all-reviewer waves keep the Opus Pass. The automatic
+      // quota tier names its own route (Haiku 5.5 or Sonnet 5.5).
+      // The API route is never a default: only an exact, explicit model names it.
+      const claudeRoute = foreignHarness ? params.model ?? (claudeTier ? claudeTier.route : defaultClaudeCodeRoute(params.tasks)) : undefined;
+      const claudeModel = anyClaudeRouteModelOf(claudeRoute);
+      const apiRoute = foreignHarness && isClaudeApiRoute(claudeRoute);
+      // Operator approval, settings contract and budget are checked before any
+      // checkpoint, relay peer or worker exists; the runner re-checks at every launch.
+      const apiAdmission = apiRoute
+        ? admitClaudeApiRoute({ route: claudeRoute, taskCount: params.tasks.length, roles: params.tasks.map((task) => task.role ?? "worker"), requireImages: params.requireImages === true }, dependencies.now ? { now: dependencies.now } : {})
+        : undefined;
+      if (apiRoute) params.concurrency = claudeApiConcurrency(params.concurrency, params.tasks.length);
+      if (foreignHarness && params.thinking !== undefined && params.thinking !== "xhigh") {
+        throw new Error(`USAP claude-code ${claudeCodeModelName(claudeModel!)} requires xhigh effort; a different explicit effort is not silently overridden.`);
+      }
+      if (foreignHarness && params.requireImages === true && !apiRoute) assertClaudeCodeImageAdmission(claudeRoute);
+      const piResolved = foreignHarness
+        ? undefined
+        : nativeResolved ?? await resolveNativeSelection(ctx, params, dependencies);
+      if (piResolved && !implicitRoute) {
+        // An explicit route stays exact: never rerouted, but never launched into a provider the
+        // router has proven exhausted either. The refusal names the router's own cause.
+        const step = stepOfSelection(piResolved.selection);
+        const cause = quotaProviderOf(step) === undefined ? undefined : routeQuotaBlock(await readQuota(), step);
+        if (cause !== undefined) {
+          throw new Error(`USAP explicit route ${routeOfStep(step)} cannot launch: ${cause}. Explicit routes are never rerouted, so no worker was started and no fallback was selected; wait for the window to return or choose another route yourself.`);
+        }
+      }
+      let reviewFallbackRuntime: PiWorkerRuntime | undefined;
+      if (readOnlyReviewFallback && !claudeUnavailable && requested.requireImages !== true && reviewFallbackBlock === undefined) {
+        try {
+          const sol = await resolveNativeSelection(ctx,
+            { ...requested, harness: "pi", model: SOL_MODEL_ROUTE, profile: undefined, thinking: "high", thinkingReason: "Automatic expert text review fallback after proven Claude unavailability." }, dependencies);
+          reviewFallbackRuntime = { model: sol.model, thinkingLevel: sol.thinkingLevel };
+        } catch { /* Claude may still succeed; unavailable Sol is not a route substitute. */ }
+      }
+      const resolvedSelection = piResolved ? piResolved.selection : apiRoute ? resolveClaudeApiSelection(claudeModel!) : resolveClaudeCodeSelection(claudeModel);
+      const resolvedThinking = piResolved ? String(piResolved.thinkingLevel) : "xhigh";
+      const model = foreignHarness ? claudeRoute! : `${piResolved!.model.provider}/${piResolved!.model.id}`;
+      const thinking = resolvedThinking;
+      const input: DispatchInput = {
+        ...params,
+        tasks: params.tasks,
+        background: params.background ?? false,
+      };
+      let run: RunRecord;
+      try {
+        run = normalizeDispatch(
+          input,
+          ctx.cwd,
+          model,
+          thinking,
+          dependencies.now?.() ?? Date.now(),
+          dependencies.idFactory,
+        );
+      } catch (error) {
+        if (!(error instanceof SubagentPolicyError)) throw error;
+        // Never throw policy failures to a host formatter that may echo raw arguments.
+        // Bound even labels and error messages: both can contain untrusted input.
+        const reason = error.message.slice(0, 200);
+        const field = /^(?:tasks\[\d+\](?:\.[A-Za-z]+(?:\[\d+\])?)?|[A-Za-z]+)/.exec(reason)?.[0] ?? "input";
+        const labels = Array.isArray(params.tasks)
+          ? params.tasks.slice(0, MAX_TASKS).map((task) =>
+            typeof task?.label === "string" ? task.label.slice(0, 20) : "?")
+          : [];
+        const digest = JSON.stringify({ field, labels }).slice(0, 200);
+        return {
+          isError: true,
+          content: [{ type: "text" as const, text: `Dispatch validation failed: ${reason}\nInput: ${digest}` }],
+          details: undefined,
+        };
+      }
+
+      if (run.claudeAccount !== undefined) {
+        try { await resolveClaudeAccount(run.claudeAccount, dependencies.accountCommand); }
+        catch (error) {
+          // The tier account came from the router snapshot a moment ago: if the router now refuses it, say which and why.
+          if (!tierAccount) throw error;
+          throw new Error(`USAP implicit routing picked ${tierAccount.label} for the ${tierName} tier, but the router would not select it now (${boundedReason(error instanceof Error ? error.message : String(error), 200)}). ${fallThroughs.length > 0
+            ? `No further worker was started after the earlier tier was refused (${fallThroughSummary(fallThroughs)}); retry or name a route explicitly.`
+            : "No worker was started and no fallback was selected; retry or name a route explicitly."}`);
+        }
+      }
+      if (apiAdmission) stampClaudeApiRun(run, apiAdmission);
+      run.selection = { ...resolvedSelection,
+        // The Claude worker tier records the steps that were really tried, then the tier itself,
+        // so a receipt shows exactly why it was reached; its work needs an Opus verification.
+        // It also names the tier chosen and why (cheapest capable model) beside the router causes.
+        ...(claudeTier ? { source: "chain" as const, chainRoutes: [...tierTried.map(routeOfStep), claudeRoute!], independence: "requires-opus" as const,
+          fallbackReason: boundedReason(`${fallThroughReason}${tierName}: ${claudeTier.reason}${tierAccount ? `; Claude account ${tierAccount.label}` : ""}; ${quotaCauses.join(" | ")}`, FALLBACK_REASON_LIMIT) } : {}),
+        ...(!claudeTier && quotaCauses.length > 0 ? { fallbackReason: boundedReason(`${fallThroughReason}${quotaCauses.join(" | ")}`, FALLBACK_REASON_LIMIT) } : {}),
+        // No route was requested for an implicit review wave: a Sol review chosen only because no Claude
+        // account was eligible is an automatic fallback, never an operator-requested override.
+        ...(opusReviewDefault ? { source: claudeUnavailable ? "automatic-review-fallback" as const : "automatic-review" as const, automaticReview: true, reviewRequiresImages: requested.requireImages === true } : {}) };
+      if (claudeUnavailable) for (const task of run.tasks) recordReviewFallback(task, "no-eligible-claude");
+      if (reviewFallbackRuntime) current.workerRuntimes.set(`${run.id}:review-fallback`, Object.freeze(reviewFallbackRuntime));
+      run.ownerSessionId = current.ownerSessionId;
+      run.ownerSessionFile = current.ownerSessionFile;
+      // An Esc during this tier's router reads (quota status, Claude account select) must not still
+      // launch it: nothing is saved or started for a cancelled dispatch.
+      if (signal?.aborted) {
+        throw new Error(fallThroughs.length > 0
+          ? `USAP dispatch cancelled before the fall-through to the next tier launched (${fallThroughs.map((step) => step.cause).join("; ")}).`
+          : "USAP dispatch cancelled before any worker launched.");
+      }
+      // Never launch a supposedly durable run whose initial checkpoint failed.
+      saveCheckpoint(current, run, true, "initial", true);
+      // Foreign-harness runs have no frozen Pi runtime: their runner branches on
+      // run.harness and never consults the Pi registry or the relay workers.
+      if (!foreignHarness) {
+        current.workerRuntimes.set(run.id, Object.freeze({
+          model: Object.freeze({ ...(piResolved!.model) }),
+          thinkingLevel: piResolved!.thinkingLevel,
+        }) as PiWorkerRuntime);
+      }
+      // Foreign children cannot bind relay peers: create only the parent peer so
+      // hub send/inbox can honestly refuse instead of silently buffering.
+      current.relay.createRun(run.id, foreignHarness && !reviewFallbackRuntime
+        ? [PARENT_RELAY_ID]
+        : [PARENT_RELAY_ID, ...run.tasks.map((task) => task.id)]);
+      const parent = current.relay.bindSender(run.id, PARENT_RELAY_ID);
+      let started: RunRecord;
+      try {
+        started = current.coordinator.start(run);
+      } catch (error) {
+        parent.close();
+        current.relay.cleanupRun(run.id);
+        current.workerRuntimes.delete(run.id); current.workerRuntimes.delete(`${run.id}:review-fallback`);
+        throw error;
+      }
+
+      const binding: RunBinding = {
+        parent,
+        background: run.background,
+        completion: Promise.resolve(started),
+        usageClaimed: false,
+        onUpdate,
+      };
+      current.bindings.set(run.id, binding);
+      persistTelemetry(current, started);
+      setStatus(current, ctx);
+
+      // A worker that dies before its first model output (router refusal, auth, route, spawn, a first
+      // request that errors) makes this dispatch fail with its named cause, background or not:
+      // `Started` is never reported for a worker already known dead. Each launched worker gets a
+      // bounded window to produce that first output.
+      // The completion handler attaches only afterwards, so a failed dispatch never also queues a
+      // background completion message.
+      // The explicit paid claude-code-api route keeps its own settled-result contract instead: its
+      // receipts ride in the settled result, never in a thrown error.
+      const startedRun = await awaitWorkerStartup(current, run.id, apiRoute ? 0 : startupWindowMs, signal);
+      const startupFailures = apiRoute ? [] : preFirstTurnFailures(startedRun);
+      if (startupFailures.length > 0) {
+        // The thrown error is the one notification: no completion message follows it, in this
+        // process (binding.background) or after a reload (the durable receipt: adoptStore queues a
+        // background run whose checkpoint is not marked delivered). Siblings are cancelled so no
+        // half-started wave is left running unseen; the record names every cause.
+        binding.background = false;
+        markDeliveredDurably(current, run.id);
+        binding.completion = attachCompletion(current, run.id);
+        current.coordinator.cancel(run.id, undefined, `Run cancelled: ${startupFailures.map((task) => `worker ${task.id}`).join(", ")} failed before its first model output`);
+        const settled = await current.coordinator.wait(run.id, "all", { timeoutMs: STARTUP_CANCEL_SETTLE_MS }).catch(() => current.coordinator.snapshot(run.id));
+        const final = settled ?? startedRun;
+        const causes = preFirstTurnFailures(final);
+        // Only what the settled snapshot shows may be claimed: a sibling that had not stopped inside
+        // the settle wait is named, not reported as cancelled.
+        const stillRunning = (final?.tasks ?? []).filter((task) => !SETTLED_TASK_STATES.includes(task.state));
+        const aftermath = stillRunning.length === 0
+          ? `The run record is ${final?.state ?? "failed"} with these causes and no worker is left running.`
+          : `Cancellation was requested for the whole run, but ${stillRunning.map((task) => `[${taskLabel(task)}]`).join(", ")} had not stopped within ${STARTUP_CANCEL_SETTLE_MS} ms and may still be shutting down; the run record is still ${final?.state ?? "running"} (inspect it with ultraterm_hub status ${run.id}).`;
+        const failureText = (causes.length > 0 ? causes : startupFailures).map(startupCause).join(" | ");
+        // An implicit wave refused on a provider quota or usage limit before any output moves to the next
+        // tier of Go -> Sol -> Claude instead of failing: only for a router-gated Pi tier, only once per
+        // tier, only when the whole run settled (so nothing can still be running or have written), and
+        // never after the operator aborted. An explicit route, the Claude tier and every non-quota failure
+        // (auth, route, spawn) fall through to the error below.
+        const reached = quotaRouted && !claudeWorkerTier && stillRunning.length === 0 && !signal?.aborted && fallThroughs.length < MAX_QUOTA_FALL_THROUGHS
+          ? quotaFallThroughProviders(final ?? startedRun, startupFailures) : undefined;
+        if (reached) return { fallThrough: { runId: run.id, route: model, providers: reached, cause: boundedReason(failureText, 240) } satisfies QuotaFallThrough };
+        throw new Error(`USAP dispatch failed before any worker produced model output (run ${run.id} · ${model}): ${failureText}. ${aftermath} ${fallThroughs.length > 0
+          ? `This was the automatic fall-through after ${fallThroughSummary(fallThroughs)}: no further fall-through applies, so the dispatch fails with both causes.`
+          : "No fallback was selected."}`);
+      }
+      binding.completion = attachCompletion(current, run.id);
+
+      if (run.background) {
+        const snapshot = current.coordinator.snapshot(run.id)!;
+        return {
+          content: [{
+            type: "text" as const,
+            text: `${persistenceNote}${routeNote}Started USAP run ${run.id} · ${model} · ${resolvedSelection.source}${resolvedSelection.profile ? ` · ${resolvedSelection.profile}` : ""}: ${run.tasks.map((task) => task.id).join(", ")}\nDispatch summary: ${JSON.stringify(dispatchDetails(snapshot, persistence).summary)}`,
+          }],
+          details: dispatchDetails(snapshot, persistence),
+        };
+      }
+
+      const abort = () => current.coordinator.cancel(run.id);
+      if (signal?.aborted) abort();
+      else signal?.addEventListener("abort", abort, { once: true });
+      try {
+        const settled = await binding.completion;
+        assertOwner(current, ctx);
+        binding.usageClaimed = true;
+        return {
+          content: [{ type: "text" as const, text: `${persistenceNote}${routeNote}Dispatch summary: ${JSON.stringify(dispatchDetails(settled, persistence).summary)}\n${renderRunResult(settled)}\n${reviewFallbackReceipt(settled, current.store?.directory)}` }],
+          details: dispatchDetails(settled, persistence),
+          // Nested worker usage belongs only here, never under details/results.
+          usage: usageCopy(settled.usage),
+        };
+      } finally {
+        signal?.removeEventListener("abort", abort);
+      }
+    };
+
     pi.registerTool({
       name: "ultraterm_subagents",
       label: "UltraTerm Subagents",
-      description: "Dispatch 1-8 bounded tasks through Pi or the official headless Claude Code CLI. All-reviewer waves default to Opus 5.5 xhigh; other claude-code waves run Sonnet 5.5 xhigh. Explicit routes win. Foreground default; ownedPaths grants guarded writes on either harness; allowBash is unsandboxed shell except Claude read-only reviewers get no Bash. Claude image review uses native Read on staged files under cwd.",
+      description: "Dispatch 1-8 bounded tasks through Pi or the official headless Claude Code CLI. All-reviewer waves default to Opus 5.5 xhigh; other claude-code waves run Sonnet 5.5 xhigh. Implicit routine waves run Go, then Sol, and the router's quota is checked first: a provider whose every account is cooling down or at 100% is skipped, and when both are out the wave runs on the claude-code subscription at the cheapest capable tier (Haiku 5.5, or Sonnet 5.5 for substantial code work; verify with Opus 5.5). Explicit routes win and are never rerouted; an explicit route in an exhausted provider is refused with the router's cause. A worker that fails before its first model output fails this call itself, background or not, except that an implicit wave refused on a provider quota or usage limit (Go GoUsageLimitError, Codex usage limit, a cooling-down router refusal) re-runs the same tasks once on the next tier (Go, Sol, then Claude Haiku/Sonnet) inside this call, before Started. Foreground default; ownedPaths grants guarded writes on either harness; allowBash is unsandboxed shell except Claude read-only reviewers get no Bash. Claude image review uses native Read on staged files under cwd.",
       promptSnippet: "Dispatch bounded independent child tasks with explicit permissions and path ownership",
       promptGuidelines: [
         "Fan out by default: independent leaves (disjoint files, modules, screens, angles) dispatch in ONE parallel wave — width defaults to min(8, task count); automatic Go/Sol chain lanes fill 8, explicit Luna lanes stay at 6 or fewer.",
         "Delegation must buy completion speed; modest token premiums for real throughput are correct. Trivial or tightly coupled edits and direct answers stay in the parent.",
         "Parent owns decomposition, integration, verification; workers own leaves end to end. With exact disjoint paths and acceptance contracts in hand, dispatch in the first tool turn without pre-reading child-owned files; do not duplicate child discovery in the parent.",
         "model or profile picks an explicit authenticated route (mutually exclusive, overrides roles). Every GPT choice requires paid openai-codex OAuth — never OpenRouter, API-key, or batch GPT. Do not select GPT-6 Astra; use GPT-6.1 Sol instead. requireImages=true for visual critics or render inspection.",
-        "Claude work defaults to Sonnet 5.5: harness claude-code (or model claude-code/claude-sonnet-5-5) runs Sonnet 5.5 xhigh, nearly Opus-level at far less quota. Escalate to Opus 5.5 (model claude-code/claude-opus-5-5) only for frontier needs: expert review and sign-off (all-reviewer waves default to it), hard architecture or security reasoning, or a leaf Sonnet already failed. mayEdit+ownedPaths are CLI-enforced; allowBash is unsandboxed except read-only reviewers get no shell, even when requested. Stage git evidence for review. requireImages=true admits native Read-image of files staged under cwd, not inline attachments. Explicit routes never fall back; implicit automatic text review may use GPT-6.1 Sol only on proven Claude quota/auth unavailability before output. Relay and native Pi resume are unavailable on this harness. The exact model claude-code-api/claude-sonnet-5-5 (or claude-code-api/claude-opus-5-5) runs this same headless CLI on approved Claude API credits: explicit only, never a default or fallback, admitted per dispatch and launch by the operator's task-scoped approval record with hard per-session budget ceilings, and a failure never falls back to the subscription or Sol. Promotional API credits cover headless runs only, never interactive Claude Code.",
-        "Background only when the parent can integrate while children run, then one bounded ultraterm_hub wait. Never start a background run merely to wait immediately.",
+        "Claude work defaults to Sonnet 5.5: harness claude-code (or model claude-code/claude-sonnet-5-5) runs Sonnet 5.5 xhigh, nearly Opus-level at far less quota. Escalate to Opus 5.5 (model claude-code/claude-opus-5-5) only for frontier needs: expert review and sign-off (all-reviewer waves default to it), hard architecture or security reasoning, or a leaf Sonnet already failed. When neither Go nor Sol can launch (not authenticated, not configured, or every account cooling down / at a 100% window per the account router; busy or unknown is NOT exhaustion), an implicit routine text wave runs on the claude-code subscription with no re-dispatch: Haiku 5.5 for ordinary leaves, Sonnet 5.5 when any leaf may edit AND run a shell or thinking xhigh is requested (the tier and why are named in the dispatch note and receipts); verify that work with an Opus 5.5 review. That fallback never uses the paid claude-code-api route, never passes a proven-ineligible Claude account, and if no route can launch the call is refused synchronously naming every cause. A spent Go plan is invisible to the router (no usage API), so an implicit wave whose worker is refused on a provider usage limit before any output falls through to the next tier by itself within the same call (each tier once; the refused run stays failed; the receipt names it; both causes are named if the next tier also cannot launch); auth, route and spawn failures and a bare 429 still fail synchronously. An explicit route whose Go or Sol provider is exhausted is refused with the router cause, not rerouted. mayEdit+ownedPaths are CLI-enforced; allowBash is unsandboxed except read-only reviewers get no shell, even when requested. Stage git evidence for review. requireImages=true admits native Read-image of files staged under cwd, not inline attachments. Explicit routes never fall back; implicit automatic text review may use GPT-6.1 Sol only on proven Claude quota/auth unavailability before output. Relay and native Pi resume are unavailable on this harness. The exact model claude-code-api/claude-sonnet-5-5 (or claude-code-api/claude-opus-5-5) runs this same headless CLI on approved Claude API credits: explicit only, never a default or fallback, admitted per dispatch and launch by the operator's task-scoped approval record with hard per-session budget ceilings, and a failure never falls back to the subscription or Sol. Promotional API credits cover headless runs only, never interactive Claude Code.",
+        "Background only when the parent can integrate while children run, then one bounded ultraterm_hub wait. Never start a background run merely to wait immediately. A background dispatch holds up to ~25 s for each launched worker to produce its first model output: `Started` means no launched worker has died yet, and a worker that fails before it (router refusal, auth, route, spawn, a first request that errors) makes the call throw with that cause and cancels its siblings (a provider quota or usage-limit refusal on an implicit wave instead re-runs the same tasks on the next tier before `Started`).",
         "For read-only tasks omit ownedPaths and state the read scope in task text; mayEdit requires ownedPaths. allowBash bypasses ownedPaths — grant only when operator-level shell access is necessary.",
       ],
       parameters: ultratermSubagentsSchema as any,
@@ -1364,188 +1965,18 @@ export function createUltratermSubagentsExtension(
       renderCall: renderSubagentCall,
       renderResult: renderSubagentResult,
       async execute(_toolCallId, rawParams, signal, onUpdate, ctx) {
-        const requested = rawParams as UltratermSubagentsParams;
-        // Do not let a mixed implicit wave silently bypass the Opus review
-        // standard or spend expert quota on routine implementation leaves.
-        if (requested.claudeAccount !== undefined) {
-          assertClaudeAccountId(requested.claudeAccount);
-          if (requested.profile !== undefined || (requested.harness !== undefined && requested.harness !== "claude-code") || (requested.harness !== "claude-code" && !CLAUDE_CODE_ROUTES.includes(requested.model ?? "")) || (requested.model !== undefined && !CLAUDE_CODE_ROUTES.includes(requested.model))) {
-            throw new Error("claudeAccount requires an explicit Claude subscription harness or exact model; Pi, API and profile routes are refused");
+        // An implicit wave whose worker is refused on a provider usage limit before any output re-runs the same
+        // tasks on the next tier (Go -> Sol -> Claude) right here, so the parent never re-dispatches. Each tier
+        // is tried at most once; explicit routes and every other failure surface as the error they are.
+        const fallThroughs: QuotaFallThrough[] = [];
+        for (;;) {
+          // An Esc during a fall-through's router reads must not still launch the next tier.
+          if (fallThroughs.length > 0 && signal?.aborted) {
+            throw new Error(`USAP dispatch cancelled before the fall-through to the next tier launched (${fallThroughs.map((step) => step.cause).join("; ")}).`);
           }
-        }
-        const implicitRoute = requested.claudeAccount === undefined && requested.harness === undefined && requested.model === undefined && requested.profile === undefined;
-        const hasReviewer = requested.tasks.some((task) => task.role === "reviewer");
-        const allReviewers = requested.tasks.length > 0 && requested.tasks.every((task) => task.role === "reviewer");
-        if (implicitRoute && hasReviewer && !allReviewers) {
-          throw new Error("Mixed worker/reviewer waves need an explicit route; split routine workers from the Opus review wave. No fallback was selected.");
-        }
-        // Explicit Pi/model/profile selections win; only implicit all-reviewer
-        // waves select the official Opus Pass CLI route automatically.
-        const opusReviewDefault = implicitRoute && allReviewers;
-        if (opusReviewDefault && requested.thinking !== undefined && requested.thinking !== "xhigh") throw new Error("Automatic Opus review requires xhigh effort; a different explicit effort is not silently overridden.");
-        // A fallback may change the harness only for permission-free reviewers.
-        // Keep privileged leaves on Claude so exact path admission and reviewer
-        // shell denial cannot be bypassed when its subscription is unavailable.
-        const readOnlyReviewFallback = opusReviewDefault && isReadOnlyReviewWave(requested.tasks);
-        const claudeUnavailable = readOnlyReviewFallback && requested.requireImages !== true &&
-          await noEligibleClaudeAccount(dependencies.accountCommand);
-        const params: UltratermSubagentsParams = {
-          ...requested,
-          ...(claudeUnavailable ? { harness: "pi" as const, model: SOL_MODEL_ROUTE, thinking: "high" as const, thinkingReason: "Automatic expert text review fallback after proven Claude unavailability." } : {}),
-          ...((!claudeUnavailable && opusReviewDefault || (requested.harness === undefined && (CLAUDE_CODE_ROUTES.includes(requested.model ?? "") || CLAUDE_API_ROUTES.includes(requested.model ?? "")))) ? { harness: "claude-code" as const } : {}),
-        };
-        if (!ctx.model) throw new Error("ultraterm_subagents requires a resolved current model");
-        const current = ensureRuntime(ctx);
-        // Never launch a run this session could not recover from its durable store.
-        assertDurableForNewWork(current);
-        const persistence = persistenceOf(current);
-        const persistenceNote = current.store
-          ? ""
-          : `USAP checkpoints are unavailable in this session (${current.checkpointError ?? "no native session file"}): this run is memory-only and cannot be resumed.\n`;
-        // Foreign-harness routing happens before native selection: the claude-code
-        // CLI route is explicit and fixed, and the native Pi registry is never
-        // consulted for it (it cannot resolve, and must not appear to).
-        const foreignHarness = params.harness === "claude-code";
-        if (foreignHarness && ((params.model !== undefined && !CLAUDE_CODE_ROUTES.includes(params.model) && !CLAUDE_API_ROUTES.includes(params.model)) || params.profile !== undefined)) {
-          throw new Error("USAP harness claude-code runs only claude-code/claude-sonnet-5-5 or claude-code/claude-opus-5-5 at xhigh (subscription), or the explicitly approved claude-code-api/claude-sonnet-5-5 or claude-code-api/claude-opus-5-5; other model/profile selectors are refused.");
-        }
-        // Sonnet 5.5 is the default Claude worker; all-reviewer waves keep the Opus Pass.
-        // The API route is never a default: only an exact, explicit model names it.
-        const claudeRoute = foreignHarness ? params.model ?? defaultClaudeCodeRoute(params.tasks) : undefined;
-        const claudeModel = anyClaudeRouteModelOf(claudeRoute);
-        const apiRoute = foreignHarness && isClaudeApiRoute(claudeRoute);
-        // Operator approval, settings contract and budget are checked before any
-        // checkpoint, relay peer or worker exists; the runner re-checks at every launch.
-        const apiAdmission = apiRoute
-          ? admitClaudeApiRoute({ route: claudeRoute, taskCount: params.tasks.length, roles: params.tasks.map((task) => task.role ?? "worker"), requireImages: params.requireImages === true }, dependencies.now ? { now: dependencies.now } : {})
-          : undefined;
-        if (apiRoute) params.concurrency = claudeApiConcurrency(params.concurrency, params.tasks.length);
-        if (foreignHarness && params.thinking !== undefined && params.thinking !== "xhigh") {
-          throw new Error(`USAP claude-code ${claudeCodeModelName(claudeModel!)} requires xhigh effort; a different explicit effort is not silently overridden.`);
-        }
-        if (foreignHarness && params.requireImages === true && !apiRoute) assertClaudeCodeImageAdmission(claudeRoute);
-        const piResolved = foreignHarness
-          ? undefined
-          : await resolveNativeSelection(ctx, params, dependencies);
-        let reviewFallbackRuntime: PiWorkerRuntime | undefined;
-        if (readOnlyReviewFallback && !claudeUnavailable && requested.requireImages !== true) {
-          try {
-            const sol = await resolveNativeSelection(ctx,
-              { ...requested, harness: "pi", model: SOL_MODEL_ROUTE, profile: undefined, thinking: "high", thinkingReason: "Automatic expert text review fallback after proven Claude unavailability." }, dependencies);
-            reviewFallbackRuntime = { model: sol.model, thinkingLevel: sol.thinkingLevel };
-          } catch { /* Claude may still succeed; unavailable Sol is not a route substitute. */ }
-        }
-        const resolvedSelection = piResolved ? piResolved.selection : apiRoute ? resolveClaudeApiSelection(claudeModel!) : resolveClaudeCodeSelection(claudeModel);
-        const resolvedThinking = piResolved ? String(piResolved.thinkingLevel) : "xhigh";
-        const model = foreignHarness ? claudeRoute! : `${piResolved!.model.provider}/${piResolved!.model.id}`;
-        const thinking = resolvedThinking;
-        const input: DispatchInput = {
-          ...params,
-          tasks: params.tasks,
-          background: params.background ?? false,
-        };
-        let run: RunRecord;
-        try {
-          run = normalizeDispatch(
-            input,
-            ctx.cwd,
-            model,
-            thinking,
-            dependencies.now?.() ?? Date.now(),
-            dependencies.idFactory,
-          );
-        } catch (error) {
-          if (!(error instanceof SubagentPolicyError)) throw error;
-          // Never throw policy failures to a host formatter that may echo raw arguments.
-          // Bound even labels and error messages: both can contain untrusted input.
-          const reason = error.message.slice(0, 200);
-          const field = /^(?:tasks\[\d+\](?:\.[A-Za-z]+(?:\[\d+\])?)?|[A-Za-z]+)/.exec(reason)?.[0] ?? "input";
-          const labels = Array.isArray(params.tasks)
-            ? params.tasks.slice(0, MAX_TASKS).map((task) =>
-              typeof task?.label === "string" ? task.label.slice(0, 20) : "?")
-            : [];
-          const digest = JSON.stringify({ field, labels }).slice(0, 200);
-          return {
-            isError: true,
-            content: [{ type: "text" as const, text: `Dispatch validation failed: ${reason}\nInput: ${digest}` }],
-            details: undefined,
-          };
-        }
-
-        if (run.claudeAccount !== undefined) await resolveClaudeAccount(run.claudeAccount, dependencies.accountCommand);
-        if (apiAdmission) stampClaudeApiRun(run, apiAdmission);
-        run.selection = { ...resolvedSelection,
-          // No route was requested for an implicit review wave: a Sol review chosen only because no Claude
-          // account was eligible is an automatic fallback, never an operator-requested override.
-          ...(opusReviewDefault ? { source: claudeUnavailable ? "automatic-review-fallback" as const : "automatic-review" as const, automaticReview: true, reviewRequiresImages: requested.requireImages === true } : {}) };
-        if (claudeUnavailable) for (const task of run.tasks) recordReviewFallback(task, "no-eligible-claude");
-        if (reviewFallbackRuntime) current.workerRuntimes.set(`${run.id}:review-fallback`, Object.freeze(reviewFallbackRuntime));
-        run.ownerSessionId = current.ownerSessionId;
-        run.ownerSessionFile = current.ownerSessionFile;
-        // Never launch a supposedly durable run whose initial checkpoint failed.
-        saveCheckpoint(current, run, true, "initial", true);
-        // Foreign-harness runs have no frozen Pi runtime: their runner branches on
-        // run.harness and never consults the Pi registry or the relay workers.
-        if (!foreignHarness) {
-          current.workerRuntimes.set(run.id, Object.freeze({
-            model: Object.freeze({ ...(piResolved!.model) }),
-            thinkingLevel: piResolved!.thinkingLevel,
-          }) as PiWorkerRuntime);
-        }
-        // Foreign children cannot bind relay peers: create only the parent peer so
-        // hub send/inbox can honestly refuse instead of silently buffering.
-        current.relay.createRun(run.id, foreignHarness && !reviewFallbackRuntime
-          ? [PARENT_RELAY_ID]
-          : [PARENT_RELAY_ID, ...run.tasks.map((task) => task.id)]);
-        const parent = current.relay.bindSender(run.id, PARENT_RELAY_ID);
-        let started: RunRecord;
-        try {
-          started = current.coordinator.start(run);
-        } catch (error) {
-          parent.close();
-          current.relay.cleanupRun(run.id);
-          current.workerRuntimes.delete(run.id); current.workerRuntimes.delete(`${run.id}:review-fallback`);
-          throw error;
-        }
-
-        const binding: RunBinding = {
-          parent,
-          background: run.background,
-          completion: Promise.resolve(started),
-          usageClaimed: false,
-          onUpdate,
-        };
-        current.bindings.set(run.id, binding);
-        persistTelemetry(current, started);
-        binding.completion = attachCompletion(current, run.id);
-        setStatus(current, ctx);
-
-        if (run.background) {
-          const snapshot = current.coordinator.snapshot(run.id)!;
-          return {
-            content: [{
-              type: "text" as const,
-              text: `${persistenceNote}Started USAP run ${run.id} · ${model} · ${resolvedSelection.source}${resolvedSelection.profile ? ` · ${resolvedSelection.profile}` : ""}: ${run.tasks.map((task) => task.id).join(", ")}\nDispatch summary: ${JSON.stringify(dispatchDetails(snapshot, persistence).summary)}`,
-            }],
-            details: dispatchDetails(snapshot, persistence),
-          };
-        }
-
-        const abort = () => current.coordinator.cancel(run.id);
-        if (signal?.aborted) abort();
-        else signal?.addEventListener("abort", abort, { once: true });
-        try {
-          const settled = await binding.completion;
-          assertOwner(current, ctx);
-          binding.usageClaimed = true;
-          return {
-            content: [{ type: "text" as const, text: `${persistenceNote}Dispatch summary: ${JSON.stringify(dispatchDetails(settled, persistence).summary)}\n${renderRunResult(settled)}\n${reviewFallbackReceipt(settled, current.store?.directory)}` }],
-            details: dispatchDetails(settled, persistence),
-            // Nested worker usage belongs only here, never under details/results.
-            usage: usageCopy(settled.usage),
-          };
-        } finally {
-          signal?.removeEventListener("abort", abort);
+          const outcome = await dispatchWave(rawParams, signal, onUpdate, ctx, fallThroughs);
+          if (!("fallThrough" in outcome) || !outcome.fallThrough) return outcome;
+          fallThroughs.push(outcome.fallThrough);
         }
       },
     });
@@ -1715,7 +2146,8 @@ export function createUltratermSubagentsExtension(
           // operator-requested, so it keeps its automatic source instead of the resume's pinned `override`.
           // `automaticReview` is not carried over, so the resume never re-arms the Claude -> Sol fallback.
           const automaticSource = snapshot.selection?.source === "automatic-review" || snapshot.selection?.source === "automatic-review-fallback" ? snapshot.selection.source : undefined;
-          run.selection = { ...resumeSelection, ...(automaticSource ? { source: automaticSource } : {}) };
+          // Independence follows the work, not the route: a resumed Claude-tier run still needs Opus verification.
+          run.selection = { ...resumeSelection, ...(automaticSource ? { source: automaticSource } : {}), ...(snapshot.selection?.independence ? { independence: snapshot.selection.independence } : {}) };
           run.resumedFrom = runId;
           if (run.maxTurns > snapshot.maxTurns || run.timeoutMs > snapshot.timeoutMs) throw new Error("Resume refused: a resume never raises the original turn or time budget");
           run.ownerSessionId = current.ownerSessionId;

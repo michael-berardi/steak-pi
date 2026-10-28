@@ -26,6 +26,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { PROCESS_LISTING_GUIDANCE } from "./process-listing-guidance.ts";
+import { providerUsageLimit, reportsSpentPlan } from "./provider-quota.ts";
 import { assertOwnedPath } from "./policy.ts";
 import { finalWorkerReport, workerJournal } from "./coordinator.ts";
 import { SOL_MODEL_ROUTE, assertActiveModelSelector } from "../retired-model-selection.ts";
@@ -665,6 +666,14 @@ function cloneUsage(usage: UsageTotals): UsageTotals {
   return sanitizeUsage(usage);
 }
 
+/** Whether a session message already carries inference output. An assistant message that
+ * only reports an error (no content, `error`/`aborted` stop) is not output. */
+function assistantMessageHasOutput(message: unknown): boolean {
+  if (!message || typeof message !== "object" || (message as { role?: unknown }).role !== "assistant") return false;
+  const { content, stopReason } = message as { content?: unknown; stopReason?: unknown };
+  return (Array.isArray(content) && content.length > 0) || (typeof stopReason === "string" && stopReason !== "error" && stopReason !== "aborted");
+}
+
 function assistantSnapshot(message: unknown): AssistantSnapshot | undefined {
   if (!message || typeof message !== "object" || (message as { role?: unknown }).role !== "assistant") return undefined;
   const assistant = message as {
@@ -940,6 +949,8 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
     let compactions = 0;
     let turnLimitReached = false;
     let turnNoticeSent = false;
+    // The parent has been told the first model output arrived (once per run).
+    let outputAnnounced = false;
     let stalled = false;
     let lastEventAt = Date.now();
     let toolsRunning = 0;
@@ -1141,6 +1152,13 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
         if (phase) onProgress({ state: "running", currentTool: event.type.endsWith("_end") ? undefined : phase });
         if (event.type === "auto_retry_start") onProgress({ retryAttempt: event.attempt, retryDelayMs: event.delayMs });
         if (event.type === "auto_retry_end") onProgress({ retryDelayMs: 0 });
+        // The launch-proof a dispatch waits for before it may report `Started`. Not turn_start: a
+        // request that is merely sent can still die on a 429 or an expired login, with turns >= 1.
+        if (!outputAnnounced && (event.type === "message_update" || event.type === "tool_execution_start" ||
+            (event.type === "message_end" && assistantMessageHasOutput(event.message)))) {
+          outputAnnounced = true;
+          onProgress({ outputStarted: true, turns });
+        }
         if (event.type === "compaction_end" && event.result && !accountedCompactions.has(event.result)) {
           accountedCompactions.add(event.result);
           if (!event.aborted) onProgress({ compactions: ++compactions });
@@ -1258,10 +1276,18 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       }
       if (account) {
         const failure = finalAssistant?.stopReason === "error" ? finalAssistant.errorMessage ?? "" : "";
-        const kind = /subscription_quota_exceeded/.test(failure) ? "usage" : /\b429\b/.test(failure) ? "rate" : undefined;
+        // A spent plan (Go's GoUsageLimitError arrives as a 429, Codex's as subscription_quota_exceeded or
+        // "usage limit has been reached") is `usage`, so the router holds the account out and the next
+        // dispatch's preflight skips it; only a bare 429 is a transient `rate` limit.
+        const usageLimit = reportsSpentPlan(failure) ? providerUsageLimit(failure) : undefined;
+        const kind = usageLimit ? "usage" : (/\b429\b/.test(failure) || providerUsageLimit(failure)) ? "rate" : undefined;
         if (kind && !signal.aborted) {
-          try { await accountCommand(["limit", "--provider", accountProvider!, "--account", account.id, "--kind", kind, "--reason", kind === "rate" ? "worker HTTP 429" : "worker subscription_quota_exceeded"]); }
-          catch { promptError ??= new Error("Go cooldown report failed; quota remains unknown"); }
+          try { await accountCommand(["limit", "--provider", accountProvider!, "--account", account.id, "--kind", kind, "--reason", usageLimit ? `worker ${usageLimit}` : "worker HTTP 429"]); }
+          catch {
+            // Keep the real cause beside the failed report: neither replaces the other.
+            const earlier = promptError !== undefined ? (promptError instanceof Error ? promptError.message : String(promptError)) : failure;
+            promptError = new Error(`Go cooldown report failed; quota remains unknown; earlier failure: ${earlier}`);
+          }
         }
         if (leaseFailure) promptError ??= leaseFailure;
         // Late session initialization owns the account until its disposal settles;
@@ -1271,7 +1297,13 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
         const release = () => keeper ? keeper.release() : accountCommand(["release", "--lease", account!.lease]).then(() => undefined);
         if (initializationCleanup) initializationCleanup = initializationCleanup.then(release);
         else {
-          try { await release(); } catch { promptError ??= new Error("Go account lease release failed; router TTL retains a bounded lease"); }
+          try { await release(); } catch {
+            // An unproven release is always the headline failure: the router may still hold the lease, so the
+            // run must never move to another route, whatever quota wording the earlier failure carried.
+            const earlier = promptError !== undefined ? (promptError instanceof Error ? promptError.message : String(promptError))
+              : finalAssistant?.stopReason === "error" ? finalAssistant.errorMessage : undefined;
+            promptError = new Error(`Go account lease release failed; router TTL retains a bounded lease${earlier ? `; earlier failure: ${earlier}` : ""}`);
+          }
         }
       }
     }

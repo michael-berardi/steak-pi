@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.12.0 (2026-10-28)
+
+- Subagents check plan quota before they launch. When the provider account
+  router shows every OpenCode Go or GPT account cooling down, signed out or at
+  a full usage window, an automatic worker wave skips that provider and moves
+  down the chain: Go, then GPT-6.1 Sol, then your Claude subscription, using
+  Haiku 5.5 for ordinary leaves and Sonnet 5.5 for leaves that may edit and
+  run a shell or ask for xhigh reasoning. Busy accounts, unmeasured usage and an
+  unreadable router never count as out of quota. Claude fallback work runs on a
+  Claude account the router shows eligible, never the paid API route, and is
+  marked as needing an Opus 5.5 review.
+- The same Claude fallback also applies when neither Go nor Sol is signed in.
+  Without the account router it runs on your own Claude Code login; 0.11.8
+  refused such a wave with "No authenticated route".
+- A route you name yourself is never rerouted. If its provider is out of
+  quota the dispatch is refused at once with the router's reason, and a wave
+  with no route that can launch says why for every route it tried.
+- A worker that dies before its first model output now fails the dispatch call
+  itself, background or not, with the cause, cancels the rest of the wave and
+  queues no second message, instead of reporting `Started`.
+- A wave refused on a plan limit before any output (Go's usage limit, a Codex
+  usage limit, a cooling-down router refusal) re-runs the same tasks on the
+  next route within the same call. Spent Go and Codex plans are now reported to
+  the router as used up rather than as a passing rate limit, so the next
+  dispatch skips them.
+
+## 0.11.8 (2026-10-24)
+
+- A Claude Code error after a failed tool no longer leaves the next message
+  stuck in the queue, even when an MCP process keeps the output pipe open.
+  History replay, model discovery, process exit and relay traffic now have
+  bounded waits; streaming uses an idle budget so long, active replies are not
+  interrupted or repeatedly retried. An inactive turn ends with a terminal error.
+- Claude Code cleanup skips exited Windows PIDs and stale POSIX process groups
+  instead of risking an unrelated process tree. Relay retries refresh the idle
+  budget even when Claude Code is silent during backoff.
+- Requests stay within Anthropic's limit of four cache markers, keeping the
+  system prompt, tools and newest message cached where possible.
+- Sessions whose managed runtime was replaced resolve worker modules again
+  from the exact content-addressed build, or a same-version copy with
+  byte-identical package modules. Different builds fail with a clear cause;
+  isolated Codex selection uses the same resolver.
+
+## 0.11.7 (2026-10-24)
+
+- Bound pre-compaction snapshot retention per working directory: keep the
+  newest 10 files, with a maximum age of 14 days. Configure both limits with
+  `snapshot.maxCount` and `snapshot.maxAgeDays`; existing settings gain the
+  defaults automatically. Cleanup runs only after a successful snapshot write,
+  leaves unrelated files and symlinks alone, and logs failures without blocking
+  compaction or discarding the newly written snapshot.
+- Fix the non-Homebrew updater's GitHub API URL and preserve failed-request
+  diagnostics instead of misreporting an unreachable server as no release.
+
 ## 0.11.6 (2026-10-24)
 
 - A live pane can recover its primary-host link after a temporary proof timeout.
