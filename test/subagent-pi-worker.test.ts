@@ -337,6 +337,21 @@ describe("Pi USAP worker tools", () => {
 });
 
 describe("native in-process Pi worker runner", () => {
+  it.each([undefined, "", " \n\t", "(no output)"])("fails a successfully resolved prompt without final output (%s)", async (text) => {
+    const recordTask = task(), fake = new FakeSession();
+    fake.onPrompt = async (session) => {
+      if (text !== undefined) session.emit({ type: "message_end", message: assistant(text) } as AgentSessionEvent);
+    };
+    const runner = createPiWorkerRunner({
+      relay: setupBroker(), resolveRuntime: () => ({ model: fakeModel, thinkingLevel: "off" }),
+      sessionFactory: async () => ({ session: fake }),
+    });
+    const result = await runner({ run: run(process.cwd(), recordTask), task: recordTask, signal: new AbortController().signal, onProgress: vi.fn() });
+    expect(result.state).toBe("failed");
+    expect(result.error).toMatch(/no final (?:assistant message|output)/);
+    expect(result.output).not.toContain("Status: done");
+    expect(fake.disposed).toBe(true);
+  });
   it.each(["frozen-runtime", "run-model", "run-profile"])("rejects retired Sol at child launch (%s) before session creation", async boundary => {
     const cwd = await mkdtemp(join(tmpdir(), "steak-retired-child-"));
     try {

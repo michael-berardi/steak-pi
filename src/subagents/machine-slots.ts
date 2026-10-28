@@ -149,6 +149,15 @@ interface HolderStamp {
   /** Identity of this exact lease; release never deletes a foreign nonce. */
   nonce: string;
   owner?: OwnerMetadata;
+  /** Present only on FIFO request records, never inferred from lease age. */
+  request?: { bucket: string; providerCap: number; globalCap: number };
+}
+
+function validRequest(value: unknown): value is NonNullable<HolderStamp["request"]> {
+  const request = value as NonNullable<HolderStamp["request"]> | undefined;
+  return typeof request?.bucket === "string" && /^[a-z0-9_-]+$/i.test(request.bucket) &&
+    Number.isSafeInteger(request.providerCap) && request.providerCap > 0 &&
+    Number.isSafeInteger(request.globalCap) && request.globalCap > 0;
 }
 
 function isHolderStamp(value: unknown): value is HolderStamp {
@@ -175,7 +184,11 @@ function readStamp(path: string): { present: boolean; holder?: HolderStamp } {
     const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
     if (isHolderStamp(parsed)) {
       const owner = validatedOwner(parsed.owner);
-      return { present: true, holder: { pid: parsed.pid, born: parsed.born, nonce: parsed.nonce, ...(owner ? { owner } : {}) } };
+      return { present: true, holder: {
+        pid: parsed.pid, born: parsed.born, nonce: parsed.nonce,
+        ...(owner ? { owner } : {}),
+        ...(validRequest(parsed.request) ? { request: parsed.request } : {}),
+      } };
     }
     return { present: true };
   } catch (error) {
@@ -244,6 +257,80 @@ function acquireClaim(dir: string, index: number): (() => void) | undefined {
       rmSync(path, { force: true });
     }
   };
+}
+
+/**
+ * Immutable, two-phase Lamport tickets. A choosing record closes the doorway
+ * while a ticket number is selected; overlapping registrations may tie and are
+ * ordered by nonce. A registration that starts after another finishes always
+ * receives a greater number. No shared counter or stealable mutex is needed.
+ *
+ * Each pathname contains a fresh nonce and is never reused. Dead participants
+ * can therefore be ignored without unlinking a foreign record (or a lease).
+ * Unreadable/unknown records fail closed; dead records are inert until manual
+ * cleanup. A live, paused participant is not expired by age.
+ */
+interface Ticket {
+  path: string;
+  number: number;
+  stamp: HolderStamp;
+  release: () => void;
+}
+
+function ticketNumber(name: string): number | undefined {
+  const match = /^(\d+)-[a-f0-9-]+\.ticket$/.exec(name);
+  if (!match) return undefined;
+  const number = Number(match[1]);
+  return Number.isSafeInteger(number) && number > 0 ? number : undefined;
+}
+
+function publishTicket(dir: string, stamp: HolderStamp): Ticket {
+  mkdirSync(dir, { recursive: true });
+  const choosing = join(dir, `${stamp.nonce}.choosing`);
+  if (!publishStamp(dir, choosing, stamp)) throw new Error("USAP duplicate queue identity");
+  try {
+    let number = 1;
+    for (const name of readdirSync(dir)) {
+      const previous = ticketNumber(name);
+      if (previous !== undefined) number = Math.max(number, previous + 1);
+    }
+    if (!Number.isSafeInteger(number)) throw new Error("USAP queue ticket range exhausted");
+    const path = join(dir, `${number}-${stamp.nonce}.ticket`);
+    if (!publishStamp(dir, path, stamp)) throw new Error("USAP duplicate queue ticket");
+    return { path, number, stamp, release: () => {
+      try { rmSync(path, { force: true }); } catch { /* inaccessible tickets fail closed */ }
+    } };
+  } finally {
+    // Only this publisher removes its unique doorway; never steal a peer's.
+    rmSync(choosing, { force: true });
+  }
+}
+
+function readTickets(dir: string): { blocked: boolean; tickets: Omit<Ticket, "release">[] } {
+  let blocked = false;
+  const tickets: Omit<Ticket, "release">[] = [];
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith(".ticket") && !name.endsWith(".choosing")) continue;
+    const path = join(dir, name);
+    const { present, holder } = readStamp(path);
+    if (!present) {
+      // A vanished doorway may have become a ready ticket after readdir. Do
+      // not miss that transition and enter alongside its publisher.
+      if (name.endsWith(".choosing")) blocked = true;
+      continue;
+    }
+    if (holder && holderIsReclaimable(holder)) continue;
+    const number = ticketNumber(name);
+    if (!holder || number === undefined || name !== `${number}-${holder.nonce}.ticket`) {
+      blocked = true; // live choosing doorway, unknown pid/stamp, or malformed ticket
+      continue;
+    }
+    if (pidStatus(holder.pid) !== "live") blocked = true;
+    tickets.push({ path, number, stamp: holder });
+  }
+  tickets.sort((a, b) => a.number - b.number ||
+    (a.stamp.nonce < b.stamp.nonce ? -1 : a.stamp.nonce > b.stamp.nonce ? 1 : 0));
+  return { blocked, tickets };
 }
 
 export class MachineSlots {
@@ -383,10 +470,26 @@ export class MachineSlots {
     return this.inspectBucket(bucket, cap).held;
   }
 
+  /** Called only under the admission bakery lock; no awaits in this section. */
+  private isOldestEligible(waiter: Ticket): boolean {
+    const queue = readTickets(join(this.dir, ".waiters"));
+    if (queue.blocked) return false;
+    for (const ticket of queue.tickets) {
+      if (ticket.path === waiter.path) return true;
+      const request = ticket.stamp.request;
+      if (!request) return false; // cannot prove a foreign request ineligible
+      if (this.inspectBucket(request.bucket, request.providerCap).held < request.providerCap &&
+          this.inspectBucket("global", request.globalCap).held < request.globalCap) return false;
+    }
+    return false;
+  }
+
   /**
-   * Acquire one launch slot for `provider` across all local sessions. Waits
-   * (bounded polling) until a provider slot and a global slot are both free.
-   * The returned release is idempotent and never throws.
+   * Acquire both launch slots, FIFO among currently eligible requests across
+   * processes. Provider-blocked requests do not block other providers. A second
+   * bakery queue serializes the short eligibility-and-publication section so a
+   * partial provider/global grab cannot make an older request appear ineligible.
+   * Pre-queue binaries still obey slot caps but cannot promise FIFO fairness.
    */
   async acquire(provider: string, signal?: AbortSignal): Promise<() => void>;
   async acquire(provider: string, signal: AbortSignal | undefined, timeoutMs: number, options?: MachineSlotsAcquireOptions): Promise<() => void>;
@@ -399,6 +502,8 @@ export class MachineSlots {
     const deadline = Date.now() + Math.max(0, timeoutMs);
     const { provider: providerCap, global: globalCap } = this.caps(provider);
     let providerRelease: (() => void) | undefined;
+    let waiter: Ticket | undefined;
+    let admission: Ticket | undefined;
     let pendingSignal: { signal: AbortSignal; listener: () => void } | undefined;
     let settled = false;
     const sleep = (ms: number) =>
@@ -422,23 +527,37 @@ export class MachineSlots {
       });
     try {
       while (!signal?.aborted) {
-        providerRelease = this.tryBucket(provider, providerCap, signal, owner);
-        if (providerRelease) {
-          const globalRelease = this.tryBucket("global", globalCap, signal, owner);
-          if (globalRelease) {
-            const providerOnce = providerRelease;
-            let done = false;
-            settled = true; // success: the finally must not release our slot
-            return () => {
-              if (done) return;
-              done = true;
-              providerOnce();
-              globalRelease();
-            };
+        waiter ??= publishTicket(join(this.dir, ".waiters"), {
+          ...freshStamp(owner),
+          request: { bucket: provider.replace(/[^a-z0-9_-]+/gi, "_"), providerCap, globalCap },
+        });
+        admission ??= publishTicket(join(this.dir, ".admission"), freshStamp());
+        const turns = readTickets(join(this.dir, ".admission"));
+        if (!turns.blocked && turns.tickets[0]?.path === admission.path) {
+          try {
+            if (this.isOldestEligible(waiter)) {
+              providerRelease = this.tryBucket(provider, providerCap, signal, owner);
+              if (providerRelease) {
+                const globalRelease = this.tryBucket("global", globalCap, signal, owner);
+                if (globalRelease) {
+                  const providerOnce = providerRelease;
+                  let done = false;
+                  settled = true; // success: the finally must not release our slot
+                  return () => {
+                    if (done) return;
+                    done = true;
+                    providerOnce();
+                    globalRelease();
+                  };
+                }
+                providerRelease();
+                providerRelease = undefined;
+              }
+            }
+          } finally {
+            admission.release();
+            admission = undefined;
           }
-          // Global full: give back the provider slot and wait for room.
-          providerRelease();
-          providerRelease = undefined;
         }
         // Report the first unsuccessful attempt immediately, including a
         // zero-timeout attempt; report every retry, but never a successful grab.
@@ -453,6 +572,7 @@ export class MachineSlots {
     } finally {
       if (pendingSignal) pendingSignal.signal.removeEventListener("abort", pendingSignal.listener);
       if (!settled) providerRelease?.();
+      try { admission?.release(); } finally { waiter?.release(); }
     }
     throw new Error(`machine launch slots exhausted for ${provider}${signal?.aborted ? " (aborted)" : ""}`);
   }

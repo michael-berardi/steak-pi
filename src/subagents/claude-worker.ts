@@ -46,7 +46,7 @@ import type { ChildProcess } from "node:child_process";
 import { OUTPUT_LIMIT, addUsage, emptyUsage, harnessOf, sanitizeUsage, type RunRecord, type TaskRecord,
   type ClaudeSubscriptionReceipt, type ClaudeApiReceipt, type UsageTotals, type WorkerProgress, type WorkerResult, type WorkerRunner } from "./types.ts";
 import { CLAUDE_CODE_EFFORT, CLAUDE_CODE_MODEL, CLAUDE_CODE_ROUTE, claudeCodeModelName, claudeCodeModelOf, type ClaudeCodeModel } from "./model-selection.ts";
-import { truncatePiWorkerOutput } from "./pi-worker.ts";
+import { truncatePiWorkerOutput, workerFinalReportInstructions, workerImplementationGate } from "./pi-worker.ts";
 import { workerJournal } from "./coordinator.ts";
 import { turnBudgetPromptLine } from "./turn-budget.ts";
 import { PROCESS_LISTING_GUIDANCE } from "./process-listing-guidance.ts";
@@ -317,7 +317,8 @@ export function buildClaudeWorkerPrompt(run: RunRecord, task: TaskRecord): strin
     ...(run.selection?.images ? ["Image inspection uses native Read on image files staged under the run cwd; inline attachments and image relay are unsupported. Read every image you claim to have inspected."] : []),
     "There is no relay tool on this harness: peer messaging is unsupported. Report coordination needs in your final report instead.",
     "Do not run project-wide builds, linters, or test suites. Run only the focused checks needed for this leaf.",
-    "You have no commit, push, or deploy permission; this prompt grants none. Before this leaf's work is committed, pushed, or deployed it needs exactly one bounded expert review, requested through the parent. If that review is unavailable, say so plainly in your final report and never claim, imply, or fabricate expert approval.",
+    "You have no commit, push, or deploy permission; this prompt grants none.",
+    ...workerImplementationGate(run, task),
     "Stop promptly with a concise report; long-horizon work must be split by the parent, not extended here.",
     turnBudgetPromptLine(Math.max(1, Math.min(run.maxTurns, 2048))),
     "",
@@ -340,12 +341,7 @@ export function buildClaudeWorkerPrompt(run: RunRecord, task: TaskRecord): strin
       ? `Owned writable paths (writes anywhere else are denied by the CLI):\n${task.ownedPaths.map((owned) => `- ${owned}`).join("\n")}`
       : "Nothing is writable.",
     "",
-    "## Required final report",
-    "Return only a concise report with these headings (at most three sentences each):",
-    "Evidence: inspected facts or implementation result",
-    "Changed paths: exact paths, or none",
-    "Focused checks: checks and outcomes",
-    "Risks: remaining uncertainty, blockers, or none",
+    ...workerFinalReportInstructions(),
   ].join("\n");
 }
 
@@ -607,6 +603,8 @@ export function classifyClaudeWorkerState(input: {
     }
     if (!state.modelVerified) return { state: "failed", error: "Claude CLI did not attest the pinned route model" };
     if (input.apiRequired && !input.apiAttested) return { state: "failed", error: "Claude CLI did not attest apiKeyHelper API authentication for this leaf" };
+    const output = state.outputParts.join("").trim();
+    if (!output || output === "(no output)") return { state: "failed", error: "Claude CLI produced no final output" };
     return { state: "done" };
   }
   if (exitCode !== null && exitCode !== 0) {
