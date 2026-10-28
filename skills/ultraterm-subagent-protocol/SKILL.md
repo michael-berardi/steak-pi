@@ -282,6 +282,23 @@ Escalate when ambiguity, blast radius, or failed attempts rise. The
 parent retains security, legal, architecture, and user-facing creative
 judgment.
 
+## Staged inputs and output contracts
+
+Pi native Read may open an individual regular file explicitly named in the leaf
+text under `~/.cache/ut-overseer/<job>/`, even outside cwd. Name the absolute or
+`~/` file path. This grants no directory discovery, sibling files, symlink paths
+or writes; Grep/Find/Ls remain cwd-only. Claude CLI inputs still belong under cwd.
+
+Only writable Go/Haiku leaves receive implementation-review instructions: Sonnet
+5.5 for Go implementation, Opus 5.5 for Haiku implementation. Sol work and read-only
+leaves receive no automatic end-gate. An explicit leaf/shared-contract output
+format wins over default headings; JSON-only tasks return JSON only. A leaf with
+empty or placeholder-only output fails even if its transport exits successfully.
+
+Machine launch admission is FIFO across parents among eligible waiters. A blocked
+provider does not hold up other providers. Mixed old binaries cannot guarantee
+fairness; never remove live or unreadable leases or queue records to force room.
+
 ## Boundaries
 
 USAP is a protocol, not a sandbox. Children may share the working directory,

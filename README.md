@@ -21,20 +21,20 @@ serious sessions need: parallel subagents with hard limits, compaction that
 costs no model calls, checks that run after every edit, and a status line that
 tells you what the agent is doing.
 
-Current release: **0.11.7**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
+Current release: **0.12.1**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
 [UltraTerm](https://paretocybernetics.com/software/).
 
 ## Install
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.11.7
+pi install git:github.com/michael-berardi/steak-pi@v0.12.1
 ```
 
 Or from the release archive, without Git:
 
 ```sh
-shasum -a 256 -c steak-pi-0.11.7.tgz.sha256
-tar -xzf steak-pi-0.11.7.tgz
+shasum -a 256 -c steak-pi-0.12.1.tgz.sha256
+tar -xzf steak-pi-0.12.1.tgz
 npm install --ignore-scripts --prefix "$PWD/package"
 pi install "$PWD/package"
 ```
@@ -51,6 +51,12 @@ steak-pi run          # same arguments as pi
 steak-pi env          # show what it sets
 steak-pi status       # what is installed and how it is managed
 ```
+
+For UltraTerm-managed launches, update the supported Homebrew package with
+`brew upgrade michael-berardi/pareto-software-distribution/steak-pi`.
+The managed launcher adopts a newer compatible Homebrew package at the next
+launch when no explicit package pin overrides it. Existing sessions keep their
+loaded runtime; never overwrite their runtime trees or hand-copy managed helpers.
 
 Local compaction also needs the [`ultracompress`](#compaction-ultracompress)
 binary. Without it, Steak Pi uses Pi's built-in compaction.
