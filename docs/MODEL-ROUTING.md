@@ -80,7 +80,121 @@ are preserved; the operator's routine default is `steak-pi/opencode-go`.
 
 - Routine text workers/scouts: canonical `opencode-go/deepseek-v4.1-flash`.
   If that registry route is unavailable at selection, authenticated
-  `openai-codex/gpt-6.1-sol` is the only text selection fallback.
+  `openai-codex/gpt-6.1-sol` is the only native text selection fallback; when neither
+  can launch, an implicit wave moves to the Claude tier below.
+- **Quota preflight.** For an *implicit* route (no `harness`/`model`/`profile`/`claudeAccount`)
+  the dispatch reads the account router (`ut-provider-accounts status`, one call, only when the
+  resolved route is a router-gated Go or Sol route) before it returns a selection, so an
+  exhausted provider is found at dispatch instead of at worker launch, after `Started`. A
+  provider is **exhausted** only when it has at least one configured account and the router's
+  own fields prove *every* one unavailable: `state: "cooling-down"` (or a live
+  `cooldown.until`), `signedOut`, or a usage window at 100% that has not yet reset.
+  `eligible: true` always wins; `eligible: false` alone, a busy account, unmeasured usage, a
+  provider the router does not list and an unreadable router are **not** exhaustion (the route
+  stays as selected and the launch-time router remains the authority). A provider the router
+  lists with no configured account cannot launch and counts as blocked. An exhausted route is
+  never selected: the built-in default chain (Go -> Sol) is re-resolved with that provider
+  skipped (a Go parent offers Sol its isolated Codex store, as for an explicit Sol dispatch),
+  the receipt records the whole chain (`source: "chain"`, `chainRoutes`) and the router cause
+  (`selection.fallbackReason`), and the dispatch text carries a route note.
+- **Claude tier.** When neither Go nor Sol can launch (exhausted or unconfigured per the router,
+  or not authenticated in the session), an implicit routine text wave (no reviewer, no
+  `requireImages`, effort unset or `xhigh`) runs on the official Claude Code subscription
+  route with no re-dispatch by the parent: **Haiku 5.5** (`claude-code/claude-haiku-5-5`) for
+  ordinary leaves, **Sonnet 5.5** (`claude-code/claude-sonnet-5-5`) for any leaf that may both
+  edit (`mayEdit`) and run a shell (`allowBash`) or a requested `thinking` of xhigh. The
+  choice reads only the dispatch's declared capabilities, never the task text.
+  A Claude Code CLI route is not a Pi provider, so it is never a step of the Pi chain; the
+  dispatch boundary reaches it from the router quota or the typed `NoChainRouteError`, which
+  carries the steps actually tried and must be exactly the built-in default text chain
+  `[Go, Sol]` (a profile-default MiMo chain, a router error or any other failure never engages
+  it). Auth is the existing Claude Code subscription login only; the `claude-code-api` route
+  is never a fallback. The tier worker is **pinned** (`run.claudeAccount`) on a Claude account
+  the same router snapshot shows `eligible: true`, balanced across the eligible ones (least-used
+  window, then fewest live leases, then router order; unmeasured accounts last); the dispatch
+  asks the router to `select` it and, if the router refuses, fails naming the account and the
+  router's words. When the router lists Claude accounts and none is eligible the call refuses
+  (`Claude subscription tier: the router shows no eligible Claude account (…)`); an unreadable
+  router, or one that lists no Claude account, proves nothing and the worker launches on the
+  parent's login. The Claude route runs only at `xhigh`, and an explicit non-`xhigh` effort is
+  never silently overridden, so `thinking: "high"` with the default chain out refuses. Haiku is
+  an internal tier: `claude-code/claude-haiku-5-5` is not an explicit route (it is refused like
+  any unlisted model) and is never admitted for image review. The run records
+  `source: "chain"` with `chainRoutes` ending in the tier route (only the steps really tried,
+  then the tier), `independence: "requires-opus"` and `fallbackReason` naming the tier, why,
+  and each router cause. Work on either tier **needs an Opus 5.5 review**; an all-reviewer wave
+  already defaults to it.
+- **When nothing can launch the dispatch refuses synchronously**, before any checkpoint, relay
+  peer or worker exists, naming every cause (Go, Sol and the Claude tier, each with the router's
+  own words, e.g. `OpenCode Go: every Go account is unavailable (Go 1: cooling down until Mon
+  02:59; Go 2: …) | GPT-6.1 Sol: … | Claude subscription tier: every Claude account is
+  ineligible (…)`). An implicit review whose Claude accounts are proven unavailable and whose
+  Sol review fallback is exhausted refuses the same way. An implicit read-only review on a
+  healthy Claude whose Sol review fallback is exhausted installs no fallback (it would only
+  trade a Claude quota/auth failure for a router refusal after `Started`) and the dispatch note
+  says so (`Review note: the GPT-6.1 Sol review fallback is unavailable (…)`).
+- **Explicit routes stay exact.** An explicit `model`/`profile`/`harness` selection is never
+  rerouted; if it resolves to a Go or Sol route whose provider is exhausted it is refused
+  synchronously with the router cause (`USAP explicit route openai-codex/gpt-6.1-sol cannot
+  launch: …`). A busy or unknown provider launches as before.
+- **A worker that fails before its first model output fails the dispatch** (router refusal,
+  auth, route, spawn, a first request that errors), background or not. Workers report their
+  first model output as soon as it arrives (`WorkerProgress.outputStarted`, recorded as
+  `TaskRecord.outputStarted`: the Pi runner on the first streamed delta, tool start or billed
+  message, the Claude runner on its first message), and the dispatch holds up to
+  `startupWindowMs` (default 25000 ms, two bounded router calls plus 5 s; maximum 30000, `0`
+  disables) for each launched worker to reach it or fail. `turns` cannot decide this: a Pi
+  worker counts a turn when its request starts, so a first request refused with a 429 or an
+  expired login still ends with `turns >= 1`. A task waiting on run width, session or machine
+  capacity is not launching and is not waited on. A task that settles `failed` without that
+  output (and is not a budget stop) throws from the tool with the named cause (`USAP dispatch
+  failed before any worker produced model output (run …): [label] <cause>`), cancels the
+  run's siblings so no half-started wave keeps running, leaves the run record `failed` with
+  each cause, and queues no completion message: the checkpoint is marked delivered in the same
+  step, so a session reload does not queue one either. The error states only what the settled
+  snapshot shows: a sibling that had not stopped inside the 5 s settle wait is named as
+  possibly still shutting down, not reported as cancelled. Within the window an unfinished
+  launch is reported `Started`; a failure after the window is the run's ordinary failure
+  (a worker whose first request fails with a 429 also reports the cooldown and releases its
+  lease before it settles, which can land after the window when the router answers near its
+  10 s timeout; the failure then arrives as an ordinary completion naming the cause). The one
+  bounded `hub resume` is not gated, and neither is the explicit paid `claude-code-api` route,
+  which keeps its settled-result contract. The one exception to "fails the dispatch" is a
+  provider quota or usage-limit refusal on an implicit wave, which falls through to the next
+  tier (below).
+- **A usage-limit refusal before any output falls through to the next tier.** The preflight
+  cannot see a spent Go plan: Go has no usage API, so its accounts read "usage unknown" and
+  eligible, and the first request is the first evidence (`429: {"type":"GoUsageLimitError",
+  "message":"Go usage limit exceeded"}`). For an *implicit* routine wave (the same condition as
+  the quota preflight) the startup gate therefore does not fail the dispatch on such a cause:
+  it re-runs the **same tasks** once on the next tier of Go -> Sol -> Claude Haiku 5.5 / Sonnet
+  5.5 (the tier by the rule above, pinned on a router-eligible Claude account), with no parent
+  re-dispatch. It happens inside the startup window, before `Started`, for foreground and
+  background runs alike (each attempt has its own window, so a wave that falls through every
+  tier can hold the call for about 130 s in the worst case before it returns or fails with every
+  cause named). *A quota cause* is the provider's own words for a spent plan: Go's
+  `GoUsageLimitError` / "Go usage limit exceeded", Codex `subscription_quota_exceeded` /
+  "usage limit has been reached" / `usage_limit_reached` / Pi's "You have hit your ChatGPT usage
+  limit", a "quota exhausted/exceeded/reached" phrase, or a router refusal that says the
+  accounts are cooling down. **Every** failed worker must have one: an auth, route or spawn
+  failure, a router that is merely unavailable, a bare 429 (a rate limit, not a spent plan), an
+  unproven lease release and any mix with a plain cause still fails the dispatch synchronously.
+  It also needs: no worker in the run produced output or finished (re-running would repeat
+  work), the whole run settled, and no abort. A cancelled sibling is marked settled before its
+  cleanup finishes, so it may still be releasing its lease when the next tier starts; it never
+  received a prompt, and an unreleased lease expires on the router's timer. Order is strict and
+  each tier is tried at most once (at most two fall-throughs, never a loop): the tier the
+  failed run reached and everything ahead of it is out whatever the router later says, and each
+  attempt reads the router afresh. The refused first run stays recorded `failed` with its
+  causes named, is marked delivered (no completion message, none after a reload) and is never
+  resumed. The second run's receipt names the fall-through and why: `selection.chainRoutes`
+  lists the tiers in order, `selection.fallbackReason` starts `automatic fall-through after a
+  usage-limit refusal before any output;` and carries each refused tier's cause, and the
+  dispatch text opens with `Fall-through: run <id> · <route> was refused on a provider usage
+  limit before any worker produced output (…)`. If the next tier cannot be selected (for
+  example every Claude account is ineligible) or also fails to launch, the call fails
+  synchronously naming **both** causes. Explicit routes, reviewer and image waves, the Claude
+  tier itself and the `claude-code-api` route never fall through.
 - Image workers stay capability-aware on the existing MiMo image chain; Sol is
   never a text-only substitute for an image request.
 - Legacy native-Pi MiMo profiles retain their explicit identities and per-profile
@@ -104,7 +218,15 @@ No parent environment mutation, active-session migration, primary credential
 replacement, quota purchase, or paid Zen overage is performed. Keep Go **Use
 balance** disabled. Endpoint must be exactly `https://opencode.ai/zen/go/v1`;
 the native guard adds User-Agent and stable session headers. Real HTTP 429 and
-`subscription_quota_exceeded` report account cooldowns, never invented percentages.
+`subscription_quota_exceeded` report account cooldowns, never invented percentages. A spent
+plan is reported to the router as `limit --kind usage`, so the account is held out and the
+next dispatch's preflight skips it: Go's `GoUsageLimitError` / "Go usage limit exceeded" (it
+arrives as a 429, but a 429 whose body names the plan is not a transient rate limit) and
+Codex's "usage limit has been reached" / `usage_limit_reached` as well as
+`subscription_quota_exceeded`. Pi rewrites every Codex 429 into "You have hit your ChatGPT
+usage limit" and adds "Try again in ~N min." only when the server sent a reset time, so that
+sentence is `usage` only with a reset time and `rate` without one. A bare 429 stays
+`--kind rate`.
 Go runtime failures stay on their isolated account (no ambient-credential Sol hop).
 An authenticated explicit canonical Go model, including parent-verified
 `longcat-2.5-preview-free`, uses the same account binding; it does not replace
@@ -326,6 +448,12 @@ proves a Go failure is never retried on another model.
 prove chain/override provenance, reviewer defaults (the same routine MiMo→Sol
 chain as workers, never an automatic expert step), and that an explicit
 selector is never upgraded into chain provenance.
+`test/provider-quota.test.ts`, `test/subagent-model-selection.test.ts` and the quota block of
+`test/ultraterm-subagents-extension.test.ts` prove the quota rules: an exhausted implicit
+Go -> Sol, Go and Sol out -> Haiku (plain leaves) or Sonnet (mayEdit+allowBash, xhigh), busy or
+unknown stays on its route, an exhausted explicit route is refused with no reroute, everything
+out refuses naming each cause, a worker that fails before its first output rejects the dispatch
+with its cause, and a usage-limit refusal falls through each tier once.
 `test/model-route-native.test.ts` uses isolated homes and a loopback server to
 prove zero requests for forbidden extension, models.json, model-level API changes,
 and friendly-alias routes, plus allowed dispatch with an intact image URL.

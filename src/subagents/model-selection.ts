@@ -5,7 +5,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { assertActiveModelIdentity, assertActiveModelSelector, SOL_MODEL_ROUTE, SOL_PROFILE } from "../retired-model-selection.ts";
 import { assertModelRoute, assertSubscriptionRequest, selectChainedWorkerModel, selectWorkerModel, selectWorkerThinking,
   DEFAULT_MULTIMODAL_WORKER_CHAIN, DEFAULT_TEXT_WORKER_CHAIN, workerChainFor, type ChainOptions } from "../model-route-policy.ts";
-import type { DispatchInput, ModelSelection } from "./types.ts";
+import type { DispatchInput, ModelSelection, SubagentTaskInput } from "./types.ts";
 import { activeTemporaryWorkerRoute, assertTemporaryFreeRequest, FREE_MODEL, FREE_PROFILE, isTemporaryFreeModel, PREFERRED_FREE_PROFILE } from "../temporary-free-route.ts";
 
 type Model = NonNullable<ExtensionContext["model"]>;
@@ -48,6 +48,8 @@ export const BUILTIN_WORKER_PROFILES: readonly WorkerProfile[] = [
   { id: "steak-pi/opencode-go", model: "opencode-go/deepseek-v4.1-flash", thinking: "high", autoChain: true,
     workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
 ];
+/** The built-in automatic profile whose head resolves the default text chain (Go -> Sol). */
+const DEFAULT_CHAIN_PROFILE = "steak-pi/opencode-go";
 const PI_FAMILY_HARNESSES = new Set(["pi", "steak-pi"]);
 const thinkingLevels = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
 
@@ -152,27 +154,61 @@ export function loadWorkerProfiles(directory = join(homedir(), ".config", "ultra
  * existing auth only, with API-key/billing override env stripped at spawn). */
 export const CLAUDE_CODE_OPUS_MODEL = "claude-opus-5-5" as const;
 export const CLAUDE_CODE_SONNET_MODEL = "claude-sonnet-5-5" as const;
+/** Haiku 5.5 is the cheapest capable tier of the automatic quota fallback. It is an internal
+ * tier only: it is not an explicit worker route (`CLAUDE_CODE_ROUTES` omits it), so a caller
+ * naming it is refused exactly like any other unlisted model, and it is never admitted for
+ * image review. */
+export const CLAUDE_CODE_HAIKU_MODEL = "claude-haiku-5-5" as const;
 /** The Opus Pass model, kept under its historical name for callers. */
 export const CLAUDE_CODE_MODEL = CLAUDE_CODE_OPUS_MODEL;
 export const CLAUDE_CODE_EFFORT = "xhigh" as const;
 export const CLAUDE_CODE_OPUS_ROUTE = `claude-code/${CLAUDE_CODE_OPUS_MODEL}` as const;
 export const CLAUDE_CODE_SONNET_ROUTE = `claude-code/${CLAUDE_CODE_SONNET_MODEL}` as const;
+export const CLAUDE_CODE_HAIKU_ROUTE = `claude-code/${CLAUDE_CODE_HAIKU_MODEL}` as const;
 /** The Opus Pass route (expert review and explicit Opus escalation). */
 export const CLAUDE_CODE_ROUTE = CLAUDE_CODE_OPUS_ROUTE;
-export type ClaudeCodeModel = typeof CLAUDE_CODE_OPUS_MODEL | typeof CLAUDE_CODE_SONNET_MODEL;
+export type ClaudeCodeModel = typeof CLAUDE_CODE_OPUS_MODEL | typeof CLAUDE_CODE_SONNET_MODEL | typeof CLAUDE_CODE_HAIKU_MODEL;
+/** Routes a caller may name explicitly. Haiku is deliberately absent: only the automatic
+ * quota fallback ({@link claudeFallbackTier}) ever selects it. */
 export const CLAUDE_CODE_ROUTES: readonly string[] = [CLAUDE_CODE_SONNET_ROUTE, CLAUDE_CODE_OPUS_ROUTE];
+export type ClaudeCodeFallbackRoute = typeof CLAUDE_CODE_HAIKU_ROUTE | typeof CLAUDE_CODE_SONNET_ROUTE;
 
 /** The pinned Claude model behind a `claude-code/…` route, or undefined for
  * anything else (never a prefix or fuzzy match). */
 export function claudeCodeModelOf(route: string | undefined): ClaudeCodeModel | undefined {
   if (route === CLAUDE_CODE_OPUS_ROUTE) return CLAUDE_CODE_OPUS_MODEL;
   if (route === CLAUDE_CODE_SONNET_ROUTE) return CLAUDE_CODE_SONNET_MODEL;
+  if (route === CLAUDE_CODE_HAIKU_ROUTE) return CLAUDE_CODE_HAIKU_MODEL;
   return undefined;
 }
 
-/** Product name for messages: "Opus 5.5" / "Sonnet 5.5". */
+/** Product name for messages: "Opus 5.5" / "Sonnet 5.5" / "Haiku 5.5". */
 export function claudeCodeModelName(model: ClaudeCodeModel): string {
-  return model === CLAUDE_CODE_OPUS_MODEL ? "Opus 5.5" : "Sonnet 5.5";
+  return model === CLAUDE_CODE_OPUS_MODEL ? "Opus 5.5" : model === CLAUDE_CODE_HAIKU_MODEL ? "Haiku 5.5" : "Sonnet 5.5";
+}
+
+export interface ClaudeFallbackTier {
+  route: ClaudeCodeFallbackRoute;
+  model: typeof CLAUDE_CODE_HAIKU_MODEL | typeof CLAUDE_CODE_SONNET_MODEL;
+  /** Why this tier, in the words a receipt and the dispatch note both carry. */
+  reason: string;
+}
+
+/** The tier for a wave whose Go and Sol routes are both out of quota: whatever will likely get the
+ * job done at least cost. Haiku 5.5 takes ordinary leaves; Sonnet 5.5 takes substantial code work (a
+ * leaf that may edit AND run a shell), any requested high/xhigh reasoning and every reviewer. The
+ * choice reads only the dispatch's own declared capabilities, never the task text. */
+export function claudeFallbackTier(
+  input: Pick<DispatchInput, "thinking"> & { tasks: readonly Partial<SubagentTaskInput>[] },
+): ClaudeFallbackTier {
+  const sonnet = (reason: string): ClaudeFallbackTier => ({ route: CLAUDE_CODE_SONNET_ROUTE, model: CLAUDE_CODE_SONNET_MODEL, reason });
+  if (input.tasks.some((task) => task.role === "reviewer")) return sonnet("a reviewer leaf needs Sonnet 5.5");
+  if (input.thinking === "high" || input.thinking === "xhigh") return sonnet(`thinking ${input.thinking} was requested`);
+  if (input.tasks.some((task) => task.mayEdit === true && task.allowBash === true)) {
+    return sonnet("substantial code work: a leaf may edit files and run a shell");
+  }
+  return { route: CLAUDE_CODE_HAIKU_ROUTE, model: CLAUDE_CODE_HAIKU_MODEL,
+    reason: "ordinary leaves (no leaf may both edit and run a shell, no high reasoning requested): the cheapest capable Claude tier" };
 }
 
 /** Which Claude model a claude-code wave runs when the caller named none:
@@ -206,9 +242,9 @@ export function resolveClaudeCodeSelection(model: ClaudeCodeModel = CLAUDE_CODE_
  * pinned Sonnet 5.5 or Opus 5.5 route passes, and the caller keeps the route it
  * asked for. There is no fallback, default or auth change; anything that is not
  * an exact route (undefined, prefix, fuzzy, other provider) fails closed. */
-export function assertClaudeCodeImageAdmission(route: string | undefined): ClaudeCodeModel {
+export function assertClaudeCodeImageAdmission(route: string | undefined): Exclude<ClaudeCodeModel, typeof CLAUDE_CODE_HAIKU_MODEL> {
   const model = claudeCodeModelOf(route);
-  if (model === undefined) {
+  if (model === undefined || model === CLAUDE_CODE_HAIKU_MODEL) {
     throw new Error(`USAP claude-code image review admits only ${CLAUDE_CODE_SONNET_ROUTE} or ${CLAUDE_CODE_OPUS_ROUTE} (staged image files read natively under cwd); no fallback was selected.`);
   }
   return model;
@@ -280,13 +316,19 @@ export function resolveWorkerSelection(
   // A /model change must not inherit defaults belonging to a stale launch profile.
   const parentProfile = namedParent && namedParent.model === parentKey ? namedParent : parents.length === 1 ? parents[0] : undefined;
   const review = input.tasks.some((task) => task.role === "reviewer");
+  // An implicit dispatch whose profile default landed on an exhausted provider re-resolves the
+  // built-in default text chain (Go -> Sol) with that provider skipped. An explicit selector
+  // never takes this path, and neither do reviewer or image waves.
+  const forceChain = options.forceDefaultChain === true && !explicit && !review && input.requireImages !== true;
   // Only ordinary implicit text workers observe the temporary preference;
   // explicit model/profile/harness and all review/image gates remain exact.
-  const temporary = !explicit && !review && !input.harness && !input.requireImages ? activeTemporaryWorkerRoute() : undefined;
-  const defaults = explicit || temporary ? {} : roleDefaults ?? loadRoleDefaults();
-  const configured = temporary ? { profile: PREFERRED_FREE_PROFILE } : review ? defaults.reviewerDefault ?? parentProfile?.reviewerDefault ?? parentProfile?.workerDefault : defaults.workerDefault ?? parentProfile?.workerDefault;
+  const temporary = !explicit && !review && !forceChain && !input.harness && !input.requireImages ? activeTemporaryWorkerRoute() : undefined;
+  const defaults = explicit || temporary || forceChain ? {} : roleDefaults ?? loadRoleDefaults();
+  const configured = temporary ? { profile: PREFERRED_FREE_PROFILE } : forceChain ? { profile: DEFAULT_CHAIN_PROFILE } : review ? defaults.reviewerDefault ?? parentProfile?.reviewerDefault ?? parentProfile?.workerDefault : defaults.workerDefault ?? parentProfile?.workerDefault;
   const chosen = explicit ? selector({ ...(requested.model !== undefined ? { model: requested.model } : {}), ...(requested.profile !== undefined ? { profile: requested.profile } : {}) }, "USAP selection") : configured ? selector(configured, "USAP profile default") : undefined;
-  const profile = chosen?.profile ? profileById(chosen.profile) : undefined;
+  const profile = forceChain
+    ? profiles.find((candidate) => candidate.id === DEFAULT_CHAIN_PROFILE) ?? BUILTIN_WORKER_PROFILES.find((candidate) => candidate.id === DEFAULT_CHAIN_PROFILE)
+    : chosen?.profile ? profileById(chosen.profile) : undefined;
   // Automatic defaults resolve the final chain; an explicit selector stays exact.
   const automatic = !explicit && (chosen === undefined || (chosen.model === undefined && (profile?.autoChain === true || (review && profile?.autoReviewChain === true))));
   // Explicit native Pi reviewer waves retain configured role metadata. Implicit

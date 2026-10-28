@@ -859,6 +859,8 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
           if (!messages.has(event.messageId)) {
             messages.set(event.messageId, emptyUsage());
             state.turns += 1;
+            // The first model message is the launch-proof a dispatch waits for before it may report `Started`.
+            if (state.turns === 1) onProgress({ turns: 1, outputStarted: true });
           }
           if (event.text) appendBounded(state, event.text);
           if (event.usage !== undefined) {

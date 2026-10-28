@@ -55,6 +55,8 @@ async function fixture() {
       let ctx!: ExtensionContext;
       let reason = "";
       const extension = createUltratermSubagentsExtension({ checkpointRoot: root,
+        // These test-controlled workers never report a turn; the startup window has its own tests.
+        startupWindowMs: 0,
         createScheduler: () => new SessionScheduler(2, { session: { providers: {}, global: 2 }, machine: { providers: {}, global: 2 } }),
         createRunner: () => async (context) => new Promise<WorkerResult>((resolve) => {
           const finish = (aborted = false) => {

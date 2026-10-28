@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.12.0 (2026-10-28)
+
+- Subagents check plan quota before they launch. When the provider account
+  router shows every OpenCode Go or GPT account cooling down, signed out or at
+  a full usage window, an automatic worker wave skips that provider and moves
+  down the chain: Go, then GPT-6.1 Sol, then your Claude subscription, using
+  Haiku 5.5 for ordinary leaves and Sonnet 5.5 for leaves that may edit and
+  run a shell or ask for xhigh reasoning. Busy accounts, unmeasured usage and an
+  unreadable router never count as out of quota. Claude fallback work runs on a
+  Claude account the router shows eligible, never the paid API route, and is
+  marked as needing an Opus 5.5 review.
+- The same Claude fallback also applies when neither Go nor Sol is signed in.
+  Without the account router it runs on your own Claude Code login; 0.11.8
+  refused such a wave with "No authenticated route".
+- A route you name yourself is never rerouted. If its provider is out of
+  quota the dispatch is refused at once with the router's reason, and a wave
+  with no route that can launch says why for every route it tried.
+- A worker that dies before its first model output now fails the dispatch call
+  itself, background or not, with the cause, cancels the rest of the wave and
+  queues no second message, instead of reporting `Started`.
+- A wave refused on a plan limit before any output (Go's usage limit, a Codex
+  usage limit, a cooling-down router refusal) re-runs the same tasks on the
+  next route within the same call. Spent Go and Codex plans are now reported to
+  the router as used up rather than as a passing rate limit, so the next
+  dispatch skips them.
+
 ## 0.11.8 (2026-10-24)
 
 - A Claude Code error after a failed tool no longer leaves the next message
