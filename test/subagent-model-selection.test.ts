@@ -2,10 +2,10 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { BUILTIN_WORKER_PROFILES, CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_SONNET_ROUTE, assertClaudeCodeImageAdmission, loadWorkerProfiles, loadRoleDefaults,
+import { BUILTIN_WORKER_PROFILES, CLAUDE_CODE_HAIKU_ROUTE, CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_ROUTES, CLAUDE_CODE_SONNET_ROUTE, assertClaudeCodeImageAdmission, claudeCodeModelName, claudeCodeModelOf, claudeFallbackTier, loadWorkerProfiles, loadRoleDefaults,
   resolveClaudeCodeSelection, resolveWorkerSelection, RETIRED_ROUTE, retiredRouteError } from "../src/subagents/model-selection.ts";
-import { DEFAULT_TEXT_WORKER_CHAIN, type ChainOptions } from "../src/model-route-policy.ts";
-import type { DispatchInput } from "../src/subagents/types.ts";
+import { DEFAULT_TEXT_WORKER_CHAIN, NoChainRouteError, type ChainOptions } from "../src/model-route-policy.ts";
+import type { DispatchInput, SubagentTaskInput } from "../src/subagents/types.ts";
 
 type Model = Parameters<typeof resolveWorkerSelection>[0];
 const astra = { id: "gpt-6-astra", name: "GPT-6 Astra", provider: "openai-codex", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text", "image"] } as Model;
@@ -369,5 +369,90 @@ describe("operator role routing precedence", () => {
       writeFileSync(file, JSON.stringify({ workerDefault: { model: "one/two", profile: "one/three" } }));
       expect(() => loadRoleDefaults(file)).toThrow(/conflict/);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("automatic quota fallback tier (cheapest capable Claude model)", () => {
+  const leaf = (extra: Partial<SubagentTaskInput> = {}): SubagentTaskInput => ({ label: "leaf", task: "work", ...extra });
+  it("takes Haiku 5.5 for ordinary leaves, whatever their read or scout role or limited edits", () => {
+    for (const tasks of [
+      [leaf({ role: "scout" })],
+      [leaf({ role: "worker" }), leaf({ role: "worker" })],
+      [leaf({ role: "worker", mayEdit: true, ownedPaths: ["/tmp/x"] })], // edits without a shell
+      [leaf({ role: "worker", allowBash: true })], // a shell without edits
+    ]) {
+      expect(claudeFallbackTier({ tasks })).toMatchObject({ route: CLAUDE_CODE_HAIKU_ROUTE, model: "claude-haiku-5-5" });
+    }
+    expect(claudeFallbackTier({ tasks: [leaf()], thinking: "medium" }).route).toBe(CLAUDE_CODE_HAIKU_ROUTE);
+  });
+  it("takes Sonnet 5.5 for substantial code work, requested high/xhigh reasoning and every reviewer, and says why", () => {
+    const cases = [
+      { tasks: [leaf(), leaf({ mayEdit: true, allowBash: true, ownedPaths: ["/tmp/x"] })], why: /edit files and run a shell/ },
+      { tasks: [leaf()], thinking: "xhigh" as const, why: /thinking xhigh/ },
+      { tasks: [leaf()], thinking: "high" as const, why: /thinking high/ },
+      { tasks: [leaf({ role: "reviewer" })], why: /reviewer/ },
+      { tasks: [leaf({ role: "scout" }), leaf({ role: "reviewer" })], why: /reviewer/ },
+    ];
+    for (const { why, ...dispatch } of cases) {
+      const tier = claudeFallbackTier(dispatch);
+      expect(tier).toMatchObject({ route: CLAUDE_CODE_SONNET_ROUTE, model: "claude-sonnet-5-5" });
+      expect(tier.reason).toMatch(why);
+    }
+  });
+  it("keeps Haiku an internal tier: pinned to its exact route, never an explicit route and never admitted for images", () => {
+    expect(CLAUDE_CODE_HAIKU_ROUTE).toBe("claude-code/claude-haiku-5-5");
+    expect(claudeCodeModelOf(CLAUDE_CODE_HAIKU_ROUTE)).toBe("claude-haiku-5-5");
+    expect(claudeCodeModelName("claude-haiku-5-5")).toBe("Haiku 5.5");
+    expect(CLAUDE_CODE_ROUTES).not.toContain(CLAUDE_CODE_HAIKU_ROUTE);
+    expect(() => assertClaudeCodeImageAdmission(CLAUDE_CODE_HAIKU_ROUTE)).toThrow(/admits only claude-code\/claude-sonnet-5-5 or claude-code\/claude-opus-5-5/);
+    for (const near of ["claude-code/claude-haiku-5", "claude-code/haiku", "claude-code-api/claude-haiku-5-5", "anthropic/claude-haiku-5-5"]) {
+      expect(claudeCodeModelOf(near)).toBeUndefined();
+    }
+  });
+});
+
+describe("exhausted-provider chain skipping for implicit routes", () => {
+  // The profile default is the exact Sol profile (not an automatic chain).
+  const solFirst = BUILTIN_WORKER_PROFILES.map(profile => profile.model === "openai-codex/gpt-6.1-sol" ? { ...profile, workerDefault: { profile: profile.id } } : profile);
+  const skipSol: ChainOptions = { forceDefaultChain: true, skipRoute: step => step.provider === "openai-codex" && step.id === "gpt-6.1-sol" };
+  const skipGo: ChainOptions = { forceDefaultChain: true, skipRoute: step => step.provider === "opencode-go" };
+  it("resolves exact Sol from the profile default when nothing is skipped", () => {
+    const resolved = choose(sol, {}, registry(), solFirst);
+    expect(resolved.model).toBe(sol);
+    expect(resolved.selection).toMatchObject({ source: "profile-default", profile: "steak-pi/gpt-6-1-sol" });
+    expect(resolved.selection).not.toHaveProperty("chainRoutes");
+  });
+  it("walks the default chain past a skipped Sol to Go, recording the whole chain", () => {
+    const resolved = choose(sol, {}, registry(), solFirst, skipSol);
+    expect(resolved.model).toBe(go);
+    expect(resolved.selection).toMatchObject({ source: "chain", provider: "opencode-go", profile: "steak-pi/opencode-go",
+      chainRoutes: DEFAULT_TEXT_WORKER_CHAIN.map(step => `${step.provider}/${step.id}`) });
+  });
+  it("walks the default chain past a skipped Go to Sol", () => {
+    const resolved = choose(go, {}, registry(), BUILTIN_WORKER_PROFILES, skipGo);
+    expect(resolved.model).toBe(sol);
+    expect(resolved.selection).toMatchObject({ source: "chain", provider: "openai-codex",
+      chainRoutes: DEFAULT_TEXT_WORKER_CHAIN.map(step => `${step.provider}/${step.id}`) });
+  });
+  it("works with no profile catalog at all (the built-in default profile is the fallback)", () => {
+    const resolved = choose(sol, {}, registry(), [], skipSol);
+    expect(resolved.model).toBe(go);
+    expect(resolved.selection.source).toBe("chain");
+  });
+  it("fails with the typed default-chain result when every step is skipped or unauthenticated", () => {
+    const skipBoth: ChainOptions = { forceDefaultChain: true, skipRoute: () => true };
+    try { choose(sol, {}, registry(), solFirst, skipBoth); throw new Error("expected NoChainRouteError"); }
+    catch (error) {
+      expect(error).toBeInstanceOf(NoChainRouteError);
+      expect((error as NoChainRouteError).tried.map(step => `${step.provider}/${step.id}`)).toEqual(DEFAULT_TEXT_WORKER_CHAIN.map(step => `${step.provider}/${step.id}`));
+    }
+    // Go skipped and unauthenticated Sol: same typed result.
+    expect(() => choose(sol, {}, registry([go]), solFirst, { forceDefaultChain: true, skipRoute: step => step.provider === "opencode-go" })).toThrow(NoChainRouteError);
+  });
+  it("never reroutes or skips an explicit selector, a reviewer wave or an image wave", () => {
+    const options: ChainOptions = { forceDefaultChain: true, skipRoute: () => true };
+    expect(choose(sol, { model: "openai-codex/gpt-6.1-sol" }, registry(), solFirst, options)).toMatchObject({ model: sol, selection: { source: "override" } });
+    expect(choose(sol, { profile: "steak-pi/gpt-6-1-sol" }, registry(), solFirst, options).selection.source).toBe("override");
+    expect(choose(sol, { tasks: [{ label: "r", task: "r", role: "reviewer" }] }, registry(), solFirst, { forceDefaultChain: true }).selection.profile).not.toBe("steak-pi/opencode-go");
   });
 });

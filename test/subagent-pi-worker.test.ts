@@ -1,3 +1,4 @@
+import { isQuotaLaunchFailure } from "../src/subagents/provider-quota.ts";
 import { homedir } from "node:os";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -678,6 +679,75 @@ describe("native in-process Pi worker runner", () => {
     expect(result.usage.cost.total).toBeCloseTo(usage(4).cost.total);
   });
 
+  it("reports first model output the moment it streams, not at turn start, so a dispatch can tell a launched worker from a dead one", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "steak-pi-first-output-"));
+    const recordTask = task();
+    const progress: WorkerProgress[] = [];
+    const fake = new FakeSession();
+    let seenAtTurnStart: WorkerProgress[] = [];
+    let seenAtFirstDelta: WorkerProgress[] = [];
+    fake.onPrompt = async (session) => {
+      const final = assistant("Evidence: first output");
+      session.emit({ type: "turn_start" } as AgentSessionEvent);
+      seenAtTurnStart = progress.filter((value) => value.outputStarted !== undefined);
+      session.emit({ type: "message_update", message: final } as unknown as AgentSessionEvent);
+      seenAtFirstDelta = progress.filter((value) => value.outputStarted !== undefined);
+      session.emit({ type: "message_update", message: final } as unknown as AgentSessionEvent);
+      session.emit({ type: "message_end", message: final } as AgentSessionEvent);
+      session.emit({ type: "turn_end", message: final, toolResults: [] } as AgentSessionEvent);
+    };
+    const runner = createPiWorkerRunner({
+      relay: setupBroker(),
+      resolveRuntime: () => ({ model: fakeModel, thinkingLevel: "off" }),
+      sessionFactory: async () => ({ session: fake }),
+    });
+    const result = await runner({ run: run(cwd, recordTask), task: recordTask, signal: new AbortController().signal, onProgress: (value) => progress.push(value) });
+    expect(result.state).toBe("done");
+    expect(seenAtTurnStart).toEqual([]);
+    expect(seenAtFirstDelta).toEqual([{ outputStarted: true, turns: 1 }]);
+    expect(progress.filter((value) => value.outputStarted !== undefined)).toHaveLength(1);
+  });
+
+  it("never reports output for a first request that fails with none, even though its turn started (429, expired OAuth)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "steak-pi-first-request-failed-"));
+    const recordTask = task();
+    const progress: WorkerProgress[] = [];
+    const fake = new FakeSession();
+    fake.onPrompt = async (session) => {
+      // What Pi emits for a request refused before any token: a turn that starts and an errored, empty message.
+      const failed = { role: "assistant" as const, content: [], api: "test", provider: "test", model: "test", usage: usage(0), stopReason: "error", errorMessage: "429 usage_limit_reached", timestamp: Date.now() };
+      session.emit({ type: "turn_start" } as AgentSessionEvent);
+      session.emit({ type: "message_start", message: failed } as AgentSessionEvent);
+      session.emit({ type: "message_end", message: failed } as AgentSessionEvent);
+      session.emit({ type: "turn_end", message: failed, toolResults: [] } as AgentSessionEvent);
+    };
+    const runner = createPiWorkerRunner({
+      relay: setupBroker(),
+      resolveRuntime: () => ({ model: fakeModel, thinkingLevel: "off" }),
+      sessionFactory: async () => ({ session: fake }),
+    });
+    const result = await runner({ run: run(cwd, recordTask), task: recordTask, signal: new AbortController().signal, onProgress: (value) => progress.push(value) });
+    expect(result.state).toBe("failed");
+    expect(result.error).toContain("429 usage_limit_reached");
+    expect(result.turns).toBe(1); // the turn counter is unchanged: it cannot tell a dead launch from a live one
+    expect(progress.some((value) => value.outputStarted !== undefined)).toBe(false);
+  });
+
+  it("reports no output for a worker whose session cannot even be created", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "steak-pi-no-turn-"));
+    const recordTask = task();
+    const progress: WorkerProgress[] = [];
+    const runner = createPiWorkerRunner({
+      relay: setupBroker(),
+      resolveRuntime: () => ({ model: fakeModel, thinkingLevel: "off" }),
+      sessionFactory: async () => { throw new Error("synthetic session creation failure"); },
+    });
+    const result = await runner({ run: run(cwd, recordTask), task: recordTask, signal: new AbortController().signal, onProgress: (value) => progress.push(value) });
+    expect(result.state).toBe("failed");
+    expect(result.turns).toBe(0);
+    expect(progress.some((value) => value.outputStarted !== undefined || value.turns !== undefined)).toBe(false);
+  });
+
   it("resumes a persisted session without replaying the original prompt", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "steak-pi-resume-"));
     try {
@@ -1255,5 +1325,89 @@ describe("preferred-free normal-return account ownership", () => {
       expect(accountCommand).not.toHaveBeenCalled(); expect(record.providerAccount).toBeUndefined();
       expect(fake.disposed).toBe(true);
     } finally { await rm(cwd, { recursive: true, force: true }); }
+  });
+});
+
+// A spent plan is `usage`, not `rate`: the router holds the account out, so the next dispatch's preflight skips it.
+// Go reports its plan exhaustion as an HTTP 429 whose body is `GoUsageLimitError`; it used to be recorded as a
+// transient `rate` limit, which no preflight reads as exhaustion.
+describe("worker plan exhaustion is reported to the account router as usage", () => {
+  const goModel = { provider: "opencode-go", id: "deepseek-v4.1-flash", baseUrl: "https://opencode.ai/zen/go/v1" } as never;
+  const solModel = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text"] } as any;
+  const solRuntime = () => ({ isUsingOAuth: () => true, hasConfiguredAuth: () => true,
+    getModels: () => [solModel], getModel: () => solModel, getProvider: () => undefined, getRegisteredNativeProvider: () => undefined } as unknown as ModelRuntime);
+  const goAgentDir = join(homedir(), ".ultraterm/provider-accounts/opencode-go/primary/agent");
+
+  /** Run one account-bound worker whose very first request is refused with `errorMessage`; return the router `limit` calls. */
+  it("an unproven lease release is the headline failure even after a quota-worded refusal, so it never falls through", async () => {
+    const record = task(); const fake = new FakeSession();
+    fake.onPrompt = async (session) => {
+      const failed = { role: "assistant" as const, content: [], api: "test", provider: "test", model: "test", usage: usage(0), stopReason: "error",
+        errorMessage: '429: {"type":"GoUsageLimitError","message":"Go usage limit exceeded"}', timestamp: Date.now() };
+      session.emit({ type: "turn_start" } as AgentSessionEvent);
+      session.emit({ type: "message_end", message: failed } as AgentSessionEvent);
+      session.emit({ type: "turn_end", message: failed, toolResults: [] } as AgentSessionEvent);
+    };
+    const command = vi.fn(async (args: string[]) => {
+      if (args[0] === "release") throw new Error("router unavailable");
+      return args[0] !== "select" ? { ok: true } : { ok: true, account: { id: "primary", agentDir: goAgentDir }, lease: "lease-go" };
+    });
+    const runner = createPiWorkerRunner({ relay: setupBroker(), accountCommand: command,
+      resolveRuntime: () => ({ model: goModel, thinkingLevel: "off" }), sessionFactory: async () => ({ session: fake }) });
+    const result = await runner({ run: run("/tmp", record), task: record, signal: new AbortController().signal, onProgress: vi.fn() });
+    expect(result.state).toBe("failed");
+    expect(result.error).toMatch(/^Go account lease release failed; router TTL retains a bounded lease; earlier failure: .*GoUsageLimitError/);
+    expect(isQuotaLaunchFailure(result.error ?? "")).toBe(false);
+  });
+
+  async function refusedLimitCalls(kind: "go" | "sol", errorMessage: string): Promise<string[][]> {
+    const record = task(); const fake = new FakeSession();
+    fake.onPrompt = async (session) => {
+      const failed = { role: "assistant" as const, content: [], api: "test", provider: "test", model: "test", usage: usage(0), stopReason: "error", errorMessage, timestamp: Date.now() };
+      session.emit({ type: "turn_start" } as AgentSessionEvent);
+      session.emit({ type: "message_end", message: failed } as AgentSessionEvent);
+      session.emit({ type: "turn_end", message: failed, toolResults: [] } as AgentSessionEvent);
+    };
+    const command = vi.fn(async (args: string[]) => args[0] !== "select" ? { ok: true }
+      : kind === "go" ? { ok: true, account: { id: "primary", agentDir: goAgentDir }, lease: "lease-go" }
+        : { ok: true, account: { id: "primary", agentDir: isolatedCodexAgentDir("primary") }, lease: "lease-sol" });
+    const runner = createPiWorkerRunner({ relay: setupBroker(), accountCommand: command,
+      resolveRuntime: () => ({ model: kind === "go" ? goModel : solModel, thinkingLevel: "off" }),
+      ...(kind === "sol" ? { createModelRuntime: async () => solRuntime() } : {}),
+      sessionFactory: async () => ({ session: fake }) });
+    const result = await runner({ run: run("/tmp", record), task: record, signal: new AbortController().signal, onProgress: vi.fn() });
+    expect(result.state).toBe("failed");
+    return command.mock.calls.map(([args]) => args as string[]).filter((args) => args[0] === "limit");
+  }
+
+  it("reports Pi's ChatGPT sentence without a reset time as --kind rate, never as a spent plan", async () => {
+    const limits = await refusedLimitCalls("sol", "You have hit your ChatGPT usage limit (pro plan).");
+    expect(limits).toEqual([["limit", "--provider", "codex", "--account", expect.any(String), "--kind", "rate", "--reason", "worker HTTP 429"]]);
+  });
+
+  it("reports Go's 429 GoUsageLimitError as --kind usage, naming the plan limit", async () => {
+    const limits = await refusedLimitCalls("go", '429: {"type":"GoUsageLimitError","message":"Go usage limit exceeded"}');
+    expect(limits).toEqual([["limit", "--provider", "opencode-go", "--account", "primary", "--kind", "usage", "--reason", "worker Go usage limit exceeded"]]);
+  });
+
+  it.each([
+    ["Go usage limit exceeded without the error type", "go", "Go usage limit exceeded", "opencode-go", "worker Go usage limit exceeded"],
+    ["Codex usage limit has been reached", "sol", "The usage limit has been reached", "codex", "worker usage limit reached"],
+    ["Codex usage_limit_reached with a 429", "sol", "429 usage_limit_reached: weekly window", "codex", "worker usage limit reached"],
+    ["Codex subscription_quota_exceeded", "sol", "subscription_quota_exceeded", "codex", "worker subscription_quota_exceeded"],
+    // Pi's own rewrite of every real Codex 429 / usage_limit_reached.
+    ["Pi's ChatGPT usage-limit sentence", "sol", "You have hit your ChatGPT usage limit (pro plan). Try again in ~120 min.", "codex", "worker ChatGPT usage limit reached"],
+  ] as const)("reports %s as --kind usage", async (_name, kind, message, provider, reason) => {
+    const limits = await refusedLimitCalls(kind, message);
+    expect(limits).toEqual([["limit", "--provider", provider, "--account", "primary", "--kind", "usage", "--reason", reason]]);
+  });
+
+  it.each([["go", "429 Too Many Requests"], ["sol", "429 rate_limit_exceeded: slow down"]] as const)("keeps a bare 429 on %s a transient rate limit", async (kind, message) => {
+    const limits = await refusedLimitCalls(kind, message);
+    expect(limits).toEqual([["limit", "--provider", kind === "go" ? "opencode-go" : "codex", "--account", "primary", "--kind", "rate", "--reason", "worker HTTP 429"]]);
+  });
+
+  it("reports nothing for a failure that is neither a usage limit nor a 429", async () => {
+    expect(await refusedLimitCalls("go", "connection reset by peer")).toEqual([]);
   });
 });

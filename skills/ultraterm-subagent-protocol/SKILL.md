@@ -87,7 +87,22 @@ efficient default. Choose a background run explicitly only while the parent can
 inspect shared contracts, prepare integration, or set up verification. Then
 call `ultraterm_hub` with one bounded `wait`; do not poll repeatedly, duplicate
 a live task, or start background work merely to wait immediately. Cancellation
-is best effort and does not roll back side effects.
+is best effort and does not roll back side effects. A background dispatch holds up
+to about 25 seconds for each launched worker to produce its first model output:
+`Started` means no launched worker has died yet, and a worker that fails before
+that output (router refusal, auth, route, spawn, a first request that errors) makes
+the call itself throw with that named cause and cancels its siblings, so a dead wave
+is never reported as started. The thrown error is the only notification: no
+completion message follows it, in this session or after a reload. The exception is an
+implicit routine wave whose worker was refused on a provider quota or usage limit (Go
+`GoUsageLimitError`, Codex `usage limit has been reached`, a router refusal that says
+cooling down) before any output: the same call re-runs the same tasks once on the next
+tier (Go, then Sol, then Claude Haiku 5.5 / Sonnet 5.5), before `Started`, with no
+re-dispatch from you. The refused run stays `failed`; the result and receipt of the run
+that served name the fall-through and why (`chainRoutes`, `fallbackReason`, a
+`Fall-through:` line), and Claude-tier work still needs an Opus 5.5 review. If
+the next tier also cannot launch the call fails naming both causes. Auth, route and spawn
+failures, a bare 429 and every explicit route fail synchronously and never fall through.
 
 ## Harness and model selection
 
@@ -204,7 +219,21 @@ and ownership-free for automatic fallback; privileged reviewers retain Claude's
 path admission and shell denial. Legacy automatic-fallback checkpoints with
 unfinished privileged reviewers cannot resume. Explicit routes remain exact, and image
 reviews never silently downgrade to text-only Sol. Routine native workers default
-to OpenCode Go DeepSeek V4.1 Flash, with isolated Go 1/Go 2 accounts. Native Pi
+to OpenCode Go DeepSeek V4.1 Flash, with isolated Go 1/Go 2 accounts, then GPT-6.1 Sol
+on Codex OAuth, then the Claude subscription when neither can launch. The dispatch asks the
+account router first: a provider whose every account is cooling down, signed out or at a
+100% window is skipped (busy or unknown is not exhaustion), and with Go and Sol both out an
+implicit wave runs, without re-dispatch, on Haiku 5.5 (ordinary leaves) or Sonnet 5.5
+(a leaf that may edit and run a shell, xhigh effort), never the paid API
+route. The worker is pinned on a Claude account the router shows eligible (the least-used
+one; Claude 1 or Claude 2); with none eligible the call refuses with the cause. Only when the
+router is unreadable or lists no Claude account does it run on the parent's default login.
+The same move happens after launch: Go cannot report usage, so a spent Go plan shows only as
+the worker's first-request `GoUsageLimitError`, and an implicit wave refused that way (or by
+Sol's usage limit, or a cooling-down router refusal) before any output falls through to the
+next tier within the same call. That work (either tier) needs an Opus 5.5 review. An explicit
+route in an exhausted provider is refused with the router cause, and when no route can launch
+the call refuses synchronously naming every cause. Native Pi
 role defaults follow explicit run selection, then global role defaults, then
 parent-profile defaults; the implicit Opus admission boundary precedes native
 Pi role defaults.
