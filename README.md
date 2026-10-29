@@ -21,20 +21,20 @@ serious sessions need: parallel subagents with hard limits, compaction that
 costs no model calls, checks that run after every edit, and a status line that
 tells you what the agent is doing.
 
-Current release: **0.12.1**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
+Current release: **0.13.0**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
 [UltraTerm](https://paretocybernetics.com/software/).
 
 ## Install
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.12.1
+pi install git:github.com/michael-berardi/steak-pi@v0.13.0
 ```
 
 Or from the release archive, without Git:
 
 ```sh
-shasum -a 256 -c steak-pi-0.12.1.tgz.sha256
-tar -xzf steak-pi-0.12.1.tgz
+shasum -a 256 -c steak-pi-0.13.0.tgz.sha256
+tar -xzf steak-pi-0.13.0.tgz
 npm install --ignore-scripts --prefix "$PWD/package"
 pi install "$PWD/package"
 ```
@@ -117,6 +117,10 @@ derives from [pi-claude-code](https://github.com/earendil-works/pi-claude-code)
 by Armin Ronacher (MIT).
 
 ## Subagents (USAP)
+
+Running Claude Code workers accept `ultraterm_hub send` and `redirect` without
+cancelling or restarting. Replies appear in the run's hub inbox. Redirects do not
+change permissions, file ownership or budgets.
 
 `ultraterm_subagents` runs bounded Pi workers inside the parent process. The
 parent plans, integrates and signs off; each worker gets one exact task and

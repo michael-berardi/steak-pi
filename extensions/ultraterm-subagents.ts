@@ -97,7 +97,7 @@ function stringEnum<T extends readonly string[]>(values: T): TSchema {
 
 const RoleSchema = stringEnum(["scout", "worker", "reviewer"] as const);
 const RelayKindSchema = stringEnum(["message", "request", "reply", "status"] as const);
-const HubActionSchema = stringEnum(["list", "status", "wait", "cancel", "send", "inbox", "resume", "diagnose"] as const);
+const HubActionSchema = stringEnum(["list", "status", "wait", "cancel", "send", "redirect", "inbox", "resume", "diagnose"] as const);
 const WaitModeSchema = stringEnum(["next", "all"] as const);
 
 const TaskSchema = Type.Object({
@@ -142,8 +142,8 @@ export const ultratermHubSchema = Type.Object({
   taskId: Type.Optional(Type.String({ minLength: 1, maxLength: 160, description: "Optional task target for cancel" })),
   mode: Type.Optional(WaitModeSchema),
   timeoutMs: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_HUB_WAIT_MS })),
-  to: Type.Optional(Type.String({ minLength: 1, maxLength: 160, description: "Required peer task ID or #run for send" })),
-  body: Type.Optional(Type.String({ minLength: 1, maxLength: 4_000, description: "Required concise body for send" })),
+  to: Type.Optional(Type.String({ minLength: 1, maxLength: 160, description: "Required peer task ID or #run for send/redirect" })),
+  body: Type.Optional(Type.String({ minLength: 1, maxLength: 4_000, description: "Required concise body for send/redirect; redirect appends instructions without cancelling or granting permissions" })),
   kind: Type.Optional(RelayKindSchema),
   replyTo: Type.Optional(Type.String({ minLength: 1, maxLength: 160, description: "Required request envelope ID when kind is reply" })),
   afterSeq: Type.Optional(Type.Integer({ minimum: 0 })),
@@ -155,7 +155,7 @@ export const hubSchema = ultratermHubSchema;
 
 export type UltratermSubagentsParams = DispatchInput;
 export interface UltratermHubParams {
-  action: "list" | "status" | "wait" | "cancel" | "send" | "inbox" | "resume" | "diagnose";
+  action: "list" | "status" | "wait" | "cancel" | "send" | "redirect" | "inbox" | "resume" | "diagnose";
   runId?: string;
   taskId?: string;
   mode?: "next" | "all";
@@ -726,27 +726,6 @@ function requireString(value: unknown, field: string): string {
   return value;
 }
 
-/** Honest capability boundary: foreign headless children have no relay tool, so
- * send/inbox are refused instead of silently buffering messages nobody reads. */
-function relayUnsupportedHarness(action: "send" | "inbox", run: RunRecord): {
-  content: Array<{ type: "text"; text: string }>;
-  details: {
-    action: "send" | "inbox";
-    run: RunView;
-    relay: { ok: false; status: "rejected"; code: "unsupported_harness"; message: string; accepted: 0; queued: 0; delivered: 0 };
-  };
-} {
-  const message = "USAP relay is unsupported for harness claude-code in this slice: the headless CLI child has no relay tool and cannot send or receive peer messages. Pass coordination in task text or dispatch a new run.";
-  return {
-    content: [{ type: "text", text: message }],
-    details: {
-      action,
-      run: toRunView(run),
-      relay: { ok: false, status: "rejected", code: "unsupported_harness", message, accepted: 0, queued: 0, delivered: 0 },
-    },
-  };
-}
-
 function requireRunId(params: UltratermHubParams): string {
   return requireString(params.runId, "runId").trim();
 }
@@ -960,7 +939,7 @@ export function defaultWorkerRunner(
           if (typeof factory !== "function") {
             throw new Error("claude-worker module does not export createClaudeWorkerRunner");
           }
-          return factory({ ...(claudeSpawn ? { spawn: claudeSpawn } : {}), accountCommand });
+          return factory({ relay, ...(claudeSpawn ? { spawn: claudeSpawn } : {}), accountCommand });
         });
       const runner = await claudeRunner.catch((error) => { claudeRunner = undefined; throw error; });
       const result = await runner(context);
@@ -1882,11 +1861,8 @@ export function createUltratermSubagentsExtension(
           thinkingLevel: piResolved!.thinkingLevel,
         }) as PiWorkerRuntime);
       }
-      // Foreign children cannot bind relay peers: create only the parent peer so
-      // hub send/inbox can honestly refuse instead of silently buffering.
-      current.relay.createRun(run.id, foreignHarness && !reviewFallbackRuntime
-        ? [PARENT_RELAY_ID]
-        : [PARENT_RELAY_ID, ...run.tasks.map((task) => task.id)]);
+      // Both native Pi and stream-json Claude children share run-local relay identities.
+      current.relay.createRun(run.id, [PARENT_RELAY_ID, ...run.tasks.map((task) => task.id)]);
       const parent = current.relay.bindSender(run.id, PARENT_RELAY_ID);
       let started: RunRecord;
       try {
@@ -1991,7 +1967,7 @@ export function createUltratermSubagentsExtension(
         "Delegation must buy completion speed; modest token premiums for real throughput are correct. Trivial or tightly coupled edits and direct answers stay in the parent.",
         "Parent owns decomposition, integration, verification; workers own leaves end to end. With exact disjoint paths and acceptance contracts in hand, dispatch in the first tool turn without pre-reading child-owned files; do not duplicate child discovery in the parent.",
         "model or profile picks an explicit authenticated route (mutually exclusive, overrides roles). Every GPT choice requires paid openai-codex OAuth — never OpenRouter, API-key, or batch GPT. Do not select GPT-6 Astra; use GPT-6.1 Sol instead. requireImages=true for visual critics or render inspection.",
-        "Claude work defaults to Sonnet 5.5: harness claude-code (or model claude-code/claude-sonnet-5-5) runs Sonnet 5.5 xhigh, nearly Opus-level at far less quota. Escalate to Opus 5.5 (model claude-code/claude-opus-5-5) only for frontier needs: expert review and sign-off (all-reviewer waves default to it), hard architecture or security reasoning, or a leaf Sonnet already failed. When neither Go nor Sol can launch (not authenticated, not configured, or every account cooling down / at a 100% window per the account router; busy or unknown is NOT exhaustion), an implicit routine text wave runs on the claude-code subscription with no re-dispatch: Haiku 5.5 for ordinary leaves, Sonnet 5.5 when any leaf may edit AND run a shell or thinking xhigh is requested (the tier and why are named in the dispatch note and receipts); verify that work with an Opus 5.5 review. That fallback never uses the paid claude-code-api route, never passes a proven-ineligible Claude account, and if no route can launch the call is refused synchronously naming every cause. A spent Go plan is invisible to the router (no usage API), so an implicit wave whose worker is refused on a provider usage limit before any output falls through to the next tier by itself within the same call (each tier once; the refused run stays failed; the receipt names it; both causes are named if the next tier also cannot launch); auth, route and spawn failures and a bare 429 still fail synchronously. An explicit route whose Go or Sol provider is exhausted is refused with the router cause, not rerouted. mayEdit+ownedPaths are CLI-enforced; allowBash is unsandboxed except read-only reviewers get no shell, even when requested. Stage git evidence for review. requireImages=true admits native Read-image of files staged under cwd, not inline attachments. Explicit routes never fall back; implicit automatic text review may use GPT-6.1 Sol only on proven Claude quota/auth unavailability before output. Relay and native Pi resume are unavailable on this harness. The exact model claude-code-api/claude-sonnet-5-5 (or claude-code-api/claude-opus-5-5) runs this same headless CLI on approved Claude API credits: explicit only, never a default or fallback, admitted per dispatch and launch by the operator's task-scoped approval record with hard per-session budget ceilings, and a failure never falls back to the subscription or Sol. Promotional API credits cover headless runs only, never interactive Claude Code.",
+        "Claude work defaults to Sonnet 5.5: harness claude-code (or model claude-code/claude-sonnet-5-5) runs Sonnet 5.5 xhigh, nearly Opus-level at far less quota. Escalate to Opus 5.5 (model claude-code/claude-opus-5-5) only for frontier needs: expert review and sign-off (all-reviewer waves default to it), hard architecture or security reasoning, or a leaf Sonnet already failed. When neither Go nor Sol can launch (not authenticated, not configured, or every account cooling down / at a 100% window per the account router; busy or unknown is NOT exhaustion), an implicit routine text wave runs on the claude-code subscription with no re-dispatch: Haiku 5.5 for ordinary leaves, Sonnet 5.5 when any leaf may edit AND run a shell or thinking xhigh is requested (the tier and why are named in the dispatch note and receipts); verify that work with an Opus 5.5 review. That fallback never uses the paid claude-code-api route, never passes a proven-ineligible Claude account, and if no route can launch the call is refused synchronously naming every cause. A spent Go plan is invisible to the router (no usage API), so an implicit wave whose worker is refused on a provider usage limit before any output falls through to the next tier by itself within the same call (each tier once; the refused run stays failed; the receipt names it; both causes are named if the next tier also cannot launch); auth, route and spawn failures and a bare 429 still fail synchronously. An explicit route whose Go or Sol provider is exhausted is refused with the router cause, not rerouted. mayEdit+ownedPaths are CLI-enforced; allowBash is unsandboxed except read-only reviewers get no shell, even when requested. Stage git evidence for review. requireImages=true admits native Read-image of files staged under cwd, not inline attachments. Explicit routes never fall back; implicit automatic text review may use GPT-6.1 Sol only on proven Claude quota/auth unavailability before output. Hub send/redirect steers running Claude workers through stream-json stdin; replies use the same run-local inbox. Native Pi resume is unavailable on this harness. The exact model claude-code-api/claude-sonnet-5-5 (or claude-code-api/claude-opus-5-5) runs this same headless CLI on approved Claude API credits: explicit only, never a default or fallback, admitted per dispatch and launch by the operator's task-scoped approval record with hard per-session budget ceilings, and a failure never falls back to the subscription or Sol. Promotional API credits cover headless runs only, never interactive Claude Code.",
         "Background only when the parent can integrate while children run, then one bounded ultraterm_hub wait. Never start a background run merely to wait immediately. A background dispatch holds up to ~25 s for each launched worker to produce its first model output: `Started` means no launched worker has died yet, and a worker that fails before it (router refusal, auth, route, spawn, a first request that errors) makes the call throw with that cause and cancels its siblings (a provider quota or usage-limit refusal on an implicit wave instead re-runs the same tasks on the next tier before `Started`).",
         "For read-only tasks omit ownedPaths and state the read scope in task text; mayEdit requires ownedPaths. allowBash bypasses ownedPaths — grant only when operator-level shell access is necessary.",
       ],
@@ -2019,7 +1995,7 @@ export function createUltratermSubagentsExtension(
     pi.registerTool({
       name: "ultraterm_hub",
       label: "UltraTerm Hub",
-      description: "Inspect this native session's live and checkpointed USAP runs: list, status, bounded wait, cancel, send, inbox, diagnose, or explicitly resume unfinished work. Resume never repeats completed tasks; host exit interrupts execution but preserves checkpoints.",
+      description: "Inspect this native session's live and checkpointed USAP runs: list, status, bounded wait, cancel, send, redirect, inbox, diagnose, or explicitly resume unfinished work. Redirect appends instructions to a running worker without cancellation or new permissions. Resume never repeats completed tasks; host exit interrupts execution but preserves checkpoints.",
       promptSnippet: "Inspect, wait for, cancel, or message an existing USAP run",
       promptGuidelines: [
         "Runs and relay actions belong only to this native parent session. IDs copied from other sessions are historical, not controllable here.",
@@ -2214,7 +2190,7 @@ export function createUltratermSubagentsExtension(
           if (!claudeResume) {
             current.workerRuntimes.set(run.id, Object.freeze({ model: Object.freeze({ ...resolved!.model }), thinkingLevel: resolved!.thinkingLevel }));
           }
-          current.relay.createRun(run.id, claudeResume ? [PARENT_RELAY_ID] : [PARENT_RELAY_ID, ...run.tasks.map((task) => task.id)]);
+          current.relay.createRun(run.id, [PARENT_RELAY_ID, ...run.tasks.map((task) => task.id)]);
           const parent = current.relay.bindSender(run.id, PARENT_RELAY_ID);
           try {
             const started = current.coordinator.start(run);
@@ -2285,8 +2261,7 @@ export function createUltratermSubagentsExtension(
           };
         }
 
-        if (params.action === "send") {
-          if (harnessOf(snapshot.harness) === "claude-code") return relayUnsupportedHarness("send", snapshot);
+        if (params.action === "send" || params.action === "redirect") {
           const to = requireString(params.to, "to").trim();
           const body = requireString(params.body, "body");
           const relay = binding.parent.send({
@@ -2297,12 +2272,11 @@ export function createUltratermSubagentsExtension(
           });
           return {
             content: [{ type: "text" as const, text: relay.ok ? `Parent relay ${relay.status}: ${relay.ids.join(", ")}` : relay.message }],
-            details: { action: "send" as const, run: toRunView(snapshot), relay },
+            details: { action: params.action, run: toRunView(snapshot), relay },
           };
         }
 
         if (params.action === "inbox") {
-          if (harnessOf(snapshot.harness) === "claude-code") return relayUnsupportedHarness("inbox", snapshot);
           const relay = binding.parent.inbox(params.afterSeq ?? 0, params.limit ?? RELAY_MAILBOX_LIMIT);
           return {
             content: [{

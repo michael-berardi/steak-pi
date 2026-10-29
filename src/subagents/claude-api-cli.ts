@@ -14,6 +14,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { SubagentCoordinator } from "./coordinator.ts";
 import { CheckpointStore } from "./checkpoints.ts";
+import { RelayBroker, type RelayPeer } from "./relay.ts";
 import { normalizeDispatch } from "./policy.ts";
 import { createClaudeWorkerRunner, type ClaudeSpawn } from "./claude-worker.ts";
 import {
@@ -76,7 +77,9 @@ export interface ClaudeApiWaveDeps {
   idFactory?: () => string;
   /** Aborting cancels the whole run through the coordinator (child processes are signalled by the runner). */
   signal?: AbortSignal;
-  onStart?: (run: RunRecord) => void;
+  /** Run-local parent peer supports steering without cancelling the CLI wave. */
+  onStart?: (run: RunRecord, parent: RelayPeer) => void;
+  relay?: RelayBroker;
 }
 
 export interface ClaudeApiWaveOutcome {
@@ -114,8 +117,27 @@ function open(deps: ClaudeApiWaveDeps): CheckpointStore {
   return new CheckpointStore(join(root, `${CLAUDE_API_CLI_OWNER}.session`), root, CLAUDE_API_CLI_OWNER);
 }
 
-function coordinatorFor(deps: ClaudeApiWaveDeps, store: CheckpointStore): SubagentCoordinator {
+/** Shared run-local relay namespace, including the bounded resume. */
+async function startRelayWave(deps: ClaudeApiWaveDeps, store: CheckpointStore, run: RunRecord,
+  onCoordinator: (value: SubagentCoordinator) => void): Promise<ClaudeApiWaveOutcome> {
+  const relay = deps.relay ?? new RelayBroker();
+  relay.createRun(run.id, ["parent", ...run.tasks.map((task) => task.id)]);
+  const parent = relay.bind(run.id, "parent");
+  const coordinator = coordinatorFor(deps, store, relay);
+  onCoordinator(coordinator);
+  try {
+    const started = coordinator.start(run);
+    deps.onStart?.(started, parent);
+    return await settle(coordinator, store, started, deps);
+  } finally {
+    parent.close();
+    relay.cleanupRun(run.id);
+  }
+}
+
+function coordinatorFor(deps: ClaudeApiWaveDeps, store: CheckpointStore, relay: RelayBroker): SubagentCoordinator {
   const runner = createClaudeWorkerRunner({
+    relay,
     ...(deps.spawn ? { spawn: deps.spawn } : {}),
     ...(deps.executable ? { executable: deps.executable } : {}),
     ...(deps.abortGraceMs === undefined ? {} : { abortGraceMs: deps.abortGraceMs }),
@@ -166,10 +188,7 @@ export async function runClaudeApiWave(spec: ClaudeApiWaveSpec, deps: ClaudeApiW
   try {
     run.ownerSessionId = CLAUDE_API_CLI_OWNER;
     store.save(run, true);
-    coordinator = coordinatorFor(deps, store);
-    const started = coordinator.start(run);
-    deps.onStart?.(started);
-    return await settle(coordinator, store, started, deps);
+    return await startRelayWave(deps, store, run, (value) => { coordinator = value; });
   } catch (error) {
     await coordinator?.shutdown().catch(() => undefined);
     store.close();
@@ -223,10 +242,7 @@ export async function resumeClaudeApiRun(runId: string, deps: ClaudeApiWaveDeps 
     });
     if (admission) stampClaudeApiRun({ tasks: run.tasks.filter((task) => task.apiLeafCapUsd === undefined) }, admission);
     store.prepareResume(runId, run);
-    coordinator = coordinatorFor(deps, store);
-    const started = coordinator.start(run);
-    deps.onStart?.(started);
-    return await settle(coordinator, store, started, deps);
+    return await startRelayWave(deps, store, run, (value) => { coordinator = value; });
   } catch (error) {
     await coordinator?.shutdown().catch(() => undefined);
     store.close();

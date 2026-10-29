@@ -20,7 +20,8 @@ Canonical tools:
 
 - `ultraterm_subagents`: parent dispatch, foreground or background.
 - `ultraterm_hub`: parent `list`, `status`, bounded `wait`, `cancel`, `send`,
-  `inbox`, metadata-only `diagnose`, and explicit `resume`.
+  `redirect` (append instructions without cancelling), `inbox`, metadata-only
+  `diagnose`, and explicit `resume`.
 - `ultraterm_relay`: child-only run-local peer send/request/reply/receive.
 
 The legacy `parallel` tool is replaced and is not canonical. Children never
@@ -146,7 +147,12 @@ the CLI itself denies writes outside owned paths. `allowBash` adds the Bash tool
 and, as on Pi, is operator-level shell that can bypass ownership. Each Claude
 worker runs with its own session id, so a cut-off worker resumes (automatically
 after a transient fault, or through hub `resume`); its transcript is deleted
-once it finishes. Relay is unavailable on this harness and refused explicitly.
+once it finishes. Hub send/redirect appends messages to the running process
+through official stream-json stdin; the same run-local inbox receives replies.
+Claude children emit `USAP_RELAY ` JSON lines (`to`, `body`, `kind`, `replyTo`
+for replies); sender identity is host-bound. Queued or delivered transport is
+not proof the child acted: inspect its response or correlated reply. Steering
+never widens tools, owned paths, deadlines or aggregate turn budgets.
 Image review is admitted only as staged files read by the CLI's native Read tool
 (see below).
 Scheduling, bounded waits/cancel, usage and reports use the same USAP coordinator.

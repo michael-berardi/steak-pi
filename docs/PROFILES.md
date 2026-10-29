@@ -42,8 +42,10 @@ workers get `mayEdit` + `ownedPaths` (enforced by CLI `Edit(...)` allow rules
 under `dontAsk`). `allowBash` is unsandboxed, but read-only Claude reviewers
 never receive Bash, even when requested; parents stage git evidence for
 Read/Grep/Glob. `requireImages: true` admits native Read-image of files staged
-under cwd, not inline attachments. Relay and native Pi-session resume remain
-unsupported; Claude workers can resume their own persisted CLI sessions.
+under cwd, not inline attachments. Hub send/redirect steers the existing Claude
+process through stream-json stdin; replies use the run-local hub inbox. Native
+Pi-session resume remains unsupported; Claude workers can resume their own
+persisted CLI sessions.
 A failed task, including quota exhaustion, is not expert approval.
 The explicit `claude-code-api/claude-sonnet-5-5` and `claude-code-api/claude-opus-5-5`
 routes are separate: the same headless worker on approved API credits, never a

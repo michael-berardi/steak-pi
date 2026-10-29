@@ -91,9 +91,9 @@ describe("API argv and environment", () => {
     expect(api[api.indexOf("--permission-mode") + 1]).toBe("dontAsk");
   });
 
-  it("subscription argv is byte-identical to the baseline contract", () => {
+  it("subscription argv keeps the permission baseline plus realtime stream-json input", () => {
     expect(claudeWorkerArgs(8, { role: "scout" }, undefined, "claude-sonnet-5-5", undefined)).toEqual([
-      "--print", "--output-format", "stream-json", "--verbose", "--model", "claude-sonnet-5-5", "--effort", "xhigh", "--no-session-persistence",
+      "--print", "--output-format", "stream-json", "--input-format", "stream-json", "--replay-user-messages", "--verbose", "--model", "claude-sonnet-5-5", "--effort", "xhigh", "--no-session-persistence",
       "--permission-mode", "dontAsk", "--safe-mode", "--restricted", "--setting-sources", "", "--max-turns", "8", "--strict-mcp-config", "--tools", "Read,Grep,Glob",
     ]);
     expect(claudeWorkerArgs(8, { role: "scout" }, undefined, "claude-opus-5-5", undefined)).not.toContain("--bare");
