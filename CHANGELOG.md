@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.1 (2026-10-29)
+
+- Claude Code reviewers can read the one staged review folder their task names
+  (under ~/.cache/ut-overseer/<job>/review/), read-only, via --add-dir. Reviewers
+  still get no writes and no shell; other folders and the cache root stay denied.
+
 ## 0.14.0 (2026-10-28)
 
 - Default implicit workers and scouts now use GPT-6.1 Terra on Codex OAuth,

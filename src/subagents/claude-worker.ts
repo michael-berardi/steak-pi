@@ -42,6 +42,7 @@ import { spawn as nodeSpawn, execFile, execFileSync } from "node:child_process";
 import type { RelayBroker } from "./relay.ts";
 import { ClaudeRelay, CLAUDE_RELAY_PROMPT, claudeUserMessage, stripClaudeRelayLines } from "./claude-relay.ts";
 import { claudeOwnedPathRules } from "./claude-owned-paths.ts";
+import { claudeReviewReadDirs } from "./claude-review-read.ts";
 export { claudeOwnedPathRules } from "./claude-owned-paths.ts";
 import { randomUUID, createHash } from "node:crypto";
 import { applyClaudeAccountEnv, resolveClaudeAccount } from "./claude-account.ts";
@@ -77,6 +78,10 @@ export interface ClaudeWorkerPermissions {
   mayEdit?: boolean;
   allowBash?: boolean;
   ownedPaths?: readonly string[];
+  /** Leaf task text; a read-only reviewer's explicitly named staged review path grants one read-only --add-dir. */
+  task?: string;
+  /** Home for the staged-review grant; tests inject a fake home. Defaults to the operator home. */
+  home?: string;
 }
 
 /** Hard cap on accumulated raw stream bytes before the child is killed. */
@@ -162,6 +167,9 @@ export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPer
     ...(permissions.mayEdit ? claudeOwnedPathRules(ownedPaths, resolve) : []),
     ...(shell.allowBash ? ["Bash"] : []),
   ];
+  // Read-only reviewers may get one extra read-only directory (their staged job
+  // review folder, named in their task text). Never writable; see claude-review-read.ts.
+  const readDirs = claudeReviewReadDirs({ role: permissions.role, mayEdit: permissions.mayEdit, task: permissions.task ?? "" }, permissions.home);
   const args = [
     "--print",
     "--output-format", "stream-json",
@@ -180,6 +188,7 @@ export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPer
     ...(maxTurns === undefined ? [] : ["--max-turns", String(maxTurns)]),
     "--strict-mcp-config",
     "--tools", tools,
+    ...(readDirs.length === 0 ? [] : ["--add-dir", ...readDirs]),
     ...(allowRules.length === 0 ? [] : ["--allowedTools", ...allowRules]),
   ];
   assertClaudeReviewArgsShellFree(permissions, args);
@@ -343,7 +352,7 @@ export function buildClaudeWorkerPrompt(run: RunRecord, task: TaskRecord, relay 
     task.task,
     "",
     "## Permissions",
-    `May edit: ${task.mayEdit ? "yes" : "no"}. May use bash: ${claudeShellPolicy(task).bashStatus}. Reads are restricted to the run cwd.`,
+    `May edit: ${task.mayEdit ? "yes" : "no"}. May use bash: ${claudeShellPolicy(task).bashStatus}. Reads are restricted to the run cwd${claudeReviewReadDirs({ role: task.role, mayEdit: task.mayEdit, task: task.task }).length > 0 ? " plus the one staged review folder named above (read-only)" : ""}.`,
     task.mayEdit
       ? `Owned writable paths (writes anywhere else are denied by the CLI):\n${task.ownedPaths.map((owned) => `- ${owned}`).join("\n")}`
       : "Nothing is writable.",
