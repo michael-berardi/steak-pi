@@ -1,5 +1,5 @@
 import { companionActivity, createActivitySignal } from "../src/tui/activity-signal.ts";
-import { PasteSafeEditor } from "../src/tui/paste-safe-editor.ts";
+import { HoldDeleteEditor } from "../src/tui/hold-delete-editor.ts";
 import {
   type ExtensionAPI,
   type ExtensionContext,
@@ -195,7 +195,7 @@ export default function companionUiExtension(pi: ExtensionAPI): void {
       };
     });
 
-    class SteakBandEditor extends PasteSafeEditor {
+    class SteakBandEditor extends HoldDeleteEditor {
       private bandLineCount = 1;
 
       constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) {

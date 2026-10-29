@@ -304,3 +304,7 @@ Steak Pi has no runtime npm dependencies beyond its Pi peers. See
 If Steak Pi earns a place in your terminal, a
 [star](https://github.com/michael-berardi/steak-pi/stargazers) helps other
 people find it.
+
+### Hold Backspace to clear the input
+
+Holding Backspace for more than two seconds clears the entire input editor, without interrupting a running turn. To disable this default-on behavior, set `"holdDeleteClearsInput": false` in `~/.pi/agent/steak-pi.json` (or `steak-pi.json` under `PI_CODING_AGENT_DIR`); restart the session after changing it.
