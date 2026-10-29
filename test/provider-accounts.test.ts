@@ -90,10 +90,18 @@ describe("real default-runner automatic fallback wiring (offline)", () => {
     const runtimes = new Map([[`${run.id}:review-fallback`, { model, thinkingLevel: "high" as const }]]);
     const spawn = (() => {
       const listeners: Record<string, any> = {};
-      return { pid: 999, onExit: (fn: any) => listeners.exit = fn, onError() {}, onStdout: (fn: any) => listeners.stdout = fn, onStderr() {}, writeStdin() {}, kill() { return true; }, endStdin() { queueMicrotask(() => {
-        listeners.stdout(JSON.stringify({ type: "assistant", message: { id: "synthetic", model: "<synthetic>", content: [{ type: "text", text: "You've hit your weekly limit" }] } }) + "\n");
-        listeners.exit(1, null);
-      }); } };
+      let started = false;
+      return { pid: 999, onExit: (fn: any) => listeners.exit = fn, onError() {}, onStdout: (fn: any) => listeners.stdout = fn, onStderr() {}, writeStdin(text: string) {
+        if (started) return;
+        started = true;
+        expect(text.endsWith("\n")).toBe(true);
+        expect(JSON.parse(text)).toMatchObject({ type: "user", message: { role: "user", content: expect.any(String) } });
+        // Stream-json keeps stdin open for relay input; respond to the prompt, not EOF.
+        queueMicrotask(() => {
+          listeners.stdout(JSON.stringify({ type: "assistant", message: { id: "synthetic", model: "<synthetic>", content: [{ type: "text", text: "You've hit your weekly limit" }] } }) + "\n");
+          listeners.exit(1, null);
+        });
+      }, kill() { return true; }, endStdin() {} };
     }) as any;
     return { run, task, relay, runtimes, spawn };
   }

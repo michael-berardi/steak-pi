@@ -252,10 +252,22 @@ retry rather than sleeping an idle worker.
 | Scheduling, status, bounded wait/cancel, telemetry | Supported | Same coordinator |
 | Tools | Guarded native tools | Read/Grep/Glob; explicit owned writes and worker shell grants |
 | Writes / shell | Explicit grants | CLI-enforced owned writes; read-only reviewers never get Bash |
-| Relay / hub send and inbox | Supported | Explicitly unsupported |
+| Relay / hub send, redirect and inbox | Supported | Stream-json stdin; run-local replies |
 | Worker history continuation | Native Pi session | Own persisted Claude session only; no cross-harness resume |
 | Image review admission | Capability-checked | Exact pinned routes only; staged files via native Read |
 | Model selection | Native registry | Exact Sonnet 5.5 or Opus 5.5/xhigh |
+
+**Claude running-worker steering.** Use `ultraterm_hub` with `action: "send"`
+(or `"redirect"` to append updated instructions), the live run ID, a task ID or
+`#run`, and a concise `body`. Messages enter the existing Claude Code process
+through its official `--input-format stream-json` stdin; no cancellation or new
+session is needed. A queued delivery is not proof the model acted on it: inspect
+the worker's response or correlated reply in `action: "inbox"`. The child can
+send a line beginning `USAP_RELAY ` followed by JSON containing `to`, `body`,
+`kind`, and, for replies, `replyTo`. Sender identity comes from the host binding,
+not the JSON. Existing relay limits, tool permissions, owned paths, deadline,
+and aggregate turn budget still apply. Steering never grants new permissions.
+Text-only coordination does not add a shell or tool to read-only reviewers.
 
 **Claude staged image review (P-0579).** `requireImages: true` with
 `harness: "claude-code"` admits only the exact `claude-code/claude-sonnet-5-5` or
@@ -268,8 +280,8 @@ authentication. It means the parent has staged image
 files under the run cwd and the child inspects them with the CLI's native Read
 tool, which presents image files to the model. Read-only reviewers' tool
 allowlist stays Read/Grep/Glob and `--restricted` still confines reads to cwd.
-It does not mean inline attachments, base64 in the prompt, relay, or hub send,
-and no such path exists. The task text
+It does not mean inline image attachments or base64 in the prompt. Relay and
+hub send carry text only, never images. The task text
 names each staged relative path; a missing, unreadable, non-image, or
 outside-cwd file is a failed review attempt, never something to infer. Pi
 `requireImages` admission and every stream, turn, output and lifetime bound are
@@ -650,7 +662,8 @@ USAP is coordination, not a security sandbox.
   Read-only Claude reviewers never receive Bash, even when requested.
 - A child should receive only the tools and context its leaf needs. The child
   tool surface excludes parent orchestration tools. Pi children expose
-  `ultraterm_relay` for agent coordination; Claude children have no relay.
+  `ultraterm_relay` for agent coordination; Claude children receive stream-json
+  user messages and emit bounded `USAP_RELAY` JSON lines for outbound coordination.
 - Run and sender identity are host-derived. Relay must reject forged sender
   IDs, unknown recipients, cross-run access, oversized bodies, and exhausted
   budgets.

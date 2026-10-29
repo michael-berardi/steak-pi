@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.13.0 (2026-10-28)
+
+- Running Claude Code subagents now receive hub messages and redirects through
+  the official CLI's stream-json input, without cancellation or losing context.
+  Replies return through the same run-local hub inbox. Steering keeps existing
+  read-only tool limits, owned paths, deadlines and aggregate turn budgets.
+- `ultraterm_hub redirect` appends updated instructions to a worker; `send`
+  remains available for coordination. Both harnesses use the same relay limits
+  and host-bound sender identities.
+
 ## 0.12.2 (2026-10-28)
 
 - Settled background runs now wake an idle parent for one integration turn,

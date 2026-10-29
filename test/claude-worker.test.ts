@@ -200,7 +200,7 @@ describe("claude-code worker CLI surface", () => {
   });
   it("pins the exact operator-confirmed headless flags with the manifest model spelling", () => {
     expect(claudeWorkerArgs()).toEqual([
-      "--print", "--output-format", "stream-json", "--verbose",
+      "--print", "--output-format", "stream-json", "--input-format", "stream-json", "--replay-user-messages", "--verbose",
       "--model", "claude-opus-5-5", "--effort", "xhigh",
       "--no-session-persistence", "--permission-mode", "dontAsk",
       "--safe-mode", "--restricted", "--setting-sources", "", "--strict-mcp-config", "--tools", CLAUDE_CODE_ALLOWED_TOOLS,
@@ -248,9 +248,10 @@ describe("claude-code worker CLI surface", () => {
     expect(joined).toContain("--strict-mcp-config");
     expect(joined).toContain("--permission-mode dontAsk");
     expect(joined).not.toContain("bypassPermissions");
-    // Prompt arrives on stdin, so task text can never be parsed as CLI flags.
-    expect(child.stdinEnded).toBe(true);
-    const prompt = child.stdinChunks.join("");
+    // Prompt arrives as stream-json; a child exiting without a result was
+    // never sent EOF by the host while it could still accept steering.
+    expect(child.stdinEnded).toBe(false);
+    const prompt = JSON.parse(child.stdinChunks[0]).message.content;
     expect(prompt).toContain("Report the routing entrypoint");
     expect(prompt).toContain("Read, Grep, Glob only");
     expect(prompt).toContain("No writes");
@@ -803,7 +804,7 @@ describe("claude-code worker stream handling", () => {
     expect(bash.slice(bash.indexOf("--tools") + 1, bash.indexOf("--tools") + 2)).toEqual(["Read,Grep,Glob,Bash"]);
     expect(bash.slice(bash.indexOf("--allowedTools") + 1)).toEqual(["Bash"]);
     expect(calls[0].child.stdinChunks.join("")).toContain("May edit: yes");
-    expect(calls[0].child.stdinChunks.join("")).toContain("- /repo/a");
+    expect(JSON.parse(calls[0].child.stdinChunks[0]).message.content).toContain("- /repo/a");
   });
 
   it("journals successful edits as changed paths and skips denied ones", async () => {

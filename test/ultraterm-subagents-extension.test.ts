@@ -514,7 +514,9 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       expect(result.details.run.selection.source).toBe(Object.keys(route).length === 0 ? "automatic-review" : "override");
       expect(runner.mock.calls.at(-1)?.[0].run.thinkingLevel).toBe("xhigh");
       const relay = await h.tools.get("ultraterm_hub").execute("send", { action: "send", runId: result.details.run.runId, to: "#run", body: "not delivered" }, undefined, undefined, h.ctx);
-      expect(relay.content[0].text).toMatch(/unsupported|not support/i);
+      expect(relay.details.relay.ok).toBe(true);
+      const inbox = await h.tools.get("ultraterm_hub").execute("inbox", { action: "inbox", runId: result.details.run.runId }, undefined, undefined, h.ctx);
+      expect(inbox.details.relay.messages).toEqual([]);
     }
     expect(runner).toHaveBeenCalledTimes(3);
     await h.handlers.get("session_shutdown")!({}, h.ctx);
@@ -586,7 +588,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     const dispatched = await h.tools.get("ultraterm_subagents").execute("a", { goal: "owner A", tasks: [{ label: "A", task: "A" }] }, undefined, undefined, h.ctx);
     const runId = dispatched.details.run.runId;
     const foreign = { ...h.ctx, sessionManager: { getSessionId: () => "foreign-session" } };
-    for (const action of ["list", "status", "wait", "cancel", "send", "inbox", "resume", "diagnose"]) {
+    for (const action of ["list", "status", "wait", "cancel", "send", "redirect", "inbox", "resume", "diagnose"]) {
       await expect(h.tools.get("ultraterm_hub").execute("b", { action, runId, ...(action === "send" ? { to: "#run", body: "foreign" } : {}) }, undefined, undefined, foreign)).rejects.toThrow(/ownership mismatch/);
     }
     await expect(h.tools.get("ultraterm_subagents").execute("b", { goal: "foreign", tasks: [{ label: "B", task: "B" }] }, undefined, undefined, foreign)).rejects.toThrow(/ownership mismatch/);
@@ -659,7 +661,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     for (const [owner, own, foreign] of [[a, ar, br], [b, br, ar]]) {
       const list = await owner.tools.get("ultraterm_hub").execute("list", { action: "list" }, undefined, undefined, owner.ctx);
       expect(list.details.runs.map((run: any) => run.runId)).toEqual([own.details.run.runId]);
-      for (const action of ["status", "wait", "cancel", "send", "inbox", "resume", "diagnose"]) {
+      for (const action of ["status", "wait", "cancel", "send", "redirect", "inbox", "resume", "diagnose"]) {
         await expect(owner.tools.get("ultraterm_hub").execute("foreign", { action, runId: foreign.details.run.runId }, undefined, undefined, owner.ctx)).rejects.toThrow(/Unknown USAP run/);
       }
       expect(own.details.run.ownerSessionId).toBe(owner.ctx.sessionManager.getSessionId());
@@ -834,7 +836,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     expect(listed.details.runs).toEqual([]);
   });
 
-  it("binds parent relay identity for send and inbox", async () => {
+  it.each([["pi", "send"], ["claude-code", "send"], ["pi", "redirect"], ["claude-code", "redirect"]])("synthetic: binds parent relay identity and correlated replies on %s %s", async (harnessRoute, action) => {
     let release!: () => void;
     let childMessage: unknown;
     const h = harness((relay) => async ({ run, task, signal }) => {
@@ -853,6 +855,8 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     });
     const started = await h.tools.get("ultraterm_subagents").execute("call", {
       goal: "relay",
+      harness: harnessRoute,
+      model: harnessRoute === "claude-code" ? "claude-code/claude-sonnet-5-5" : "openai-codex/gpt-6.1-sol",
       background: true,
       tasks: [{ label: "one", task: "one" }],
     }, undefined, undefined, h.ctx);
@@ -860,7 +864,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     const runId = started.details.run.runId;
     const taskId = started.details.run.tasks[0].taskId;
     const sent = await h.tools.get("ultraterm_hub").execute("hub", {
-      action: "send", runId, to: taskId, body: "parent fact", kind: "request",
+      action, runId, to: taskId, body: "parent fact", kind: "request",
     }, undefined, undefined, h.ctx);
     expect(sent.details.relay.ok).toBe(true);
     release();
@@ -2928,8 +2932,8 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
         const result = await dispatch(h, { tasks: review });
         expect(result.details.run).toMatchObject({ model: OPUS_ROUTE, harness: "claude-code" });
         expect(result.content[0].text).toMatch(/Review note: the GPT-6\.1 Sol review fallback is unavailable \(every GPT account is unavailable \(GPT 1: cooling down until Mon 02:59; GPT 2: cooling down until Mon 02:59\).*\); a Claude quota or auth failure ends this review without falling back/);
-        // No Sol review fallback runtime: the run binds the parent peer only, no worker peer for a Sol leg.
-        expect(relay.listPeers(result.details.run.runId)).toEqual(["parent"]);
+        // The Claude worker has its own relay peer even without a Sol fallback runtime.
+        expect(relay.listPeers(result.details.run.runId)).toEqual(["parent", result.details.run.tasks[0].taskId]);
       } finally { await shutdown(h); }
     });
 

@@ -13,6 +13,10 @@ process.on("exit", () => { try { rmSync(home, { recursive: true, force: true });
 export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
+    // Transport fixtures start native processes with short idle deadlines.
+    // Bound file fan-out so host CPU count cannot turn startup contention into
+    // false protocol timeouts (individual fixtures still exercise concurrency).
+    maxWorkers: 2,
     env: {
       // Keep unit tests hermetic: no cross-process slot files, default caps.
       STEAK_PI_USAP_MACHINE: "off",

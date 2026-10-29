@@ -9,13 +9,16 @@
  *
  * The CLI flag surface below is the exact operator-confirmed set for the
  * installed CLI:
- *   --print --output-format stream-json --verbose --model <claude-sonnet-5-5|claude-opus-5-5>
+ *   --print --output-format stream-json --input-format stream-json
+ *   --replay-user-messages --verbose --model <claude-sonnet-5-5|claude-opus-5-5>
  *   --effort xhigh --no-session-persistence --permission-mode dontAsk
  *   --safe-mode --restricted --setting-sources "" --strict-mcp-config
  *   --max-turns <run budget> --tools <allowlist> [--allowedTools <rules>]
  * The installed CLI help documents settings/read confinement; live USAP smoke
  * verifies these flags and the stream's served-model identity. Stream fragments
- * share response IDs; terminal num_turns is authoritative when provided.
+ * share response IDs; each result's num_turns is authoritative for that query.
+ * Realtime stdin stays open until all accepted relay UUIDs have been replayed
+ * and consumed at a result boundary. Relay never changes the tool policy.
  *
  * Write and shell leaves (USAP 1.4): `--tools` adds Edit/Write/NotebookEdit for
  * mayEdit and Bash for allowBash. Under `--permission-mode dontAsk` every tool
@@ -36,6 +39,8 @@
  * subscription route below never changes.
  */
 import { spawn as nodeSpawn, execFile, execFileSync } from "node:child_process";
+import type { RelayBroker } from "./relay.ts";
+import { ClaudeRelay, CLAUDE_RELAY_PROMPT, claudeUserMessage, stripClaudeRelayLines } from "./claude-relay.ts";
 import { claudeOwnedPathRules } from "./claude-owned-paths.ts";
 export { claudeOwnedPathRules } from "./claude-owned-paths.ts";
 import { randomUUID, createHash } from "node:crypto";
@@ -160,6 +165,8 @@ export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPer
   const args = [
     "--print",
     "--output-format", "stream-json",
+    "--input-format", "stream-json",
+    "--replay-user-messages",
     "--verbose",
     "--model", model,
     "--effort", CLAUDE_CODE_EFFORT,
@@ -301,7 +308,7 @@ export function buildClaudeWorkerContinuationPrompt(task: TaskRecord, maxTurns?:
   ].join("\n");
 }
 
-export function buildClaudeWorkerPrompt(run: RunRecord, task: TaskRecord): string {
+export function buildClaudeWorkerPrompt(run: RunRecord, task: TaskRecord, relay = false): string {
   const constraints = run.constraints.length > 0
     ? run.constraints.map((value) => `- ${value}`).join("\n")
     : "- None supplied.";
@@ -315,7 +322,7 @@ export function buildClaudeWorkerPrompt(run: RunRecord, task: TaskRecord): strin
     // Observed on CLI 2.1.296: `--bare` offers only Read (plus Edit and Bash when granted); Grep, Glob and Write were absent. Say so rather than promise tools the session lacks.
     ...(claudeApiModelOf(run.model) ? ["This session runs in the CLI's minimal bare mode: Grep, Glob, Write and NotebookEdit may not be provided, so read files with Read and change files with Edit. The tools you actually hold are the ones available."] : []),
     ...(run.selection?.images ? ["Image inspection uses native Read on image files staged under the run cwd; inline attachments and image relay are unsupported. Read every image you claim to have inspected."] : []),
-    "There is no relay tool on this harness: peer messaging is unsupported. Report coordination needs in your final report instead.",
+    relay ? CLAUDE_RELAY_PROMPT : "There is no relay tool on this harness: peer messaging is unsupported. Report coordination needs in your final report instead.",
     "Do not run project-wide builds, linters, or test suites. Run only the focused checks needed for this leaf.",
     "You have no commit, push, or deploy permission; this prompt grants none.",
     ...workerImplementationGate(run, task),
@@ -350,6 +357,7 @@ export type ClaudeStreamEvent =
   | { kind: "identity"; model: string; apiKeySource?: string; cliVersion?: string }
   | { kind: "tool_result"; isError: boolean; results: Array<{ id: string; isError: boolean }> }
   | { kind: "result"; subtype?: string; isError: boolean; result?: string; usage?: unknown; totalCostUsd?: number; numTurns?: number; models?: string[]; usageLimit?: true }
+  | { kind: "replay"; uuid: string }
   | { kind: "other" }
   | { kind: "malformed" };
 
@@ -391,7 +399,8 @@ export function parseClaudeStreamLine(line: string): ClaudeStreamEvent {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { kind: "malformed" };
   const event = parsed as { type?: unknown; subtype?: unknown; is_error?: unknown; result?: unknown;
     usage?: unknown; total_cost_usd?: unknown; num_turns?: unknown; message?: unknown; model?: unknown; modelUsage?: unknown;
-    parent_tool_use_id?: unknown; error?: unknown; apiKeySource?: unknown; claude_code_version?: unknown };
+    parent_tool_use_id?: unknown; isSidechain?: unknown; is_sidechain?: unknown; uuid?: unknown; isReplay?: unknown;
+    error?: unknown; apiKeySource?: unknown; claude_code_version?: unknown };
   if (event.type === "system" && event.subtype === "init" && typeof event.model === "string") {
     return { kind: "identity", model: event.model,
       ...(typeof event.apiKeySource === "string" ? { apiKeySource: event.apiKeySource.slice(0, 40) } : {}),
@@ -404,7 +413,7 @@ export function parseClaudeStreamLine(line: string): ClaudeStreamEvent {
     return { kind: "assistant", text, toolUses, toolCalls, ...(usage === undefined ? {} : { usage }),
       ...(typeof message?.id === "string" ? { messageId: message.id } : {}),
       ...(typeof message?.model === "string" ? { model: message.model } : {}),
-      ...(typeof event.parent_tool_use_id === "string" ? { sidechain: true } : {}),
+      ...(typeof event.parent_tool_use_id === "string" || event.isSidechain === true || event.is_sidechain === true ? { sidechain: true } : {}),
       ...(hasUsageLimitMarker(event.error) || hasUsageLimitMarker(message?.error) ? { usageLimit: true as const } : {}) };
   }
   if (event.type === "user") {
@@ -423,7 +432,16 @@ export function parseClaudeStreamLine(line: string): ClaudeStreamEvent {
         }
       }
     }
-    return found ? { kind: "tool_result", isError, results } : { kind: "other" };
+    if (found) return { kind: "tool_result", isError, results };
+    // A replayed SDK user message echoes the input UUID. Tool results and
+    // sidechain user frames cannot acknowledge running-worker steering.
+    const message = event.message as { role?: unknown; content?: unknown } | undefined;
+    if (typeof event.uuid === "string" && message?.role === "user"
+      && (typeof message.content === "string" || Array.isArray(message.content))
+      && typeof event.parent_tool_use_id !== "string" && event.isSidechain !== true && event.is_sidechain !== true) {
+      return { kind: "replay", uuid: event.uuid };
+    }
+    return { kind: "other" };
   }
   if (event.type === "result") {
     if (typeof event.subtype !== "string" || typeof event.is_error !== "boolean"
@@ -514,6 +532,8 @@ export interface ClaudeWorkerRunnerOptions {
   executable?: string;
   /** Test seam; defaults to the real node spawn of `executable`. */
   spawn?: ClaudeSpawn;
+  /** Shared run-local broker; caller creates the run/peer identities. No tools or permissions are added. */
+  relay?: RelayBroker;
   /** Bounded wait between SIGTERM and SIGKILL on cancel/timeout. */
   abortGraceMs?: number;
   /** Explicit API route only: approval-record location/clock seams (tests). */
@@ -698,6 +718,11 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
       turns: 0, turnLimitReached: false, usage: emptyUsage(), sawResult: false,
     };
     const messages = new Map<string, UsageTotals>();
+    let completedTurns = 0;
+    let completedUsage = emptyUsage();
+    let resultOutputUsed = 0;
+    let terminalResult = false;
+    let relay: ClaudeRelay | undefined;
     // Pending tool calls by ID, so a successful edit/write lands in the same
     // changed-path journal the Pi runner keeps.
     const pendingCalls = new Map<string, ClaudeToolCall>();
@@ -721,6 +746,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     const ownsProcess = (): boolean => child.pid === launchedPid;
 
     const killOnce = (graceful: boolean): void => {
+      relay?.close();
       if (killed) return;
       if (!ownsProcess()) {
         state.failure = "claude-code spawn handle lost its captured process identity; refusing to signal an unknown process";
@@ -741,6 +767,8 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     child.onExit((code, sig) => {
       if (!ownsProcess()) return;
       closed = true;
+      relay?.close();
+      if (relay?.hasPending && !signal.aborted && !killed) state.failure ??= "Claude CLI exited before accepted relay input was consumed";
       if (stdoutBuffer.trim()) state.incompleteFrame = true;
       exitCode = code;
       exitSignal = sig;
@@ -788,6 +816,12 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
         if (event.kind === "malformed") {
           // Malformed output is terminal: no retry, no reparse, no fallback.
           state.failure = "claude-code emitted malformed stream-json output";
+          killOnce(false);
+          return;
+        }
+        if (event.kind === "replay") { relay?.replay(event.uuid); continue; }
+        if (terminalResult && (event.kind === "assistant" || event.kind === "result")) {
+          state.failure = "Claude CLI emitted model output after its final result";
           killOnce(false);
           return;
         }
@@ -855,12 +889,18 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
           }
           // Thinking, tool and text frames can share ONE API response ID.
           if (!messages.has(event.messageId)) {
+            if (messages.size === 0 && state.sawResult) {
+              state.outputParts = []; state.outputLength = 0;
+            }
             messages.set(event.messageId, emptyUsage());
             state.turns += 1;
             // The first model message is the launch-proof a dispatch waits for before it may report `Started`.
             if (state.turns === 1) onProgress({ turns: 1, outputStarted: true });
           }
-          if (event.text) appendBounded(state, event.text);
+          if (event.text) {
+            if (!event.sidechain) relay?.text(event.messageId, event.text);
+            appendBounded(state, event.text, Math.max(0, OUTPUT_LIMIT - resultOutputUsed));
+          }
           if (event.usage !== undefined) {
             // Replace cumulative usage for this response rather than counting
             // its input/cache tokens again for each streamed content block.
@@ -871,7 +911,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
             }
             cumulative.totalTokens = cumulative.input + cumulative.output + cumulative.cacheRead + cumulative.cacheWrite;
             messages.set(event.messageId, cumulative);
-            state.usage = [...messages.values()].reduce((total, usage) => addUsage(total, usage), emptyUsage());
+            state.usage = [...messages.values()].reduce((total, usage) => addUsage(total, usage), sanitizeUsage(completedUsage));
             onProgress({ state: "running", usage: sanitizeUsage(state.usage) });
           }
           for (const call of event.toolCalls) pendingCalls.set(call.id, call);
@@ -917,22 +957,41 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
             if (!Number.isSafeInteger(event.numTurns) || event.numTurns < 0) {
               state.failure = "Claude CLI reported an invalid turn count";
             } else {
-              state.turns = event.numTurns;
-              if (event.numTurns > maxTurns) state.turnLimitReached = true;
+              // num_turns describes this query, not the whole realtime stdin
+              // session. Never let another result reset the host's budget.
+              state.turns = Math.max(state.turns, completedTurns + event.numTurns);
+              if (state.turns > maxTurns) state.turnLimitReached = true;
             }
           }
           if (event.subtype === "error_max_turns") state.turnLimitReached = true;
-          if (event.result !== undefined && !state.failure && !state.turnLimitReached) {
-            state.outputParts = []; state.outputLength = 0; state.truncated = false;
-            appendBounded(state, event.result);
-          }
-          // Authoritative session totals replace partial per-message accumulation.
-          if (event.usage !== undefined) state.usage = claudeUsage(event.usage, event.totalCostUsd);
-          else if (event.totalCostUsd !== undefined) state.usage.cost.total = claudeUsage({}, event.totalCostUsd).cost.total;
-          onProgress({ state: "running", usage: sanitizeUsage(state.usage) });
+          completedTurns = state.turns;
+          // Usage is per query; total_cost_usd is cumulative for the CLI session.
+          if (event.usage !== undefined) state.usage = addUsage(sanitizeUsage(completedUsage), claudeUsage(event.usage));
+          if (event.totalCostUsd !== undefined) state.usage.cost.total = Math.max(completedUsage.cost.total, claudeUsage({}, event.totalCostUsd).cost.total);
+          completedUsage = sanitizeUsage(state.usage);
+          messages.clear();
+          relay?.flushText();
           if (state.failure !== undefined || state.turnLimitReached) {
             killOnce(true);
             return;
+          }
+          const consumed = relay?.result() ?? true;
+          if (consumed) {
+            // Synchronously revoke steering BEFORE publishing final output or
+            // progress callbacks, which can themselves send relay envelopes.
+            terminalResult = true;
+            relay?.close();
+          }
+          if (event.result !== undefined) {
+            const report = stripClaudeRelayLines(event.result);
+            state.outputParts = []; state.outputLength = 0;
+            appendBounded(state, report, Math.max(0, OUTPUT_LIMIT - resultOutputUsed));
+            resultOutputUsed += report.length;
+          }
+          onProgress({ state: "running", usage: sanitizeUsage(state.usage) });
+          if (consumed) {
+            try { child.endStdin(); }
+            catch { state.failure = "Claude CLI stdin could not close after its final result"; killOnce(false); }
           }
         }
       }
@@ -948,11 +1007,25 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
       if (signal.aborted) onAbort();
       else signal.addEventListener("abort", onAbort, { once: true });
       if (!signal.aborted) {
-        child.writeStdin(resuming ? buildClaudeWorkerContinuationPrompt(task, maxTurns) : buildClaudeWorkerPrompt(run, task));
+        try {
+          const prompt = resuming
+            ? [buildClaudeWorkerContinuationPrompt(task, maxTurns), ...(options.relay ? [CLAUDE_RELAY_PROMPT] : [])].join("\n")
+            : buildClaudeWorkerPrompt(run, task, options.relay !== undefined);
+          child.writeStdin(claudeUserMessage(prompt));
+          if (options.relay && !killed && !terminalResult) {
+            relay = new ClaudeRelay({ broker: options.relay, runId: run.id, task,
+              write: (text) => child.writeStdin(text),
+              fail: () => { state.failure = "Claude CLI stdin rejected relay input"; killOnce(false); } });
+            relay.bind();
+          }
+        } catch {
+          state.failure = "Claude CLI stream-json input or relay binding failed";
+          killOnce(false);
+        }
       }
-      child.endStdin();
       await Promise.race([exitPromise, stopPromise]);
     } finally {
+      relay?.close();
       signal.removeEventListener("abort", onAbort);
       if (killTimer !== undefined) clearTimeout(killTimer);
       if (stopDeadline !== undefined) clearTimeout(stopDeadline);
@@ -971,12 +1044,13 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     if (classification.state === "done" && !options.spawn) {
       try { removeClaudeWorkerSession(sessionId, childEnv.HOME, childEnv.CLAUDE_CONFIG_DIR); } catch { /* best effort; the report is unaffected */ }
     }
-    const bounded = truncatePiWorkerOutput([claudeShellPolicy(task).diagnostic, state.outputParts.join("")].filter(Boolean).join("\n"));
+    const bounded = truncatePiWorkerOutput([claudeShellPolicy(task).diagnostic, stripClaudeRelayLines(state.outputParts.join(""))].filter(Boolean).join("\n"));
     return {
       ...classification,
       ...(closed && !sawModelOutput && !state.modelVerified && !signal.aborted && classification.state === "failed" && reviewFallbackReason && !admission ? { reviewFallbackReason } : {}),
       ...(subscriptionReceipt ? { subscriptionReceipt } : {}),
-      ...(buildApiReceipt(state.result?.totalCostUsd) ? { apiReceipt: buildApiReceipt(state.result?.totalCostUsd)! } : {}),
+      ...(buildApiReceipt(state.result?.totalCostUsd === undefined ? undefined : state.usage.cost.total)
+        ? { apiReceipt: buildApiReceipt(state.result?.totalCostUsd === undefined ? undefined : state.usage.cost.total)! } : {}),
       ...(!closed ? { cleanup: exitPromise } : {}),
       output: bounded.output,
       toolErrors: state.toolErrors,

@@ -68,6 +68,33 @@ describe("wave spec", () => {
 });
 
 describe("runClaudeApiWave (native coordinator)", () => {
+  it("synthetic: exposes a run-bound parent relay for queued steering and correlated API replies", async () => {
+    let requestId = "";
+    let parent: import("../src/subagents/relay.ts").RelayPeer;
+    let received: unknown[] = [];
+    const t = setup((child) => {
+      child.out(initFrame());
+      expect(child.stdin).toHaveLength(2);
+      for (const input of child.stdin) child.out(frame({ ...JSON.parse(input), isReplay: true }));
+      expect(child.stdin[1]).toContain("updated instruction");
+      const marker = `USAP_RELAY ${JSON.stringify({ to: "parent", kind: "reply", replyTo: requestId, body: "applied update" })}`;
+      child.out(reply(marker + "\nEvidence: applied update"));
+      received = parent.inbox().messages;
+      child.out(result("Evidence: applied update"));
+      child.exit();
+    });
+    const outcome = await runClaudeApiWave(t.spec, { ...t.deps, onStart(run, peer) {
+      parent = peer;
+      const sent = peer.send({ to: run.tasks[0].id, body: "updated instruction", kind: "request" });
+      expect(sent.ok).toBe(true);
+      if (sent.ok) requestId = sent.ids[0];
+    } });
+    expect(outcome.run.state).toBe("done");
+    expect(received).toMatchObject([{ from: outcome.run.tasks[0].id, kind: "reply", replyTo: requestId, body: "applied update" }]);
+    expect(outcome.run.tasks[0]).toMatchObject({ relaySent: 1, relayReceived: 1 });
+    expect(t.calls).toHaveLength(1);
+  });
+
   it("dispatches through the coordinator, persists a checkpoint, and returns a sanitized summary with the API receipt", async () => {
     const t = setup((child) => { child.out(initFrame()); child.out(reply("entrypoint is bin/steak-pi")); child.out(result("entrypoint is bin/steak-pi")); child.exit(); });
     const outcome = await runClaudeApiWave(t.spec, t.deps);
