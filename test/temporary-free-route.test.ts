@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { chmodSync, linkSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { createRequire, findPackageJSON } from "node:module";
@@ -28,8 +28,18 @@ function officialFetch(id: string, mutate: (m: any) => void = () => {}, mutateEn
     return new Response(JSON.stringify({ data: url.endsWith("/endpoints") ? endpoints : [m] }), { status: 200 });
   });
 }
+// The route reader refuses a config under any group- or world-writable folder (by design). A TMPDIR such as
+// /tmp/x has one (/private/tmp), so every test here would fail with a bare config error; say why instead.
+function safeTmp(): string {
+  const base = realpathSync(tmpdir());
+  for (let p = base; ; p = dirname(p)) {
+    const s = lstatSync(p);
+    if (s.mode & 0o022) throw new Error(`TMPDIR ${base} has a group/world-writable ancestor ${p}; the temporary route reader refuses that by design. Run with the default per-user TMPDIR.`);
+    if (p === dirname(p)) return base;
+  }
+}
 function fixture() {
-  const home = mkdtempSync(join(realpathSync(tmpdir()), "steak-free-")); dirs.push(home);
+  const home = mkdtempSync(join(safeTmp(), "steak-free-")); dirs.push(home);
   const directory = join(home, ".config", "ultraterm"); mkdirSync(directory, { recursive: true, mode: 0o700 });
   const path = join(directory, "temporary-worker-route.json"); writeFileSync(path, JSON.stringify(config()), { mode: 0o600 });
   vi.stubEnv("HOME", home); vi.useFakeTimers(); vi.setSystemTime(now);

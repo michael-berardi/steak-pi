@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.2 (2026-10-29)
+
+- A terminal's UltraTerm inbox registers again after its session identity is
+  republished (or published after session start). Before, the inbox monitor
+  stopped for good and every peer message to that terminal was refused with
+  "recipient inbox is not registered".
+- The temporary free-route tests name the cause when TMPDIR sits under a
+  group- or world-writable folder, instead of failing with a bare config error.
+
 ## 0.14.1 (2026-10-29)
 
 - Claude Code reviewers can read the one staged review folder their task names
