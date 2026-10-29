@@ -81,7 +81,7 @@ export function createClaudeCodeProvider() {
         },
         async refresh(_credential, signal) {
           const status = await getClaudeStatus(claudeCodeEnv(), signal);
-          if (!status.subscription) throw new Error(LOGIN_HINT);
+          if (!status.subscription) throw new Error(status.detail ?? LOGIN_HINT);
           return externalOAuthMarker();
         },
         async toAuth() {
