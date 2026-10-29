@@ -98,7 +98,7 @@ completion message follows it, in this session or after a reload. The exception 
 implicit routine wave whose worker was refused on a provider quota or usage limit (Go
 `GoUsageLimitError`, Codex `usage limit has been reached`, a router refusal that says
 cooling down) before any output: the same call re-runs the same tasks once on the next
-tier (Go, then Sol, then Claude Haiku 5.5 / Sonnet 5.5), before `Started`, with no
+tier (Terra, then Go, then Claude Haiku 5.5 / Sonnet 5.5), before `Started`, with no
 re-dispatch from you. The refused run stays `failed`; the result and receipt of the run
 that served name the fall-through and why (`chainRoutes`, `fallbackReason`, a
 `Fall-through:` line), and Claude-tier work still needs an Opus 5.5 review. If
@@ -201,15 +201,14 @@ roles keep explicit shell grants; this is tool denial, not an OS sandbox.
 ### Native Pi routes
 
 Use one run-level `model: "provider/model"` **or**
-`profile: "steak-pi/gpt-6-1-sol"`, never both. All tasks share that route.
+`profile: "steak-pi/gpt-6-1-terra"`, never both. All tasks share that route.
 Explicit selection overrides role defaults, including reviewers. An Astra
-manager can explicitly select GPT-6.1 Sol; a MiMo parent can explicitly select authorized GPT.
+manager can explicitly select GPT-6.1 Terra; a MiMo parent can explicitly select authorized GPT.
 GLM 5.3 and the Z.ai plan are retired (2026-10-03); GLM or `zai/` selectors are refused.
 Prose saying a model name does not select it.
 
 GPT-6.0 Sol was retired on **2026-10-05**. Sol is only
-`openai-codex/gpt-6.1-sol` / `steak-pi/gpt-6-1-sol`; the Sol step of the
-automatic chain below is 6.1. Retired `gpt-6-sol` / `gpt-6.0-sol` selectors,
+`openai-codex/gpt-6.1-sol` / `steak-pi/gpt-6-1-sol`; Sol is explicitly selectable, not an automatic step. Retired `gpt-6-sol` / `gpt-6.0-sol` selectors,
 qualified profiles, and display names such as "GPT-6 Sol" are rejected at
 profile/manifest ingestion and child/request resolution with
 `RetiredModelSelectionError`, including explicit checkpoint resume after
@@ -217,18 +216,19 @@ restart. Never reinterpret a retired selector as 6.1 or convert Astra, Luna,
 Sonnet, Opus, MiMo or DeepSeek to Sol. Preserve checkpoints and ownership;
 inspect and use a supported explicit model-change/handoff, never kill a run.
 
+
 Without a selector, all-reviewer waves prefer the Opus Pass. When the account
 router proves Claude unavailable, or the official CLI returns a recognized
-pre-output quota/auth failure, automatic text review uses GPT-6.1 Sol on Codex
+pre-output quota/auth failure, automatic text review uses GPT-6.1 Terra on Codex
 OAuth and records the actual fallback. Every leaf must be read-only, shell-free
 and ownership-free for automatic fallback; privileged reviewers retain Claude's
 path admission and shell denial. Legacy automatic-fallback checkpoints with
 unfinished privileged reviewers cannot resume. Explicit routes remain exact, and image
-reviews never silently downgrade to text-only Sol. Routine native workers default
-to OpenCode Go DeepSeek V4.1 Flash, with isolated Go 1/Go 2 accounts, then GPT-6.1 Sol
-on Codex OAuth, then the Claude subscription when neither can launch. The dispatch asks the
+reviews never silently downgrade to the automatic text-review fallback. Routine native workers and scouts default
+to GPT-6.1 Terra on Codex OAuth, then OpenCode Go DeepSeek V4.1 Flash
+with isolated Go 1/Go 2 accounts, then the Claude subscription when neither can launch. The dispatch asks the
 account router first: a provider whose every account is cooling down, signed out or at a
-100% window is skipped (busy or unknown is not exhaustion), and with Go and Sol both out an
+100% window is skipped (busy or unknown is not exhaustion), and with Terra and Go both out an
 implicit wave runs, without re-dispatch, on Haiku 5.5 (ordinary leaves) or Sonnet 5.5
 (a leaf that may edit and run a shell, xhigh effort), never the paid API
 route. The worker is pinned on a Claude account the router shows eligible (the least-used
@@ -236,7 +236,7 @@ one; Claude 1 or Claude 2); with none eligible the call refuses with the cause. 
 router is unreadable or lists no Claude account does it run on the parent's default login.
 The same move happens after launch: Go cannot report usage, so a spent Go plan shows only as
 the worker's first-request `GoUsageLimitError`, and an implicit wave refused that way (or by
-Sol's usage limit, or a cooling-down router refusal) before any output falls through to the
+Terra's usage limit, or a cooling-down router refusal) before any output falls through to the
 next tier within the same call. That work (either tier) needs an Opus 5.5 review. An explicit
 route in an exhausted provider is refused with the router cause, and when no route can launch
 the call refuses synchronously naming every cause. Native Pi
@@ -281,7 +281,7 @@ Canonical ceilings include 8 concurrent children per run, 16 active runs,
 run. Treat truncation, timeout, budget exhaustion, failure, and cancellation
 as evidence to inspect—not reasons to silently fan out or retry.
 
-Routine bounded scouting and implementation use the configured Go→Sol
+Routine bounded scouting and implementation use the configured Terra→Go
 subscription chain. An explicit Go selection is not retried on another model. For visual
 work, explicitly select an authenticated image-capable route and require images.
 Escalate when ambiguity, blast radius, or failed attempts rise. The
@@ -295,8 +295,8 @@ text under `~/.cache/ut-overseer/<job>/`, even outside cwd. Name the absolute or
 `~/` file path. This grants no directory discovery, sibling files, symlink paths
 or writes; Grep/Find/Ls remain cwd-only. Claude CLI inputs still belong under cwd.
 
-Only writable Go/Haiku leaves receive implementation-review instructions: Sonnet
-5.5 for Go implementation, Opus 5.5 for Haiku implementation. Sol work and read-only
+Writable Terra/Go/Haiku implementation receives parent-requested verification:
+Opus 5.5 for Terra/Haiku and Sonnet 5.5 for Go. Explicit Sol work and read-only
 leaves receive no automatic end-gate. An explicit leaf/shared-contract output
 format wins over default headings; JSON-only tasks return JSON only. A leaf with
 empty or placeholder-only output fails even if its transport exits successfully.
@@ -335,3 +335,6 @@ integrated proof, first-pass acceptance, total cost, and low rework—not agent
 count.
 
 Full canonical contract: `docs/ULTRATERM-SUBAGENT-PROTOCOL.md`.
+
+Security-audit work stays Go/Haiku, never any GPT. Terra is the implicit worker
+and scout default (`openai-codex/gpt-6.1-terra`, `steak-pi/gpt-6-1-terra`).

@@ -67,7 +67,7 @@ function harness(runnerFactory: (relay: RelayBroker) => WorkerRunner, durable?: 
   })(pi);
   const cwd = mkdtempSync(join(tmpdir(), "steak-usap-extension-"));
   dirs.push(cwd);
-  const model = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text", "image"] };
+  const model = { provider: "openai-codex", id: "gpt-6.1-terra", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text", "image"] };
   const ctx = {
     cwd,
     model,
@@ -118,8 +118,8 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-describe("UltraTerm Subagent Protocol Pi extension", () => {
-  describe("synthetic task-scoped Claude account dispatch", () => {
+describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
+  describe("synthetic: synthetic task-scoped Claude account dispatch", () => {
     it("exposes only the primary and b account IDs as an optional schema enum", () => {
       expect(ultratermSubagentsSchema.properties.claudeAccount).toMatchObject({ type: "string", enum: ["primary", "b"] });
       expect(ultratermSubagentsSchema.required ?? []).not.toContain("claudeAccount");
@@ -176,13 +176,13 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       { claudeAccount: "PRIMARY", harness: "claude-code" },
       { claudeAccount: "b" },
       { claudeAccount: "b", harness: "pi" },
-      { claudeAccount: "b", model: "openai-codex/gpt-6.1-sol" },
-      { claudeAccount: "b", harness: "claude-code", model: "openai-codex/gpt-6.1-sol" },
+      { claudeAccount: "b", model: "openai-codex/gpt-6.1-terra" },
+      { claudeAccount: "b", harness: "claude-code", model: "openai-codex/gpt-6.1-terra" },
       { claudeAccount: "b", model: "claude-code-api/claude-sonnet-5-5" },
       { claudeAccount: "b", harness: "claude-code", model: "claude-code-api/claude-opus-5-5" },
       { claudeAccount: "b", model: "anthropic/claude-opus-5-5" },
       { claudeAccount: "b", harness: "claude-code", profile: "steak-claude-code/claude-opus-5-5" },
-      { claudeAccount: "b", profile: "steak-pi/gpt-6-1-sol" },
+      { claudeAccount: "b", profile: "steak-pi/gpt-6-1-terra" },
       { claudeAccount: "b", model: "claude-opus-5-5" },
       { claudeAccount: "b", model: "claude-code/claude-opus-5-5/" },
       { claudeAccount: "b", model: "CLAUDE-CODE/claude-sonnet-5-5" },
@@ -207,7 +207,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); save.mockRestore(); }
     });
 
-    it.each(["refused", "unavailable", "malformed"] as const)("router %s fails closed with no checkpoint, default-account start or Sol fallback", async (failure) => {
+    it.each(["refused", "unavailable", "malformed"] as const)("router %s fails closed with no checkpoint, default-account start or Terra fallback", async (failure) => {
       const root = mkdtempSync(join(tmpdir(), "usap-account-router-")); dirs.push(root);
       const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "account-router" };
       const runner = vi.fn(async () => ({ state: "done" as const, output: "unexpected", turns: 1, usage: emptyUsage() }));
@@ -339,7 +339,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
   });
 
-  it("synthetic: an implicit read-only review still falls back to Sol when no Claude account is eligible", async () => {
+  it("synthetic: an implicit read-only review still falls back to Terra when no Claude account is eligible", async () => {
     const runner = vi.fn(async () => ({ state: "done" as const, output: "fixture", turns: 1, usage: emptyUsage() }));
     const accountCommand = claudeUnavailable();
     const h = harness(() => runner, undefined, undefined, { accountCommand });
@@ -347,7 +347,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       const result = await h.tools.get("ultraterm_subagents").execute("readonly", {
         goal: "Read-only fallback", tasks: [{ label: "Read review", task: "Inspect", role: "reviewer" }],
       }, undefined, undefined, h.ctx);
-      expect(result.details.run.model).toBe("openai-codex/gpt-6.1-sol");
+      expect(result.details.run.model).toBe("openai-codex/gpt-6.1-terra");
       expect(result.details.run.harness ?? "pi").toBe("pi");
       expect(result.details.run.selection.source).toBe("automatic-review-fallback");
       expect(accountCommand).toHaveBeenCalled();
@@ -529,9 +529,9 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     await expect(h.tools.get("ultraterm_subagents").execute("mixed", { goal: "Mixed", tasks }, undefined, undefined, h.ctx))
       .rejects.toThrow(/split routine workers from the Opus review wave/);
     expect(runnerFactory).not.toHaveBeenCalled();
-    for (const route of [{ harness: "pi" }, { model: "openai-codex/gpt-6.1-sol" }]) {
+    for (const route of [{ harness: "pi" }, { model: "openai-codex/gpt-6.1-terra" }]) {
       const result = await h.tools.get("ultraterm_subagents").execute("explicit-mixed", { goal: "Explicit native review", ...route, tasks }, undefined, undefined, h.ctx);
-      expect(result.details.run.model).toBe("openai-codex/gpt-6.1-sol");
+      expect(result.details.run.model).toBe("openai-codex/gpt-6.1-terra");
       expect(result.details.run.harness).not.toBe("claude-code");
       expect(result.details.run.tasks.every((task: any) => task.state === "done")).toBe(true);
     }
@@ -732,6 +732,9 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     const h = harness(() => async () => ({ state: "done", output: "ok", turns: 1, usage: usage(1) }));
     expect([...h.tools.keys()]).toEqual(["ultraterm_subagents", "ultraterm_hub"]);
     const guidelines = h.tools.get("ultraterm_subagents").promptGuidelines.join(" ");
+    expect(guidelines).toContain("Terra implementation requires one bounded Opus 5.5 xhigh");
+    expect(guidelines).toContain("GPT-6.1 Sol remains explicitly selectable");
+    expect(guidelines).toContain("Security-audit work stays Go/Haiku, never any GPT");
     expect(guidelines).toContain("Fan out by default");
     expect(guidelines).toContain("Parent owns decomposition");
     expect(guidelines).toContain("Delegation must buy completion speed");
@@ -829,7 +832,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     const runner = vi.fn(async () => ({ state: "done" as const, output: "ok", turns: 1, usage: emptyUsage() }));
     const h = harness(() => runner);
     await expect(h.tools.get("ultraterm_subagents").execute("call", {
-      goal: "conflict", model: "openai-codex/gpt-6.1-sol", profile: "steak-pi/mimo-v2-6-flash", tasks: [{ label: "one", task: "one" }],
+      goal: "conflict", model: "openai-codex/gpt-6.1-terra", profile: "steak-pi/mimo-v2-6-flash", tasks: [{ label: "one", task: "one" }],
     }, undefined, undefined, h.ctx)).rejects.toThrow(/conflict/);
     expect(runner).not.toHaveBeenCalled();
     const listed = await h.tools.get("ultraterm_hub").execute("hub", { action: "list" }, undefined, undefined, h.ctx);
@@ -856,7 +859,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     const started = await h.tools.get("ultraterm_subagents").execute("call", {
       goal: "relay",
       harness: harnessRoute,
-      model: harnessRoute === "claude-code" ? "claude-code/claude-sonnet-5-5" : "openai-codex/gpt-6.1-sol",
+      model: harnessRoute === "claude-code" ? "claude-code/claude-sonnet-5-5" : "openai-codex/gpt-6.1-terra",
       background: true,
       tasks: [{ label: "one", task: "one" }],
     }, undefined, undefined, h.ctx);
@@ -1072,7 +1075,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  describe("synthetic background parent wake", () => {
+  describe("synthetic: synthetic background parent wake", () => {
     const done = () => ({ state: "done" as const, output: "synthetic result", turns: 1, usage: emptyUsage() });
     function controlled() {
       const finish = new Map<string, () => void>();
@@ -1292,13 +1295,13 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     const root = mkdtempSync(join(tmpdir(), "usap-retired-restart-")); dirs.push(root);
     const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "retired" };
     const store = new CheckpointStore(durable.parent, durable.root, durable.parent);
-    const run = normalizeDispatch({ goal: "continue", background: true, tasks: [{ label: "unfinished", task: "continue" }] }, root, "openai-codex/gpt-6.1-sol", "medium", Date.now(), () => "retired-checkpoint");
+    const run = normalizeDispatch({ goal: "continue", background: true, tasks: [{ label: "unfinished", task: "continue" }] }, root, "openai-codex/gpt-6.1-terra", "medium", Date.now(), () => "retired-checkpoint");
     run.tasks[0].state = "running"; run.tasks[0].startedAt = Date.now();
     const sessionFile = join(store.sessionsDirectory, "native.jsonl"); writeFileSync(sessionFile, "checkpoint", { mode: 0o600 });
     run.tasks[0].sessionFile = sessionFile;
     // Model an already-persisted pre-retirement record: never migrate history.
     if (boundary === "model") run.model = "openai-codex/gpt-6-sol";
-    else run.selection = { provider: "openai-codex", modelId: "gpt-6.1-sol", profile: "steak-pi/gpt-6-sol", source: "override", images: false, tools: true };
+    else run.selection = { provider: "openai-codex", modelId: "gpt-6.1-terra", profile: "steak-pi/gpt-6-sol", source: "override", images: false, tools: true };
     store.save(run, true); store.close();
     const runner = vi.fn(async () => ({ state: "done" as const, output: "unexpected", turns: 1, usage: emptyUsage() }));
     const h = harness(() => runner, durable);
@@ -1321,7 +1324,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     const root = mkdtempSync(join(tmpdir(), "usap-resume-")); dirs.push(root);
     const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "resumed" };
     const store = new CheckpointStore(durable.parent, durable.root, durable.parent);
-    const run = normalizeDispatch({ goal: "continue", background: true, tasks: [{ label: "complete", task: "complete" }, { label: "unfinished", task: "continue" }] }, root, "openai-codex/gpt-6.1-sol", "medium", Date.now(), () => "interrupted");
+    const run = normalizeDispatch({ goal: "continue", background: true, tasks: [{ label: "complete", task: "complete" }, { label: "unfinished", task: "continue" }] }, root, "openai-codex/gpt-6.1-terra", "medium", Date.now(), () => "interrupted");
     run.tasks[0].state = "done";
     run.tasks[1].state = "running"; run.tasks[1].startedAt = Date.now();
     const sessionFile = join(store.sessionsDirectory, "native.jsonl"); writeFileSync(sessionFile, "checkpoint", { mode: 0o600 });
@@ -1489,7 +1492,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
 
   it("keeps compact public views deterministic", () => {
     const run = {
-      id: "run-a", goal: "g", state: "running", model: "openai-codex/gpt-6.1-sol",
+      id: "run-a", goal: "g", state: "running", model: "openai-codex/gpt-6.1-terra",
       thinkingLevel: "high", background: true, createdAt: 1, constraints: [], cwd: "/tmp",
       concurrency: 1, timeoutMs: 1000, version: "1.0", usage: emptyUsage(),
       tasks: [{ id: "t", label: "l", task: "x", role: "scout", mayEdit: false,
@@ -1505,11 +1508,11 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     expect(toRunView(run).observedAt).toBe(234567);
     clock.mockRestore();
     expect(toRunView(run).tasks[0].taskId).toBe("t");
-    expect(renderRunResult(run)).toContain("model openai-codex/gpt-6.1-sol · thinking high");
+    expect(renderRunResult(run)).toContain("model openai-codex/gpt-6.1-terra · thinking high");
     expect(renderRunResult(run)).toContain("openai-codex/");
-    expect(toRunView(run).model).toBe("openai-codex/gpt-6.1-sol");
+    expect(toRunView(run).model).toBe("openai-codex/gpt-6.1-terra");
   });
-  describe("explicit partial outcome and bounded resume", () => {
+  describe("synthetic: explicit partial outcome and bounded resume", () => {
     const turnLimit = (turns: number) => `Child exceeded the ${turns}-turn limit; the partial report above is evidence, not acceptance`;
     const telemetryFor = (h: ReturnType<typeof harness>, runId: string) =>
       h.entries.filter((entry) => entry.type === "ultraterm-usap-telemetry" && entry.data.runId === runId).map((entry) => entry.data);
@@ -1519,7 +1522,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       const root = mkdtempSync(join(tmpdir(), `usap-${name}-`)); dirs.push(root);
       const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: name };
       const store = new CheckpointStore(durable.parent, durable.root, durable.parent);
-      const run = normalizeDispatch({ goal: "review", background: true, maxTurns: 12, tasks: [{ label: "Metadata signoff", task: "Review the metadata", role: "reviewer" }, { label: "Impl", task: "Done already", role: "worker" }] }, root, overrides.model ?? "openai-codex/gpt-6.1-sol", overrides.thinkingLevel ?? "medium", Date.now(), () => `${name}-origin`);
+      const run = normalizeDispatch({ goal: "review", background: true, maxTurns: 12, tasks: [{ label: "Metadata signoff", task: "Review the metadata", role: "reviewer" }, { label: "Impl", task: "Done already", role: "worker" }] }, root, overrides.model ?? "openai-codex/gpt-6.1-terra", overrides.thinkingLevel ?? "medium", Date.now(), () => `${name}-origin`);
       if (overrides.selection) run.selection = overrides.selection;
       if (overrides.account) run.tasks[0].providerAccount = overrides.account;
       if (overrides.reviewFallback) run.tasks[0].reviewFallback = overrides.reviewFallback;
@@ -1765,9 +1768,9 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       await k.handlers.get("session_shutdown")!({}, k.ctx);
     });
 
-    it("keeps automatic review provenance on a resumed Sol fallback review instead of recording an override", async () => {
-      const reviewFallback = { from: "claude-code/claude-opus-5-5", to: "openai-codex/gpt-6.1-sol", reason: "no-eligible-claude" } as const;
-      const selection = { provider: "openai-codex", modelId: "gpt-6.1-sol", source: "automatic-review-fallback", automaticReview: true, harness: "pi", images: false, tools: true };
+    it("keeps automatic review provenance on a resumed Terra fallback review instead of recording an override", async () => {
+      const reviewFallback = { from: "claude-code/claude-opus-5-5", to: "openai-codex/gpt-6.1-terra", reason: "no-eligible-claude" } as const;
+      const selection = { provider: "openai-codex", modelId: "gpt-6.1-terra", source: "automatic-review-fallback", automaticReview: true, harness: "pi", images: false, tools: true };
       const { durable, run } = partialCheckpoint("resume-review-fallback", { selection, reviewFallback });
       const seen: Array<{ source?: string; fallback?: TaskRecord["reviewFallback"] }> = [];
       const h = harness(() => async ({ run: context, task }) => {
@@ -1776,8 +1779,8 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       }, durable);
       await h.handlers.get("session_start")!({}, h.ctx);
       const resumed = await resume(h, run.id);
-      expect(resumed.details.run.selection).toMatchObject({ provider: "openai-codex", modelId: "gpt-6.1-sol", source: "automatic-review-fallback" });
-      // Resume pins the route, so the automatic Claude -> Sol fallback is not re-armed.
+      expect(resumed.details.run.selection).toMatchObject({ provider: "openai-codex", modelId: "gpt-6.1-terra", source: "automatic-review-fallback" });
+      // Resume pins the route, so the automatic Claude -> Terra fallback is not re-armed.
       expect(resumed.details.run.selection.automaticReview).toBeUndefined();
       await vi.waitFor(() => expect(seen).toEqual([{ source: "automatic-review-fallback", fallback: reviewFallback }]));
       await h.handlers.get("session_shutdown")!({}, h.ctx);
@@ -1789,13 +1792,13 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       { privilege: "write", source: "override" },
       { privilege: "shell", source: "override" },
     ] as const)("refuses a legacy automatic-fallback checkpoint with an unfinished privileged reviewer (%j) before any resume state changes", async ({ privilege, source }) => {
-      const reviewFallback = { from: "claude-code/claude-opus-5-5", to: "openai-codex/gpt-6.1-sol", reason: "no-eligible-claude" } as const;
-      const selection = { provider: "openai-codex", modelId: "gpt-6.1-sol", source, automaticReview: true, harness: "pi", images: false, tools: true };
+      const reviewFallback = { from: "claude-code/claude-opus-5-5", to: "openai-codex/gpt-6.1-terra", reason: "no-eligible-claude" } as const;
+      const selection = { provider: "openai-codex", modelId: "gpt-6.1-terra", source, automaticReview: true, harness: "pi", images: false, tools: true };
       const { durable, run } = partialCheckpoint(`legacy-fallback-${source}-${privilege}`, { selection, reviewFallback, privilege });
       const launches: string[] = [];
       const h = harness(() => async ({ task }) => { launches.push(task.id); return { state: "done", output: "finished", turns: 1, usage: emptyUsage() }; }, durable);
       await h.handlers.get("session_start")!({}, h.ctx);
-      await expect(resume(h, run.id)).rejects.toThrow(/Resume refused: "Metadata signoff" reached Sol only through the automatic review fallback/);
+      await expect(resume(h, run.id)).rejects.toThrow(/Resume refused: "Metadata signoff" reached Terra only through the automatic review fallback/);
       const listed = await h.tools.get("ultraterm_hub").execute("l", { action: "list" }, undefined, undefined, h.ctx);
       expect(listed.details.runs.every((view: any) => view.resumedAs === undefined)).toBe(true);
       expect(launches).toEqual([]);
@@ -1803,7 +1806,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     });
 
     it.each(["write", "shell"] as const)("keeps explicitly Pi-selected %s ownership resumable on its pinned route", async privilege => {
-      const selection = { provider: "openai-codex", modelId: "gpt-6.1-sol", source: "override", harness: "pi", images: false, tools: true };
+      const selection = { provider: "openai-codex", modelId: "gpt-6.1-terra", source: "override", harness: "pi", images: false, tools: true };
       const { durable, run } = partialCheckpoint(`explicit-pi-${privilege}`, { selection, privilege });
       const seen: Array<{ mayEdit: boolean; allowBash: boolean; owned: number }> = [];
       const h = harness(() => async ({ task }) => { seen.push({ mayEdit: task.mayEdit, allowBash: task.allowBash, owned: task.ownedPaths.length }); return { state: "done", output: "finished", turns: 1, usage: emptyUsage() }; }, durable);
@@ -1814,9 +1817,9 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       await h.handlers.get("session_shutdown")!({}, h.ctx);
     });
 
-    it("keeps automatic review provenance on a resumed implicit Claude review, without carrying a mid-run Sol fallback onto Claude", async () => {
+    it("keeps automatic review provenance on a resumed implicit Claude review, without carrying a mid-run Terra fallback onto Claude", async () => {
       const selection = { ...resolveClaudeCodeSelection("claude-opus-5-5"), source: "automatic-review" as const, automaticReview: true };
-      const reviewFallback = { from: "claude-code/claude-opus-5-5", to: "openai-codex/gpt-6.1-sol", reason: "quota" } as const;
+      const reviewFallback = { from: "claude-code/claude-opus-5-5", to: "openai-codex/gpt-6.1-terra", reason: "quota" } as const;
       const review = partialCheckpoint("resume-automatic-review", { model: "claude-code/claude-opus-5-5", thinkingLevel: "xhigh", claude: true, selection, reviewFallback });
       const seen: Array<{ source?: string; fallback?: TaskRecord["reviewFallback"] }> = [];
       const h = harness(() => async ({ run: context, task }) => {
@@ -1833,7 +1836,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     });
 
     it("keeps an explicit route as `override` when a checkpoint without automatic provenance is resumed", async () => {
-      const { durable, run } = partialCheckpoint("resume-explicit-override", { selection: { provider: "openai-codex", modelId: "gpt-6.1-sol", source: "override", harness: "pi", images: false, tools: true } });
+      const { durable, run } = partialCheckpoint("resume-explicit-override", { selection: { provider: "openai-codex", modelId: "gpt-6.1-terra", source: "override", harness: "pi", images: false, tools: true } });
       const h = harness(() => async () => ({ state: "done", output: "finished", turns: 1, usage: emptyUsage() }), durable);
       await h.handlers.get("session_start")!({}, h.ctx);
       const resumed = await resume(h, run.id);
@@ -1849,7 +1852,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
       const runnerFactory = () => async ({ task }: { task: { id: string } }) => { launches.push(task.id); return { state: "done" as const, output: "ok", turns: 1, usage: emptyUsage() }; };
       const h = harness(runnerFactory, stale.durable);
       await h.handlers.get("session_start")!({}, h.ctx);
-      await expect(resume(h, stale.run.id)).rejects.toThrow(/Resume refused: the route changed \(checkpoint xiaomi\/mimo-v2\.6-flash, run openai-codex\/gpt-6\.1-sol, now openai-codex\/gpt-6\.1-sol\)\. A resume continues only on the original subscription route/);
+      await expect(resume(h, stale.run.id)).rejects.toThrow(/Resume refused: the route changed \(checkpoint xiaomi\/mimo-v2\.6-flash, run openai-codex\/gpt-6\.1-terra, now openai-codex\/gpt-6\.1-terra\)\. A resume continues only on the original subscription route/);
       const listed = await h.tools.get("ultraterm_hub").execute("l", { action: "list" }, undefined, undefined, h.ctx);
       expect(listed.details.runs.every((view: any) => view.resumedAs === undefined)).toBe(true);
       expect(launches).toEqual([]);
@@ -1876,9 +1879,9 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
 });
 
 
-describe("fresh Go parent dispatch to isolated authenticated Sol", () => {
+describe("synthetic: fresh Go parent dispatch to isolated authenticated Terra", () => {
   it.each(["explicit-model", "explicit-profile", "claude-unavailable", "opus-first"])("bridges %s without registering Codex auth into the Go registry", async kind => {
-    const sol = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text"] } as any;
+    const sol = { provider: "openai-codex", id: "gpt-6.1-terra", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text"] } as any;
     const isolatedRuntime = { getModel: () => sol, getModels: () => [sol], getAvailableSnapshot: () => [sol], hasConfiguredAuth: () => true,
       isUsingOAuth: () => true, getProvider: () => ({ streamSimple() {} }) } as unknown as ModelRuntime;
     const createRuntime = vi.fn(async () => isolatedRuntime);
@@ -1893,11 +1896,11 @@ describe("fresh Go parent dispatch to isolated authenticated Sol", () => {
       getAll: () => [go], getAvailable: () => [go], hasConfiguredAuth: (model: any) => model.provider === "opencode-go",
       isUsingOAuth: () => false, getProvider: () => ({ streamSimple() {} }) };
     h.ctx.modelRegistry = registry;
-    const selector = kind === "explicit-model" ? { model: "openai-codex/gpt-6.1-sol" }
-      : kind === "explicit-profile" ? { profile: "steak-pi/gpt-6-1-sol" } : {};
+    const selector = kind === "explicit-model" ? { model: "openai-codex/gpt-6.1-terra" }
+      : kind === "explicit-profile" ? { profile: "steak-pi/gpt-6-1-terra" } : {};
     const result = await h.tools.get("ultraterm_subagents").execute("go-sol", { goal: "bounded review", ...selector,
       tasks: [{ label: "Review", task: "Inspect only", role: "reviewer" }] }, undefined, undefined, h.ctx);
-    expect(result.details.run.model).toBe(kind === "opus-first" ? "claude-code/claude-opus-5-5" : "openai-codex/gpt-6.1-sol");
+    expect(result.details.run.model).toBe(kind === "opus-first" ? "claude-code/claude-opus-5-5" : "openai-codex/gpt-6.1-terra");
     // A no-Claude fallback is automatic, never an operator-requested `override`; explicit routes stay `override`.
     expect(result.details.run.selection.source).toBe(kind === "claude-unavailable" ? "automatic-review-fallback" : kind === "opus-first" ? "automatic-review" : "override");
     expect(createRuntime).toHaveBeenCalledWith(isolatedAgentPaths(isolatedCodexAgentDir("fallback")));
@@ -1907,17 +1910,17 @@ describe("fresh Go parent dispatch to isolated authenticated Sol", () => {
   });
 });
 
-// Quota routing: an implicit wave used to resolve Go or Sol without asking the account router, the worker's
+// Quota routing: an implicit wave used to resolve Go or Terra without asking the account router, the worker's
 // router refusal surfaced only at launch (turns=0) and the parent was told `Started`. Every fixture below is a
 // router `status` shape; nothing is credential-bearing.
-describe("quota-aware implicit routing and synchronous launch failure", () => {
+describe("synthetic: quota-aware implicit routing and synchronous launch failure", () => {
   const NOW = 1_793_164_649;
-  const SOL_ROUTE = "openai-codex/gpt-6.1-sol";
+  const SOL_ROUTE = "openai-codex/gpt-6.1-terra";
   const GO_ROUTE = "opencode-go/deepseek-v4.1-flash";
   const OPUS_ROUTE = "claude-code/claude-opus-5-5";
-  const solModel = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text", "image"] };
+  const solModel = { provider: "openai-codex", id: "gpt-6.1-terra", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text", "image"] };
   const goModel = { provider: "opencode-go", id: "deepseek-v4.1-flash", api: "openai-completions", baseUrl: "https://opencode.ai/zen/go/v1", input: ["text"] };
-  // A profile default that names the exact Sol profile instead of the automatic Go -> Sol chain.
+  // A profile default that names the exact Terra profile instead of the automatic Go -> Terra chain.
   const solFirstProfiles = BUILTIN_WORKER_PROFILES.map(profile => profile.model === SOL_ROUTE ? { ...profile, workerDefault: { profile: profile.id } } : profile);
   const cooling = (id: string, label: string) => ({
     configured: true, eligible: false, id, label, state: "cooling-down", stateText: "cooling down until Mon 02:59", ineligibleReason: "cooling down",
@@ -1956,7 +1959,7 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
       return answer;
     });
     const h = harness(() => runner, durable, undefined, { accountCommand: accountCommand as never, profiles: BUILTIN_WORKER_PROFILES, ...overrides });
-    const models = [solModel, goModel];
+    const models = [solModel, goModel, { ...solModel, id: "gpt-6.1-sol" }];
     h.ctx.modelRegistry = {
       find: (provider: string, id: string) => models.find(model => model.provider === provider && model.id === id),
       getAll: () => models, getAvailable: () => models, hasConfiguredAuth: () => true,
@@ -1970,30 +1973,30 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
   const plain = [{ label: "scout", task: "Read the routing module and report", role: "scout" }];
   const shutdown = (h: ReturnType<typeof harness>) => h.handlers.get("session_shutdown")!({}, h.ctx);
 
-  describe("quota preflight for an implicit route", () => {
-    it("does not select an exhausted Go: the default chain continues to Sol", async () => {
+  describe("synthetic: quota preflight for an implicit route", () => {
+    it("selects Terra first without consulting the later exhausted Go", async () => {
       const runner = done();
       const { h, accountCommand } = quotaHarness(status({ codex: solUp, go: goOut, claude: claudeUp }), runner);
       try {
         const result = await dispatch(h, { tasks: [{ label: "leaf", task: "Implement the leaf" }] });
         expect(result.details.run.model).toBe(SOL_ROUTE);
-        expect(result.details.run.selection).toMatchObject({ provider: "openai-codex", source: "chain", chainRoutes: [GO_ROUTE, SOL_ROUTE] });
-        expect(result.details.run.selection.fallbackReason).toMatch(/OpenCode Go: every Go account is unavailable \(Go 1: cooling down until Mon 02:59; Go 2: cooling down until Mon 02:59\)/);
-        expect(result.content[0].text).toMatch(/Route note: OpenCode Go: every Go account is unavailable.*continues down the default chain on openai-codex\/gpt-6\.1-sol/);
+        expect(result.details.run.selection).toMatchObject({ provider: "openai-codex", source: "chain", chainRoutes: [SOL_ROUTE, GO_ROUTE] });
+        expect(result.details.run.selection.fallbackReason).toBeUndefined();
+        expect(result.content[0].text).not.toContain("Route note:");
         expect(runner.mock.calls[0][0].run.model).toBe(SOL_ROUTE);
         expect(accountCommand.mock.calls).toEqual([[["status"]]]);
       } finally { await shutdown(h); }
     });
 
-    it("does not select an exhausted Sol named by the profile default: the default chain continues to Go", async () => {
+    it("does not select an exhausted Terra named by the profile default: the default chain continues to Go", async () => {
       const runner = done();
       const { h, accountCommand } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeUp }), runner, { profiles: solFirstProfiles as never });
       try {
         const result = await dispatch(h, { tasks: [{ label: "leaf", task: "Implement the leaf" }] });
         expect(result.details.run.model).toBe(GO_ROUTE);
-        expect(result.details.run.selection).toMatchObject({ provider: "opencode-go", source: "chain", chainRoutes: [GO_ROUTE, SOL_ROUTE] });
-        expect(result.details.run.selection.fallbackReason).toMatch(/GPT-6\.1 Sol: every GPT account is unavailable \(GPT 1: cooling down until Mon 02:59; GPT 2: cooling down until Mon 02:59\)/);
-        expect(result.content[0].text).toMatch(/Route note: GPT-6\.1 Sol: every GPT account is unavailable.*continues down the default chain on opencode-go\/deepseek-v4\.1-flash/);
+        expect(result.details.run.selection).toMatchObject({ provider: "opencode-go", source: "chain", chainRoutes: [SOL_ROUTE, GO_ROUTE] });
+        expect(result.details.run.selection.fallbackReason).toMatch(/GPT-6\.1 Terra: every GPT account is unavailable \(GPT 1: cooling down until Mon 02:59; GPT 2: cooling down until Mon 02:59\)/);
+        expect(result.content[0].text).toMatch(/Route note: GPT-6\.1 Terra: every GPT account is unavailable.*continues down the default chain on opencode-go\/deepseek-v4\.1-flash/);
         expect(accountCommand.mock.calls).toEqual([[["status"]]]);
       } finally { await shutdown(h); }
     });
@@ -2003,7 +2006,7 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
       ["a worker leaf that edits without a shell", { tasks: [{ label: "doc", task: "Edit the doc", role: "worker", mayEdit: true, ownedPaths: ["docs/x.md"] }] }, "claude-code/claude-haiku-5-5", /ordinary leaves/],
       ["a mayEdit + allowBash leaf", { tasks: [{ label: "build", task: "Implement and test", role: "worker", mayEdit: true, ownedPaths: ["src/x.ts"], allowBash: true }] }, "claude-code/claude-sonnet-5-5", /^Sonnet 5\.5: substantial code work/],
       ["a requested xhigh effort", { tasks: plain, thinking: "xhigh", thinkingReason: "Cross-module reasoning is required here" }, "claude-code/claude-sonnet-5-5", /thinking xhigh was requested/],
-    ])("falls to the claude-code subscription route for %s when Go and Sol are both exhausted", async (_name, wave, expected, tierText) => {
+    ])("falls to the claude-code subscription route for %s when Go and Terra are both exhausted", async (_name, wave, expected, tierText) => {
       const runner = done();
       const { h, selected } = quotaHarness(status({ codex: solOut, go: goOut, claude: claudeUp }), runner);
       try {
@@ -2013,10 +2016,10 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
         expect(runner.mock.calls[0][0].run.claudeAccount).toBe("primary"); // pinned on an account the snapshot shows eligible
         expect(selected).toEqual(["primary"]);
         expect(run.model.startsWith("claude-code/")).toBe(true); // never the paid claude-code-api route
-        expect(run.selection).toMatchObject({ provider: "claude-code", source: "chain", independence: "requires-opus", chainRoutes: [GO_ROUTE, SOL_ROUTE, expected] });
+        expect(run.selection).toMatchObject({ provider: "claude-code", source: "chain", independence: "requires-opus", chainRoutes: [SOL_ROUTE, GO_ROUTE, expected] });
         expect(run.selection.fallbackReason).toMatch(tierText);
-        expect(run.selection.fallbackReason).toMatch(/OpenCode Go: every Go account is unavailable.*GPT-6\.1 Sol: every GPT account is unavailable/);
-        expect(result.content[0].text).toMatch(/Route note: neither OpenCode Go nor GPT-6\.1 Sol could launch/);
+        expect(run.selection.fallbackReason).toMatch(/GPT-6\.1 Terra: every GPT account is unavailable.*OpenCode Go: every Go account is unavailable/);
+        expect(result.content[0].text).toMatch(/Route note: neither GPT-6\.1 Terra nor OpenCode Go could launch/);
         expect(result.content[0].text).toContain(`work needs verification: review it with an Opus 5.5 reviewer wave (all-reviewer waves default to model ${OPUS_ROUTE})`);
         expect(result.content[0].text).toContain(`${expected.endsWith("haiku-5-5") ? "Haiku" : "Sonnet"} 5.5 work needs verification`);
         expect(renderRunResult(run)).toContain("tier: requires Opus 5.5 verification");
@@ -2045,10 +2048,9 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
       const { h } = quotaHarness(answer, runner);
       try {
         const result = await dispatch(h, { tasks: plain });
-        expect(result.details.run.model).toBe(GO_ROUTE);
-        expect(result.details.run.selection).toMatchObject({ source: "chain", provider: "opencode-go" });
-        expect(result.details.run.selection.fallbackReason).toBeUndefined();
-        expect(result.content[0].text).not.toContain("Route note");
+        expect(result.details.run.model).toBe(answer instanceof Error ? SOL_ROUTE : GO_ROUTE);
+        if (answer instanceof Error) expect(result.details.run.selection.fallbackReason).toBeUndefined();
+        else expect(result.details.run.selection.fallbackReason).toContain("GPT-6.1 Terra: every GPT account is unavailable");
       } finally { await shutdown(h); }
     });
 
@@ -2057,7 +2059,7 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
       const { h } = quotaHarness(status({ codex: solOut, go: goOut, claude: claudeOut }), runner);
       try {
         await expect(dispatch(h, { tasks: plain })).rejects.toThrow(
-          /no route that can launch this wave \(OpenCode Go: every Go account is unavailable \(Go 1: cooling down until Mon 02:59; Go 2: cooling down until Mon 02:59\).*\| GPT-6\.1 Sol: every GPT account is unavailable \(GPT 1: cooling down.*\| Claude subscription tier: every Claude account is ineligible \(Claude 1: signed out; Claude 2: signed out\)\)\. No route was started and no fallback was selected/);
+          /no route that can launch this wave \(GPT-6\.1 Terra: every GPT account is unavailable \(GPT 1: cooling down.*\| OpenCode Go: every Go account is unavailable \(Go 1: cooling down until Mon 02:59; Go 2: cooling down until Mon 02:59\).*\| Claude subscription tier: every Claude account is ineligible \(Claude 1: signed out; Claude 2: signed out\)\)\. No route was started and no fallback was selected/);
         expect(runner).not.toHaveBeenCalled();
         const list = await h.tools.get("ultraterm_hub").execute("list", { action: "list" }, undefined, undefined, h.ctx);
         expect(list.details.runs).toEqual([]);
@@ -2065,7 +2067,7 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
       } finally { await shutdown(h); }
     });
 
-    it("serves from Sol without touching Claude when Sol still launches, even if every Claude account is out", async () => {
+    it("serves from Terra without touching Claude when Terra still launches, even if every Claude account is out", async () => {
       const runner = done();
       const { h, selected } = quotaHarness(status({ codex: solUp, go: goOut, claude: claudeOut }), runner);
       try {
@@ -2148,12 +2150,12 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
       } finally { await shutdown(h); }
     });
 
-    it("refuses an implicit review synchronously when Claude is ineligible and the Sol review fallback is exhausted", async () => {
+    it("refuses an implicit review synchronously when Claude is ineligible and the Terra review fallback is exhausted", async () => {
       const runner = done();
       const { h } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeOut }), runner);
       try {
         await expect(dispatch(h, { tasks: [{ label: "review", task: "Review", role: "reviewer" }] }))
-          .rejects.toThrow(/implicit review cannot run: Claude subscription tier: every Claude account is ineligible.*GPT-6\.1 Sol review fallback: every GPT account is unavailable/);
+          .rejects.toThrow(/implicit review cannot run: Claude subscription tier: every Claude account is ineligible.*GPT-6\.1 Terra review fallback: every GPT account is unavailable/);
         expect(runner).not.toHaveBeenCalled();
       } finally { await shutdown(h); }
     });
@@ -2168,8 +2170,8 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
       } finally { await shutdown(h); }
     });
 
-    describe("a Go parent whose own store has no Codex login", () => {
-      const sol = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text"] } as any;
+    describe("synthetic: a Go parent whose own store has no Codex login", () => {
+      const sol = { provider: "openai-codex", id: "gpt-6.1-terra", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text"] } as any;
       const isolatedRuntime = () => ({ getModel: (provider: string) => provider === "openai-codex" ? sol : undefined, getModels: () => [sol], getAvailableSnapshot: () => [sol],
         hasConfiguredAuth: () => true, isUsingOAuth: () => true, getProvider: () => ({ streamSimple() {} }) }) as unknown as ModelRuntime;
       function goParent(answer: unknown) {
@@ -2186,20 +2188,20 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
         return { ...base, createRuntime, runner, registry };
       }
 
-      it("continues from an exhausted Go to Sol on the isolated Codex store, without registering Codex auth in the Go registry", async () => {
+      it("continues from an exhausted Go to Terra on the isolated Codex store, without registering Codex auth in the Go registry", async () => {
         const { h, createRuntime, runner, registry } = goParent(status({ codex: solUp, go: goOut, claude: claudeUp }));
         try {
           const result = await dispatch(h, { tasks: plain });
           expect(result.details.run.model).toBe(SOL_ROUTE);
-          expect(result.details.run.selection).toMatchObject({ source: "chain", chainRoutes: [GO_ROUTE, SOL_ROUTE] });
-          expect(result.details.run.selection.fallbackReason).toMatch(/OpenCode Go: every Go account is unavailable/);
+          expect(result.details.run.selection).toMatchObject({ source: "chain", chainRoutes: [SOL_ROUTE, GO_ROUTE] });
+          expect(result.details.run.selection.fallbackReason).toBeUndefined();
           expect(createRuntime).toHaveBeenCalledWith(isolatedAgentPaths(isolatedCodexAgentDir("fallback")));
           expect(runner.mock.calls[0][0].run.model).toBe(SOL_ROUTE);
           expect(registry.getAll()).toEqual([goModel]);
         } finally { await shutdown(h); }
       });
 
-      it("goes straight to the Claude tier, never opening the Codex store, when Sol is exhausted too", async () => {
+      it("goes straight to the Claude tier, never opening the Codex store, when Terra is exhausted too", async () => {
         const { h, createRuntime } = goParent(status({ codex: solOut, go: goOut, claude: claudeUp }));
         try {
           const result = await dispatch(h, { tasks: plain });
@@ -2208,23 +2210,36 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
         } finally { await shutdown(h); }
       });
 
-      it("keeps Go, and never opens the Codex store, while Go can launch", async () => {
+      it("synthetic: retains healthy Go when isolated Terra authentication is unavailable", async () => {
         const { h, createRuntime } = goParent(status({ codex: solUp, go: goUp, claude: claudeUp }));
+        const unavailable = isolatedRuntime(); unavailable.hasConfiguredAuth = () => false;
+        createRuntime.mockResolvedValue(unavailable);
         try {
           const result = await dispatch(h, { tasks: plain });
           expect(result.details.run.model).toBe(GO_ROUTE);
-          expect(createRuntime).not.toHaveBeenCalled();
+          expect(createRuntime).toHaveBeenCalledOnce();
+        } finally { await shutdown(h); }
+      });
+
+      it("synthetic: prefers isolated Terra even while Go can launch", async () => {
+        const { h, createRuntime } = goParent(status({ codex: solUp, go: goUp, claude: claudeUp }));
+        try {
+          const result = await dispatch(h, { tasks: plain });
+          expect(result.details.run.model).toBe(SOL_ROUTE);
+          expect(createRuntime).toHaveBeenCalledOnce();
         } finally { await shutdown(h); }
       });
     });
   });
 
-  describe("explicit routes stay exact", () => {
+  describe("synthetic: explicit routes stay exact", () => {
     it.each([
-      ["Sol by model", { model: SOL_ROUTE }, status({ codex: solOut, go: goUp, claude: claudeUp }), SOL_ROUTE, /every GPT account is unavailable \(GPT 1: cooling down until Mon 02:59; GPT 2: cooling down until Mon 02:59\)/],
-      ["Sol by profile", { profile: "steak-pi/gpt-6-1-sol" }, status({ codex: solOut, go: goUp, claude: claudeUp }), SOL_ROUTE, /every GPT account is unavailable/],
+      ["explicit Sol by model", { model: "openai-codex/gpt-6.1-sol" }, status({ codex: solOut, go: goUp }), "openai-codex/gpt-6.1-sol", /every GPT account is unavailable/],
+      ["explicit Sol by profile", { profile: "steak-pi/gpt-6-1-sol" }, status({ codex: solOut, go: goUp }), "openai-codex/gpt-6.1-sol", /every GPT account is unavailable/],
+      ["Terra by model", { model: SOL_ROUTE }, status({ codex: solOut, go: goUp, claude: claudeUp }), SOL_ROUTE, /every GPT account is unavailable \(GPT 1: cooling down until Mon 02:59; GPT 2: cooling down until Mon 02:59\)/],
+      ["Terra by profile", { profile: "steak-pi/gpt-6-1-terra" }, status({ codex: solOut, go: goUp, claude: claudeUp }), SOL_ROUTE, /every GPT account is unavailable/],
       ["Go by model", { model: GO_ROUTE }, status({ codex: solUp, go: goOut, claude: claudeUp }), GO_ROUTE, /every Go account is unavailable/],
-      ["the chain head, named only by harness", { harness: "pi" }, status({ codex: solUp, go: goOut, claude: claudeUp }), GO_ROUTE, /every Go account is unavailable/],
+      ["the chain head, named only by harness", { harness: "pi" }, status({ codex: solOut, go: goUp, claude: claudeUp }), SOL_ROUTE, /every GPT account is unavailable/],
     ])("refuses an exhausted provider synchronously with the router cause and never reroutes (%s)", async (_name, selector, answer, route, cause) => {
       const runner = done();
       const { h, accountCommand } = quotaHarness(answer, runner);
@@ -2256,10 +2271,10 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
     });
   });
 
-  describe("a worker that fails before its first model output fails the dispatch", () => {
+  describe("synthetic: a worker that fails before its first model output fails the dispatch", () => {
     // A plain route failure, not a quota cause: these tests are about the startup gate itself (cancel, durable
     // delivery, the window), so the failure must be one the gate surfaces and never falls through on.
-    const cause = "Reserved Codex account has no exact Sol model with configured OAuth authentication";
+    const cause = "Reserved Codex account has no exact Terra model with configured OAuth authentication";
     const refused = () => vi.fn(async (_context: Parameters<WorkerRunner>[0]) => ({ state: "failed" as const, output: "", turns: 0, usage: emptyUsage(), error: cause }));
     const two = [{ label: "one", task: "First leaf" }, { label: "two", task: "Second leaf" }];
     type Settled = Awaited<ReturnType<WorkerRunner>>;
@@ -2376,7 +2391,7 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
       }
     });
 
-    describe("a real, nonzero startup window", () => {
+    describe("synthetic: a real, nonzero startup window", () => {
       // Fake timers drive the window itself; the worker settles `failed` with no output after `delayMs`.
       const failsAfter = (delayMs: number) => vi.fn(async (_context: Parameters<WorkerRunner>[0]) => {
         await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
@@ -2417,7 +2432,7 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
       it("outlasts a slow router: the default window exceeds the router timeout plus the bind call, so the refusal still names its cause", async () => {
         expect(DEFAULT_STARTUP_WINDOW_MS).toBeGreaterThan(2 * GO_ACCOUNT_ROUTER_TIMEOUT_MS);
         vi.useFakeTimers();
-        // A Sol worker's account phase: `reserve` answers at the router timeout, `bind` just under it,
+        // A Terra worker's account phase: `reserve` answers at the router timeout, `bind` just under it,
         // and only then does the router's refusal fail the leaf: well past the old 8 s window.
         const accountPhaseMs = 2 * GO_ACCOUNT_ROUTER_TIMEOUT_MS - 1_000;
         const h = harness(() => failsAfter(accountPhaseMs), undefined, undefined, { startupWindowMs: undefined });
@@ -2433,7 +2448,7 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
       });
     });
 
-    describe("a failed background startup is delivered durably", () => {
+    describe("synthetic: a failed background startup is delivered durably", () => {
       it("is not queued again after the session reloads its checkpoint store", async () => {
         const durable = durableAt("startup-fail");
         const mark = vi.spyOn(CheckpointStore.prototype, "markDelivered");
@@ -2521,7 +2536,7 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
       });
     });
 
-    describe("a real Pi worker whose first request fails with no output", () => {
+    describe("synthetic: a real Pi worker whose first request fails with no output", () => {
       const failedMessage = { role: "assistant", content: [], api: "test", provider: "test", model: "test", usage: emptyUsage(), stopReason: "error", errorMessage: "429 rate_limit_exceeded: too many requests", timestamp: Date.now() };
       /** The session Pi hands a worker: a turn starts, then the provider refuses the request. */
       function refusedSession() {
@@ -2591,7 +2606,7 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
   // Go has no usage API, so a spent Go plan reads as an eligible account until its first request answers 429
   // GoUsageLimitError. An implicit wave must then re-run on the next tier by itself instead of failing with
   // "No fallback was selected".
-  describe("an implicit wave refused on a usage limit before any output falls through to the next tier", () => {
+  describe("synthetic: an implicit wave refused on a usage limit before any output falls through to the next tier", () => {
     const HAIKU = "claude-code/claude-haiku-5-5";
     const SONNET = "claude-code/claude-sonnet-5-5";
     const GO_LIMIT = '429: {"type":"GoUsageLimitError","message":"Go usage limit exceeded"}';
@@ -2631,7 +2646,7 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
       } finally { await shutdown(h); }
     });
 
-    describe.each([false, true])("Go refuses at its first request with GoUsageLimitError and Sol is out (background=%s)", (background) => {
+    describe.each([false, true])("Go refuses at its first request with GoUsageLimitError and Terra is out (background=%s)", (background) => {
       it.each([
         ["a plain scout leaf", plain, HAIKU, /^automatic fall-through after a usage-limit refusal before any output; Haiku 5\.5: ordinary leaves/],
         ["a mayEdit + allowBash leaf", build, SONNET, /^automatic fall-through after a usage-limit refusal before any output; Sonnet 5\.5: substantial code work/],
@@ -2655,13 +2670,13 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
           // The second run's receipt names the fall-through and why.
           const second = background ? await recordOf(h, "run-fixed-2") : result.details.run;
           expect(second).toMatchObject({ model: tier, harness: "claude-code" });
-          expect(second.selection).toMatchObject({ provider: "claude-code", source: "chain", independence: "requires-opus", chainRoutes: [GO_ROUTE, SOL_ROUTE, tier] });
+          expect(second.selection).toMatchObject({ provider: "claude-code", source: "chain", independence: "requires-opus", chainRoutes: [SOL_ROUTE, GO_ROUTE, tier] });
           expect(second.selection.fallbackReason).toMatch(reason);
           expect(second.selection.fallbackReason).toMatch(/OpenCode Go: run run-fixed-1 was refused on a usage limit before any output \(\[[a-z]+\] 429: .*GoUsageLimitError.*Go usage limit exceeded/);
-          expect(second.selection.fallbackReason).toMatch(/GPT-6\.1 Sol: every GPT account is unavailable/);
+          expect(second.selection.fallbackReason).toMatch(/GPT-6\.1 Terra: every GPT account is unavailable/);
           const text = result.content[0].text;
           expect(text).toMatch(/Fall-through: run run-fixed-1 · opencode-go\/deepseek-v4\.1-flash was refused on a provider usage limit before any worker produced output \(\[[a-z]+\] 429: .*GoUsageLimitError.*\)\. The same tasks were re-run here on the next tier, with no parent re-dispatch\./);
-          expect(text).toMatch(/Route note: neither OpenCode Go nor GPT-6\.1 Sol could launch/);
+          expect(text).toMatch(/Route note: neither GPT-6\.1 Terra nor OpenCode Go could launch/);
           if (background) {
             expect(text).toMatch(new RegExp(`Started USAP run run-fixed-2 · ${tier}`));
             await flush();
@@ -2700,7 +2715,7 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
         const { h } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeOut }), runner, open);
         try {
           const message = await messageOf(dispatch(h, { background, tasks: plain }));
-          expect(message).toMatch(/no route that can launch this wave \(OpenCode Go: run run-fixed-1 was refused on a usage limit before any output \(\[scout\] 429: .*GoUsageLimitError.*\) \| GPT-6\.1 Sol: every GPT account is unavailable.*\| Claude subscription tier: every Claude account is ineligible \(Claude 1: signed out; Claude 2: signed out\)\)\./);
+          expect(message).toMatch(/no route that can launch this wave \(GPT-6\.1 Terra: every GPT account is unavailable.*\| OpenCode Go: run run-fixed-1 was refused on a usage limit before any output \(\[scout\] 429: .*GoUsageLimitError.*\) \| Claude subscription tier: every Claude account is ineligible \(Claude 1: signed out; Claude 2: signed out\)\)\./);
           expect(message).toContain("The tier that launched was refused before any output (run run-fixed-1) and no further route was started");
           expect(message).not.toContain("no fallback was selected");
           expect(runner).toHaveBeenCalledTimes(1);
@@ -2723,19 +2738,18 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
       } finally { await shutdown(h); }
     });
 
-    describe("the chain is walked once, in order", () => {
-      it("Go refused with GoUsageLimitError falls through to Sol, not to the parent", async () => {
-        const runner = routed({ [GO_ROUTE]: GO_LIMIT });
+    describe("synthetic: the chain is walked once, in order", () => {
+      it("synthetic: Terra usage limit falls through to Go, not to the parent", async () => {
+        const runner = routed({ [SOL_ROUTE]: SOL_LIMIT });
         const { h, selected } = quotaHarness(status({ codex: solUp, go: goUp, claude: claudeUp }), runner, open);
         try {
           const result = await dispatch(h, { tasks: plain });
-          expect(runner.mock.calls.map(([context]) => context.run.model)).toEqual([GO_ROUTE, SOL_ROUTE]);
-          expect(result.details.run).toMatchObject({ model: SOL_ROUTE, state: "done" });
-          expect(result.details.run.selection).toMatchObject({ provider: "openai-codex", source: "chain", chainRoutes: [GO_ROUTE, SOL_ROUTE] });
-          expect(result.details.run.selection.fallbackReason).toMatch(/^automatic fall-through after a usage-limit refusal before any output; OpenCode Go: run run-fixed-1 was refused on a usage limit before any output \(\[scout\] /);
-          expect(result.content[0].text).toMatch(/Fall-through: run run-fixed-1 · opencode-go\/deepseek-v4\.1-flash was refused/);
-          expect(result.content[0].text).toMatch(/this implicit wave continues down the default chain on openai-codex\/gpt-6\.1-sol/);
-          expect(selected).toEqual([]); // Claude is never consulted while Sol can launch
+          expect(runner.mock.calls.map(([context]) => context.run.model)).toEqual([SOL_ROUTE, GO_ROUTE]);
+          expect(result.details.run).toMatchObject({ model: GO_ROUTE, state: "done" });
+          expect(result.details.run.selection).toMatchObject({ provider: "opencode-go", source: "chain", chainRoutes: [SOL_ROUTE, GO_ROUTE] });
+          expect(result.details.run.selection.fallbackReason).toMatch(/GPT-6\.1 Terra: run run-fixed-1 was refused on a usage limit/);
+          expect(result.content[0].text).toContain("openai-codex/gpt-6.1-terra was refused");
+          expect(selected).toEqual([]);
           expect((await recordOf(h, "run-fixed-1")).state).toBe("failed");
         } finally { await shutdown(h); }
       });
@@ -2744,51 +2758,51 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
         ["the Codex usage-limit wording", SOL_LIMIT],
         ["subscription_quota_exceeded", "subscription_quota_exceeded"],
         ["a router refusal that says cooling down", "Provider account router refused: every GPT account is cooling down (GPT 1, GPT 2); the earliest returns at Mon 02:59"],
-      ])("Sol refused with %s falls through to the Claude tier, not back to Go", async (_name, error) => {
-        // Go is exhausted by the snapshot, so Sol is the route; its refusal leaves nothing but Claude.
+      ])("Terra refused with %s falls through to the Claude tier, not back to Go", async (_name, error) => {
+        // Go is exhausted by the snapshot, so Terra is the route; its refusal leaves nothing but Claude.
         const runner = routed({ [SOL_ROUTE]: error });
         const { h } = quotaHarness(status({ codex: solUp, go: goOut, claude: claudeUp }), runner, open);
         try {
           const result = await dispatch(h, { tasks: plain });
           expect(runner.mock.calls.map(([context]) => context.run.model)).toEqual([SOL_ROUTE, HAIKU]);
-          expect(result.details.run.selection).toMatchObject({ source: "chain", chainRoutes: [GO_ROUTE, SOL_ROUTE, HAIKU] });
-          expect(result.details.run.selection.fallbackReason).toMatch(/GPT-6\.1 Sol: run run-fixed-1 was refused on a usage limit before any output/);
+          expect(result.details.run.selection).toMatchObject({ source: "chain", chainRoutes: [SOL_ROUTE, GO_ROUTE, HAIKU] });
+          expect(result.details.run.selection.fallbackReason).toMatch(/GPT-6\.1 Terra: run run-fixed-1 was refused on a usage limit before any output/);
           expect((await recordOf(h, "run-fixed-1")).state).toBe("failed");
         } finally { await shutdown(h); }
       });
 
-      it("Go, then Sol, then Claude: each tier once, one completion", async () => {
+      it("synthetic: Terra, then Go, then Claude: each tier once, one completion", async () => {
         const runner = routed({ [GO_ROUTE]: GO_LIMIT, [SOL_ROUTE]: SOL_LIMIT });
         const { h, accountCommand } = quotaHarness(status({ codex: solUp, go: goUp, claude: claudeUp }), runner, open);
         try {
           const result = await dispatch(h, { tasks: plain });
-          expect(runner.mock.calls.map(([context]) => context.run.model)).toEqual([GO_ROUTE, SOL_ROUTE, HAIKU]);
-          expect(result.details.run.selection).toMatchObject({ source: "chain", chainRoutes: [GO_ROUTE, SOL_ROUTE, HAIKU] });
-          expect(result.details.run.selection.fallbackReason).toMatch(/^automatic fall-through after a usage-limit refusal before any output; Haiku 5\.5: .*OpenCode Go: run run-fixed-1 was refused on a usage limit .*GPT-6\.1 Sol: run run-fixed-2 was refused on a usage limit/);
-          expect(result.content[0].text).toMatch(/Fall-through: run run-fixed-1 · opencode-go\/deepseek-v4\.1-flash was refused .*; run run-fixed-2 · openai-codex\/gpt-6\.1-sol was refused/);
+          expect(runner.mock.calls.map(([context]) => context.run.model)).toEqual([SOL_ROUTE, GO_ROUTE, HAIKU]);
+          expect(result.details.run.selection).toMatchObject({ source: "chain", chainRoutes: [SOL_ROUTE, GO_ROUTE, HAIKU] });
+          expect(result.details.run.selection.fallbackReason).toMatch(/^automatic fall-through after a usage-limit refusal before any output; Haiku 5\.5: .*GPT-6\.1 Terra: run run-fixed-1 was refused on a usage limit .*OpenCode Go: run run-fixed-2 was refused on a usage limit/);
+          expect(result.content[0].text).toMatch(/Fall-through: run run-fixed-1 · openai-codex\/gpt-6\.1-terra was refused .*; run run-fixed-2 · opencode-go\/deepseek-v4\.1-flash was refused/);
           expect(statusCalls(accountCommand)).toBe(3);
           expect(h.messages).toEqual([]);
         } finally { await shutdown(h); }
       });
 
-      it("Go, Sol and Claude all refused: three runs, one error naming all three causes, no fourth launch", async () => {
+      it("synthetic: Terra, Go and Claude all refused: three runs, one error naming all three causes, no fourth launch", async () => {
         const runner = routed({ [GO_ROUTE]: GO_LIMIT, [SOL_ROUTE]: SOL_LIMIT, [HAIKU]: CLAUDE_LIMIT });
         const { h } = quotaHarness(status({ codex: solUp, go: goUp, claude: claudeUp }), runner, open);
         try {
           const message = await messageOf(dispatch(h, { tasks: plain }));
           expect(runner).toHaveBeenCalledTimes(3);
           expect(message).toMatch(/\(run run-fixed-3 · claude-code\/claude-haiku-5-5\): \[scout\] quota limit reached/);
-          expect(message).toMatch(/after run run-fixed-1 · opencode-go\/deepseek-v4\.1-flash was refused on a provider usage limit.*GoUsageLimitError.*; run run-fixed-2 · openai-codex\/gpt-6\.1-sol was refused on a provider usage limit.*The usage limit has been reached/);
+          expect(message).toMatch(/after run run-fixed-1 · openai-codex\/gpt-6\.1-terra was refused on a provider usage limit.*The usage limit has been reached.*; run run-fixed-2 · opencode-go\/deepseek-v4\.1-flash was refused on a provider usage limit.*GoUsageLimitError/);
           expect(message).not.toContain("No fallback was selected");
         } finally { await shutdown(h); }
       });
     });
 
-    describe("what does not fall through", () => {
+    describe("synthetic: what does not fall through", () => {
       it.each([
         ["an explicit Go model", { model: GO_ROUTE }, status({ go: goUp }), { [GO_ROUTE]: GO_LIMIT }],
-        ["an explicit Sol model", { model: SOL_ROUTE }, status({ codex: solUp, go: goUp }), { [SOL_ROUTE]: SOL_LIMIT }],
-        ["an explicit Sol profile", { profile: "steak-pi/gpt-6-1-sol" }, status({ codex: solUp, go: goUp }), { [SOL_ROUTE]: SOL_LIMIT }],
+        ["an explicit Terra model", { model: SOL_ROUTE }, status({ codex: solUp, go: goUp }), { [SOL_ROUTE]: SOL_LIMIT }],
+        ["an explicit Terra profile", { profile: "steak-pi/gpt-6-1-terra" }, status({ codex: solUp, go: goUp }), { [SOL_ROUTE]: SOL_LIMIT }],
       ])("%s with a usage-limit refusal fails as it always did: explicit routes never fall back", async (_name, selector, answer, refused) => {
         const runner = routed(refused);
         const { h, accountCommand } = quotaHarness(answer, runner, open);
@@ -2805,7 +2819,7 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
       });
 
       it.each([
-        ["a route failure", "Reserved Codex account has no exact Sol model with configured OAuth authentication"],
+        ["a route failure", "Reserved Codex account has no exact Terra model with configured OAuth authentication"],
         ["an expired login", "OAuth access token expired; sign in again"],
         ["a spawn failure", "spawn ut-provider-accounts ENOENT"],
         ["a bare 429 rate limit", "429 Too Many Requests"],
@@ -2836,7 +2850,7 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
       });
 
       it("a lease release that could not be proven never falls through, whatever quota wording it quotes", async () => {
-        const runner = routed({ [GO_ROUTE]: `Go account lease release failed (Go 1, lease=abc); router TTL retains a bounded lease; earlier failure: ${GO_LIMIT}` });
+        const runner = routed({ [SOL_ROUTE]: `Codex account lease release failed (Go 1, lease=abc); router TTL retains a bounded lease; earlier failure: ${GO_LIMIT}` });
         const { h } = quotaHarness(status({ codex: solUp, go: goUp, claude: claudeUp }), runner, open);
         try {
           const message = await messageOf(dispatch(h, { tasks: plain }));
@@ -2861,7 +2875,7 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
         } finally { await shutdown(h); }
       });
 
-      it("an implicit reviewer wave refused on Claude's quota keeps its exact route and never falls through to Go, Sol or Haiku", async () => {
+      it("an implicit reviewer wave refused on Claude's quota keeps its exact route and never falls through to Go, Terra or Haiku", async () => {
         const runner = routed({ [OPUS_ROUTE]: CLAUDE_LIMIT });
         const { h } = quotaHarness(status({ codex: solUp, go: goUp, claude: claudeUp }), runner, open);
         try {
@@ -2904,7 +2918,7 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
     });
   });
 
-  describe("implicit review, Claude-tier work and the Sol review fallback", () => {
+  describe("synthetic: implicit review, Claude-tier work and the Terra review fallback", () => {
     const review = [{ label: "review", task: "Review the diff", role: "reviewer" }];
 
     it.each([
@@ -2924,31 +2938,31 @@ describe("quota-aware implicit routing and synchronous launch failure", () => {
       } finally { await shutdown(h); }
     });
 
-    it("installs no Sol review fallback when every GPT account is unavailable, and says why", async () => {
+    it("installs no Terra review fallback when every GPT account is unavailable, and says why", async () => {
       let relay!: RelayBroker;
       const runner = done();
       const { h } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeUp }), runner, { createRunner: (_pi: unknown, broker: RelayBroker) => { relay = broker; return runner; } });
       try {
         const result = await dispatch(h, { tasks: review });
         expect(result.details.run).toMatchObject({ model: OPUS_ROUTE, harness: "claude-code" });
-        expect(result.content[0].text).toMatch(/Review note: the GPT-6\.1 Sol review fallback is unavailable \(every GPT account is unavailable \(GPT 1: cooling down until Mon 02:59; GPT 2: cooling down until Mon 02:59\).*\); a Claude quota or auth failure ends this review without falling back/);
-        // The Claude worker has its own relay peer even without a Sol fallback runtime.
+        expect(result.content[0].text).toMatch(/Review note: the GPT-6\.1 Terra review fallback is unavailable \(every GPT account is unavailable \(GPT 1: cooling down until Mon 02:59; GPT 2: cooling down until Mon 02:59\).*\); a Claude quota or auth failure ends this review without falling back/);
+        // The Claude worker has its own relay peer even without a Terra fallback runtime.
         expect(relay.listPeers(result.details.run.runId)).toEqual(["parent", result.details.run.tasks[0].taskId]);
       } finally { await shutdown(h); }
     });
 
-    it("keeps the Sol review fallback when GPT can launch", async () => {
+    it("keeps the Terra review fallback when GPT can launch", async () => {
       let relay!: RelayBroker;
       const runner = done();
       const { h } = quotaHarness(status({ codex: solUp, go: goUp, claude: claudeUp }), runner, { createRunner: (_pi: unknown, broker: RelayBroker) => { relay = broker; return runner; } });
       try {
         const result = await dispatch(h, { tasks: review });
-        expect(result.content[0].text).not.toContain("Sol review fallback is unavailable");
+        expect(result.content[0].text).not.toContain("Terra review fallback is unavailable");
         expect(relay.listPeers(result.details.run.runId)).toEqual(["parent", expect.stringContaining("task")]);
       } finally { await shutdown(h); }
     });
 
-    it("switches an implicit review to the Sol fallback when the router shows every Claude account cooling down", async () => {
+    it("switches an implicit review to the Terra fallback when the router shows every Claude account cooling down", async () => {
       const runner = done();
       const { h } = quotaHarness(status({ codex: solUp, go: goUp, claude: [cooling("primary", "Claude 1"), cooling("b", "Claude 2")] }), runner);
       try {

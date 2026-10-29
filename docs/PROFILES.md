@@ -7,7 +7,7 @@ harness uses the official headless CLI instead; see the [capability matrix](./UL
 
 ## Explicit cross-model dispatch
 
-An Astra manager can select the GPT-6.1 Sol profile:
+An Astra manager can still explicitly select the GPT-6.1 Sol profile:
 
 ```json
 {
@@ -29,11 +29,11 @@ conflicting selectors and unavailable routes fail before launch.
 
 ## Per-parent defaults
 
-Routine workers on every built-in parent profile default to canonical **Go DeepSeek V4.1 Flash** (`opencode-go/deepseek-v4.1-flash`), with **GPT-6.1 Sol on Codex OAuth** as the only automatic text fallback (image runs have no fallback). GLM 5.3, GLM 5.3 Flash and the Z.ai plan were retired on 2026-10-03; GLM or `zai/` selectors are refused. The main app's launch model is unchanged (MiMo V2.6 Pro). Explicitly native-Pi reviewer runs (`harness: "pi"` or an explicit native model/profile) resolve the automatic MiMo V2.6 Pro → GPT-6.1 Sol chain: no expert model is ever selected automatically in the native review chain, and the shipped "expert review chain" label is a legacy native-Pi routing flag, not expert sign-off.
+Routine workers and scouts default to **GPT-6.1 Terra on Codex OAuth** (`openai-codex/gpt-6.1-terra`, profile `steak-pi/gpt-6-1-terra`, thinking `high`), then canonical **Go DeepSeek V4.1 Flash** (`opencode-go/deepseek-v4.1-flash`), then Claude Haiku/Sonnet on usage limits or proven unavailability (image runs have no fallback). GLM 5.3, GLM 5.3 Flash and the Z.ai plan were retired on 2026-10-03; GLM or `zai/` selectors are refused. The main app's launch model is unchanged (MiMo V2.6 Pro). Explicitly native-Pi reviewer runs (`harness: "pi"` or an explicit native model/profile) resolve the automatic MiMo V2.6 Pro → GPT-6.1 Terra chain: no expert model is ever selected automatically in the native review chain, and the shipped "expert review chain" label is a legacy native-Pi routing flag, not expert sign-off.
 
 All-reviewer waves with no explicit harness/model/profile use the **Opus Pass**:
 `claude-code/claude-opus-5-5`, official Claude Code CLI, `xhigh` effort and
-existing subscription authentication. Only the [bounded automatic review exception](./MODEL-ROUTING.md#automatic-review-exception) may use GPT-6.1 Sol when Claude is proven unavailable; explicit Claude routes remain exact. Any
+existing subscription authentication. Only the [bounded automatic review exception](./MODEL-ROUTING.md#automatic-review-exception) may use GPT-6.1 Terra when Claude is proven unavailable; explicit Claude routes remain exact. Any
 other Claude Code wave (`harness: "claude-code"` with worker or scout tasks, or
 `model: "claude-code/claude-sonnet-5-5"`) runs **Sonnet 5.5** at `xhigh`: the
 default Claude worker, nearly Opus-level at far less quota. Select
@@ -52,9 +52,9 @@ routes are separate: the same headless worker on approved API credits, never a
 default or fallback, and never offered as an interactive profile (promotional API
 credits do not cover interactive Claude Code). See [CLAUDE-API-ROUTE.md](./CLAUDE-API-ROUTE.md).
 
-Only writable Go/Haiku leaves receive an implementation-review request through
-the parent: Sonnet 5.5 for Go implementation, Opus 5.5 for Haiku implementation.
-Sol work and read-only leaves receive no automatic end-gate. Explicit task or
+Writable Terra/Go/Haiku implementation requests verification through the parent:
+Opus 5.5 for Terra or Haiku, Sonnet 5.5 for Go. Explicit Sol work and read-only
+leaves receive no automatic end-gate; report-only work does not require one. Explicit task or
 contract output formats override default report headings. USAP never grants
 permission to release. Explicit native Pi
 model/profile selections remain exact, including image-capable routes selected
@@ -62,7 +62,7 @@ with `requireImages: true`. Pi's subscription fallback applies only to eligible
 failures before content or tool activity, never authentication/permission/region
 errors. The separate automatic CLI review exception is quota/auth-before-output only.
 
-Validated role selectors in `~/.config/ultraterm/routing.json` override parent-profile defaults (explicit model/profile still wins). Automatic image review cannot use text-only Sol.
+Validated role selectors in `~/.config/ultraterm/routing.json` override parent-profile defaults (explicit model/profile still wins). Automatic image review cannot use the automatic text-review fallback.
 
 Native profiles are read from the existing JSON harness manifests under
 `~/.config/ultraterm/harnesses/`. A profile with one explicit
@@ -79,7 +79,7 @@ change. When no manifest is readable the pickers keep the previous native
 availability instead of hiding every model, and dispatch and fallback eligibility
 are never narrowed by the manifest — see [`MODEL-ROUTING.md`](./MODEL-ROUTING.md).
 
-An owner may add these fields to a profile entry to configure Sol for both
+An owner may add these fields to a profile entry to configure Terra for both
 routine and explicitly selected native Pi reviewer work from that parent
 (`harness: "pi"`). These native defaults do not replace the new automatic
 all-reviewer Opus Pass:
@@ -88,10 +88,10 @@ all-reviewer Opus Pass:
 {
   "id": "gpt-6-astra",
   "name": "GPT-6 Astra",
-  "description": "Codex manager with Sol workers",
+  "description": "Codex manager with Terra workers",
   "args": ["--model", "openai-codex/gpt-6-astra", "--thinking", "medium"],
-  "workerDefault": {"profile": "steak-pi/gpt-6-1-sol"},
-  "reviewerDefault": {"profile": "steak-pi/gpt-6-1-sol"}
+  "workerDefault": {"profile": "steak-pi/gpt-6-1-terra"},
+  "reviewerDefault": {"profile": "steak-pi/gpt-6-1-terra"}
 }
 ```
 
@@ -177,3 +177,8 @@ implicit text workers while the temporary configuration is active; reviewers,
 image requirements and explicit selections keep their existing semantics.
 Physical assistant-message receipts, not the selected virtual profile or config
 status, prove which model actually answered. See [temporary free routing](./MODEL-ROUTING.md#temporary-approved-free-workers).
+
+The Terra profile uses `--model openai-codex/gpt-6.1-terra --thinking high`;
+its workerDefault and reviewerDefault are `steak-pi/gpt-6-1-terra`.
+GPT-6.1 Sol remains explicitly selectable; GPT-6.0 Sol stays retired.
+Security-audit work stays Go/Haiku, never GPT.

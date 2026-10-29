@@ -1,3 +1,4 @@
+import { TERRA_MODEL_ROUTE, isManagedCodexRoute, registerTerraRuntime } from "../codex-models.ts";
 import {
   GO_ACCOUNT_LEASE_RENEW_INTERVAL_MS,
   GO_ACCOUNT_LEASE_TTL_SECONDS,
@@ -29,7 +30,7 @@ import { PROCESS_LISTING_GUIDANCE } from "./process-listing-guidance.ts";
 import { providerUsageLimit, reportsSpentPlan } from "./provider-quota.ts";
 import { assertOwnedPath } from "./policy.ts";
 import { finalWorkerReport, workerJournal } from "./coordinator.ts";
-import { SOL_MODEL_ROUTE, assertActiveModelSelector } from "../retired-model-selection.ts";
+import { assertActiveModelSelector } from "../retired-model-selection.ts";
 import { assertWorkerDependencies, resolveWorkerDependency } from "./dependency-preflight.ts";
 import {
   assertModelRoute,
@@ -298,10 +299,10 @@ interface AssistantSnapshot {
 /** Only lower-cost implementation routes need a parent-requested expert gate. */
 export function workerImplementationGate(run: RunRecord, task: TaskRecord): string[] {
   if (!task.mayEdit) return [];
-  const reviewer = run.model.startsWith("opencode-go/") ? "Sonnet"
+  const reviewer = run.model === TERRA_MODEL_ROUTE ? "Opus" : run.model.startsWith("opencode-go/") ? "Sonnet"
     : /(?:^|\/)(?:claude-)?haiku(?:[-.]|$)/i.test(run.model) ? "Opus" : undefined;
   if (!reviewer) return [];
-  return [`End-gate: if you produced implementation, before it is committed, pushed, or deployed request one bounded ${reviewer} 5.5 verification through the parent: official Claude Code CLI ${reviewer} 5.5 at xhigh effort via the USAP claude-code route. If Claude is unavailable, say so plainly and request the explicitly named GPT-6.1 Sol fallback review through the parent. Never substitute another model silently or claim, imply, or fabricate approval.`];
+  return [`End-gate: if you produced implementation, before it is committed, pushed, or deployed request one bounded ${reviewer} 5.5 verification through the parent: official Claude Code CLI ${reviewer} 5.5 at xhigh effort via the USAP claude-code route. If Claude is unavailable, say so plainly and request the explicitly named GPT-6.1 Terra fallback review through the parent. Never substitute another model silently or claim, imply, or fabricate approval.`];
 }
 
 /** Explicit parent output contracts take precedence over the default prose report. */
@@ -887,7 +888,7 @@ export function workerChainFallback(selection: Pick<ModelSelection, "source" | "
   model: PiModel, onFallback?: ChainFallbackInput["onFallback"]): ChainFallbackInput | undefined {
   if (selection?.source !== "chain") return undefined;
   const images = selection.images === true;
-  // The run's own recorded chain (a Pro-headed reviewer chain hops Pro -> Sol), when
+  // The run's own recorded chain (a Pro-headed reviewer chain hops Pro -> Terra), when
   // it is exactly one this policy produces; otherwise the default chain.
   const chain = recordedWorkerChain(selection.chainRoutes, images);
   if (!chain.some((step) => step.provider === model.provider && step.id === model.id)) return undefined;
@@ -1040,11 +1041,11 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
           resuming && task.providerAccount?.provider === "opencode-go" ? task.providerAccount.id : undefined);
         accountProvider = "opencode-go";
         task.providerAccount = { provider: "opencode-go", id: account.id, label: account.label, lease: account.lease };
-      } else if (`${runtime.model.provider}/${runtime.model.id}` === SOL_MODEL_ROUTE) {
+      } else if (isManagedCodexRoute(`${runtime.model.provider}/${runtime.model.id}`)) {
         // preferred-free is deliberately NOT included: its virtual call boundary
         // signals return-to-normal instead of borrowing ambient Codex credentials.
         // A normal-profile checkpointed relaunch must enter this reservation path.
-        // Every Sol child gets its own router reservation, never the Go parent store.
+        // Every Terra/Sol child gets its own router reservation, never the Go parent store.
         account = await reserveCodexAccount(`${run.id}/${task.id}`, accountCommand,
           resuming && task.providerAccount?.provider === "codex" ? task.providerAccount.id : undefined);
         accountProvider = "codex";
@@ -1105,12 +1106,13 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       const createRuntime = options.createModelRuntime ?? sdk?.ModelRuntime.create;
       const modelRuntime = createRuntime ? await initialize(createRuntime({ signal, ...(account ? isolatedAgentPaths(account.agentDir) : {}) })) : undefined;
       if (modelRuntime) {
+        if (runtime.model.id === "gpt-6.1-terra") registerTerraRuntime(modelRuntime);
         assertSubscriptionRequest(runtime.model, modelRuntime.isUsingOAuth(runtime.model.provider));
         if (accountProvider === "codex") {
           const reservedModel = modelRuntime.getModel(runtime.model.provider, runtime.model.id);
-          if (!reservedModel || `${reservedModel.provider}/${reservedModel.id}` !== SOL_MODEL_ROUTE ||
+          if (!reservedModel || `${reservedModel.provider}/${reservedModel.id}` !== `${runtime.model.provider}/${runtime.model.id}` ||
               !modelRuntime.hasConfiguredAuth(runtime.model.provider)) {
-            throw new Error("Reserved Codex account has no exact Sol model with configured OAuth authentication");
+            throw new Error("Reserved Codex account has no exact selected GPT model with configured OAuth authentication");
           }
           assertSubscriptionRequest(reservedModel, modelRuntime.isUsingOAuth(reservedModel.provider));
         }

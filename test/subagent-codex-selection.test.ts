@@ -89,3 +89,21 @@ it("resolves the isolated Codex worker SDK through the staged-runtime resolver",
     expect(registry.find("openai-codex", "gpt-6.1-sol")).toEqual(sol);
   } finally { resolver.mockRestore(); }
 });
+
+const terra = { ...sol, id: "gpt-6.1-terra", name: "GPT-6.1 Terra" };
+describe("synthetic: Terra isolated Codex admission", () => {
+  it.each([{ model: "openai-codex/gpt-6.1-terra" }, { profile: "steak-pi/gpt-6-1-terra" }, { profile: "gpt-6-1-terra" }])("bridges exact Terra selector %j without changing parent auth", async selector => {
+    const registry = goRegistry();
+    const command = vi.fn(async () => ({ ok: true, account: { id: "primary", agentDir: isolatedCodexAgentDir("primary") } }));
+    const selected = await registryForSolSelection(parent, selector, registry, command, async () => runtime(terra));
+    expect(selected.find("openai-codex", terra.id)).toEqual(terra);
+    expect(registry.getAll()).toEqual([parent]);
+    expect(command).toHaveBeenCalledWith(["select", "--provider", "codex"]);
+  });
+  it.each([[terra, false, true], [terra, true, false], [sol, true, true],
+    [{ ...terra, baseUrl: "https://api.openai.com/v1" }, true, true]])("rejects wrong identity, non-OAuth, missing auth or paid endpoint", async (model, oauth, configured) => {
+    const command = async () => ({ ok: true, account: { id: "primary", agentDir: isolatedCodexAgentDir("primary") } });
+    await expect(registryForSolSelection(parent, { model: "openai-codex/gpt-6.1-terra" }, goRegistry(), command,
+      async () => runtime(model, oauth as boolean, configured as boolean))).rejects.toThrow();
+  });
+});

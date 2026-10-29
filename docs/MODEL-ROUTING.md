@@ -7,11 +7,19 @@ OpenAI API-key billing, custom endpoints, and batch GPT variants are rejected.
 The parent session has no provider fallback. Child worker runs have exactly one
 ordered automatic chain (below); every other selection is exact.
 
+Implicit routine workers and scouts default to **GPT-6.1 Terra → OpenCode Go →
+Claude Haiku/Sonnet** on proven unavailability or usage limits. Terra uses
+`openai-codex/gpt-6.1-terra`, profile `steak-pi/gpt-6-1-terra` at high effort,
+and native Codex catalog registration (text+image input, 1,050,000 context,
+128,000 output). Writable Terra implementation requests Opus 5.5 verification
+through the parent; read-only and report-only work does not. Security-audit work
+stays Go/Haiku, never GPT.
+
 ## Sol retirement — 2026-10-05
 
 **Sol means GPT-6.1 Sol only:** model `openai-codex/gpt-6.1-sol`, profile
 `steak-pi/gpt-6-1-sol`. The built-in profile for explicit Sol selection is the
-6.1 route, and the Sol step of the automatic Go → Sol selection chain below is 6.1.
+6.1 route, and it remains explicitly selectable; the automatic GPT step below is Terra.
 Unavailable 6.1 fails closed, never selecting another model. Other model routes
 and their defaults are unchanged; Astra is not retired Sol.
 
@@ -84,7 +92,7 @@ are preserved; the operator's routine default is `steak-pi/opencode-go`.
   can launch, an implicit wave moves to the Claude tier below.
 - **Quota preflight.** For an *implicit* route (no `harness`/`model`/`profile`/`claudeAccount`)
   the dispatch reads the account router (`ut-provider-accounts status`, one call, only when the
-  resolved route is a router-gated Go or Sol route) before it returns a selection, so an
+  resolved route is a router-gated Go or Terra route) before it returns a selection, so an
   exhausted provider is found at dispatch instead of at worker launch, after `Started`. A
   provider is **exhausted** only when it has at least one configured account and the router's
   own fields prove *every* one unavailable: `state: "cooling-down"` (or a live
@@ -93,11 +101,11 @@ are preserved; the operator's routine default is `steak-pi/opencode-go`.
   provider the router does not list and an unreadable router are **not** exhaustion (the route
   stays as selected and the launch-time router remains the authority). A provider the router
   lists with no configured account cannot launch and counts as blocked. An exhausted route is
-  never selected: the built-in default chain (Go -> Sol) is re-resolved with that provider
-  skipped (a Go parent offers Sol its isolated Codex store, as for an explicit Sol dispatch),
+  never selected: the built-in default chain (Terra -> Go) is re-resolved with that provider
+  skipped (a Go parent offers Terra its isolated Codex store, as for an explicit Sol dispatch),
   the receipt records the whole chain (`source: "chain"`, `chainRoutes`) and the router cause
   (`selection.fallbackReason`), and the dispatch text carries a route note.
-- **Claude tier.** When neither Go nor Sol can launch (exhausted or unconfigured per the router,
+- **Claude tier.** When neither Terra nor Go can launch (exhausted or unconfigured per the router,
   or not authenticated in the session), an implicit routine text wave (no reviewer, no
   `requireImages`, effort unset or `xhigh`) runs on the official Claude Code subscription
   route with no re-dispatch by the parent: **Haiku 5.5** (`claude-code/claude-haiku-5-5`) for
@@ -107,7 +115,7 @@ are preserved; the operator's routine default is `steak-pi/opencode-go`.
   A Claude Code CLI route is not a Pi provider, so it is never a step of the Pi chain; the
   dispatch boundary reaches it from the router quota or the typed `NoChainRouteError`, which
   carries the steps actually tried and must be exactly the built-in default text chain
-  `[Go, Sol]` (a profile-default MiMo chain, a router error or any other failure never engages
+  `[Terra, Go]` (a profile-default MiMo chain, a router error or any other failure never engages
   it). Auth is the existing Claude Code subscription login only; the `claude-code-api` route
   is never a fallback. The tier worker is **pinned** (`run.claudeAccount`) on a Claude account
   the same router snapshot shows `eligible: true`, balanced across the eligible ones (least-used
@@ -125,16 +133,16 @@ are preserved; the operator's routine default is `steak-pi/opencode-go`.
   and each router cause. Work on either tier **needs an Opus 5.5 review**; an all-reviewer wave
   already defaults to it.
 - **When nothing can launch the dispatch refuses synchronously**, before any checkpoint, relay
-  peer or worker exists, naming every cause (Go, Sol and the Claude tier, each with the router's
+  peer or worker exists, naming every cause (Terra, Go and the Claude tier, each with the router's
   own words, e.g. `OpenCode Go: every Go account is unavailable (Go 1: cooling down until Mon
-  02:59; Go 2: …) | GPT-6.1 Sol: … | Claude subscription tier: every Claude account is
+  02:59; Go 2: …) | GPT-6.1 Terra: … | Claude subscription tier: every Claude account is
   ineligible (…)`). An implicit review whose Claude accounts are proven unavailable and whose
-  Sol review fallback is exhausted refuses the same way. An implicit read-only review on a
-  healthy Claude whose Sol review fallback is exhausted installs no fallback (it would only
+  Terra review fallback is exhausted refuses the same way. An implicit read-only review on a
+  healthy Claude whose Terra review fallback is exhausted installs no fallback (it would only
   trade a Claude quota/auth failure for a router refusal after `Started`) and the dispatch note
-  says so (`Review note: the GPT-6.1 Sol review fallback is unavailable (…)`).
+  says so (`Review note: the GPT-6.1 Terra review fallback is unavailable (…)`).
 - **Explicit routes stay exact.** An explicit `model`/`profile`/`harness` selection is never
-  rerouted; if it resolves to a Go or Sol route whose provider is exhausted it is refused
+  rerouted; if it resolves to a Go or Terra route whose provider is exhausted it is refused
   synchronously with the router cause (`USAP explicit route openai-codex/gpt-6.1-sol cannot
   launch: …`). A busy or unknown provider launches as before.
 - **A worker that fails before its first model output fails the dispatch** (router refusal,
@@ -167,7 +175,7 @@ are preserved; the operator's routine default is `steak-pi/opencode-go`.
   eligible, and the first request is the first evidence (`429: {"type":"GoUsageLimitError",
   "message":"Go usage limit exceeded"}`). For an *implicit* routine wave (the same condition as
   the quota preflight) the startup gate therefore does not fail the dispatch on such a cause:
-  it re-runs the **same tasks** once on the next tier of Go -> Sol -> Claude Haiku 5.5 / Sonnet
+  it re-runs the **same tasks** once on the next tier of Terra -> Go -> Claude Haiku 5.5 / Sonnet
   5.5 (the tier by the rule above, pinned on a router-eligible Claude account), with no parent
   re-dispatch. It happens inside the startup window, before `Started`, for foreground and
   background runs alike (each attempt has its own window, so a wave that falls through every
@@ -195,8 +203,8 @@ are preserved; the operator's routine default is `steak-pi/opencode-go`.
   example every Claude account is ineligible) or also fails to launch, the call fails
   synchronously naming **both** causes. Explicit routes, reviewer and image waves, the Claude
   tier itself and the `claude-code-api` route never fall through.
-- Image workers stay capability-aware on the existing MiMo image chain; Sol is
-  never a text-only substitute for an image request.
+- Image workers stay capability-aware on the existing MiMo image chain; Terra is
+  not an automatic substitute for that image chain, despite supporting image input.
 - Legacy native-Pi MiMo profiles retain their explicit identities and per-profile
   chains. Astra and Luna explicit identities are unchanged.
 
@@ -227,7 +235,7 @@ Codex's "usage limit has been reached" / `usage_limit_reached` as well as
 usage limit" and adds "Try again in ~N min." only when the server sent a reset time, so that
 sentence is `usage` only with a reset time and `rate` without one. A bare 429 stays
 `--kind rate`.
-Go runtime failures stay on their isolated account (no ambient-credential Sol hop).
+Go runtime failures stay on their isolated account (no ambient-credential GPT hop).
 An authenticated explicit canonical Go model, including parent-verified
 `longcat-2.5-preview-free`, uses the same account binding; it does not replace
 DeepSeek as a routine default. No Step model/profile is added here.
@@ -237,21 +245,21 @@ DeepSeek as a routine default. No Step model/profile is added here.
 Implicit all-reviewer waves prefer official Claude Code **Opus 5.5 xhigh**.
 Only a router status proving every Claude account ineligible, or an official
 Claude child with a recognized quota/auth failure **before model output**, may
-use exact **GPT-6.1 Sol on Codex OAuth**. Unknown router state, unavailable Sol,
+use exact **GPT-6.1 Terra on Codex OAuth**. Unknown router state, unavailable Terra,
 transport/protocol/model mismatch, partial output, cancellation, and explicit
 Claude selection do not authorize fallback. Mixed implicit waves are rejected;
-image review never downgrades to text-only Sol. Automatic fallback requires every
+image review never downgrades to the automatic text-review fallback. Automatic fallback requires every
 reviewer to be read-only, with no `mayEdit`, `allowBash` or owned paths.
 Privileged reviewers retain Claude's path admission and shell restrictions.
 Legacy automatic-fallback checkpoints with unfinished privileged reviewers
 cannot resume; explicitly selected Pi runs are unchanged.
 
 A task records `reviewFallback: {from,to,reason}` and `routeFallbacks`; successful
-Sol review emits `Sol fallback review: USAP <run-id> receipt=<checkpoint.json>
-report=<task-id>`. A failed Sol attempt is not approval. The original requested
+Terra review emits `GPT-6.1 Terra fallback review: USAP <run-id> receipt=<checkpoint.json>
+report=<task-id>`. A failed Terra attempt is not approval. The original requested
 Claude run identity remains in runtime-fallback receipts; the task's actual
-answering route is Sol. A leaf resumed on Sol keeps its `reviewFallback`; a Claude
-review resumed on Claude does not carry a mid-run Sol fallback. Parents gate on successful task/checkpoint evidence,
+answering route is Terra. A leaf resumed on Terra keeps its `reviewFallback`; a Claude
+review resumed on Claude does not carry a mid-run Terra fallback. Parents gate on successful task/checkpoint evidence,
 not a prose claim of Opus approval. No commit/push/deploy permission is granted.
 
 GLM 5.3, GLM 5.3 Flash and the Z.ai plan were retired on 2026-10-03. A `zai/`,
@@ -269,7 +277,7 @@ The main app's own launch model is unchanged (MiMo V2.6 Pro). Explicitly chosen 
 review/validation — never routine implementation or orchestration. USAP 1.3
 removed the automatic Astra-first reviewer default. Implicit all-reviewer waves
 prefer the official Opus Pass; only the automatic review exception above may
-use Sol. Explicit native reviewer choices remain exact.
+use Terra. Explicit native reviewer choices remain exact.
 Astra itself is reachable only through an exact explicit selector on the paid Codex OAuth coding
 plan; eligibility is the exact subscription identity (OAuth, Codex Responses
 API, official `chatgpt.com/backend-api`), so a batch id, API-key endpoint, or
@@ -280,11 +288,11 @@ claim expert approval that did not happen. Astra keeps its medium
 reasoning default; reviewer role alone does not raise effort. Astra is never a
 routine worker default: parent-added `steak-pi/gpt-6-1-sol` and
 `steak-pi/gpt-6-luna` profiles are explicit-selection routes only, whose own
-`workerDefault` keeps routine workers on Go → Sol selection.
+`workerDefault` keeps routine workers on Terra → Go selection.
 
 The first step that is authenticated, present in the operator's available
 catalog, capability-matching, has a native streaming adapter, and is spendable
-serves the run. MiMo must use the exact Singapore Token Plan host, with `/v1` or `/anthropic`; Sol must use Codex OAuth on `chatgpt.com/backend-api`. Lookalike hosts and general paid API endpoints do not qualify. No INCO, OpenRouter or metered/PAYG route is part of this default chain; GPT-6.1 Sol on Codex OAuth is its only GPT step.
+serves the run. MiMo must use the exact Singapore Token Plan host, with `/v1` or `/anthropic`; Terra must use Codex OAuth on `chatgpt.com/backend-api`. Lookalike hosts and general paid API endpoints do not qualify. No INCO, OpenRouter or metered/PAYG route is part of this default chain; GPT-6.1 Terra on Codex OAuth is its only GPT step.
 
 A legacy MiMo run frozen as an automatic chain may hop to the next eligible chain route at
 runtime — this is real routing, not a selection shortcut. The hop happens only
@@ -304,7 +312,7 @@ run never install this hop.
 
 Go needs the user's own key. Its former same-plan retry on Go GLM 5.3 Flash was
 retired with GLM; a Go failure is reported as itself. A
-`/model` change cannot inherit a stale launch profile's defaults. Parents without an explicit profile default use the same MiMo → Sol automatic chain, including reviewer runs.
+`/model` change cannot inherit a stale launch profile's defaults. Parents without an explicit profile default use the Terra → Go automatic worker chain; legacy native reviewer chains remain MiMo Pro → Terra.
 
 Selection resolves against Pi's configured authentication and available model
 catalog, so the catalog must list the route before selection can include it.
@@ -321,7 +329,7 @@ provider/model, selected profile when supplied, parent profile when matched,
 `override`/`chain`/`profile-default`/`legacy-default`/`automatic-review`/`automatic-review-fallback`
 provenance, the ordered `chainRoutes` of an automatic chain, capabilities and effort.
 `automatic-review` marks an implicit review wave on its automatic Claude route, and
-`automatic-review-fallback` one moved to Sol because no Claude account was eligible;
+`automatic-review-fallback` one moved to Terra because no Claude account was eligible;
 neither is ever recorded as `override` (the value an operator-requested route
 produces), and a resume keeps them without re-arming the automatic fallback.
 Task results report native tool successes and errors. If every attempted tool
@@ -445,12 +453,12 @@ off-plan routes, and generic metered endpoints never hop or spend.
 hop is recorded as `from->to` provenance. `test/opencode-go-routing.test.ts`
 proves a Go failure is never retried on another model.
 `test/subagent-model-selection.test.ts` and `test/model-selection-override.test.ts`
-prove chain/override provenance, reviewer defaults (the same routine MiMo→Sol
+prove chain/override provenance, reviewer defaults (the same routine MiMo→Terra
 chain as workers, never an automatic expert step), and that an explicit
 selector is never upgraded into chain provenance.
 `test/provider-quota.test.ts`, `test/subagent-model-selection.test.ts` and the quota block of
 `test/ultraterm-subagents-extension.test.ts` prove the quota rules: an exhausted implicit
-Go -> Sol, Go and Sol out -> Haiku (plain leaves) or Sonnet (mayEdit+allowBash, xhigh), busy or
+Terra -> Go, Terra and Go out -> Haiku (plain leaves) or Sonnet (mayEdit+allowBash, xhigh), busy or
 unknown stays on its route, an exhausted explicit route is refused with no reroute, everything
 out refuses naming each cause, a worker that fails before its first output rejects the dispatch
 with its cause, and a usage-limit refusal falls through each tier once.

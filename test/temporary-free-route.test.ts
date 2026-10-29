@@ -38,8 +38,9 @@ function fixture() {
 type Model = Parameters<typeof assertTemporaryFreeRequest>[0];
 const free = { provider: "openrouter", id: FREE_MODEL, name: "MiniMax free", api: "openai-completions", baseUrl: FREE_BASE_URL, reasoning: true, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192 } as Model;
 const sol = { ...free, provider: "openai-codex", id: "gpt-6.1-sol", name: "GPT-6.1 Sol", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api" } as Model;
+const terra = { ...sol, id: "gpt-6.1-terra", name: "GPT-6.1 Terra" };
 const preferred = { ...free, provider: "steak-pi", id: "preferred-free", api: "pi-virtual" } as Model;
-const registry = () => ({ find: (provider: string, id: string) => [free, sol, preferred].find(m => m.provider === provider && m.id === id), getAll: () => [free, sol, preferred], getAvailable: () => [free, sol, preferred], hasConfiguredAuth: () => true, isUsingOAuth: () => true, getProvider: () => ({ streamSimple() {} }) });
+const registry = () => ({ find: (provider: string, id: string) => [free, sol, terra, preferred].find(m => m.provider === provider && m.id === id), getAll: () => [free, sol, terra, preferred], getAvailable: () => [free, sol, terra, preferred], hasConfiguredAuth: () => true, isUsingOAuth: () => true, getProvider: () => ({ streamSimple() {} }) });
 const input = { tasks: [{ label: "leaf", task: "synthetic", role: "worker" as const }] };
 function nativeStream() {
   const sdk = findPackageJSON(import.meta.resolve("@earendil-works/pi-coding-agent"))!;
@@ -47,7 +48,7 @@ function nativeStream() {
   return createRequire(sdk)(join(dirname(ai), "dist/utils/event-stream.js")).createAssistantMessageEventStream();
 }
 const receipt = (model: Model) => ({ role: "assistant", content: [{ type: "text", text: "synthetic" }], api: model.api, provider: model.provider, model: model.id, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: now });
-describe("bounded generic approved free route", () => {
+describe("synthetic: bounded generic approved free route", () => {
   it("normalizes canonical UTC milliseconds and admits generic data, retaining exact legacy alias", () => {
     expect(validateTemporaryWorkerRoute(config()).startsAt).toBe("2026-10-20T13:00:00.000Z");
     expect(validateTemporaryWorkerRoute({ ...config(), profile: "minimax-m3-1-flash-free" }).profile).toBe("minimax-m3-1-flash-free");
@@ -86,9 +87,9 @@ describe("bounded generic approved free route", () => {
     expect(choose().selection).toMatchObject({ profile: PREFERRED_FREE_PROFILE, source: "profile-default", modelId: "preferred-free" });
     expect(choose({ model: "openai-codex/gpt-6.1-sol" }).selection).toMatchObject({ source: "override", modelId: sol.id });
     expect(choose({ profile: FREE_PROFILE }).model.id).toBe(FREE_MODEL);
-    for (const extra of [{ harness: "pi" }, { tasks: [{ ...input.tasks[0], role: "reviewer" }] }]) expect(choose(extra).model.id).toBe(sol.id);
+    for (const extra of [{ harness: "pi" }, { tasks: [{ ...input.tasks[0], role: "reviewer" }] }]) expect(choose(extra).model.id).toBe(terra.id);
     expect(() => choose({ requireImages: true })).toThrow();
-    vi.setSystemTime(Date.parse(config().expiresAt)); expect(choose().model.id).toBe(sol.id);
+    vi.setSystemTime(Date.parse(config().expiresAt)); expect(choose().model.id).toBe(terra.id);
     expect(() => choose({ profile: FREE_PROFILE })).toThrow(TemporaryFreeRouteUnavailableError);
   });
   it("never routes unleased Sol: expiry/auth/price loss produce a named checkpoint-switch signal", async () => {
@@ -165,7 +166,7 @@ describe("bounded generic approved free route", () => {
   it("startup virtual route rechecks continuation/retry/direct without reloading or falling back on 429/5xx", async () => {
     fixture(); let definition: any; const registerProvider = vi.fn();
     modelRoutePolicy({ registerProvider, registerVirtualModel: (value: unknown) => { definition = value; }, registerFlag: vi.fn(), on: vi.fn() } as never);
-    expect(registerProvider).toHaveBeenCalledTimes(1); expect(definition.id).toBe("preferred-free");
+    expect(registerProvider).toHaveBeenCalledTimes(2); expect(definition.id).toBe("preferred-free");
     const ctx = { modelRegistry: registry() };
     for (const reason of ["user", "continuation", "retry", "direct"]) expect((await definition.route({ reason, failed: { message: { errorMessage: "429 503" } } }, ctx)).model.id).toBe(FREE_MODEL);
     vi.setSystemTime(Date.parse(config().expiresAt));

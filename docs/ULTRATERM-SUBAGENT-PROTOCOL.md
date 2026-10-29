@@ -148,7 +148,7 @@ Ownership: exclusive files or mutable boundaries
 USAP uses one coordinator, hub, capacity limiter, checkpoint store and telemetry
 surface for both Pi workers and the official headless Claude Code CLI. An absent
 `harness` means Pi except for an all-reviewer wave with no explicit route: that
-wave defaults to the **Opus Pass**, Claude Code Opus 5.5 at `xhigh` effort. The [automatic text-review exception](./MODEL-ROUTING.md#automatic-review-exception) alone permits actual GPT-6.1 Sol fallback evidence when Claude is proven unavailable; it is not Opus approval.
+wave defaults to the **Opus Pass**, Claude Code Opus 5.5 at `xhigh` effort. The [automatic text-review exception](./MODEL-ROUTING.md#automatic-review-exception) alone permits actual GPT-6.1 Terra fallback evidence when Claude is proven unavailable; it is not Opus approval.
 Explicit Pi/model/profile selections still win.
 
 `harness: "claude-code"` runs **Sonnet 5.5** (`claude-code/claude-sonnet-5-5`)
@@ -329,7 +329,7 @@ never both. Selection applies to every task in that run; per-task selectors are
 not supported. Explicit selection is never overridden by a reviewer role or a
 profile default. Omitted selectors on a Pi wave use the matching parent profile's
 configured worker/reviewer default, retaining legacy role defaults when none is
-configured; automatic native-Pi reviewer defaults ride the same MiMo→Sol
+configured; automatic native-Pi reviewer defaults ride the same MiMo→Terra
 subscription chain as routine workers, with no automatic expert step. An
 all-reviewer wave without an explicit route uses the CLI default
 above instead.
@@ -368,7 +368,7 @@ The parent may choose either execution mode:
   The parent continues useful local work, then uses `ultraterm_hub` rather than
   polling or launching duplicate work. `Started` is never reported for a worker
   already known dead: the dispatch holds up to a bounded startup window (default
-  25 s, longer than the router's two bounded calls before a Go or Sol request) for each
+  25 s, longer than the router's two bounded calls before a Go or GPT request) for each
   launched worker to produce its first model output, and a worker that fails
   before it (provider-account router refusal, auth, route, spawn, a first request
   that errors) makes the call throw with that named cause, cancels its siblings and
@@ -377,7 +377,7 @@ The parent may choose either execution mode:
   applies to foreground dispatches as well.
 - **Quota-aware routing:** an implicit routine wave asks the account router first.
   A provider whose every configured account is cooling down, signed out or at a
-  100% window is skipped (Go -> Sol); when both are out the wave runs on the
+  100% window is skipped (Terra -> Go); when both are out the wave runs on the
   claude-code subscription at the cheapest capable tier (Haiku 5.5, or Sonnet 5.5
   for mayEdit+allowBash leaves and xhigh effort), pinned on the
   least-used Claude account the router shows eligible, and needs an Opus 5.5
@@ -391,7 +391,7 @@ The parent may choose either execution mode:
   usage limit (Go `GoUsageLimitError`, Codex `usage limit has been reached` /
   `subscription_quota_exceeded`, a router refusal that says cooling down), no worker
   produced output and the run settled, the same dispatch call re-runs the same tasks once
-  on the next tier (Go -> Sol -> Claude Haiku 5.5 / Sonnet 5.5) with no parent
+  on the next tier (Terra -> Go -> Claude Haiku 5.5 / Sonnet 5.5) with no parent
   re-dispatch, inside the startup window and before `Started`. Each tier is tried at most
   once; the refused first run stays `failed` with its causes and is marked delivered; the
   second run's `chainRoutes`, `fallbackReason` and dispatch text name the fall-through and
@@ -399,7 +399,7 @@ The parent may choose either execution mode:
   causes. An auth, route or spawn failure, a bare 429 and every explicit route fail
   synchronously and never fall through. Go's usage limit is recorded with the router as
   plan exhaustion (`limit --kind usage`), so the next dispatch's preflight skips it. Each
-  tier gets its own startup window, so a wave that falls through Go -> Sol -> Claude can hold
+  tier gets its own startup window, so a wave that falls through Terra -> Go -> Claude can hold
   the dispatch call for up to three 25 s windows plus the sibling settles and router reads in
   between (about 130 s worst case) before it returns `Started` or fails with every cause
   named. A worker whose first request fails with a 429 also reports the cooldown and releases
@@ -615,9 +615,9 @@ turn.
 ## 8. Model guidance
 
 Routine bounded scouting and implementation use the configured parent profile
-defaults: built-in routine workers resolve canonical Go DeepSeek V4.1 Flash → GPT-6.1
-Sol at selection (text; images MiMo only), and explicitly native-Pi reviewer chains resolve MiMo V2.6 Pro →
-GPT-6.1 Sol — the legacy "expert review chain" name is a native-Pi routing label, not
+defaults: built-in routine workers and scouts resolve GPT-6.1 Terra → canonical
+Go DeepSeek V4.1 Flash → Claude Haiku/Sonnet on usage limits or proven unavailability (text; images MiMo only), and explicitly native-Pi reviewer chains resolve MiMo V2.6 Pro →
+GPT-6.1 Terra — the legacy "expert review chain" name is a native-Pi routing label, not
 expert sign-off. All-reviewer waves with no explicit route use the official Claude Code
 Opus 5.5/xhigh pass. Existing explicitly selected Pi profiles keep their native
 route semantics. No failed Opus review silently falls back to Astra or another
@@ -628,10 +628,10 @@ for reviewer defaults and route-specific fallback. Record the resolved
 provider/model on the run so results are auditable.
 
 **Implementation review.** USAP never grants commit, push, or deploy permission.
-Only writable Go/Haiku leaves receive an implementation-review request: Go-produced
-implementation needs Sonnet 5.5 verification; Haiku-produced implementation needs
-Opus 5.5 verification, through the parent. GPT-6.1 Sol and read-only leaves receive
-no automatic end-gate. Never claim approval from a failed or unavailable review.
+Writable Terra/Go/Haiku implementation requests verification through the parent:
+Terra and Haiku need Opus 5.5; Go needs Sonnet 5.5. Read-only, report-only and
+explicit Sol leaves receive no automatic end-gate. Security-audit work stays
+Go/Haiku, never any GPT. Never claim approval from a failed or unavailable review.
 An explicit task or shared-contract output format takes precedence over default
 report headings, including JSON-only output. Empty or placeholder-only output is
 a failed leaf, not a completed result.

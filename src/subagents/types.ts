@@ -137,14 +137,14 @@ export interface ModelSelection {
   parentProfile?: string;
   /** `chain` marks a capability-aware automatic route; explicit selectors stay `override`.
    * `automatic-review` marks an implicit review wave on its automatic Claude route: no route was requested.
-   * `automatic-review-fallback` marks an implicit review wave moved to Sol because no Claude
+   * `automatic-review-fallback` marks an implicit review wave moved to Terra because no Claude
    * account was eligible: never an operator-requested route, so it is not recorded as `override`. */
   source: "override" | "profile-default" | "legacy-default" | "chain" | "automatic-review" | "automatic-review-fallback";
   /** Ordered automatic chain routes (provider/model), for auditable provenance. */
   chainRoutes?: string[];
   automaticReview?: boolean;
   reviewRequiresImages?: boolean;
-  /** `requires-opus`: a Claude-tier worker run (Haiku 5.5 or Sonnet 5.5 after the Go and Sol routes ran
+  /** `requires-opus`: a Claude-tier worker run (Haiku 5.5 or Sonnet 5.5 after the Terra and Go routes ran
    * out of quota), whose work needs an explicit Opus 5.5 verification. */
   independence?: "requires-opus";
   /** Why an implicit wave left its default route (bounded text, for the dispatch note and every
@@ -253,7 +253,7 @@ export interface TaskRecord extends NormalizedTask {
   routeFallbacks?: string[];
   providerAccount?: { provider: "opencode-go"; id: "primary" | "b"; label: string; lease: string } |
     { provider: "codex"; id: "primary" | "fallback"; label: string; lease: string };
-  reviewFallback?: { from: "claude-code/claude-opus-5-5"; to: "openai-codex/gpt-6.1-sol"; reason: "no-eligible-claude" | "quota" | "auth" };
+  reviewFallback?: { from: "claude-code/claude-opus-5-5"; to: "openai-codex/gpt-6.1-terra" | "openai-codex/gpt-6.1-sol"; reason: "no-eligible-claude" | "quota" | "auth" };
   /** Epoch ms of the last accepted progress update; drives staleness diagnosis. */
   lastProgressAt?: number;
   /** Set only for a turn- or time-budget stop; absent for every other settlement. */

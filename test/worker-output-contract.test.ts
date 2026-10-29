@@ -29,7 +29,7 @@ afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) awai
 
 // These are synthetic test fixtures only, inside the test runner's isolated
 // HOME. Never use the operator's cache or read real overseer evidence.
-describe("assigned staged input Read", () => {
+describe("synthetic: assigned staged input Read", () => {
   it("reads exactly assigned regular files natively, without directory, sibling, write, or symlink grants", async () => {
     const staging = join(homedir(), ".cache", "ut-overseer");
     await mkdir(staging, { recursive: true });
@@ -73,24 +73,25 @@ describe("assigned staged input Read", () => {
   });
 });
 
-describe("worker output contract", () => {
+describe("synthetic: worker output contract", () => {
   const routes = [
     ["opencode-go/deepseek-v4.1-flash", "Sonnet"],
     ["anthropic/claude-haiku-4-5", "Opus"],
     ["claude-code/haiku-5-5", "Opus"],
     ["openai-codex/gpt-6.1-sol", undefined],
+    ["openai-codex/gpt-6.1-terra", "Opus"],
     ["claude-code/claude-sonnet-5-5", undefined],
     ["claude-code/claude-opus-5-5", undefined],
   ] as const;
   for (const build of [buildPiWorkerSystemPrompt, buildClaudeWorkerPrompt]) {
     describe(build.name, () => {
       it.each(routes.flatMap(([model, reviewer]) => [false, true].map(mayEdit => ({ model, reviewer, mayEdit }))))(
-        "gates only implementation routes: $model mayEdit=$mayEdit", ({ model, reviewer, mayEdit }) => {
+        "synthetic: gates only implementation routes: $model mayEdit=$mayEdit", ({ model, reviewer, mayEdit }) => {
           const task = leaf({ mayEdit, ownedPaths: mayEdit ? [join(process.cwd(), "synthetic-owned.txt")] : [] });
           const prompt = build(run(task, model), task);
           if (mayEdit && reviewer) {
             expect(prompt).toContain(`official Claude Code CLI ${reviewer} 5.5 at xhigh effort via the USAP claude-code route`);
-            expect(prompt).toContain("GPT-6.1 Sol fallback review");
+            expect(prompt).toContain("GPT-6.1 Terra fallback review");
             expect(prompt).toContain("if you produced implementation");
           } else {
             expect(prompt).not.toContain("End-gate:");

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.0 (2026-10-28)
+
+- Default implicit workers and scouts now use GPT-6.1 Terra on Codex OAuth,
+  then OpenCode Go and Claude Haiku/Sonnet on proven unavailability or usage limits.
+- Register Terra in the native Codex catalog and add its high-effort USAP profile;
+  explicit GPT-6.1 Sol remains supported and GPT-6.0 Sol stays retired.
+- Automatic text-review fallback uses Terra only after proven Claude unavailability;
+  implementation on Terra requests Opus 5.5 completion verification.
+
 ## 0.13.0 (2026-10-28)
 
 - Running Claude Code subagents now receive hub messages and redirects through

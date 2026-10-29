@@ -1271,8 +1271,8 @@ describe("sticky Go continuation and pre-prompt lease failure", () => {
 });
 
 
-describe("Sol account-isolated SDK lifecycle", () => {
-  const model = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text"] } as any;
+describe.each(["gpt-6.1-sol", "gpt-6.1-terra"])("synthetic: %s account-isolated SDK lifecycle", id => {
+  const model = { provider: "openai-codex", id, api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text"] } as any;
   const fixtureRuntime = () => ({ isUsingOAuth: () => true, hasConfiguredAuth: () => true,
     getModels: () => [model], getModel: () => model, getProvider: () => undefined, getRegisteredNativeProvider: () => undefined } as unknown as ModelRuntime);
   it("reserves both accounts concurrently and supplies the reserved agent paths/runtime without environment races", async () => {

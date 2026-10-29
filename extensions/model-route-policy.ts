@@ -4,6 +4,8 @@ import { createRegistryGuard } from "../src/model-route-policy.ts";
 import { activeTemporaryWorkerRoute, preferredFreeMetadata, selectPreferredFreePhysical, temporaryFreeStartupProvider } from "../src/temporary-free-route.ts";
 import { createExplicitPaidApproval, createSelectedRouteApproval, PAID_ROUTE_FLAG } from "../src/explicit-paid-route.ts";
 
+import { terraStartupProvider } from "../src/codex-models.ts";
+
 type Model = NonNullable<ExtensionContext["model"]>;
 
 /** Guard provider execution, including restored models, compaction, and model switching. */
@@ -11,6 +13,7 @@ export default function modelRoutePolicy(pi: ExtensionAPI): void {
   // Native provider registration happens before Pi resolves --model at startup.
   // Complete-provider augmentation preserves its built-in catalog and auth.
   pi.registerProvider(temporaryFreeStartupProvider());
+  pi.registerProvider(terraStartupProvider());
   if (activeTemporaryWorkerRoute()) {
     pi.registerVirtualModel({ ...preferredFreeMetadata, route: (_request, ctx) => selectPreferredFreePhysical(ctx.modelRegistry) });
   }
