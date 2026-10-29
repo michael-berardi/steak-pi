@@ -162,26 +162,38 @@ export async function getClaudeStatus(
   const env = withConfigDirectory(envInput);
   const command = await resolveClaudeExecutable(env);
   if (!command) return { available: false, loggedIn: false, subscription: false, detail: INSTALL_HINT };
-  try {
-    const result = await captureProcess(command, ["auth", "status"], env, signal);
-    const payload = result.stdout.trim().startsWith("{")
-      ? (JSON.parse(result.stdout) as { loggedIn?: unknown; authMethod?: unknown; subscriptionType?: unknown })
-      : {};
-    const loggedIn = payload.loggedIn === true;
-    const plan = typeof payload.subscriptionType === "string" ? payload.subscriptionType : undefined;
-    return {
-      available: true,
-      loggedIn,
-      subscription: loggedIn && !!plan,
-      command,
-      authMethod: typeof payload.authMethod === "string" ? payload.authMethod : undefined,
-      plan,
-      detail: loggedIn ? undefined : LOGIN_HINT,
-    };
-  } catch (error) {
-    if (signal?.aborted) throw error;
-    return { available: true, loggedIn: false, subscription: false, command, detail: LOGIN_HINT };
+  // Only Claude Code's own answer `loggedIn: false` means logged out. A check that timed out, crashed or printed
+  // no status (a busy machine, a token refresh racing another process) is retried once and then named as what it
+  // is: 2026-10-29 two Haiku workers were torn down as "not logged in" while the login was fine.
+  let uncertain = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt) await new Promise((resolve) => setTimeout(resolve, 1_000));
+    try {
+      const result = await captureProcess(command, ["auth", "status"], env, signal);
+      const text = result.stdout.trim();
+      let payload: { loggedIn?: unknown; authMethod?: unknown; subscriptionType?: unknown } | undefined;
+      if (text.startsWith("{")) { try { payload = JSON.parse(text); } catch { payload = undefined; } }
+      if (!payload || typeof payload.loggedIn !== "boolean") {
+        uncertain = `Claude Code auth status gave no answer (exit ${result.code}${result.stderr.trim() ? `: ${result.stderr.trim().slice(0, 200)}` : ""})`;
+        continue;
+      }
+      const loggedIn = payload.loggedIn === true;
+      const plan = typeof payload.subscriptionType === "string" ? payload.subscriptionType : undefined;
+      return {
+        available: true,
+        loggedIn,
+        subscription: loggedIn && !!plan,
+        command,
+        authMethod: typeof payload.authMethod === "string" ? payload.authMethod : undefined,
+        plan,
+        detail: loggedIn ? undefined : LOGIN_HINT,
+      };
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      uncertain = `Claude Code auth status failed: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
+  return { available: true, loggedIn: false, subscription: false, command, detail: `${uncertain}; the login itself was not checked` };
 }
 
 const READY_STATUS_TTL_MS = 60_000;
@@ -205,7 +217,7 @@ async function readyClaudeCommand(
   if (!status.available || !status.command) throw new Error(INSTALL_HINT);
   if (!status.loggedIn) {
     readyStatusCache.delete(key);
-    throw new Error(LOGIN_HINT);
+    throw new Error(status.detail ?? LOGIN_HINT);
   }
   readyStatusCache.set(key, { command: status.command, expires: Date.now() + READY_STATUS_TTL_MS });
   return status.command;

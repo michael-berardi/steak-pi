@@ -7,6 +7,8 @@ import {
   cachedClaudeProcessCount,
   closeClaudeProcesses,
   discoverClaudeModels,
+  getClaudeStatus,
+  LOGIN_HINT,
   rewriteInitialRequest,
   runClaudeRequest,
 } from "../../extensions/claude-code/claude-cli.ts";
@@ -382,4 +384,43 @@ for await (const line of input) {
     await closeClaudeProcesses();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+async function fakeAuth(script: string) {
+  const root = await mkdtemp(join(tmpdir(), "pi-claude-auth-test-"));
+  const executable = join(root, "fake-claude.mjs");
+  await writeFile(executable, `#!/usr/bin/env node\n${script}\n`);
+  await chmod(executable, 0o755);
+  return { root, executable };
+}
+
+test("a first auth status with no answer is retried, not reported as logged out", async () => {
+  const { root, executable } = await fakeAuth(`import {existsSync, writeFileSync} from "node:fs";
+const mark = process.env.MARK;
+if (!existsSync(mark)) { writeFileSync(mark, "1"); process.exit(1); }
+console.log(JSON.stringify({loggedIn: true, authMethod: "claude.ai", subscriptionType: "max"}));`);
+  try {
+    const status = await getClaudeStatus({ PI_CLAUDE_CODE_COMMAND: executable, MARK: join(root, "mark"), PATH: process.env.PATH, HOME: process.env.HOME });
+    assert.equal(status.loggedIn, true);
+    assert.equal(status.subscription, true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("an auth status that never answers is named as such, never as a logout", async () => {
+  const { root, executable } = await fakeAuth(`console.error("keychain busy"); process.exit(1);`);
+  try {
+    const status = await getClaudeStatus({ PI_CLAUDE_CODE_COMMAND: executable, PATH: process.env.PATH, HOME: process.env.HOME });
+    assert.equal(status.loggedIn, false);
+    assert.notEqual(status.detail, LOGIN_HINT);
+    assert.match(status.detail ?? "", /gave no answer.*keychain busy.*login itself was not checked/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Claude Code's own loggedIn false is still a logout", async () => {
+  const { root, executable } = await fakeAuth(`console.log(JSON.stringify({loggedIn: false, authMethod: "none"})); process.exit(1);`);
+  try {
+    const status = await getClaudeStatus({ PI_CLAUDE_CODE_COMMAND: executable, PATH: process.env.PATH, HOME: process.env.HOME });
+    assert.equal(status.loggedIn, false);
+    assert.equal(status.detail, LOGIN_HINT);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

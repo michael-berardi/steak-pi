@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.3 (2026-10-29)
+
+- A Claude Code login check that times out, crashes or prints no status is
+  retried once, then named as what it was. Only Claude Code's own
+  "loggedIn: false" reads as logged out. Before, a busy check tore down
+  Claude workers as "not logged in" while the login was fine.
+
 ## 0.14.2 (2026-10-29)
 
 - A terminal's UltraTerm inbox registers again after its session identity is
