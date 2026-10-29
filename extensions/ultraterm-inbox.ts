@@ -31,10 +31,18 @@ export default function ultratermInbox(pi: ExtensionAPI): void {
         && host.pid === process.pid && getPrimaryHostIdentity(ctx.sessionManager) === host
         && ctx.sessionManager.getSessionId() === host.sessionId
         && ctx.sessionManager.getSessionFile() === host.sessionFile;
-      if (!host) { startup = setTimeout(attempt, 1000); startup.unref?.(); return; }
-      if (!current()) return;
+      if (!host || !current()) { startup = setTimeout(attempt, 1000); startup.unref?.(); return; }
       consumer = new InboxConsumer({ host, current, idle: () => ctx.isIdle(), send: (m, o) => pi.sendMessage(m, o), evidence: createPersistedReader(host, undefined, () => !ctx.sessionManager.getEntries().some(e => e.type === "message" && e.message.role === "assistant")), accepted: m => acceptedEntry(ctx.sessionManager.getEntries(), m), transport: unixTransport() });
       consumer.start();
+      // A republished identity (compaction, /tree, reload of the publisher) replaces the host object, and the
+      // consumer stops for good on the old one. While this manager is still ours, start again on the new identity:
+      // otherwise the terminal's inbox stays unregistered and every peer message is refused (2026-10-29).
+      const watch = () => {
+        if (manager !== ctx.sessionManager || owners.get(ctx.sessionManager) !== token) return;
+        if (consumer && consumer.phase !== "stopped") { startup = setTimeout(watch, 1000); startup.unref?.(); return; }
+        consumer = undefined; attempt();
+      };
+      startup = setTimeout(watch, 1000); startup.unref?.();
     };
     startup = setTimeout(attempt, 0);
     startup.unref?.();

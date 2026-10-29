@@ -162,6 +162,35 @@ describe("native inbox extension delivery boundary", () => {
     } finally { f.handlers.get("session_shutdown")?.(); await f.publisher.stop(); rmSync(f.root, { recursive: true, force: true }); }
   });
 
+  it("registers again after the same manager's identity is republished (the inbox never stays unregistered)", async () => {
+    const f = fixture();
+    const ctx = f.context("pi-busy");
+    try {
+      await f.publisher.start(ctx);
+      f.handlers.get("session_start")!({}, ctx);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(f.broker.registered).toBe(1);
+      // A republish (reload of the publisher) replaces the host object; the old consumer stops on it.
+      await f.publisher.stop(); await f.publisher.start(ctx);
+      await vi.advanceTimersByTimeAsync(3100);
+      expect(f.broker.registered).toBe(2);
+      expect(f.broker.polls.at(-1).host).toBe(getPrimaryHostIdentity(ctx.sessionManager));
+    } finally { f.handlers.get("session_shutdown")?.(); await f.publisher.stop(); rmSync(f.root, { recursive: true, force: true }); }
+  });
+
+  it("starts once the identity is published after session_start, not only when it already exists", async () => {
+    const f = fixture();
+    const ctx = f.context("pi-busy");
+    try {
+      f.handlers.get("session_start")!({}, ctx);
+      await vi.advanceTimersByTimeAsync(2100);
+      expect(f.broker.registered).toBe(0);
+      await f.publisher.start(ctx);
+      await vi.advanceTimersByTimeAsync(1100);
+      expect(f.broker.registered).toBe(1);
+    } finally { f.handlers.get("session_shutdown")?.(); await f.publisher.stop(); rmSync(f.root, { recursive: true, force: true }); }
+  });
+
   it("creates no consumer and no mailbox traffic without a published primary host", async () => {
     const f = fixture();
     const ctx = f.context("pi-busy");
