@@ -1,3 +1,4 @@
+import { withTerraCatalog } from "./codex-models.ts";
 import type { ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { activeTemporaryWorkerRoute, ensureTemporaryFreeMetadata, assertTemporaryFreeRequest, isTemporaryFreeModel, preferredFreeMetadata, selectPreferredFreePhysical, temporaryFreeOptions, withTemporaryFreeCatalog, TemporaryFreeRouteRequestError } from "./temporary-free-route.ts";
 import { createAllowlistApproval, findPaidRoute } from "./explicit-paid-route.ts";
@@ -23,7 +24,7 @@ const guardMark = (provider: Provider) => (provider as unknown as Record<symbol,
 
 /** Registry surface an ordered chain needs; Pi's ModelRegistry and ModelRuntime both satisfy it.
  * `getAll()` is the published dispatch catalog and is deliberately *not* the curated
- * picker snapshot: a fallback route (for example the Sol step) must stay reachable
+ * picker snapshot: a fallback route (for example the Terra step) must stay reachable
  * even when the operator's harness manifest does not offer it as a separate choice. */
 export interface ChainRegistry {
   find(provider: string, id: string): Model | undefined;
@@ -112,7 +113,7 @@ export function guardProvider(provider: Provider, usingOAuth: () => boolean,
   const previous = guardMark(provider);
   if (previous) provider = previous.root;
   const root = original ?? provider;
-  provider = withOpenCodeGoRouting(provider);
+  provider = withTerraCatalog(withOpenCodeGoRouting(provider));
   const check = (model: Model) => {
     assertActiveModelIdentity(model);
     if (model.provider !== provider.id) throw new Error(GPT_ROUTE_ERROR);
@@ -310,21 +311,21 @@ export function selectWorkerThinking(
 
 export interface WorkerRouteStep { provider: string; id: string }
 
-/** Operator default (2026-10-13): canonical Go DeepSeek V4.1 Flash, then
- * authenticated GPT-6.1 Sol if Go is absent at selection. Go child runtime
+/** Operator default (2026-10-28): authenticated GPT-6.1 Terra, then
+ * canonical Go DeepSeek V4.1 Flash if Terra is unavailable at selection. Go child runtime
  * failures stay account-bound and fail honestly; no ambient-auth stream hop.
  * Explicit identities and legacy profile-specific MiMo chains remain exact. */
 export const DEFAULT_TEXT_WORKER_CHAIN: readonly WorkerRouteStep[] = [
+  { provider: "openai-codex", id: "gpt-6.1-terra" },
   { provider: "opencode-go", id: "deepseek-v4.1-flash" },
-  { provider: "openai-codex", id: "gpt-6.1-sol" },
 ];
-/** Image runs stay on MiMo V2.6 Flash alone: Sol is the non-visual fallback, so an
- * image run with MiMo unavailable fails with its cause instead of hopping. */
+/** Automatic image runs stay on MiMo V2.6 Flash alone; an unavailable image
+ * head fails with its cause instead of joining the automatic text chain. */
 export const DEFAULT_MULTIMODAL_WORKER_CHAIN: readonly WorkerRouteStep[] = [
   { provider: "xiaomi", id: "mimo-v2.6-flash" },
 ];
 /** Token Plan routes an automatic profile may keep as its own chain head. A profile
- * naming MiMo V2.6 Pro (the reviewer default) resolves [Pro, Sol], never the Flash
+ * naming MiMo V2.6 Pro (the reviewer default) resolves [Pro, Terra], never the Flash
  * worker head; every other automatic profile resolves the default chain. */
 const TOKEN_PLAN_CHAIN_HEADS: readonly WorkerRouteStep[] = [
   { provider: "xiaomi", id: "mimo-v2.6-pro" },
@@ -334,7 +335,7 @@ const sameStep = (a: WorkerRouteStep, b: WorkerRouteStep) => a.provider === b.pr
 export function workerChainFor(head: WorkerRouteStep | undefined, requireImages: boolean): readonly WorkerRouteStep[] {
   const base = requireImages ? DEFAULT_MULTIMODAL_WORKER_CHAIN : DEFAULT_TEXT_WORKER_CHAIN;
   if (!head || !TOKEN_PLAN_CHAIN_HEADS.some((step) => sameStep(step, head)) || sameStep(base[0], head)) return base;
-  return requireImages ? [head] : [head, { provider: "openai-codex", id: "gpt-6.1-sol" }];
+  return requireImages ? [head] : [head, { provider: "openai-codex", id: "gpt-6.1-terra" }];
 }
 /** Rebuild a run's recorded chain (`selection.chainRoutes`) only when it is exactly a
  * chain this policy can produce; anything else falls back to the default chain. */
@@ -366,8 +367,8 @@ export class NoChainRouteError extends Error {
 }
 
 /** True when `error` is exactly "the built-in default chain resolved nowhere": the text
- * default (Go, Sol) and nothing else. A profile-default or reviewer chain that names MiMo
- * (Flash/Pro, Sol) is a different chain whose head was never the default's Go step. */
+ * default (Terra, Go) and nothing else. A profile-default or reviewer chain that names MiMo
+ * (Flash/Pro, Terra) is a different chain whose head was never the default's Terra step. */
 export function isDefaultTextChainExhausted(error: unknown): error is NoChainRouteError {
   return error instanceof NoChainRouteError && !error.multimodal && error.tried.length === DEFAULT_TEXT_WORKER_CHAIN.length &&
     error.tried.every((step, index) => sameStep(step, DEFAULT_TEXT_WORKER_CHAIN[index]));
@@ -401,7 +402,7 @@ export type ChainOptions = {
    * exhausted is skipped, so selection never lands on a route that cannot launch. A
    * skipped step is still part of the chain that was tried (see {@link NoChainRouteError}). */
   skipRoute?: (step: WorkerRouteStep) => boolean;
-  /** Resolve the built-in default text chain (Go -> Sol) instead of a profile default or
+  /** Resolve the built-in default text chain (Terra -> Go) instead of a profile default or
    * the legacy parent route. Only an implicit dispatch that must leave an exhausted
    * provider sets it; an explicit selector never does. */
   forceDefaultChain?: boolean;

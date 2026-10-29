@@ -32,7 +32,7 @@ export interface TemporaryWorkerRoute {
   schemaVersion: 1;
   provider: string; model: string; harness: string; profile: string;
   startsAt: string; expiresAt: string;
-  fallbackHarness: "steak-pi"; fallbackProfile: "gpt-6-1-sol";
+  fallbackHarness: "steak-pi"; fallbackProfile: "gpt-6-1-terra" | "gpt-6-1-sol";
   zeroPriceOnly: true; source: string; evidence: string;
 }
 const failConfig = (): never => { throw new TemporaryFreeRouteConfigError("Temporary worker route configuration denied: invalid, unknown, or unsafe configuration."); };
@@ -51,7 +51,7 @@ export function validateTemporaryWorkerRoute(value: unknown): TemporaryWorkerRou
   const v = value as Record<string, unknown>;
   const keys = ["schemaVersion", "provider", "model", "harness", "profile", "startsAt", "expiresAt", "fallbackHarness", "fallbackProfile", "zeroPriceOnly", "source", "evidence"];
   if (Object.keys(v).length !== keys.length || keys.some(key => !Object.hasOwn(v, key)) || v.schemaVersion !== 1 ||
-      v.zeroPriceOnly !== true || v.fallbackHarness !== "steak-pi" || v.fallbackProfile !== "gpt-6-1-sol" ||
+      v.zeroPriceOnly !== true || v.fallbackHarness !== "steak-pi" || !["gpt-6-1-terra", "gpt-6-1-sol"].includes(v.fallbackProfile as string) ||
       !isSupportedTemporaryFreeIdentity(v.provider, v.model) || v.harness !== "steak-pi" ||
       !(v.profile === "preferred-free" || (v.model === FREE_MODEL && v.profile === "minimax-m3-1-flash-free"))) return failConfig();
   for (const key of ["source", "evidence"]) if (typeof v[key] !== "string" || !(v[key] as string).trim() || (v[key] as string).length > 4096) return failConfig();

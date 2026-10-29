@@ -164,15 +164,20 @@ parent
   would end the same way): Steak Pi names the failure, keeps the model and
   reasoning level, and continues once in smaller steps.
 
-**Models.** Routine workers follow the configured role defaults. An approved,
+**Models.** Implicit routine workers and scouts default to **GPT-6.1 Terra**
+on Codex OAuth, then OpenCode Go, then Claude Haiku/Sonnet on proven
+unavailability or usage limits; configured role defaults remain supported.
+Terra implementation requests Opus 5.5 completion verification; Go implementation
+requests Sonnet 5.5 and Haiku implementation requests Opus 5.5.
+Security-audit work stays on Go/Haiku, never GPT. An approved,
 active free preference applies to implicit workers until its expiry; explicit
 selections remain exact. Go accounts stay isolated and balanced. Implicit reviewers prefer Opus 5.5; when Claude
-is provably unavailable before output, text reviews use GPT-6.1 Sol on Codex
-OAuth. Go-only parents resolve Sol through separate Codex account stores,
+is provably unavailable before output, text reviews use GPT-6.1 Terra on Codex
+OAuth. Go-only parents resolve Terra through separate Codex account stores,
 without copying credentials or changing the parent environment. Explicit routes
-remain exact, and image reviews never silently downgrade to text-only Sol. GLM 5.3 and the Z.ai plan were
+remain exact, and image reviews never silently switch to the automatic text-review fallback. GLM 5.3 and the Z.ai plan were
 retired on 2026-10-03, and selecting them is refused. GPT-6.0 Sol was retired on
-2026-10-05: Sol means GPT-6.1 Sol only, and selecting the old model is refused
+2026-10-05: GPT-6.1 Sol remains explicitly selectable, and selecting the old model is refused
 with an error that names the replacement. An explicit `model`, `profile` or `harness`
 always wins. A wave of reviewers with no explicit route goes to the **Opus
 Pass**: the official Claude Code CLI on Opus 5.5 at `xhigh` effort, using your

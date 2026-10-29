@@ -13,9 +13,10 @@ import { readHarnessProfiles } from "../src/harness-profiles.ts";
 type Model = Parameters<typeof resolveWorkerSelection>[0];
 const astra = { id: "gpt-6-astra", name: "GPT-6 Astra", provider: "openai-codex", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text", "image"] } as Model;
 const sol = { ...astra, id: SOL_MODEL_ID, name: "GPT-6.1 Sol" };
+const terra = { ...astra, id: "gpt-6.1-terra", name: "GPT-6.1 Terra" };
 const retired = { ...astra, id: "gpt-6-sol", name: "GPT-6 Sol" };
 const aliases = ["gpt-6-sol", "openai-codex/gpt-6-sol", "steak-pi/gpt-6-sol", "gpt-6-sol-pro", "gpt-6-sol-900k", "gpt-6-sol-2026-09-01", "gpt-6.0-sol", "gpt-6-0-sol", "gpt-6.0-sol-900k", "GPT 6 Sol", "GPT-6.0 Sol", "GPT6 Sol"];
-function registry(models = [astra, sol, retired]) {
+function registry(models = [astra, terra, sol, retired]) {
   return {
     find: vi.fn((provider: string, id: string) => models.find(m => m.provider === provider && m.id === id)),
     isUsingOAuth: () => true, hasConfiguredAuth: () => true,
@@ -32,7 +33,7 @@ function manifest(directory: string, profile: unknown) {
 }
 const profile = { id: "friendly", name: "Friendly", args: ["--model", SOL_MODEL_ROUTE, "--thinking", "medium"] };
 
-describe("GPT-6.0 Sol retirement (2026-10-05)", () => {
+describe("synthetic: GPT-6.0 Sol retirement (2026-10-05)", () => {
   // The fixtures are Steak Pi manifests: never read the harness of the shell running the tests.
   beforeEach(() => { vi.stubEnv("ULTRATERM_HARNESS_ID", "steak-pi"); vi.stubEnv("ULTRATERM_HARNESS", "steak-pi"); });
   afterEach(() => { vi.unstubAllEnvs(); });
@@ -76,20 +77,19 @@ describe("GPT-6.0 Sol retirement (2026-10-05)", () => {
     const profiles = [{ id: "steak-pi/friendly-sol", model: "openai-codex/gpt-6-sol" }];
     expect(() => resolveWorkerSelection(astra, "medium", { ...input, profile: profiles[0].id }, registry() as never, profiles, "")).toThrow(RetiredModelSelectionError);
   });
-  it("routes Sol only to 6.1: explicit selection is exact, defaults stay on the 0.9.8 chain, never 6.0", () => {
-    // 0.9.8 keeps every role default on the MiMo -> GPT-6.1 Sol chain; a Sol parent adds no Sol default.
+  it("synthetic: defaults use Terra, explicit Sol stays exactly 6.1, never 6.0", () => {
     for (const role of ["worker", "reviewer"] as const) {
-      const result = resolveWorkerSelection(sol, "high", { ...input, tasks: [{ label: "leaf", task: "test", role }] }, registry([astra, sol]) as never, BUILTIN_WORKER_PROFILES, "");
-      expect(result.model).toBe(sol);
-      expect(result.selection).toMatchObject({ modelId: SOL_MODEL_ID, source: "chain" });
-      expect(result.selection.chainRoutes?.at(-1)).toBe(SOL_MODEL_ROUTE);
+      const result = resolveWorkerSelection(sol, "high", { ...input, tasks: [{ label: "leaf", task: "test", role }] }, registry([astra, sol, terra]) as never, BUILTIN_WORKER_PROFILES, "");
+      expect(result.model).toBe(terra);
+      expect(result.selection).toMatchObject({ modelId: terra.id, source: "chain" });
+      expect(result.selection.chainRoutes).toContain("openai-codex/gpt-6.1-terra");
     }
     for (const selector of [{ profile: SOL_PROFILE }, { profile: "gpt-6-1-sol" }, { model: SOL_MODEL_ROUTE }]) {
       const result = resolveWorkerSelection(astra, "medium", { ...input, ...selector }, registry() as never, BUILTIN_WORKER_PROFILES, "");
       expect(result.model).toBe(sol);
       expect(result.selection).toMatchObject({ modelId: SOL_MODEL_ID, source: "override" });
     }
-    expect(selectWorkerModel(sol, ["worker"], registry() as never)).toBe(sol);
+    expect(selectWorkerModel(sol, ["worker"], registry() as never)).toBe(terra);
     const r = registry([astra]);
     expect(() => resolveWorkerSelection(sol, "medium", input, r as never, BUILTIN_WORKER_PROFILES, "")).toThrow(/no fallback|no chain route/i);
   });

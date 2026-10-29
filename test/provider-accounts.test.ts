@@ -51,7 +51,7 @@ describe("automatic-only official review fallback", () => {
     expect(canFallbackReview(run(), { ...result(), reviewFallbackReason: undefined, error: "quota exceeded" }, new AbortController().signal)).toBe(false);
     const task = {} as TaskRecord;
     recordReviewFallback(task, "quota");
-    expect(task.reviewFallback).toEqual({ from: "claude-code/claude-opus-5-5", to: "openai-codex/gpt-6.1-sol", reason: "quota" });
+    expect(task.reviewFallback).toEqual({ from: "claude-code/claude-opus-5-5", to: "openai-codex/gpt-6.1-terra", reason: "quota" });
   });
   it.each([{ mayEdit: true }, { allowBash: true }, { ownedPaths: ["src/[slug].astro"] }])("never falls back a privileged reviewer after quota/auth: %j", (permissions) => {
     const privileged = run(); Object.assign(privileged.tasks[0], permissions);
@@ -79,7 +79,7 @@ describe("automatic-only official review fallback", () => {
 });
 
 describe("real default-runner automatic fallback wiring (offline)", () => {
-  const model = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text"] } as any;
+  const model = { provider: "openai-codex", id: "gpt-6.1-terra", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text"] } as any;
   /** An implicit Opus review whose Claude child fails before output on a weekly-limit message. */
   function quotaFixture(permissions: { allowBash?: boolean } = {}) {
     const run = normalizeDispatch({ goal: "review", tasks: [{ label: "review", role: "reviewer", task: "inspect only", ...permissions }] }, process.cwd(), "claude-code/claude-opus-5-5", "xhigh", 0, () => "run-review-fixture");
@@ -105,9 +105,9 @@ describe("real default-runner automatic fallback wiring (offline)", () => {
     }) as any;
     return { run, task, relay, runtimes, spawn };
   }
-  it("refuses runtime fallback for a privileged reviewer even with a frozen Sol runtime", async () => {
+  it("refuses runtime fallback for a privileged reviewer even with a frozen Terra runtime", async () => {
     const { run, task, relay, runtimes, spawn } = quotaFixture({ allowBash: true });
-    const factory = vi.fn(async () => { throw new Error("must not launch Sol"); });
+    const factory = vi.fn(async () => { throw new Error("must not launch the Terra fallback"); });
     const accountCommand = vi.fn(async () => ({ ok: true }));
     const result = await defaultWorkerRunner(relay, runtimes, spawn, accountCommand, factory)({ run, task, signal: new AbortController().signal, onProgress() {} });
     expect(result.state).toBe("failed");
@@ -117,14 +117,14 @@ describe("real default-runner automatic fallback wiring (offline)", () => {
     expect(task.allowBash).toBe(true);
     expect(run.model).toBe("claude-code/claude-opus-5-5");
   });
-  it.each([false, true])("records actual Sol completion or failure (failure=%s)", async failure => {
+  it.each([false, true])("records actual Terra fallback completion or failure (failure=%s)", async failure => {
     const { run, task, relay, runtimes, spawn } = quotaFixture();
     let listener: any;
     const factory = vi.fn(async (options: any) => {
-      expect(options.model.id).toBe("gpt-6.1-sol");
-      if (failure) throw new Error("Sol unavailable");
+      expect(options.model.id).toBe("gpt-6.1-terra");
+      if (failure) throw new Error("Terra unavailable");
       return { session: { isStreaming: false, subscribe(fn: any) { listener = fn; return () => {}; }, async prompt() {
-        listener({ type: "message_end", message: { role: "assistant", provider: model.provider, model: model.id, api: model.api, content: [{ type: "text", text: "Sol review evidence" }], stopReason: "stop", usage: emptyUsage(), timestamp: 0 } });
+        listener({ type: "message_end", message: { role: "assistant", provider: model.provider, model: model.id, api: model.api, content: [{ type: "text", text: "Terra review evidence" }], stopReason: "stop", usage: emptyUsage(), timestamp: 0 } });
       }, async steer() {}, async abort() {}, dispose() {} } };
     });
     const accountCommand = vi.fn(async (args: string[]) => args[0] === "select"
@@ -132,11 +132,11 @@ describe("real default-runner automatic fallback wiring (offline)", () => {
     const runner = defaultWorkerRunner(relay, runtimes, spawn, accountCommand, factory);
     const result = await runner({ run, task, signal: new AbortController().signal, onProgress() {} });
     expect(result.state).toBe(failure ? "failed" : "done");
-    expect(task.reviewFallback?.to).toBe("openai-codex/gpt-6.1-sol");
+    expect(task.reviewFallback?.to).toBe("openai-codex/gpt-6.1-terra");
     expect(task.allowBash).toBe(false);
     expect(run.model).toBe("claude-code/claude-opus-5-5");
     task.state = result.state;
-    expect(reviewFallbackReceipt(run, "/fixture")).toBe(failure ? "" : `Sol fallback review: USAP ${run.id} receipt=/fixture/${run.id}.json report=${task.id}`);
+    expect(reviewFallbackReceipt(run, "/fixture")).toBe(failure ? "" : `GPT-6.1 Terra fallback review: USAP ${run.id} receipt=/fixture/${run.id}.json report=${task.id}`);
   });
 });
 

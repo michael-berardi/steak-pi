@@ -34,7 +34,7 @@ No cache-warming metadata is enabled.
 The old `steak-pi/claude-opus-5-5` launch profile is retired in UltraTerm 2.3.5.
 Use the Claude Code harness for Opus instead. Keeping this file does not activate
 an Anthropic API route, alter credentials or grant paid-route approval.
-Routine workers use canonical Go DeepSeek V4.1 Flash; automatic reviews may use the bounded GPT-6.1 Sol (Codex OAuth) fallback only when Claude is unavailable; expert
+Routine workers use GPT-6.1 Terra on Codex OAuth, then Go DeepSeek V4.1 Flash; automatic reviews may use the bounded GPT-6.1 Terra (Codex OAuth) fallback only when Claude is unavailable; expert
 review waves use the separate CLI route described in [PROFILES.md](./PROFILES.md).
 
 ## Compatibility proof and limits

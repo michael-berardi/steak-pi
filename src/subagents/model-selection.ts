@@ -1,3 +1,4 @@
+import { TERRA_MODEL_ROUTE, TERRA_PROFILE } from "../codex-models.ts";
 import { readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -27,10 +28,12 @@ export interface WorkerProfile {
    * sign-off; reviews still need the explicit Opus Pass or override route. */
   autoReviewChain?: boolean;
 }
-/** Explicit model identities are unchanged. Routine role defaults use Go;
+/** Explicit model identities are unchanged. Routine role defaults use Terra;
  * legacy native-review profiles keep their exact Pro/image chain. The dispatch
- * boundary handles automatic Opus -> Sol separately, never as a worker chain. */
+ * boundary handles automatic Opus -> Terra separately, never as a worker chain. */
 export const BUILTIN_WORKER_PROFILES: readonly WorkerProfile[] = [
+  { id: TERRA_PROFILE, model: TERRA_MODEL_ROUTE, thinking: "high", autoChain: true,
+    workerDefault: { profile: TERRA_PROFILE }, reviewerDefault: { profile: TERRA_PROFILE } },
   { id: PREFERRED_FREE_PROFILE, model: PREFERRED_FREE_PROFILE, thinking: "high",
     workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: FREE_PROFILE, model: `openrouter/${FREE_MODEL}`, thinking: "high",
@@ -48,7 +51,7 @@ export const BUILTIN_WORKER_PROFILES: readonly WorkerProfile[] = [
   { id: "steak-pi/opencode-go", model: "opencode-go/deepseek-v4.1-flash", thinking: "high", autoChain: true,
     workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
 ];
-/** The built-in automatic profile whose head resolves the default text chain (Go -> Sol). */
+/** The built-in automatic profile whose head resolves the default text chain (Terra -> Go). */
 const DEFAULT_CHAIN_PROFILE = "steak-pi/opencode-go";
 const PI_FAMILY_HARNESSES = new Set(["pi", "steak-pi"]);
 const thinkingLevels = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
@@ -56,7 +59,7 @@ const thinkingLevels = new Set(["off", "minimal", "low", "medium", "high", "xhig
 /** GLM 5.3, GLM 5.3 Flash and the Z.ai plan were retired by the operator on 2026-10-03. */
 export const RETIRED_ROUTE = /(?:^|[/:])(?:zai|z-ai)\/|(?:^|\/)glm[-.]/i;
 export const retiredRouteError = (route: string) =>
-  `${route} is retired: GLM 5.3 and the Z.ai plan were removed on 2026-10-03. Use steak-pi/gpt-6-1-sol (openai-codex/gpt-6.1-sol) or the automatic default.`;
+  `${route} is retired: GLM 5.3 and the Z.ai plan were removed on 2026-10-03. Use steak-pi/gpt-6-1-terra (openai-codex/gpt-6.1-terra) or the automatic default.`;
 
 function selector(value: WorkerSelector, label: string): WorkerSelector {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be a model/profile selector.`);
@@ -194,7 +197,7 @@ export interface ClaudeFallbackTier {
   reason: string;
 }
 
-/** The tier for a wave whose Go and Sol routes are both out of quota: whatever will likely get the
+/** The tier for a wave whose Terra and Go routes are both out of quota: whatever will likely get the
  * job done at least cost. Haiku 5.5 takes ordinary leaves; Sonnet 5.5 takes substantial code work (a
  * leaf that may edit AND run a shell), any requested high/xhigh reasoning and every reviewer. The
  * choice reads only the dispatch's own declared capabilities, never the task text. */
@@ -317,7 +320,7 @@ export function resolveWorkerSelection(
   const parentProfile = namedParent && namedParent.model === parentKey ? namedParent : parents.length === 1 ? parents[0] : undefined;
   const review = input.tasks.some((task) => task.role === "reviewer");
   // An implicit dispatch whose profile default landed on an exhausted provider re-resolves the
-  // built-in default text chain (Go -> Sol) with that provider skipped. An explicit selector
+  // built-in default text chain (Terra -> Go) with that provider skipped. An explicit selector
   // never takes this path, and neither do reviewer or image waves.
   const forceChain = options.forceDefaultChain === true && !explicit && !review && input.requireImages !== true;
   // Only ordinary implicit text workers observe the temporary preference;
@@ -339,7 +342,7 @@ export function resolveWorkerSelection(
   };
   const chainImages = input.requireImages === true;
   const profileChain = workerChainFor(headRoute(profile?.model), chainImages);
-  const chain = review && !chainImages && !["mimo-v2.6-pro", "mimo-v2.6-flash"].includes(headRoute(profile?.model)?.id ?? "")
+  const chain = review && !["mimo-v2.6-pro", "mimo-v2.6-flash"].includes(headRoute(profile?.model)?.id ?? "")
     ? workerChainFor({ provider: "xiaomi", id: "mimo-v2.6-pro" }, chainImages)
     : profileChain;
   const key = automatic ? undefined : profile?.model ?? chosen?.model;

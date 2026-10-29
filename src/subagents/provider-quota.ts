@@ -1,7 +1,7 @@
-import { SOL_MODEL_ROUTE } from "../retired-model-selection.ts";
+import { isManagedCodexRoute } from "../codex-models.ts";
 import { providerAccountCommand, type AccountCommand } from "./provider-accounts.ts";
 
-/** Router provider keys whose accounts gate a launch: GPT Sol (`codex`), OpenCode Go and Claude. */
+/** Router provider keys whose accounts gate a launch: GPT Terra/Sol (`codex`), OpenCode Go and Claude. */
 export type QuotaProvider = "codex" | "opencode-go" | "claude";
 
 const PROVIDER_NAMES: Record<QuotaProvider, string> = { codex: "GPT", "opencode-go": "Go", claude: "Claude" };
@@ -187,7 +187,7 @@ export function isQuotaLaunchFailure(text: string): boolean {
 /** The router-managed provider a chain step launches on, or undefined for a route the
  * router does not gate (MiMo, Astra, Luna, local models). */
 export function quotaProviderOf(step: { provider: string; id: string }): QuotaProvider | undefined {
-  if (`${step.provider}/${step.id}` === SOL_MODEL_ROUTE) return "codex";
+  if (isManagedCodexRoute(`${step.provider}/${step.id}`)) return "codex";
   if (step.provider === "opencode-go") return "opencode-go";
   return undefined;
 }
