@@ -96,6 +96,12 @@ describe("synthetic: USAP 1.1 explicit model/profile contract", () => {
     expect(reviewer.selection).toMatchObject({ source: "chain",
       chainRoutes: ["xiaomi/mimo-v2.6-pro", "openai-codex/gpt-6.1-terra"] });
   });
+  it("resolves an implicit worker with the configured Terra profile", () => {
+    const result = resolveWorkerSelection(astra, "high", input(), registry() as never,
+      BUILTIN_WORKER_PROFILES, "", {}, { workerDefault: { profile: "steak-pi/gpt-6-1-terra" } });
+    expect(result.selection).toMatchObject({ provider: "openai-codex", modelId: "gpt-6.1-terra", profile: "steak-pi/gpt-6-1-terra" });
+    expect(result.model).toBe(sol);
+  });
   it("selects Terra→Codex OAuth and retains Astra medium", () => {
     const result = choose(sol, { model: "openai-codex/gpt-6-astra" });
     expect(result.model).toBe(astra); expect(result.thinkingLevel).toBe("medium");
