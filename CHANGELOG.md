@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.15.0 (2026-10-29)
+
+- Hold Backspace for more than two seconds to clear the input editor without interrupting the agent. Set `holdDeleteClearsInput` to `false` in `~/.pi/agent/steak-pi.json` to disable it.
+
 ## 0.14.3 (2026-10-29)
 
 - A Claude Code login check that times out, crashes or prints no status is
