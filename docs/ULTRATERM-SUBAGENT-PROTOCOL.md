@@ -505,6 +505,12 @@ while children run, then issue one bounded `wait`. Starting background work
 merely to wait immediately, or repeatedly polling `status`, wastes turns and is
 not canonical behavior.
 
+An unacknowledged background completion wakes an idle parent once per coalesced
+batch so it can integrate results, verify and release; a busy parent receives
+the completion as a steer in its current run without a new wake. Set `STEAK_USAP_WAKE_PARENT=0`
+(or `false`/`off`) before starting a session to disable automatic continuation
+for headless or batch hosts.
+
 ## 6. Run-namespaced relay
 
 Each run has an ephemeral IRC-style mailbox namespace. “IRC-style” means

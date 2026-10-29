@@ -595,6 +595,13 @@ interface SessionRuntime {
   /** Background completions awaiting one coalesced delivery. */
   completionBuffer: Array<{ runId: string; text: string }>;
   awaitingReceipt: Set<string>;
+  /** Terminal hub observations and native receipts suppress future delivery. */
+  acknowledgedCompletions: Set<string>;
+  /** A rejected trigger is never attempted again for the same completion. */
+  wakeAttempted: Set<string>;
+  wakeParent: boolean;
+  wakePending: boolean;
+  flushingCompletions: boolean;
   deliveryRetry?: ReturnType<typeof setTimeout>;
   deliveryRetries: number;
   store?: CheckpointStore;
@@ -881,7 +888,7 @@ export function renderCompletionMessage(run: RunRecord, limit = MAX_COMPLETION_M
   const tasks = run.tasks.map((task) => task.outcome
     ? `${task.id}=${task.state}/PARTIAL(${task.partialReason ?? "budget"}, ${task.role} ${JSON.stringify(task.label.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 40))})`
     : `${task.id}=${task.state}`).join(", ");
-  return `${renderRunProgress(run)}\n${tasks}`.slice(0, limit);
+  return `Background run ${run.id} finished: continue the parent task (integrate results, verify, release) before ending the turn.\n${renderRunProgress(run)}\n${tasks}`.slice(0, limit);
 }
 
 /** Pure status text for the extension-owned `usap` footer slot. */
@@ -1299,6 +1306,9 @@ export function createUltratermSubagentsExtension(
      * cause): without it a reload would queue that run's completion again. A failed write is retried with
      * the next successful save, like every other receipt. */
     const markDeliveredDurably = (current: SessionRuntime, runId: string): void => {
+      current.acknowledgedCompletions.add(runId);
+      current.completionBuffer = current.completionBuffer.filter((item) => item.runId !== runId);
+      current.awaitingReceipt.delete(runId);
       if (!current.store) return;
       current.checkpointReceipts.add(runId);
       try {
@@ -1418,6 +1428,12 @@ export function createUltratermSubagentsExtension(
         closed: false,
         completionBuffer: [],
         awaitingReceipt: new Set(),
+        acknowledgedCompletions: new Set(),
+        wakeAttempted: new Set(),
+        // Captured per native session; batch hosts can opt out before startup.
+        wakeParent: !/^(0|false|off)$/i.test((process.env.STEAK_USAP_WAKE_PARENT ?? "").trim()),
+        wakePending: false,
+        flushingCompletions: false,
         deliveryRetries: 0,
         store,
         checkpointHealth: new PersistenceHealth(),
@@ -1430,7 +1446,8 @@ export function createUltratermSubagentsExtension(
         readOnlyCheckpoints: () => readOnlyCheckpointsFor(owner),
         shutdownWarning: lastShutdownWarning?.owner === owner ? lastShutdownWarning.message : undefined,
         attachStore: (candidate: CheckpointStore, adoptCtx?: ExtensionContext) => adoptStore(candidate, adoptCtx),
-        agentIdle: true,
+        // Tools can initialize the runtime after agent_start already fired.
+        agentIdle: ctx.isIdle?.() ?? true,
         startupWatchers: new Set(),
       };
       runtime = created;
@@ -1468,9 +1485,11 @@ export function createUltratermSubagentsExtension(
           // A settled tool call may no longer accept updates.
         }
         binding.onUpdate = undefined;
-        if (binding.background) {
+        if (binding.background && !current.acknowledgedCompletions.has(run.id)) {
           current.completionBuffer.push({ runId: run.id, text: [renderCompletionMessage(run), reviewFallbackReceipt(run, current.store?.directory)].filter(Boolean).join("\n") });
-          flushCompletions(current);
+          // Let completions from the same coordinator tick (and terminal hub
+          // observations) coalesce before submitting a single wake.
+          queueMicrotask(() => flushCompletions(current));
         }
       }).catch((error: unknown) => {
         if (current.closed) return;
@@ -1478,17 +1497,18 @@ export function createUltratermSubagentsExtension(
         current.workerRuntimes.delete(`${runId}:review-fallback`);
         setStatus(current);
         reconcileRetainedBindings(current);
+        if (!current.bindings.get(runId)?.background || current.acknowledgedCompletions.has(runId)) return;
         current.completionBuffer.push({ runId, text:
-          `USAP ${runId} infrastructure failure: ${error instanceof Error ? error.message : String(error)}`
+          `Background run ${runId} finished: continue the parent task (integrate results, verify, release) before ending the turn.\nUSAP ${runId} infrastructure failure: ${error instanceof Error ? error.message : String(error)}`
             .slice(0, MAX_COMPLETION_MESSAGE),
         });
-        flushCompletions(current);
+        queueMicrotask(() => flushCompletions(current));
       });
       return completion;
     };
 
     // Short, bounded retries bridge SDK idle/append transitions without polling
-    // throughout a long task or starting another model turn.
+    // throughout a long task or re-submitting an accepted wake.
     const retryDelivery = (current: SessionRuntime): void => {
       if (current.closed || !ownsContext(current, current.statusContext) || current.deliveryRetry) return;
       if (current.deliveryRetries >= 20) {
@@ -1503,45 +1523,34 @@ export function createUltratermSubagentsExtension(
       current.deliveryRetry.unref?.();
     };
 
-    /** Passive delivery adds no model call. Never resend an unconfirmed SDK
-     * submission: it may already be queued. Native receipts acknowledge it. */
+    /** Busy completions steer into the current turn. Idle background completions
+     * request at most one new turn per flush; receipts prevent repeat delivery. */
     const flushCompletions = (current: SessionRuntime): void => {
-      if (runtime !== current || current.closed || !ownsContext(current, current.statusContext) || !current.agentIdle) return;
-      if (current.statusContext?.isIdle && !current.statusContext.isIdle()) {
+      if (runtime !== current || current.closed || !ownsContext(current, current.statusContext) || current.flushingCompletions) return;
+      if (current.agentIdle && current.statusContext?.isIdle && !current.statusContext.isIdle()) {
         retryDelivery(current);
         return;
       }
-      const acknowledge = (ids: Set<string>): void => {
-        current.completionBuffer = current.completionBuffer.filter((item) => {
-          if (!ids.has(item.runId)) return true;
-          current.awaitingReceipt.delete(item.runId);
-          if (current.store) {
-            current.checkpointReceipts.add(item.runId);
-            try {
-              current.store.markDelivered(item.runId);
-              current.checkpointReceipts.delete(item.runId);
-            } catch (error) {
-              const run = readRun(current, item.runId);
-              if (run) checkpointFailed(current, run, error, "receipt");
-            }
+      current.flushingCompletions = true;
+      try {
+        const acknowledge = (ids: Set<string>): void => {
+          for (const id of ids) {
+            if (current.completionBuffer.some((item) => item.runId === id)) markDeliveredDurably(current, id);
           }
-          // The native host observed this completion: never submit it again,
-          // even if its durable receipt must be retried on a later save.
-          return false;
-        });
-      };
-      acknowledge(observedCompletionIds(current.statusContext) ?? new Set());
-      while (current.completionBuffer.some((item) => !current.awaitingReceipt.has(item.runId))) {
-        const batch: typeof current.completionBuffer = [];
-        let used = 0;
-        for (const item of current.completionBuffer) {
-          if (current.awaitingReceipt.has(item.runId)) continue;
-          if (used + item.text.length + 2 > MAX_COMPLETION_MESSAGE && batch.length > 0) break;
-          batch.push(item);
-          used += item.text.length + 2;
-        }
-        try {
-          pi.sendMessage({
+        };
+        acknowledge(observedCompletionIds(current.statusContext) ?? new Set());
+        current.completionBuffer = current.completionBuffer.filter((item) => !current.acknowledgedCompletions.has(item.runId) && !current.store?.get(item.runId)?.delivered);
+        let wakeUsed = false;
+        while (current.completionBuffer.some((item) => !current.awaitingReceipt.has(item.runId))) {
+          const batch: typeof current.completionBuffer = [];
+          let used = 0;
+          for (const item of current.completionBuffer) {
+            if (current.awaitingReceipt.has(item.runId)) continue;
+            if (used + item.text.length + 2 > MAX_COMPLETION_MESSAGE && batch.length > 0) break;
+            batch.push(item);
+            used += item.text.length + 2;
+          }
+          const message = {
             customType: "ultraterm-subagents-complete",
             content: batch.map((item) => item.text).join("\n\n").slice(0, MAX_COMPLETION_MESSAGE),
             display: true,
@@ -1552,21 +1561,47 @@ export function createUltratermSubagentsExtension(
                 return run ? [{ ...toRunView(run, linksFor(current, run)), goal: "", tasks: run.tasks.map((task) => ({ ...taskView(task), output: "", ...(task.error ? { error: taskDetail(task) } : {}) })) }] : [];
               }),
             },
-          }, { deliverAs: "steer", triggerTurn: false });
-        } catch { retryDelivery(current); return; }
-        for (const item of batch) current.awaitingReceipt.add(item.runId);
-        // Real Pi appends passive idle messages synchronously. Preserve pending
-        // evidence if a host queues them instead; do not manufacture a receipt.
-        const observed = observedCompletionIds(current.statusContext);
-        acknowledge(observed ?? new Set());
-      }
-      if (current.completionBuffer.length) retryDelivery(current);
-      else {
-        clearTimeout(current.deliveryRetry);
-        current.deliveryRetry = undefined;
-        current.deliveryRetries = 0;
-        try { current.statusContext?.ui.setStatus("usap-delivery", undefined); } catch { /* Observation only. */ }
-      }
+          };
+          const triggerTurn = current.agentIdle && current.wakeParent && !current.wakePending && !wakeUsed
+            && batch.some((item) => !current.wakeAttempted.has(item.runId));
+          if (triggerTurn) {
+            wakeUsed = true;
+            current.wakePending = true;
+            // Include overflow chunks so even a rejected trigger followed by a
+            // passive retry cannot turn one coalesced flush into multiple wakes.
+            for (const item of current.completionBuffer) current.wakeAttempted.add(item.runId);
+          }
+          try {
+            // Pi treats triggerTurn:false as deferred passive append even when
+            // busy. Omit it then: native steer joins the current run, never starts
+            // a new one; only an idle parent gets an explicit wake request.
+            pi.sendMessage(message, current.agentIdle
+              ? { deliverAs: "steer", triggerTurn }
+              : { deliverAs: "steer" });
+          } catch {
+            if (!triggerTurn) { retryDelivery(current); return; }
+            current.wakePending = false;
+            // A host may append before throwing: honor that receipt, otherwise
+            // fall back to the old passive path, with bounded passive-only retries.
+            const observed = observedCompletionIds(current.statusContext) ?? new Set<string>();
+            acknowledge(observed);
+            if (!batch.every((item) => observed.has(item.runId))) {
+              try { pi.sendMessage(message, { deliverAs: "steer", triggerTurn: false }); }
+              catch { retryDelivery(current); return; }
+            }
+          }
+          for (const item of batch) if (!current.acknowledgedCompletions.has(item.runId)) current.awaitingReceipt.add(item.runId);
+          // Do not manufacture a receipt for hosts that queue submissions.
+          acknowledge(observedCompletionIds(current.statusContext) ?? new Set());
+        }
+        if (current.completionBuffer.length) retryDelivery(current);
+        else {
+          clearTimeout(current.deliveryRetry);
+          current.deliveryRetry = undefined;
+          current.deliveryRetries = 0;
+          try { current.statusContext?.ui.setStatus("usap-delivery", undefined); } catch { /* Observation only. */ }
+        }
+      } finally { current.flushingCompletions = false; }
     };
 
     pi.registerMessageRenderer?.("ultraterm-subagents-complete", (message, options, theme) => {
@@ -1609,7 +1644,7 @@ export function createUltratermSubagentsExtension(
     });
 
     pi.on("agent_start", async (_event, ctx) => {
-      if (runtime && ownsContext(runtime, ctx)) { runtime.statusContext = ctx; runtime.agentIdle = false; }
+      if (runtime && ownsContext(runtime, ctx)) { runtime.statusContext = ctx; runtime.agentIdle = false; runtime.wakePending = false; }
     });
 
     pi.on("agent_settled", async (_event, ctx) => {
@@ -2192,6 +2227,7 @@ export function createUltratermSubagentsExtension(
         }
 
         if (params.action === "status") {
+          if (snapshot.state !== "running") markDeliveredDurably(current, runId);
           const warning = sessionWarning(current);
           return {
             content: [{ type: "text" as const, text: warning ? `${renderRunResult(snapshot)}\n${warning}` : renderRunResult(snapshot) }],
@@ -2200,6 +2236,7 @@ export function createUltratermSubagentsExtension(
         }
 
         if (params.action === "wait" && !binding) {
+          if (snapshot.state !== "running") markDeliveredDurably(current, runId);
           return { content: [{ type: "text" as const, text: [renderRunResult(snapshot), reviewFallbackReceipt(snapshot, current.store?.directory)].filter(Boolean).join("\n") }], details: { action: "wait", run: toRunView(snapshot), timedOut: false } };
         }
         if (!binding) throw new Error("Archived run: use status, diagnose, or explicitly resume unfinished work");
@@ -2209,6 +2246,7 @@ export function createUltratermSubagentsExtension(
           try {
             const waited = await current.coordinator.wait(runId, params.mode ?? "next", { timeoutMs, signal });
             assertOwner(current, ctx);
+            if (waited.state !== "running") markDeliveredDurably(current, runId);
             const result: {
               content: Array<{ type: "text"; text: string }>;
               details: HubDetails;

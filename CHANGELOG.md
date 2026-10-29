@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.12.2 (2026-10-28)
+
+- Settled background runs now wake an idle parent for one integration turn,
+  coalescing simultaneous completions without repeating acknowledged results.
+  Busy parents receive completion steers in their current run; headless/batch hosts can
+  opt out with `STEAK_USAP_WAKE_PARENT=0`, and hosts that reject a wake fall
+  back to bounded passive delivery.
+
 ## 0.12.1 (2026-10-28)
 
 - Machine launch slots now admit the oldest eligible waiter across parents,

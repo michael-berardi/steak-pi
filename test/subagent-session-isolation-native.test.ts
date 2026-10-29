@@ -16,7 +16,7 @@ import { emptyUsage, type WorkerRunContext, type WorkerResult } from "../src/sub
 import { sdkPiAiUrl } from "./helpers/pi-sdk-dependencies.ts";
 
 // Resolve the SDK's own dependency; never import another test (which registers tests).
-const { InMemoryCredentialStore, InMemoryModelsStore } = await import(/* @vite-ignore */ sdkPiAiUrl);
+const { AssistantMessageEventStream, InMemoryCredentialStore, InMemoryModelsStore } = await import(/* @vite-ignore */ sdkPiAiUrl);
 const model = {
   id: "mimo-v2.6-flash", name: "Offline MiMo fixture", provider: "xiaomi",
   api: "openai-completions" as const, baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1",
@@ -30,11 +30,11 @@ const invoke = (capture: Capture, tool: "hub" | "dispatch", params: object, ctx 
   capture[tool].execute("offline-captured-call", params, AbortSignal.timeout(5000), undefined, ctx as ExtensionToolContext);
 const list = async (capture: Capture) => (await invoke(capture, "hub", { action: "list" })).details as { runs: RunView[] };
 
-/** Native SDK runtime/resource loading/contexts/checkpoints; only worker execution is emulated.
- * Captured execute handlers avoid model dispatch entirely; provider transport throws if invoked.
+/** Native SDK runtime/resource loading/contexts/checkpoints; workers and optional
+ * parent model responses are synthetic. Isolation-only cases forbid model dispatch.
  * All persistent sessions here are synthetic fixtures in one private temporary directory.
  */
-async function fixture() {
+async function fixture(wakeParent = false, holdFirstTurn = false) {
   const cwd = await mkdtemp(join(tmpdir(), "usap-native-isolation-"));
   const root = join(cwd, "checkpoints");
   const sessions: AgentSessionRuntime[] = [];
@@ -43,8 +43,26 @@ async function fixture() {
   const fetchGuard = vi.spyOn(globalThis, "fetch").mockImplementation(async () => { throw new Error("Network forbidden"); });
   vi.stubEnv("STEAK_PI_USAP_MACHINE", "off");
   vi.stubEnv("STEAK_PI_USAP_CAPS", "off");
+  vi.stubEnv("STEAK_USAP_WAKE_PARENT", wakeParent ? "1" : "0");
   const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsStore: new InMemoryModelsStore(), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false });
-  const transport = vi.fn((): never => { throw new Error("Model transport forbidden: captured handlers only"); });
+  const parentContexts: unknown[] = [];
+  const turnGate: { release?: () => void } = {};
+  const lifecycle = { starts: 0, settled: 0 };
+  const transport = vi.fn((_model: unknown, context: unknown) => {
+    if (!wakeParent) throw new Error("Model transport forbidden: captured handlers only");
+    parentContexts.push(structuredClone(context));
+    const message = { role: "assistant", content: [{ type: "text", text: "Synthetic parent turn completed." }],
+      api: model.api, provider: model.provider, model: model.id, usage: emptyUsage(), stopReason: "stop", timestamp: Date.now() };
+    const events = new AssistantMessageEventStream();
+    const finish = () => {
+      events.push({ type: "start", partial: message });
+      events.push({ type: "done", reason: "stop", message });
+      events.end();
+    };
+    if (holdFirstTurn && parentContexts.length === 1) turnGate.release = finish;
+    else finish();
+    return events;
+  });
   modelRuntime.registerNativeProvider({ id: model.provider, name: "Offline isolation",
     getModels: () => [model], auth: { apiKey: { name: "Keyless", resolve: async () => ({ auth: {}, source: "offline" }) } },
     stream: transport, streamSimple: transport });
@@ -76,6 +94,8 @@ async function fixture() {
           systemPrompt: "Offline session-isolation fixture. Never call a provider.",
           extensionFactories: [extension, pi => {
             pi.on("session_start", (event, context) => { ctx = context; reason = event.reason; });
+            pi.on("agent_start", () => { lifecycle.starts++; });
+            pi.on("agent_settled", () => { lifecycle.settled++; });
             // Registered after USAP: cancellation must not undo live worker state.
             pi.on("session_before_switch", () => ({ cancel: transitions.cancel }));
             pi.on("session_before_fork", () => ({ cancel: transitions.cancel }));
@@ -100,11 +120,11 @@ async function fixture() {
     await vi.waitFor(() => expect(workers.has(run.runId)).toBe(true), { timeout: 2000 });
     return run;
   }
-  return { cwd, root, host, dispatch, workers, errors, async close() {
+  return { cwd, root, host, dispatch, workers, errors, transport, parentContexts, lifecycle, turnGate, async close() {
     try {
       for (const session of sessions) await session.dispose();
       expect(errors).toEqual([]);
-      expect(transport).not.toHaveBeenCalled();
+      if (!wakeParent) expect(transport).not.toHaveBeenCalled();
       expect(fetchGuard).not.toHaveBeenCalled();
     } finally { fetchGuard.mockRestore(); vi.unstubAllEnvs(); await rm(cwd, { recursive: true, force: true }); }
   } };
@@ -119,6 +139,48 @@ async function rejectForeign(capture: Capture, run: RunView) {
 
 // Bounded real Pi 0.86 replacement flows, not synthetic lifecycle event emission.
 describe("native SDK session ownership isolation (offline)", () => {
+  it("synthetic: settled background work wakes its idle native parent exactly once without human input", async () => {
+    const f = await fixture(true);
+    try {
+      const parent = await f.host();
+      const run = await f.dispatch(parent.current, "synthetic-native-wake");
+      await parent.runtime.session.prompt("Synthetic parent task: integrate the background result when it finishes.");
+      expect(f.lifecycle).toEqual({ starts: 1, settled: 1 });
+      expect(parent.current.ctx.isIdle()).toBe(true);
+      expect(f.transport).toHaveBeenCalledTimes(1);
+      f.workers.get(run.runId)!.finish();
+      await vi.waitFor(() => expect(f.lifecycle).toEqual({ starts: 2, settled: 2 }));
+      expect(f.transport).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(f.parentContexts[1])).toContain(`Background run ${run.runId} finished: continue the parent task (integrate results, verify, release) before ending the turn.`);
+      const entries = parent.current.ctx.sessionManager.getEntries();
+      expect(entries.filter(e => e.type === "custom_message" && e.customType === "ultraterm-subagents-complete")).toHaveLength(1);
+      await new Promise(resolve => setTimeout(resolve, 150));
+      expect(f.lifecycle).toEqual({ starts: 2, settled: 2 });
+      expect(f.transport).toHaveBeenCalledTimes(2);
+    } finally { await f.close(); }
+  }, 10000);
+  it("synthetic: busy native parent integrates a steered completion in the same agent run", async () => {
+    const f = await fixture(true, true);
+    try {
+      const parent = await f.host();
+      const run = await f.dispatch(parent.current, "synthetic-native-busy");
+      const prompt = parent.runtime.session.prompt("Synthetic parent task: keep working and integrate the background result.");
+      await vi.waitFor(() => expect(f.turnGate.release).toBeTypeOf("function"));
+      f.workers.get(run.runId)!.finish();
+      // The native model request stays held until its real steer queue receives the completion.
+      await vi.waitFor(() => expect(parent.runtime.session.agent.hasQueuedMessages()).toBe(true));
+      expect(f.lifecycle).toEqual({ starts: 1, settled: 0 });
+      expect(f.transport).toHaveBeenCalledTimes(1);
+      f.turnGate.release!();
+      await prompt;
+      expect(f.lifecycle).toEqual({ starts: 1, settled: 1 });
+      expect(f.transport).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(f.parentContexts[1])).toContain(`Background run ${run.runId} finished:`);
+      await new Promise(resolve => setTimeout(resolve, 150));
+      expect(f.lifecycle).toEqual({ starts: 1, settled: 1 });
+    } finally { f.turnGate.release?.(); await f.close(); }
+  }, 10000);
+
   it("preserves work on cancelled and invalid transitions, then checkpoints a committed switch", async () => {
     const f = await fixture();
     try {
@@ -229,10 +291,11 @@ describe("native SDK session ownership isolation (offline)", () => {
       f.workers.get(ra.runId)!.finish();
       f.workers.get(rb.runId)!.finish();
       for (const [host, run, foreign] of [[a, ra, rb], [b, rb, ra]] as const) {
+        // Observe the unsolicited native receipt before hub wait acknowledges it.
+        await vi.waitFor(() => expect(JSON.stringify(host.current.ctx.sessionManager.getEntries())).toContain("ultraterm-subagents-complete"));
         const result = await invoke(host.current, "hub", { action: "wait", runId: run.runId, mode: "all", timeoutMs: 2000 });
         expect(JSON.stringify(result)).toContain(`PRIVATE:${run.goal}`);
         expect(JSON.stringify(result)).not.toContain(`PRIVATE:${foreign.goal}`);
-        await vi.waitFor(() => expect(JSON.stringify(host.current.ctx.sessionManager.getEntries())).toContain("ultraterm-subagents-complete"));
         const receipts = host.current.ctx.sessionManager.getEntries().filter(e => e.type === "custom_message" && e.customType === "ultraterm-subagents-complete");
         expect(JSON.stringify(receipts)).toContain(run.ownerSessionId);
         expect(JSON.stringify(receipts)).not.toContain(foreign.runId);
