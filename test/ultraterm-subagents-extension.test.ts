@@ -82,7 +82,7 @@ function harness(runnerFactory: (relay: RelayBroker) => WorkerRunner, durable?: 
     sessionManager: { getSessionFile: () => durable?.parent, getSessionId: () => durable?.parent ?? cwd, getEntries: () => messages.map(({ message }) => ({ type: "custom_message", ...message })) },
     ui: { setStatus(_key: string, value: string | undefined) { statuses.push(value); } },
   } as any;
-  return { tools, handlers, messages, statuses, entries, ctx };
+  return { tools, handlers, messages, statuses, entries, ctx, pi };
 }
 
 async function flush(): Promise<void> {
@@ -114,6 +114,7 @@ function syntheticClaudeReceipt(account: "primary" | "b"): NonNullable<TaskRecor
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -758,7 +759,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     expect(result.usage.totalTokens).toBe(30);
   });
 
-  it("starts background work, delivers one passive completion, and attributes usage on the first terminal wait only", async () => {
+  it("synthetic: starts background work, wakes once, and attributes usage on the first terminal wait only", async () => {
     const h = harness(() => async ({ task }) => ({ state: "done", output: task.label, turns: 1, usage: usage(1) }));
     const started = await h.tools.get("ultraterm_subagents").execute("call", {
       goal: "background",
@@ -769,7 +770,7 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     expect(started.usage).toBeUndefined();
     await flush();
     expect(h.messages).toHaveLength(1);
-    expect(h.messages[0].options).toEqual({ deliverAs: "steer", triggerTurn: false });
+    expect(h.messages[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
 
     const runId = started.details.run.runId;
     const first = await h.tools.get("ultraterm_hub").execute("hub", {
@@ -945,19 +946,19 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     expect(() => broker.bind(firstRunId, "parent")).toThrow(/unknown relay run/i);
   });
 
-  it("retries a transient SDK idle boundary without another user turn", async () => {
+  it("synthetic: retries a transient SDK idle boundary without another user turn", async () => {
     vi.useFakeTimers();
     const h = harness(() => async () => ({ state: "done", output: "ready", turns: 1, usage: emptyUsage() }));
     let idle = false;
-    h.ctx.isIdle = () => idle;
     await h.handlers.get("session_start")!({}, h.ctx);
+    h.ctx.isIdle = () => idle;
     await h.tools.get("ultraterm_subagents").execute("call", { goal: "idle edge", background: true, tasks: [{ label: "one", task: "one" }] }, undefined, undefined, h.ctx);
     await flush();
     expect(h.messages).toHaveLength(0);
     idle = true;
     await vi.advanceTimersByTimeAsync(100);
     expect(h.messages).toHaveLength(1);
-    expect(h.messages[0].options.triggerTurn).toBe(false);
+    expect(h.messages[0].options.triggerTurn).toBe(true);
     await h.handlers.get("session_shutdown")!({}, h.ctx);
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -1067,22 +1068,201 @@ describe("UltraTerm Subagent Protocol Pi extension", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("delivers busy-parent completions at settlement, once, without waiting for user input", async () => {
-    const h = harness(() => async () => ({ state: "done", output: "ready", turns: 1, usage: emptyUsage() }));
-    await h.handlers.get("session_start")!({}, h.ctx);
-    await h.handlers.get("agent_start")!({}, h.ctx);
-    for (let index = 0; index < 3; index++) {
-      await h.tools.get("ultraterm_subagents").execute("call", { goal: "busy", background: true, tasks: [{ label: "one", task: "one" }] }, undefined, undefined, h.ctx);
+  describe("synthetic background parent wake", () => {
+    const done = () => ({ state: "done" as const, output: "synthetic result", turns: 1, usage: emptyUsage() });
+    function controlled() {
+      const finish = new Map<string, () => void>();
+      const h = harness(() => async ({ run }) => {
+        await new Promise<void>((resolve) => finish.set(run.id, resolve));
+        return done();
+      });
+      const start = async (background = true) => {
+        const result = await h.tools.get("ultraterm_subagents").execute("dispatch", {
+          goal: "Synthetic wake regression", background, tasks: [{ label: "leaf", task: "Finish" }],
+        }, undefined, undefined, h.ctx);
+        return result.details.run.runId as string;
+      };
+      return { ...h, start, finish };
     }
-    await flush();
-    expect(h.messages).toHaveLength(0);
-    await h.handlers.get("agent_settled")!({}, h.ctx);
-    expect(h.messages).toHaveLength(1);
-    expect(h.messages[0].message.details.coalesced).toBe(3);
-    expect(h.messages[0].options).toEqual({ deliverAs: "steer", triggerTurn: false });
-    await h.handlers.get("agent_start")!({}, h.ctx);
-    await h.handlers.get("agent_settled")!({}, h.ctx);
-    expect(h.messages).toHaveLength(1);
+
+    it("idle background completion starts exactly one turn with an actionable first line", async () => {
+      const h = controlled();
+      try {
+        const id = await h.start();
+        h.finish.get(id)!();
+        await flush();
+        expect(h.messages).toHaveLength(1);
+        expect(h.messages[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
+        expect(h.messages[0].message.content.split("\n")[0]).toBe(`Background run ${id} finished: continue the parent task (integrate results, verify, release) before ending the turn.`);
+        await h.handlers.get("agent_start")!({}, h.ctx);
+        await h.handlers.get("agent_settled")!({}, h.ctx);
+        expect(h.messages).toHaveLength(1);
+      } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+    });
+
+    it("busy parent steers into its current turn without a trigger or a later wake", async () => {
+      const h = controlled();
+      try {
+        await h.handlers.get("session_start")!({}, h.ctx);
+        await h.handlers.get("agent_start")!({}, h.ctx);
+        h.ctx.isIdle = () => false;
+        const id = await h.start();
+        h.finish.get(id)!();
+        await flush();
+        expect(h.messages).toHaveLength(1);
+        expect(h.messages[0].options).toEqual({ deliverAs: "steer" });
+        h.ctx.isIdle = () => true;
+        await h.handlers.get("agent_settled")!({}, h.ctx);
+        expect(h.messages).toHaveLength(1);
+      } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+    });
+
+    it("runtime initialized by a mid-turn dispatch still steers without a trigger", async () => {
+      const h = controlled();
+      try {
+        await h.handlers.get("agent_start")!({}, h.ctx);
+        h.ctx.isIdle = () => false;
+        const id = await h.start();
+        h.finish.get(id)!();
+        await flush();
+        expect(h.messages).toHaveLength(1);
+        expect(h.messages[0].options).toEqual({ deliverAs: "steer" });
+      } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+    });
+
+    it("two runs settling together coalesce into one triggered send", async () => {
+      const h = controlled();
+      try {
+        const ids = [await h.start(), await h.start()];
+        ids.forEach((id) => h.finish.get(id)!());
+        await flush();
+        expect(h.messages).toHaveLength(1);
+        expect(h.messages[0].message.details).toMatchObject({ coalesced: 2, runIds: ids });
+        expect(h.messages[0].options.triggerTurn).toBe(true);
+      } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+    });
+
+    it.each(["status", "wait"])("terminal hub %s acknowledges a completion before idle delivery", async (action) => {
+      vi.useFakeTimers();
+      const h = controlled();
+      await h.handlers.get("session_start")!({}, h.ctx);
+      h.ctx.isIdle = () => false;
+      try {
+        const id = await h.start();
+        h.finish.get(id)!();
+        await flush();
+        const result = await h.tools.get("ultraterm_hub").execute("observe", { action, runId: id, mode: "all", timeoutMs: 100 }, undefined, undefined, h.ctx);
+        expect(result.details.run.state).toBe("done");
+        h.ctx.isIdle = () => true;
+        await h.handlers.get("agent_settled")!({}, h.ctx);
+        await vi.advanceTimersByTimeAsync(300);
+        expect(h.messages).toHaveLength(0);
+      } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+    });
+
+    it("a terminal wait already in flight acknowledges before delivery", async () => {
+      const h = controlled();
+      try {
+        const id = await h.start();
+        const observed = h.tools.get("ultraterm_hub").execute("observe", { action: "wait", runId: id, mode: "all", timeoutMs: 100 }, undefined, undefined, h.ctx);
+        h.finish.get(id)!();
+        await observed;
+        await flush();
+        expect(h.messages).toHaveLength(0);
+      } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+    });
+
+    it("a running status does not acknowledge the eventual completion", async () => {
+      const h = controlled();
+      try {
+        const id = await h.start();
+        const observed = await h.tools.get("ultraterm_hub").execute("observe", { action: "status", runId: id }, undefined, undefined, h.ctx);
+        expect(observed.details.run.state).toBe("running");
+        h.finish.get(id)!();
+        await flush();
+        expect(h.messages).toHaveLength(1);
+        expect(h.messages[0].options.triggerTurn).toBe(true);
+      } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+    });
+
+    it("a pending native wake prevents a second trigger before agent_start", async () => {
+      vi.useFakeTimers();
+      const h = controlled();
+      h.ctx.sessionManager.getEntries = () => [];
+      try {
+        for (let index = 0; index < 2; index++) {
+          const id = await h.start();
+          h.finish.get(id)!();
+          await flush();
+        }
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(h.messages.map(({ options }) => options.triggerTurn)).toEqual([true, false]);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+    });
+
+    it("permanent host rejection bounds passive retries and never retries the trigger", async () => {
+      vi.useFakeTimers();
+      const h = controlled();
+      const send = vi.spyOn(h.pi, "sendMessage").mockImplementation(() => { throw new Error("synthetic host rejection"); });
+      try {
+        const id = await h.start();
+        h.finish.get(id)!();
+        await flush();
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(send.mock.calls.filter(([, options]) => options?.triggerTurn)).toHaveLength(1);
+        expect(send).toHaveBeenCalledTimes(22); // one wake, one fallback, 20 passive retries
+        expect(vi.getTimerCount()).toBe(0);
+        expect(h.statuses.some((text) => text?.includes("delivery unconfirmed"))).toBe(true);
+      } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+    });
+
+    it.each(["0", "false", "off"])("disabled env (%s) delivers passively", async (value) => {
+      vi.stubEnv("STEAK_USAP_WAKE_PARENT", value);
+      const h = controlled();
+      try {
+        const id = await h.start();
+        h.finish.get(id)!();
+        await flush();
+        expect(h.messages).toHaveLength(1);
+        expect(h.messages[0].options).toEqual({ deliverAs: "steer", triggerTurn: false });
+      } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+    });
+
+    it.each([false, true])("trigger rejection falls back passively without a trigger retry (passive rejects once=%s)", async (rejectPassive) => {
+      vi.useFakeTimers();
+      const h = controlled();
+      const original = h.pi.sendMessage.bind(h.pi);
+      let passiveRejected = false;
+      const send = vi.spyOn(h.pi, "sendMessage").mockImplementation((message, options) => {
+        if (options?.triggerTurn) throw new Error("synthetic host rejects continuation");
+        if (rejectPassive && !passiveRejected) { passiveRejected = true; throw new Error("synthetic transient passive rejection"); }
+        original(message, options);
+      });
+      try {
+        const id = await h.start();
+        h.finish.get(id)!();
+        await flush();
+        await vi.advanceTimersByTimeAsync(3000);
+        await h.handlers.get("agent_settled")!({}, h.ctx);
+        expect(send.mock.calls.filter(([, options]) => options?.triggerTurn)).toHaveLength(1);
+        expect(send).toHaveBeenCalledTimes(rejectPassive ? 3 : 2);
+        expect(h.messages).toHaveLength(1);
+        expect(h.messages[0].options.triggerTurn).toBe(false);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+    });
+
+    it("foreground work never emits a completion wake", async () => {
+      const h = harness(() => async () => done());
+      try {
+        await h.tools.get("ultraterm_subagents").execute("foreground", {
+          goal: "Synthetic foreground", background: false, tasks: [{ label: "leaf", task: "Finish" }],
+        }, undefined, undefined, h.ctx);
+        await h.handlers.get("agent_settled")!({}, h.ctx);
+        expect(h.messages).toHaveLength(0);
+      } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
+    });
   });
 
   it("recovers completed history and diagnoses it without replaying completed work", async () => {
