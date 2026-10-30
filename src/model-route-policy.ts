@@ -319,9 +319,12 @@ export const DEFAULT_TEXT_WORKER_CHAIN: readonly WorkerRouteStep[] = [
   { provider: "openai-codex", id: "gpt-6.1-terra" },
   { provider: "opencode-go", id: "deepseek-v4.1-flash" },
 ];
-/** Automatic image runs stay on MiMo V2.6 Flash alone; an unavailable image
- * head fails with its cause instead of joining the automatic text chain. */
+/** Automatic image runs use GPT-6.1 Terra, which reads images, then MiMo V2.6 Flash
+ * (2026-10-29: the MiMo-only chain refused every image dispatch that named no model or
+ * the Terra profile, while explicit openai-codex/gpt-6.1-terra read scans correctly).
+ * Go DeepSeek is text-only and never joins this chain. */
 export const DEFAULT_MULTIMODAL_WORKER_CHAIN: readonly WorkerRouteStep[] = [
+  { provider: "openai-codex", id: "gpt-6.1-terra" },
   { provider: "xiaomi", id: "mimo-v2.6-flash" },
 ];
 /** Token Plan routes an automatic profile may keep as its own chain head. A profile

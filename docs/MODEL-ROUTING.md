@@ -203,8 +203,9 @@ are preserved; the operator's routine default is `steak-pi/opencode-go`.
   example every Claude account is ineligible) or also fails to launch, the call fails
   synchronously naming **both** causes. Explicit routes, reviewer and image waves, the Claude
   tier itself and the `claude-code-api` route never fall through.
-- Image workers stay capability-aware on the existing MiMo image chain; Terra is
-  not an automatic substitute for that image chain, despite supporting image input.
+- Automatic image workers (requireImages with no model, or the Terra profile) use
+  GPT-6.1 Terra, which reads images, then MiMo V2.6 Flash. The text-only Go route
+  never joins the image chain; an explicit MiMo profile keeps its own image route.
 - Legacy native-Pi MiMo profiles retain their explicit identities and per-profile
   chains. Astra and Luna explicit identities are unchanged.
 

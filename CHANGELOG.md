@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.15.1 (2026-10-29)
+
+- Automatic image work (requireImages with no model named, or the Terra
+  profile) now runs on GPT-6.1 Terra, then MiMo V2.6 Flash. Before, the image
+  chain was MiMo Flash alone, so these dispatches were refused with "No
+  authenticated route in the default multimodal worker chain" while an explicit
+  openai-codex/gpt-6.1-terra read the same scans. The text-only Go route never
+  joins the image chain.
+
 ## 0.15.0 (2026-10-29)
 
 - Hold Backspace for more than two seconds to clear the input editor without interrupting the agent. Set `holdDeleteClearsInput` to `false` in `~/.pi/agent/steak-pi.json` to disable it.
