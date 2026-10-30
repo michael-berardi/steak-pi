@@ -277,7 +277,8 @@ describe("synthetic: GPT coding-plan route policy", () => {
       { provider: "openai-codex", id: "gpt-6-astra" },
       { provider: "openai-codex", id: "gpt-6.1-terra" }, { provider: "opencode-go", id: "deepseek-v4.1-flash" }]);
     expect(EXPERT_MULTIMODAL_REVIEW_CHAIN).toEqual([
-      { provider: "openai-codex", id: "gpt-6-astra" }, { provider: "xiaomi", id: "mimo-v2.6-flash" }]);
+      { provider: "openai-codex", id: "gpt-6-astra" }, { provider: "openai-codex", id: "gpt-6.1-terra" },
+      { provider: "xiaomi", id: "mimo-v2.6-flash" }]);
     expect(isExpertReviewModel(astra)).toBe(true);
     expect(isExpertReviewModel({ ...astra, id: "gpt-5.6-luna" })).toBe(false);
     expect(DEFAULT_TEXT_WORKER_CHAIN.some(isExpertReviewModel)).toBe(false);
@@ -320,7 +321,7 @@ describe("synthetic: GPT coding-plan route policy", () => {
     // Text has a Terra fallback; the multimodal chain has no fallback.
     expect([...DEFAULT_TEXT_WORKER_CHAIN]).toEqual([
       { provider: "openai-codex", id: "gpt-6.1-terra" }, { provider: "opencode-go", id: "deepseek-v4.1-flash" }]);
-    expect(DEFAULT_MULTIMODAL_WORKER_CHAIN).toEqual([{ provider: "xiaomi", id: "mimo-v2.6-flash" }]);
+    expect(DEFAULT_MULTIMODAL_WORKER_CHAIN).toEqual([{ provider: "openai-codex", id: "gpt-6.1-terra" }, { provider: "xiaomi", id: "mimo-v2.6-flash" }]);
     // Both steps are actual subscription routes: selected with NO paid allowlist grant.
     expect(selectChainedWorkerModel(chainRegistry(), DEFAULT_TEXT_WORKER_CHAIN)).toBe(chainModels.sol);
     expect(selectChainedWorkerModel(chainRegistry(), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => false }))
@@ -709,10 +710,12 @@ describe("synthetic: per-profile Token Plan chain heads (0.8.1)", () => {
   const sol = { provider: "openai-codex", id: "gpt-6.1-terra" };
   it("leads routine workers with Flash and keeps a Pro head for Pro profiles", () => {
     expect(DEFAULT_TEXT_WORKER_CHAIN).toEqual([sol, { provider: "opencode-go", id: "deepseek-v4.1-flash" }]);
-    expect(DEFAULT_MULTIMODAL_WORKER_CHAIN).toEqual([flash]);
+    expect(DEFAULT_MULTIMODAL_WORKER_CHAIN).toEqual([sol, flash]);
     expect(workerChainFor(pro, true)).toEqual([pro]);
     expect(workerChainFor(undefined, false)).toBe(DEFAULT_TEXT_WORKER_CHAIN);
-    expect(workerChainFor(flash, true)).toBe(DEFAULT_MULTIMODAL_WORKER_CHAIN);
+    // An explicit MiMo Flash profile keeps its own image route; only the automatic default leads with Terra.
+    expect(workerChainFor(flash, true)).toEqual([flash]);
+    expect(workerChainFor(sol, true)).toBe(DEFAULT_MULTIMODAL_WORKER_CHAIN);
     expect(workerChainFor(pro, false)).toEqual([pro, sol]);
     // Non-Token-Plan heads never become chain steps (no Go, Astra or PAYG route).
     expect(workerChainFor({ provider: "opencode-go", id: "deepseek-v4.1-flash" }, false)).toBe(DEFAULT_TEXT_WORKER_CHAIN);

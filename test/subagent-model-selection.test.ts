@@ -236,11 +236,16 @@ describe("synthetic: USAP 1.1 explicit model/profile contract", () => {
     expect(choose(astra, {}, registry([astra, go]), BUILTIN_WORKER_PROFILES, approved).selection)
       .toMatchObject({ source: "chain", provider: "opencode-go", modelId: "deepseek-v4.1-flash" });
   });
-  it("routes automatic multimodal defaults through MiMo Flash only, with no fallback", () => {
-    const tokenPlan = registry([astra, sol, mimoFlash]);
-    expect(choose(astra, { requireImages: true }, tokenPlan, BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => true }).model).toBe(mimoFlash);
-    expect(() => choose(astra, { requireImages: true }, registry([astra, sol]), BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => false }))
-      .toThrow(/no fallback was selected/);
+  it("routes automatic multimodal defaults through Terra, then MiMo Flash, never text-only Go", () => {
+    // 2026-10-29: image dispatches naming no model or the Terra profile were refused while explicit Terra read scans.
+    const terraVision = { ...sol, input: ["text", "image"] } as Model;
+    expect(choose(astra, { requireImages: true }, registry([astra, terraVision, mimoFlash])).model).toBe(terraVision);
+    expect(choose(astra, { requireImages: true, profile: "steak-pi/gpt-6-1-terra" }, registry([astra, terraVision, mimoFlash])).model)
+      .toBe(terraVision);
+    // Terra unavailable: MiMo Flash is the image fallback.
+    expect(choose(astra, { requireImages: true }, registry([astra, sol, mimoFlash]), BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => true }).model)
+      .toBe(mimoFlash);
+    // Neither: no fallback, never the text-only Go route.
     expect(() => choose(astra, { requireImages: true }, registry([astra, go]), BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => true }))
       .toThrow(/no fallback was selected/);
   });
