@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.15.2 (2026-10-30)
+
+- USAP workers' read tool now says it can view images (jpg, png, gif, webp,
+  bmp), not only text files. It always could; workers given an image task
+  sometimes never tried to open the image because the tool description only
+  mentioned files.
+
 ## 0.15.1 (2026-10-29)
 
 - Automatic image work (requireImages with no model named, or the Terra

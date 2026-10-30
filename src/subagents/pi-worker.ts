@@ -528,7 +528,7 @@ export function createGuardedPiWorkerTools(options: GuardedToolOptions): AnyTool
   const read: AnyToolDefinition = {
     name: "read",
     label: "read",
-    description: "Read a file under the run cwd, or an explicitly assigned staged file under ~/.cache/ut-overseer/<job>/.",
+    description: "Read a text file or view an image (jpg, png, gif, webp, bmp) under the run cwd, or an explicitly assigned staged file under ~/.cache/ut-overseer/<job>/.",
     parameters: Type.Object({
       path: Type.String(),
       offset: Type.Optional(Type.Number()),
