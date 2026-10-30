@@ -267,6 +267,21 @@ describe("Pi USAP worker tools", () => {
     } finally { await rm(cwd, { recursive: true, force: true }); }
   });
 
+  it("advertises and delivers image content through the guarded native read tool", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "steak-pi-native-image-"));
+    try {
+      const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==", "base64");
+      await writeFile(join(cwd, "image.png"), png);
+      const relay = setupBroker();
+      const record = task();
+      const read = createGuardedPiWorkerTools({ cwd, task: record, relay: relay.bind("run-test", record.id) })
+        .find((tool) => tool.name === "read")!;
+      expect(read.description).toMatch(/view an image/i);
+      const result = await read.execute("read", { path: "image.png" }, undefined, undefined, {} as never);
+      expect(result.content).toContainEqual(expect.objectContaining({ type: "image", mimeType: "image/png", data: png.toString("base64") }));
+    } finally { await rm(cwd, { recursive: true, force: true }); }
+  });
+
   it("filters capabilities and rejects filesystem paths outside cwd or ownership", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "steak-pi-worker-"));
     await writeFile(join(cwd, "inside.txt"), "inside", "utf8");
