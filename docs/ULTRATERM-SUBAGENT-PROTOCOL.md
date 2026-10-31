@@ -377,7 +377,9 @@ The parent may choose either execution mode:
   applies to foreground dispatches as well.
 - **Quota-aware routing:** an implicit routine wave asks the account router first.
   A provider whose every configured account is cooling down, signed out or at a
-  100% window is skipped (Terra -> Go); when both are out the wave runs on the
+  100% window is skipped (OpenRouter DeepSeek -> Go -> Terra; the router meters
+  Go, Codex and Claude only, so an OpenRouter head launches without a router
+  read); when all of them are out the wave runs on the
   claude-code subscription at the cheapest capable tier (Haiku 5.5, or Sonnet 5.5
   for mayEdit+allowBash leaves and xhigh effort), pinned on the
   least-used Claude account the router shows eligible, and needs an Opus 5.5
@@ -391,15 +393,17 @@ The parent may choose either execution mode:
   usage limit (Go `GoUsageLimitError`, Codex `usage limit has been reached` /
   `subscription_quota_exceeded`, a router refusal that says cooling down), no worker
   produced output and the run settled, the same dispatch call re-runs the same tasks once
-  on the next tier (Terra -> Go -> Claude Haiku 5.5 / Sonnet 5.5) with no parent
-  re-dispatch, inside the startup window and before `Started`. Each tier is tried at most
+  on the next tier (OpenRouter DeepSeek -> Go -> Terra -> Claude Haiku 5.5 /
+  Sonnet 5.5) with no parent re-dispatch, inside the startup window and before
+  `Started`. An OpenRouter 402 "Insufficient credits" / "No endpoints found"
+  refusal is such a cause. Each tier is tried at most
   once; the refused first run stays `failed` with its causes and is marked delivered; the
   second run's `chainRoutes`, `fallbackReason` and dispatch text name the fall-through and
   why. If the next tier also cannot launch, the call fails synchronously naming both
   causes. An auth, route or spawn failure, a bare 429 and every explicit route fail
   synchronously and never fall through. Go's usage limit is recorded with the router as
   plan exhaustion (`limit --kind usage`), so the next dispatch's preflight skips it. Each
-  tier gets its own startup window, so a wave that falls through Terra -> Go -> Claude can hold
+  tier gets its own startup window, so a wave that falls through OpenRouter -> Go -> Terra -> Claude can hold
   the dispatch call for up to three 25 s windows plus the sibling settles and router reads in
   between (about 130 s worst case) before it returns `Started` or fails with every cause
   named. A worker whose first request fails with a 429 also reports the cooldown and releases
@@ -615,8 +619,10 @@ turn.
 ## 8. Model guidance
 
 Routine bounded scouting and implementation use the configured parent profile
-defaults: built-in routine workers and scouts resolve GPT-6.1 Terra → canonical
-Go DeepSeek V4.1 Flash → Claude Haiku/Sonnet on usage limits or proven unavailability (text; images MiMo only), and explicitly native-Pi reviewer chains resolve MiMo V2.6 Pro →
+defaults: built-in routine workers and scouts resolve OpenRouter DeepSeek V4.1 Flash
+(the exact `:exacto` route, approved in `~/.pi/agent/paid-routes.json`) → canonical
+Go DeepSeek V4.1 Flash → GPT-6.1 Terra on Codex OAuth → Claude Haiku/Sonnet on usage
+limits or proven unavailability (text; images MiMo only), and explicitly native-Pi reviewer chains resolve MiMo V2.6 Pro →
 GPT-6.1 Terra — the legacy "expert review chain" name is a native-Pi routing label, not
 expert sign-off. All-reviewer waves with no explicit route use the official Claude Code
 Opus 5.5/xhigh pass. Existing explicitly selected Pi profiles keep their native
@@ -628,8 +634,8 @@ for reviewer defaults and route-specific fallback. Record the resolved
 provider/model on the run so results are auditable.
 
 **Implementation review.** USAP never grants commit, push, or deploy permission.
-Writable Terra/Go/Haiku implementation requests verification through the parent:
-Terra and Haiku need Opus 5.5; Go needs Sonnet 5.5. Read-only, report-only and
+Writable DeepSeek/Terra/Go/Haiku implementation requests verification through the parent:
+OpenRouter DeepSeek, Terra and Haiku need Opus 5.5; Go needs Sonnet 5.5. Read-only, report-only and
 explicit Sol leaves receive no automatic end-gate. Security-audit work stays
 Go/Haiku, never any GPT. Never claim approval from a failed or unavailable review.
 An explicit task or shared-contract output format takes precedence over default

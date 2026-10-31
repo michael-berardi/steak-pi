@@ -98,7 +98,8 @@ completion message follows it, in this session or after a reload. The exception 
 implicit routine wave whose worker was refused on a provider quota or usage limit (Go
 `GoUsageLimitError`, Codex `usage limit has been reached`, a router refusal that says
 cooling down) before any output: the same call re-runs the same tasks once on the next
-tier (Terra, then Go, then Claude Haiku 5.5 / Sonnet 5.5), before `Started`, with no
+tier (OpenRouter DeepSeek, then Go, then Terra, then Claude Haiku 5.5 / Sonnet 5.5),
+before `Started`, with no
 re-dispatch from you. The refused run stays `failed`; the result and receipt of the run
 that served name the fall-through and why (`chainRoutes`, `fallbackReason`, a
 `Fall-through:` line), and Claude-tier work still needs an Opus 5.5 review. If
@@ -225,10 +226,13 @@ and ownership-free for automatic fallback; privileged reviewers retain Claude's
 path admission and shell denial. Legacy automatic-fallback checkpoints with
 unfinished privileged reviewers cannot resume. Explicit routes remain exact, and image
 reviews never silently downgrade to the automatic text-review fallback. Routine native workers and scouts default
-to GPT-6.1 Terra on Codex OAuth, then OpenCode Go DeepSeek V4.1 Flash
-with isolated Go 1/Go 2 accounts, then the Claude subscription when neither can launch. The dispatch asks the
+to DeepSeek V4.1 Flash on OpenRouter (the exact `:exacto` route, approved in
+`~/.pi/agent/paid-routes.json`), then OpenCode Go DeepSeek V4.1 Flash with isolated
+Go 1/Go 2 accounts, then GPT-6.1 Terra on Codex OAuth, then the Claude subscription
+when none can launch. Paid routes are allowed under that exact allowlist. The dispatch asks the
 account router first: a provider whose every account is cooling down, signed out or at a
-100% window is skipped (busy or unknown is not exhaustion), and with Terra and Go both out an
+100% window is skipped (busy or unknown is not exhaustion; the router meters Go, Codex and
+Claude only, so an OpenRouter head launches without a router read), and with all of them out an
 implicit wave runs, without re-dispatch, on Haiku 5.5 (ordinary leaves) or Sonnet 5.5
 (a leaf that may edit and run a shell, xhigh effort), never the paid API
 route. The worker is pinned on a Claude account the router shows eligible (the least-used
@@ -281,8 +285,8 @@ Canonical ceilings include 8 concurrent children per run, 16 active runs,
 run. Treat truncation, timeout, budget exhaustion, failure, and cancellation
 as evidence to inspect—not reasons to silently fan out or retry.
 
-Routine bounded scouting and implementation use the configured Terra→Go
-subscription chain. An explicit Go selection is not retried on another model. For visual
+Routine bounded scouting and implementation use the configured
+OpenRouter DeepSeek → Go → Terra worker chain. An explicit Go selection is not retried on another model. For visual
 work, explicitly select an authenticated image-capable route and require images.
 Escalate when ambiguity, blast radius, or failed attempts rise. The
 parent retains security, legal, architecture, and user-facing creative

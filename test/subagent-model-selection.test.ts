@@ -15,7 +15,14 @@ const go = { ...sol, id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", pro
 const mimoPro = { ...go, id: "mimo-v2.6-pro", name: "MiMo V2.6 Pro", provider: "xiaomi", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1", input: ["text", "image"] } as Model;
 const mimoFlash = { ...mimoPro, id: "mimo-v2.6-flash", name: "MiMo V2.6 Flash" } as Model;
 const other = { ...mimoPro, id: "custom-vision", name: "Custom vision", provider: "custom" };
-function registry(models = [astra, luna, sol, go, mimoPro, mimoFlash, other]) {
+// The default worker head since 2026-10-31: DeepSeek V4.1 Flash on OpenRouter's Exacto sort. It stays out of
+// the default registry so Terra/Go tests keep resolving their own tier; tests about the head add it.
+const openRouter = { ...go, provider: "openrouter", id: "deepseek/deepseek-v4.1-flash-1017:exacto", name: "DeepSeek V4.1 Flash (Exacto)",
+  baseUrl: "https://openrouter.ai/api/v1", input: ["text"] } as Model;
+const OPENROUTER_ROUTE = "openrouter/deepseek/deepseek-v4.1-flash-1017:exacto";
+const CHAIN_ROUTES = DEFAULT_TEXT_WORKER_CHAIN.map(step => `${step.provider}/${step.id}`);
+const all = [astra, luna, sol, go, mimoPro, mimoFlash, other];
+function registry(models = all) {
   return {
     find: vi.fn((provider: string, id: string) => models.find(m => m.provider === provider && m.id === id)),
     getAvailable: vi.fn(() => models),
@@ -85,22 +92,32 @@ describe("synthetic: USAP 1.1 explicit model/profile contract", () => {
   it("selects any authorized native provider without a hard-coded model allowlist", () => {
     expect(choose(astra, { model: "custom/custom-vision" }).model).toBe(other);
   });
-  it("keeps automatic native-Pi roles on MiMo→Terra chains without retired routes", () => {
-    // Both roles use subscription chains with their own MiMo head, never Z.ai.
+  it("keeps automatic native-Pi roles on the default worker chain without retired routes", () => {
+    // Both roles use automatic chains, never Z.ai. The worker chain is OpenRouter DeepSeek -> Go -> Terra;
+    // with no OpenRouter route authenticated here its Go step serves the run.
     const worker = choose(other, { tasks: [{ label: "leaf", task: "test", role: "worker" }] });
-    expect(worker.model).toBe(sol);
-    expect(worker.selection).toMatchObject({ source: "chain", chainRoutes: ["openai-codex/gpt-6.1-terra", "opencode-go/deepseek-v4.1-flash"] });
-    // Reviewers keep their MiMo V2.6 Pro head; only routine workers moved to Flash.
+    expect(worker.model).toBe(go);
+    expect(worker.selection).toMatchObject({ source: "chain", chainRoutes: CHAIN_ROUTES });
+    // The reviewed OpenRouter head serves the same run once the operator's exact allowlist grant covers it.
+    expect(choose(other, { tasks: [{ label: "leaf", task: "test", role: "worker" }] }, registry([...all, openRouter]),
+      BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => true }).model).toBe(openRouter);
+    // Reviewers keep their MiMo V2.6 Pro head; only routine workers moved to the default worker chain.
     const reviewer = choose(other, { tasks: [{ label: "leaf", task: "test", role: "reviewer" }] });
     expect(reviewer.model).toBe(mimoPro);
     expect(reviewer.selection).toMatchObject({ source: "chain",
       chainRoutes: ["xiaomi/mimo-v2.6-pro", "openai-codex/gpt-6.1-terra"] });
   });
   it("resolves an implicit worker with the configured Terra profile", () => {
+    // A configured Terra profile is still an automatic profile: it resolves the default worker chain,
+    // whose Go step serves the run when no OpenRouter route is authenticated in this registry.
     const result = resolveWorkerSelection(astra, "high", input(), registry() as never,
       BUILTIN_WORKER_PROFILES, "", {}, { workerDefault: { profile: "steak-pi/gpt-6-1-terra" } });
-    expect(result.selection).toMatchObject({ provider: "openai-codex", modelId: "gpt-6.1-terra", profile: "steak-pi/gpt-6-1-terra" });
-    expect(result.model).toBe(sol);
+    expect(result.selection).toMatchObject({ provider: "opencode-go", modelId: "deepseek-v4.1-flash", profile: "steak-pi/gpt-6-1-terra" });
+    expect(result.model).toBe(go);
+    // With the reviewed OpenRouter head authenticated and allowlisted, the chain head serves it.
+    expect(resolveWorkerSelection(astra, "high", input(), registry([...all, openRouter]) as never,
+      BUILTIN_WORKER_PROFILES, "", { approvePaidRoute: () => true }, { workerDefault: { profile: "steak-pi/gpt-6-1-terra" } }).model)
+      .toBe(openRouter);
   });
   it("selects Terra→Codex OAuth and retains Astra medium", () => {
     const result = choose(sol, { model: "openai-codex/gpt-6-astra" });
@@ -110,11 +127,12 @@ describe("synthetic: USAP 1.1 explicit model/profile contract", () => {
     expect(choose(astra, { profile: "steak-pi/mimo-v2-6-flash", tasks: [{ label: "review", task: "review", role: "reviewer" }] }).model).toBe(mimoFlash);
   });
   it("preserves omitted default routes and configured per-profile overrides", () => {
-    expect(choose(astra).model).toBe(sol);
+    expect(choose(astra).model).toBe(go);
     expect(choose(astra).selection.source).toBe("chain");
     expect(choose(astra).selection.chainRoutes?.some(route => RETIRED_ROUTE.test(route))).toBe(false);
     expect(choose(astra, { tasks: [{ label: "r", task: "review", role: "reviewer" }] }).model).toBe(mimoPro);
-    expect(choose(sol).model).toBe(sol);
+    // A Terra parent's automatic worker default is the default worker chain, not the parent's own route.
+    expect(choose(sol).model).toBe(go);
     const profiles = BUILTIN_WORKER_PROFILES.map(profile => profile.model === "openai-codex/gpt-6-astra"
       ? { ...profile, workerDefault: { model: "openai-codex/gpt-6.1-terra" } } : profile);
     const configured = choose(astra, {}, registry(), profiles);
@@ -122,24 +140,33 @@ describe("synthetic: USAP 1.1 explicit model/profile contract", () => {
     expect(configured.selection.source).toBe("profile-default");
     expect(configured.selection.chainRoutes).toBeUndefined();
   });
-  it("routes automatic defaults through the final MiMo→Terra chain with chain provenance", () => {
-    // Luna and Astra never enter the automatic worker chain; only Terra is a fallback.
+  it("routes automatic defaults through the final default worker chain with chain provenance", () => {
+    // Luna and Astra never enter the automatic worker chain; OpenRouter DeepSeek leads it, Go and Terra follow.
     const result = choose(astra);
-    expect(result.model).toBe(sol);
-    expect(result.selection).toMatchObject({ provider: "openai-codex", modelId: "gpt-6.1-terra", source: "chain",
-      chainRoutes: ["openai-codex/gpt-6.1-terra", "opencode-go/deepseek-v4.1-flash"] });
-    // MiMo unavailable: the Codex OAuth coding subscription route is the only automatic fallback.
+    expect(result.model).toBe(go);
+    expect(result.selection).toMatchObject({ provider: "opencode-go", modelId: "deepseek-v4.1-flash", source: "chain",
+      chainRoutes: CHAIN_ROUTES });
+    // The reviewed OpenRouter head serves the run once its exact allowlist grant covers it.
+    expect(choose(astra, {}, registry([...all, openRouter]), BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => true }).model)
+      .toBe(openRouter);
+    // Without that grant the head is a metered route no automatic chain may spend on: Go still serves the run.
+    expect(choose(astra, {}, registry([...all, openRouter]), BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => false }).model)
+      .toBe(go);
+    // A sibling OpenRouter id without :exacto is a different billing target and never satisfies the head step.
+    expect(choose(astra, {}, registry([{ ...openRouter, id: "deepseek/deepseek-v4.1-flash" } as Model, go]),
+      BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => true }).model).toBe(go);
+    // MiMo unavailable: the Codex OAuth coding subscription route is the last automatic fallback.
     expect(choose(astra, {}, registry([sol])).model).toBe(sol);
-    // Subscription-first regression: the reviewed Token Plan step is selected with
-    // no paid allowlist grant at all (revoked or absent), never spend-gated.
+    // Paid-route regression: the subscription Go step is selected with no paid
+    // allowlist grant at all (revoked or absent), never spend-gated.
     const tokenPlan = registry([astra, sol, go]);
-    expect(choose(astra, {}, tokenPlan, BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => false }).model).toBe(sol);
+    expect(choose(astra, {}, tokenPlan, BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => false }).model).toBe(go);
     // A non-plan Xiaomi endpoint (general PAYG) is a different billing target: the
     // chain skips it rather than approving it in, and falls through to Codex OAuth.
     expect(choose(astra, {}, registry([{ ...mimoFlash, baseUrl: "https://api.xiaomimimo.com/v1" } as Model, sol])).model).toBe(sol);
     // Unmapped parents use the same chain through the legacy default path.
-    expect(choose(astra, {}, tokenPlan, [], { approvePaidRoute: () => false }).model).toBe(sol);
-    // Go routes are no automatic chain step: with neither subscription step present, fail closed.
+    expect(choose(astra, {}, tokenPlan, [], { approvePaidRoute: () => false }).model).toBe(go);
+    // A lone Go route still resolves its own chain step, whatever the grant.
     expect(choose(astra, {}, registry([go]), BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => true }).model).toBe(go);
   });
   it("keeps automatic native-Pi reviewer defaults on the routine chain, never another expert", () => {
@@ -199,8 +226,8 @@ describe("synthetic: USAP 1.1 explicit model/profile contract", () => {
     const added = BUILTIN_WORKER_PROFILES.filter((profile) => ["steak-pi/gpt-6-1-terra", "steak-pi/gpt-6-luna"].includes(profile.id));
     expect(added.map((profile) => profile.id)).toEqual(["steak-pi/gpt-6-1-terra", "steak-pi/gpt-6-luna"]);
     for (const profile of added) {
-      // Never an automatic worker default: routine workers stay on the chain.
-      expect(profile.workerDefault).toEqual({ profile: profile.id.endsWith("terra") ? profile.id : "steak-pi/opencode-go" });
+      // Never an automatic worker default: routine workers stay on the default worker chain.
+      expect(profile.workerDefault).toEqual({ profile: "steak-pi/deepseek-openrouter" });
       expect(DEFAULT_TEXT_WORKER_CHAIN.some((step) => step.id === profile.model.split("/")[1] && step.id !== "gpt-6.1-terra")).toBe(false);
     }
     // Explicit selection is exact, with the profile's high thinking preference.
@@ -213,9 +240,9 @@ describe("synthetic: USAP 1.1 explicit model/profile contract", () => {
     const retired = { ...astra, id: "gpt-6-sol", name: "GPT-6 Sol" } as Model;
     expect(() => choose(astra, { profile: "steak-pi/gpt-6-sol" }, registry([astra, sol, retired, mimoFlash]))).toThrow(/RetiredModelSelectionError/);
     // A Terra parent keeps workers and reviewers on the routine chain — Terra and
-    // Astra are never automatic defaults in any role.
+    // Astra are never automatic worker defaults in any role.
     const solParent = choose(sol, {}, registry([astra, sol, go, mimoFlash]));
-    expect(solParent.model).toBe(sol);
+    expect(solParent.model).toBe(go);
     expect(solParent.selection).toMatchObject({ source: "chain", parentProfile: "steak-pi/gpt-6-1-terra" });
     const solReview = choose(sol, { tasks: [{ label: "r", task: "review", role: "reviewer" }] }, registry([astra, sol, mimoPro, mimoFlash]));
     expect(solReview.model).toBe(mimoPro);
@@ -265,7 +292,9 @@ describe("synthetic: USAP 1.1 explicit model/profile contract", () => {
   it("does not inherit a stale launch profile after /model changes", () => {
     const r = registry();
     const result = resolveWorkerSelection(sol, "high", input(), r as never, BUILTIN_WORKER_PROFILES, "gpt-6-astra");
-    expect(result.model).toBe(sol);
+    // The stale Astra launch profile does not decide the route: the default worker chain's Go step serves it.
+    expect(result.model).toBe(go);
+    expect(result.selection).toMatchObject({ source: "chain", chainRoutes: CHAIN_ROUTES });
   });
   it.each([
     { model: "openai-codex/gpt-6.1-terra", profile: "steak-pi/mimo-v2-6-flash" },
@@ -427,17 +456,30 @@ describe("synthetic: exhausted-provider chain skipping for implicit routes", () 
   const solFirst = BUILTIN_WORKER_PROFILES.map(profile => profile.model === "openai-codex/gpt-6.1-terra" ? { ...profile, workerDefault: { profile: profile.id } } : profile);
   const skipTerra: ChainOptions = { forceDefaultChain: true, skipRoute: step => step.provider === "openai-codex" && step.id === "gpt-6.1-terra" };
   const skipGo: ChainOptions = { forceDefaultChain: true, skipRoute: step => step.provider === "opencode-go" };
-  it("resolves exact Terra from the profile default when nothing is skipped", () => {
+  const skipOpenRouter: ChainOptions = { forceDefaultChain: true, skipRoute: step => step.provider === "openrouter" };
+  it("resolves the default chain's Go step from the Terra profile default when nothing is skipped", () => {
     const resolved = choose(sol, {}, registry(), solFirst);
-    expect(resolved.model).toBe(sol);
+    expect(resolved.model).toBe(go);
     expect(resolved.selection).toMatchObject({ source: "chain", profile: "steak-pi/gpt-6-1-terra" });
-    expect(resolved.selection.chainRoutes).toEqual(["openai-codex/gpt-6.1-terra", "opencode-go/deepseek-v4.1-flash"]);
+    expect(resolved.selection.chainRoutes).toEqual(CHAIN_ROUTES);
+  });
+  it("resolves the reviewed OpenRouter head from the Terra profile default when it is authenticated and allowlisted", () => {
+    const resolved = choose(sol, {}, registry([...all, openRouter]), solFirst, { approvePaidRoute: () => true });
+    expect(resolved.model).toBe(openRouter);
+    expect(resolved.selection).toMatchObject({ source: "chain", provider: "openrouter", modelId: "deepseek/deepseek-v4.1-flash-1017:exacto",
+      profile: "steak-pi/gpt-6-1-terra", chainRoutes: CHAIN_ROUTES });
+  });
+  it("walks the default chain past a skipped OpenRouter head to Go, recording the whole chain", () => {
+    const resolved = choose(sol, {}, registry([...all, openRouter]), solFirst, { ...skipOpenRouter, approvePaidRoute: () => true });
+    expect(resolved.model).toBe(go);
+    expect(resolved.selection).toMatchObject({ source: "chain", provider: "opencode-go", profile: "steak-pi/deepseek-openrouter",
+      chainRoutes: CHAIN_ROUTES });
   });
   it("walks the default chain past a skipped Terra to Go, recording the whole chain", () => {
     const resolved = choose(sol, {}, registry(), solFirst, skipTerra);
     expect(resolved.model).toBe(go);
-    expect(resolved.selection).toMatchObject({ source: "chain", provider: "opencode-go", profile: "steak-pi/opencode-go",
-      chainRoutes: DEFAULT_TEXT_WORKER_CHAIN.map(step => `${step.provider}/${step.id}`) });
+    expect(resolved.selection).toMatchObject({ source: "chain", provider: "opencode-go", profile: "steak-pi/deepseek-openrouter",
+      chainRoutes: CHAIN_ROUTES });
   });
   it("walks the default chain past a skipped Go to Terra", () => {
     const resolved = choose(go, {}, registry(), BUILTIN_WORKER_PROFILES, skipGo);

@@ -7,13 +7,23 @@ OpenAI API-key billing, custom endpoints, and batch GPT variants are rejected.
 The parent session has no provider fallback. Child worker runs have exactly one
 ordered automatic chain (below); every other selection is exact.
 
-Implicit routine workers and scouts default to **GPT-6.1 Terra → OpenCode Go →
-Claude Haiku/Sonnet** on proven unavailability or usage limits. Terra uses
+Implicit routine workers and scouts default to **DeepSeek V4.1 Flash on
+OpenRouter → OpenCode Go → GPT-6.1 Terra → Claude Haiku/Sonnet** on proven
+unavailability or usage limits. The default worker profile is
+`steak-pi/deepseek-openrouter` on the exact reviewed route
+`openrouter/deepseek/deepseek-v4.1-flash-1017:exacto` (OpenRouter's quality-first
+Exacto provider sort, `https://openrouter.ai/api/v1`), which launches only while
+the operator's `~/.pi/agent/paid-routes.json` allowlist carries that exact route;
+removing the entry revokes the head and the chain starts at Go. Paid routes are
+allowed under that exact reviewed-route allowlist — the earlier "subscription
+first, no paid fallback" rule is revoked. Terra uses
 `openai-codex/gpt-6.1-terra`, profile `steak-pi/gpt-6-1-terra` at high effort,
 and native Codex catalog registration (text+image input, 1,050,000 context,
-128,000 output). Writable Terra implementation requests Opus 5.5 verification
-through the parent; read-only and report-only work does not. Security-audit work
-stays Go/Haiku, never GPT.
+128,000 output). Writable DeepSeek or Terra implementation requests Opus 5.5
+verification through the parent; read-only and report-only work does not.
+Security-audit work stays Go/Haiku, never GPT. An OpenRouter 402 / insufficient
+credits, persistent 429, 5xx or "no endpoints found" refusal moves the wave to
+the next tier instead of stalling.
 
 ## Sol retirement — 2026-10-05
 
@@ -86,10 +96,11 @@ selectors (`workerDefault` / `reviewerDefault`) first, then the matching parent
 profile metadata. Explicit model/profile selection always wins. Custom selectors
 are preserved; the operator's routine default is `steak-pi/opencode-go`.
 
-- Routine text workers/scouts: canonical `opencode-go/deepseek-v4.1-flash`.
-  If that registry route is unavailable at selection, authenticated
-  `openai-codex/gpt-6.1-sol` is the only native text selection fallback; when neither
-  can launch, an implicit wave moves to the Claude tier below.
+- Routine text workers/scouts: the reviewed `openrouter/deepseek/deepseek-v4.1-flash-1017:exacto`
+  head, then canonical `opencode-go/deepseek-v4.1-flash`, then
+  `openai-codex/gpt-6.1-terra`. A step the registry cannot resolve (no OpenRouter
+  route, no approved allowlist entry) is skipped at selection; when no step can
+  launch, an implicit wave moves to the Claude tier below.
 - **Quota preflight.** For an *implicit* route (no `harness`/`model`/`profile`/`claudeAccount`)
   the dispatch reads the account router (`ut-provider-accounts status`, one call, only when the
   resolved route is a router-gated Go or Terra route) before it returns a selection, so an
@@ -101,12 +112,14 @@ are preserved; the operator's routine default is `steak-pi/opencode-go`.
   provider the router does not list and an unreadable router are **not** exhaustion (the route
   stays as selected and the launch-time router remains the authority). A provider the router
   lists with no configured account cannot launch and counts as blocked. An exhausted route is
-  never selected: the built-in default chain (Terra -> Go) is re-resolved with that provider
-  skipped (a Go parent offers Terra its isolated Codex store, as for an explicit Sol dispatch),
+  never selected: the built-in default chain (OpenRouter DeepSeek -> Go -> Terra) is re-resolved
+  with that provider skipped (a Go parent offers Terra its isolated Codex store, as for an
+  explicit Sol dispatch),
   the receipt records the whole chain (`source: "chain"`, `chainRoutes`) and the router cause
   (`selection.fallbackReason`), and the dispatch text carries a route note.
-- **Claude tier.** When neither Terra nor Go can launch (exhausted or unconfigured per the router,
-  or not authenticated in the session), an implicit routine text wave (no reviewer, no
+- **Claude tier.** When none of OpenRouter DeepSeek, Go or Terra can launch (exhausted or
+  unconfigured per the router, not approved in `~/.pi/agent/paid-routes.json`, or not authenticated
+  in the session), an implicit routine text wave (no reviewer, no
   `requireImages`, effort unset or `xhigh`) runs on the official Claude Code subscription
   route with no re-dispatch by the parent: **Haiku 5.5** (`claude-code/claude-haiku-5-5`) for
   ordinary leaves, **Sonnet 5.5** (`claude-code/claude-sonnet-5-5`) for any leaf that may both
@@ -133,9 +146,11 @@ are preserved; the operator's routine default is `steak-pi/opencode-go`.
   and each router cause. Work on either tier **needs an Opus 5.5 review**; an all-reviewer wave
   already defaults to it.
 - **When nothing can launch the dispatch refuses synchronously**, before any checkpoint, relay
-  peer or worker exists, naming every cause (Terra, Go and the Claude tier, each with the router's
-  own words, e.g. `OpenCode Go: every Go account is unavailable (Go 1: cooling down until Mon
-  02:59; Go 2: …) | GPT-6.1 Terra: … | Claude subscription tier: every Claude account is
+  peer or worker exists, naming every cause (OpenRouter DeepSeek, Go, Terra and the Claude tier,
+  each with the router's own words or the missing allowlist entry, e.g. `OpenRouter DeepSeek V4.1
+  Flash: no authenticated route is available in this session and the reviewed route is not approved
+  in ~/.pi/agent/paid-routes.json | OpenCode Go: every Go account is unavailable (Go 1: cooling down
+  until Mon 02:59; Go 2: …) | GPT-6.1 Terra: … | Claude subscription tier: every Claude account is
   ineligible (…)`). An implicit review whose Claude accounts are proven unavailable and whose
   Terra review fallback is exhausted refuses the same way. An implicit read-only review on a
   healthy Claude whose Terra review fallback is exhausted installs no fallback (it would only
@@ -175,9 +190,11 @@ are preserved; the operator's routine default is `steak-pi/opencode-go`.
   eligible, and the first request is the first evidence (`429: {"type":"GoUsageLimitError",
   "message":"Go usage limit exceeded"}`). For an *implicit* routine wave (the same condition as
   the quota preflight) the startup gate therefore does not fail the dispatch on such a cause:
-  it re-runs the **same tasks** once on the next tier of Terra -> Go -> Claude Haiku 5.5 / Sonnet
-  5.5 (the tier by the rule above, pinned on a router-eligible Claude account), with no parent
-  re-dispatch. It happens inside the startup window, before `Started`, for foreground and
+  it re-runs the **same tasks** once on the next tier of OpenRouter DeepSeek -> Go -> Terra ->
+  Claude Haiku 5.5 / Sonnet 5.5 (the tier by the rule above, pinned on a router-eligible Claude
+  account), with no parent re-dispatch. An OpenRouter head's own 402 "Insufficient credits" /
+  "requires more credits" or "No endpoints found" refusal is a quota cause too, and the router
+  never meters it, so the head launches without a router read. It happens inside the startup window, before `Started`, for foreground and
   background runs alike (each attempt has its own window, so a wave that falls through every
   tier can hold the call for about 130 s in the worst case before it returns or fails with every
   cause named). *A quota cause* is the provider's own words for a spent plan: Go's
@@ -459,7 +476,7 @@ chain as workers, never an automatic expert step), and that an explicit
 selector is never upgraded into chain provenance.
 `test/provider-quota.test.ts`, `test/subagent-model-selection.test.ts` and the quota block of
 `test/ultraterm-subagents-extension.test.ts` prove the quota rules: an exhausted implicit
-Terra -> Go, Terra and Go out -> Haiku (plain leaves) or Sonnet (mayEdit+allowBash, xhigh), busy or
+OpenRouter -> Go -> Terra, all three out -> Haiku (plain leaves) or Sonnet (mayEdit+allowBash, xhigh), busy or
 unknown stays on its route, an exhausted explicit route is refused with no reroute, everything
 out refuses naming each cause, a worker that fails before its first output rejects the dispatch
 with its cause, and a usage-limit refusal falls through each tier once.

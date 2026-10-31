@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { findPackageJSON } from "node:module";
 import { pathToFileURL } from "node:url";
-import { createAllowlistApproval, createExplicitPaidApproval, createSelectedRouteApproval, isAllowlistedPaidRoute, PAID_INCO_BASE_URL, PAID_ROUTES, PAID_ROUTE_FLAG, readApprovedPaidRoutes } from "../src/explicit-paid-route.ts";
+import { createAllowlistApproval, createExplicitPaidApproval, createSelectedRouteApproval, isAllowlistedPaidRoute, OPENROUTER_BASE_URL, OPENROUTER_DEEPSEEK_ID, PAID_INCO_BASE_URL, PAID_ROUTES, PAID_ROUTE_FLAG, readApprovedPaidRoutes } from "../src/explicit-paid-route.ts";
 import { guardProvider, createRegistryGuard } from "../src/model-route-policy.ts";
 import { beginGoAttempt, observeGoQuota, hasConfirmedGoExhaustion, SUBSCRIPTION_FIRST_ERROR } from "../src/subscription-first-routing.ts";
 
@@ -105,6 +105,7 @@ describe("explicit paid route permission", () => {
 
   it("requires the exact flag, model and verified https://api.inco.ai/v1 endpoint for Inco DeepSeek", () => {
     expect(PAID_ROUTES).toEqual([
+      { provider: "openrouter", id: OPENROUTER_DEEPSEEK_ID, baseUrl: OPENROUTER_BASE_URL },
       { provider: "inco", id: "deepseek-v4.1-flash:fast", baseUrl: PAID_INCO_BASE_URL },
       { provider: "xiaomi", id: "mimo-v2.6-pro", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1" },
       { provider: "xiaomi", id: "mimo-v2.6-flash", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1" },
@@ -193,7 +194,7 @@ describe("operator /model paid authorization across all approved profiles", () =
   ] as const;
   afterEach(() => vi.restoreAllMocks());
 
-  function setup(flag: string | undefined, initialModel: Model, allow: unknown[] = [{ provider: model.provider, model: model.id, baseUrl: model.baseUrl }]) {
+  function setup(flag: string | undefined, initialModel: Model, allow: unknown[] = [{ provider: model.provider, model: model.id, baseUrl: model.baseUrl }], target: Model = model) {
     const { path } = approvalFor(launchFlag, model, allow);
     const createLaunch = paidRoute.createExplicitPaidApproval;
     const createSelected = paidRoute.createSelectedRouteApproval;
@@ -201,10 +202,10 @@ describe("operator /model paid authorization across all approved profiles", () =
       .mockImplementation((intent, selected) => createLaunch(intent, selected, path));
     vi.spyOn(paidRoute, "createSelectedRouteApproval")
       .mockImplementation(getSelected => createSelected(getSelected, path));
-    const base = provider();
+    const base = providerFor(target);
     let current = base;
     const registry = {
-      getAll: () => [model], getProvider: () => current,
+      getAll: () => [target], getProvider: () => current,
       getRegisteredNativeProvider: () => current,
       registerProvider: (next: typeof base) => { current = next; },
       isUsingOAuth: () => false,
@@ -224,7 +225,7 @@ describe("operator /model paid authorization across all approved profiles", () =
     };
     const dispatch = async (expected: "done" | "error") => {
       for (const method of ["stream", "streamSimple"] as const) {
-        const events = await drain(current[method](model, emptyContext()));
+        const events = await drain(current[method](target, emptyContext()));
         if (expected === "error") {
           expect(events[0]).toMatchObject({ type: "error", error: { errorMessage: SUBSCRIPTION_FIRST_ERROR } });
           expect(isRetryableAssistantError((events[0] as any).error)).toBe(false);
@@ -232,7 +233,7 @@ describe("operator /model paid authorization across all approved profiles", () =
       }
     };
     expect(registerFlag).toHaveBeenCalledWith(PAID_ROUTE_FLAG, expect.objectContaining({ type: "string" }));
-    return { base, ctx, emit, dispatch, factory, getFlag, path,
+    return { base, ctx, emit, dispatch, factory, getFlag, path, current: () => current,
       replaceProvider: () => { current = base; } };
   }
 
@@ -252,6 +253,39 @@ describe("operator /model paid authorization across all approved profiles", () =
     expect(h.base.streamSimple).toHaveBeenCalledTimes(10);
     expect(h.ctx.ui.confirm).not.toHaveBeenCalled();
     expect(hasConfirmedGoExhaustion("synthetic-extension-go")).toBe(false);
+  });
+
+  const openRouter = { ...model, provider: "openrouter", id: OPENROUTER_DEEPSEEK_ID, name: "DeepSeek V4.1 Flash (Exacto)",
+    api: "openai-completions", baseUrl: OPENROUTER_BASE_URL } as Model;
+  const openRouterAllow = [{ provider: "openrouter", model: OPENROUTER_DEEPSEEK_ID, baseUrl: OPENROUTER_BASE_URL }];
+
+  it("admits the exact OpenRouter default-worker route from the allowlist with no launch flag", async () => {
+    const h = setup(undefined, openRouter, openRouterAllow, openRouter);
+    await h.emit("session_start");
+    // No launch flag: the reviewed-route allowlist entry alone is the spending grant for this exact route.
+    expect(h.factory).toHaveBeenCalledWith(undefined, openRouter);
+    expect(isAllowlistedPaidRoute(openRouter)).toBe(false); // hermetic HOME: no operator file in tests
+    expect(isAllowlistedPaidRoute(openRouter, h.path)).toBe(true);
+    await h.dispatch("done");
+    expect(h.base.streamSimple).toHaveBeenCalledTimes(2);
+    expect(h.ctx.ui.confirm).not.toHaveBeenCalled();
+  });
+
+  // A sibling OpenRouter model without :exacto, or the reviewed id at another baseUrl, is a different
+  // billing target: allowlisting it grants nothing and the dispatch stays blocked.
+  it.each([
+    ["a sibling id", { id: "deepseek/deepseek-v4.1-flash" }],
+    ["the dated id without :exacto", { id: "deepseek/deepseek-v4.1-flash-1017" }],
+    ["another baseUrl", { baseUrl: "https://openrouter.ai/api/v2" }],
+    ["a trailing slash on the baseUrl", { baseUrl: `${OPENROUTER_BASE_URL}/` }],
+  ])("refuses the reviewed OpenRouter route behind %s even when that entry is allowlisted", async (_label, change) => {
+    const sibling = { ...openRouter, ...change } as Model;
+    const h = setup(undefined, sibling, [{ provider: "openrouter", model: sibling.id, baseUrl: sibling.baseUrl }], sibling);
+    expect(isAllowlistedPaidRoute(sibling, h.path)).toBe(false);
+    await h.emit("session_start");
+    await h.dispatch("error");
+    expect(h.base.streamSimple).not.toHaveBeenCalled();
+    expect(h.ctx.ui.confirm).not.toHaveBeenCalled();
   });
 
   it("never authorizes a selected route the user allowlist does not carry", async () => {
@@ -326,18 +360,26 @@ describe("reviewed-route allowlist reads", () => {
   });
 
   it("resolves only exact reviewed identities into the allowlist", () => {
+    const openRouter = { ...model, provider: "openrouter", id: OPENROUTER_DEEPSEEK_ID, baseUrl: OPENROUTER_BASE_URL } as Model;
     const path = tempAllow([
       { provider: "inco", model: "deepseek-v4.1-flash:fast", baseUrl: PAID_INCO_BASE_URL },
       { provider: "xiaomi", model: "mimo-v2.6-pro", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1" },
       { provider: "inco", model: "deepseek-v4.1-flash:fast", baseUrl: "https://api.inco.ai/v2" },
+      { provider: "openrouter", model: OPENROUTER_DEEPSEEK_ID, baseUrl: OPENROUTER_BASE_URL },
+      { provider: "openrouter", model: "deepseek/deepseek-v4.1-flash", baseUrl: OPENROUTER_BASE_URL },
     ]);
     expect(readApprovedPaidRoutes(path)).toEqual([
       { provider: "inco", id: "deepseek-v4.1-flash:fast", baseUrl: PAID_INCO_BASE_URL },
       { provider: "xiaomi", id: "mimo-v2.6-pro", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1" },
+      { provider: "openrouter", id: OPENROUTER_DEEPSEEK_ID, baseUrl: OPENROUTER_BASE_URL },
     ]);
     expect(isAllowlistedPaidRoute(model, path)).toBe(true);
     expect(createAllowlistApproval(path)(model)).toBe(true);
     expect(isAllowlistedPaidRoute(xiaomi, path)).toBe(false);
+    expect(isAllowlistedPaidRoute(openRouter, path)).toBe(true);
+    expect(createAllowlistApproval(path)(openRouter)).toBe(true);
+    // The sibling without :exacto never resolves to the reviewed default worker route.
+    expect(isAllowlistedPaidRoute({ ...openRouter, id: "deepseek/deepseek-v4.1-flash" }, path)).toBe(false);
   });
 
   it("scopes selection approval to the exact allowlisted route currently selected", () => {
