@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.15.3 (2026-10-30)
+
+- A background subagent result that arrives while the parent is in a long tool call no longer shows "USAP delivery unconfirmed".
+  The result is queued and lands when the current step ends; the receipt is now re-checked at every turn end. The message shows
+  only when the parent is idle and the result still has not landed.
+
 ## 0.15.2 (2026-10-30)
 
 - USAP workers' read tool now says it can view images (jpg, png, gif, webp,

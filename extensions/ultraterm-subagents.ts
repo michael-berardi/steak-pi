@@ -1521,7 +1521,12 @@ export function createUltratermSubagentsExtension(
     const retryDelivery = (current: SessionRuntime): void => {
       if (current.closed || !ownsContext(current, current.statusContext) || current.deliveryRetry) return;
       if (current.deliveryRetries >= 20) {
-        try { current.statusContext?.ui.setStatus("usap-delivery", "USAP delivery unconfirmed — results remain in hub status"); } catch { /* Observation only. */ }
+        // A busy parent receives a steer only when its current step ends (a long tool call can take minutes), so a missing
+        // receipt mid-turn is a normal wait, not a lost delivery (2026-10-30: slot 4 showed "unconfirmed" during a long bash
+        // call). turn_end and agent_settled re-check receipts; only an idle parent with no receipt is really unconfirmed.
+        if (current.agentIdle) {
+          try { current.statusContext?.ui.setStatus("usap-delivery", "USAP delivery unconfirmed — results remain in hub status"); } catch { /* Observation only. */ }
+        }
         return;
       }
       current.deliveryRetries += 1;
@@ -1654,6 +1659,15 @@ export function createUltratermSubagentsExtension(
 
     pi.on("agent_start", async (_event, ctx) => {
       if (runtime && ownsContext(runtime, ctx)) { runtime.statusContext = ctx; runtime.agentIdle = false; runtime.wakePending = false; }
+    });
+
+    // A steer queued while the parent was busy lands at a step boundary: confirm its receipt there instead of waiting for the
+    // whole run to settle, and clear any stale delivery status.
+    pi.on("turn_end", async (_event, ctx) => {
+      if (!runtime || runtime.closed || !ownsContext(runtime, ctx) || !runtime.completionBuffer.length) return;
+      runtime.statusContext = ctx;
+      runtime.deliveryRetries = 0;
+      flushCompletions(runtime);
     });
 
     pi.on("agent_settled", async (_event, ctx) => {
