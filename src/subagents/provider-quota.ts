@@ -1,9 +1,10 @@
 import { isManagedCodexRoute } from "../codex-models.ts";
 import { providerAccountCommand, type AccountCommand } from "./provider-accounts.ts";
 
-/** Router provider keys whose accounts gate a launch: GPT Terra/Sol (`codex`), OpenCode Go and Claude. */
-/** "openrouter" is a chain tier the fall-through walk tracks (2026-10-31 default worker); the account router has no
- * OpenRouter meter, so a snapshot never carries it and only a run's own refusal proves it spent. */
+/** Chain tiers whose accounts gate a launch: OpenRouter DeepSeek, OpenCode Go, GPT Terra/Sol (`codex`) and
+ * Claude. "openrouter" is tracked for the fall-through walk only (2026-10-31 default worker): the account
+ * router has no OpenRouter meter, so a snapshot never carries it (see {@link readProviderQuota}) and only a
+ * run's own refusal proves it spent. */
 export type QuotaProvider = "openrouter" | "codex" | "opencode-go" | "claude";
 
 const PROVIDER_NAMES: Record<QuotaProvider, string> = { openrouter: "OpenRouter", codex: "GPT", "opencode-go": "Go", claude: "Claude" };
@@ -132,6 +133,8 @@ export async function readProviderQuota(command: AccountCommand = providerAccoun
   }
   const now = finite(status.time) ?? nowMs / 1000;
   const providers: QuotaSnapshot["providers"] = {};
+  // "openrouter" is deliberately absent: the router manages Go/Codex/Claude accounts and has no OpenRouter
+  // meter. An OpenRouter route is never preflight-blocked; only its own 402/no-endpoint refusal proves it spent.
   for (const provider of ["codex", "opencode-go", "claude"] as const) {
     const evaluated = evaluateProvider(provider, status.providers[provider], now);
     if (evaluated) providers[provider] = evaluated;

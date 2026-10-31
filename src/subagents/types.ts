@@ -144,8 +144,8 @@ export interface ModelSelection {
   chainRoutes?: string[];
   automaticReview?: boolean;
   reviewRequiresImages?: boolean;
-  /** `requires-opus`: a Claude-tier worker run (Haiku 5.5 or Sonnet 5.5 after the Terra and Go routes ran
-   * out of quota), whose work needs an explicit Opus 5.5 verification. */
+  /** `requires-opus`: a Claude-tier worker run (Haiku 5.5 or Sonnet 5.5 after the OpenRouter DeepSeek, Go
+   * and Terra routes ran out of quota), whose work needs an explicit Opus 5.5 verification. */
   independence?: "requires-opus";
   /** Why an implicit wave left its default route (bounded text, for the dispatch note and every
    * receipt): the router cause of each exhausted provider it skipped and, on the Claude tier, which

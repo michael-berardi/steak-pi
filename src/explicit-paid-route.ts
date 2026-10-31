@@ -10,10 +10,11 @@ export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 /** Default worker since 2026-10-31 (Mike): DeepSeek V4.1 Flash on OpenRouter, Exacto quality-first provider sort. */
 export const OPENROUTER_DEEPSEEK_ID = "deepseek/deepseek-v4.1-flash-1017:exacto";
 export type Route = { provider: string; id: string; baseUrl: string };
-// These reviewed exceptions authorize the user-requested Inco products and
-// Xiaomi Singapore Token Plan models at their exact verified endpoints. Adding an entry here is a spending
-// grant, so it stays an exact, hand-maintained list: no wildcard, no provider
-// prefix match, and no route inherited by automatic worker routing or fallback.
+// These reviewed exceptions authorize the user-requested Inco products and Xiaomi Singapore Token Plan models
+// at their exact verified endpoints, plus the default worker route: DeepSeek V4.1 Flash on OpenRouter's
+// quality-first Exacto sort (Mike 2026-10-31). Adding an entry here is a spending grant, so it stays an exact,
+// hand-maintained list: no wildcard, no provider prefix match. The OpenRouter entry is the one reviewed route
+// the automatic worker chain leads with; every other entry stays explicit-selection only.
 export const PAID_ROUTES: readonly Route[] = [
   { provider: "openrouter", id: OPENROUTER_DEEPSEEK_ID, baseUrl: OPENROUTER_BASE_URL },
   { provider: "inco", id: "deepseek-v4.1-flash:fast", baseUrl: PAID_INCO_BASE_URL },

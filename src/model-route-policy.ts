@@ -65,12 +65,16 @@ export type ChainFallbackInput = Omit<ChainFallbackOptions, "registry">;
  * never generic PAYG. Auth, permission, region, context and 400-class failures
  * never hop, whatever transient wording they carry.
  */
-/** OpenRouter's own pre-output refusals that another route can serve: spent credits (402) and no provider endpoint
- * available for the request (404 guardrail/endpoint filter). Checked before the generic 4xx refusal below. */
-export const OPENROUTER_ROUTE_UNAVAILABLE = /\b402\b|insufficient[_ ]credits|requires more credits|more credits|no endpoints? (?:found|available)|endpoints? out of \d+ requested are available/i;
+/** OpenRouter's own pre-output refusals that another route can serve: spent credits (402 "Insufficient credits" /
+ * "requires more credits") and a request no provider endpoint can serve ("No endpoints found" / "0 endpoints out
+ * of N requested are available"). Checked after the hard auth/abort class and before the generic 404 refusal, so
+ * the endpoint answer hops while a plain 404 stays put. */
+export const OPENROUTER_ROUTE_UNAVAILABLE = /\b402\b|insufficient[_ ]credits|requires more credits|no endpoints? (?:found|available)|endpoints? out of \d+ requested are available/i;
 export function eligibleChainFallback(message: string): boolean {
+  // Auth, permission, region, context and 400-class failures never hop, whatever transient wording they carry.
+  if (/abort|cancel|auth|permission|region|context|invalid|\b(?:400|401|403)\b/i.test(message)) return false;
   if (OPENROUTER_ROUTE_UNAVAILABLE.test(message)) return true;
-  if (/abort|cancel|auth|permission|region|context|invalid|\b(?:400|401|403|404)\b/i.test(message)) return false;
+  if (/\b404\b/i.test(message)) return false;
   return eligibleGoFallback(message) || /subscription_quota_exceeded|GoUsageLimitError|usage limit|quota[_ -]?(?:exhausted|exceeded|reached)/i.test(message);
 }
 /** Never auto-selected: the operator scope removed automatic Luna workers/reviewers. */
@@ -377,7 +381,7 @@ export class NoChainRouteError extends Error {
 }
 
 /** True when `error` is exactly "the built-in default chain resolved nowhere": the text
- * default (Terra, Go) and nothing else. A profile-default or reviewer chain that names MiMo
+ * default (OpenRouter DeepSeek, Go, Terra) and nothing else. A profile-default or reviewer chain that names MiMo
  * (Flash/Pro, Terra) is a different chain whose head was never the default's Terra step. */
 export function isDefaultTextChainExhausted(error: unknown): error is NoChainRouteError {
   return error instanceof NoChainRouteError && !error.multimodal && error.tried.length === DEFAULT_TEXT_WORKER_CHAIN.length &&
@@ -394,6 +398,7 @@ export function isDefaultTextChainExhausted(error: unknown): error is NoChainRou
  * resolves the routine subscription chain instead, and an expert review that fails
  * at runtime fails visibly — it is never silently downgraded to a weaker model. */
 export const EXPERT_REVIEW_MODEL: WorkerRouteStep = { provider: "openai-codex", id: "gpt-6-astra" };
+/** Astra first, then the default worker chain in its own order (OpenRouter DeepSeek -> Go -> Terra). */
 export const EXPERT_TEXT_REVIEW_CHAIN: readonly WorkerRouteStep[] = [
   EXPERT_REVIEW_MODEL, ...DEFAULT_TEXT_WORKER_CHAIN,
 ];
@@ -412,7 +417,7 @@ export type ChainOptions = {
    * exhausted is skipped, so selection never lands on a route that cannot launch. A
    * skipped step is still part of the chain that was tried (see {@link NoChainRouteError}). */
   skipRoute?: (step: WorkerRouteStep) => boolean;
-  /** Resolve the built-in default text chain (Terra -> Go) instead of a profile default or
+  /** Resolve the built-in default text chain (OpenRouter DeepSeek -> Go -> Terra) instead of a profile default or
    * the legacy parent route. Only an implicit dispatch that must leave an exhausted
    * provider sets it; an explicit selector never does. */
   forceDefaultChain?: boolean;

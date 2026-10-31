@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.16.0 (2026-10-31)
+
+- The default worker is now **DeepSeek V4.1 Flash on OpenRouter**, the exact
+  `openrouter/deepseek/deepseek-v4.1-flash-1017:exacto` route (OpenRouter's
+  quality-first Exacto provider sort) at `https://openrouter.ai/api/v1`, approved in
+  `~/.pi/agent/paid-routes.json` and launched under the operator's exact
+  reviewed-route allowlist. Fallback order: OpenRouter DeepSeek -> OpenCode Go
+  DeepSeek V4.1 Flash -> GPT-6.1 Terra on Codex OAuth -> the Claude subscription
+  tier. DeepSeek and Terra implementation work needs an Opus 5.5 verification.
+- Paid routes are allowed: the earlier "subscription first, no paid fallback" rule is
+  revoked. Any allowlisted reviewed route may serve a request, including a chain hop,
+  without a launch flag; removing the allowlist entry revokes it, and a sibling id
+  (for example `deepseek/deepseek-v4.1-flash` without `:exacto`) or a different
+  baseUrl is still refused as a different billing target.
+- OpenRouter's own 402 "Insufficient credits" / "requires more credits" and
+  "No endpoints found" / "0 endpoints out of N requested are available" refusals now
+  count as a provider quota cause: an implicit wave refused on OpenRouter before any
+  output falls through to Go within the same call instead of stalling. A tier a
+  fall-through already refused is never retried, whatever the router later says.
+- The account router meters Go, Codex and Claude only. An OpenRouter head launches
+  without a router read; only its own refusal proves the route spent. The dispatch's
+  route note and receipt name each tier walked past in chain order.
+- Bumped the worker chain order in the USAP tool description, model-routing, profile,
+  protocol and skill docs.
+
 ## 0.15.4 (2026-10-31)
 
 - Long MCP tool names now work on the Claude Code route. Pi names MCP tools `mcp__<server>__<tool>`, and a name over

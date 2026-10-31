@@ -98,8 +98,18 @@ describe("provider quota (router status) exhaustion", () => {
   it("gates only the routes that launch on a router reservation", () => {
     expect(quotaProviderOf(SOL)).toBe("codex");
     expect(quotaProviderOf(GO)).toBe("opencode-go");
+    // The default worker head since 2026-10-31: OpenRouter DeepSeek is a tracked chain tier.
+    expect(quotaProviderOf({ provider: "openrouter", id: "deepseek/deepseek-v4.1-flash-1017:exacto" })).toBe("openrouter");
     expect(quotaProviderOf({ provider: "openai-codex", id: "gpt-6-astra" })).toBeUndefined();
     expect(quotaProviderOf({ provider: "xiaomi", id: "mimo-v2.6-flash" })).toBeUndefined();
+  });
+
+  it("tracks OpenRouter as a chain tier without inventing a router meter for it", async () => {
+    // The account router manages Go/Codex/Claude only; a snapshot never carries an OpenRouter meter, so an
+    // OpenRouter route is never preflight-blocked — only its own 402/no-endpoint refusal proves it spent.
+    const snap = await read(status({ codex: [coolingDown("primary", "GPT 1")], "opencode-go": [coolingDown("primary", "Go 1")] }));
+    expect(snap.providers.openrouter).toBeUndefined();
+    expect(routeQuotaBlock(snap, { provider: "openrouter", id: "deepseek/deepseek-v4.1-flash-1017:exacto" })).toBeUndefined();
   });
 });
 

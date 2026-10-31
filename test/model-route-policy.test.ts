@@ -49,7 +49,12 @@ const chainModels = {
   mimoFlash: { ...astra, id: "mimo-v2.6-flash", name: "MiMo V2.6 Flash", provider: "xiaomi", api: "openai-completions", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1", input: ["text", "image"] } as Model,
   mimoPro: { ...astra, id: "mimo-v2.6-pro", name: "MiMo V2.6 Pro", provider: "xiaomi", api: "openai-completions", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1", input: ["text", "image"] } as Model,
   zaiGlm: { ...astra, id: "glm-5.3-flash", name: "GLM-5.3 Flash", provider: "zai", api: "openai-completions", baseUrl: "https://api.z.ai/api/coding/paas/v4", input: ["text", "image"] } as Model,
+  // The reviewed OpenRouter Exacto route that leads the default text worker chain (Mike 2026-10-31).
+  openRouter: { ...astra, id: "deepseek/deepseek-v4.1-flash-1017:exacto", name: "DeepSeek V4.1 Flash (OpenRouter Exacto)", provider: "openrouter", api: "openai-completions", baseUrl: "https://openrouter.ai/api/v1", input: ["text"] } as Model,
 };
+const OPENROUTER_STEP = { provider: "openrouter", id: "deepseek/deepseek-v4.1-flash-1017:exacto" } as const;
+const GO_STEP = { provider: "opencode-go", id: "deepseek-v4.1-flash" } as const;
+const TERRA_STEP = { provider: "openai-codex", id: "gpt-6.1-terra" } as const;
 
 /** Chain registries resolve exact provider/id pairs, like the native registry. */
 function chainRegistry(models: readonly Model[] = Object.values(chainModels) as Model[]): Registry {
@@ -261,8 +266,11 @@ describe("synthetic: GPT coding-plan route policy", () => {
 
   it("routes routine GPT runs through the final text chain, retaining the parent for review", () => {
     const chain = chainRegistry();
-    expect(selectWorkerModel(astra, ["scout", "worker"], chain)).toEqual(chainModels.sol);
-    expect(selectWorkerModel(astra, [undefined], chain)).toEqual(chainModels.sol);
+    // No allowlist grant here: the reviewed OpenRouter head is skipped and Go serves the chain.
+    expect(selectWorkerModel(astra, ["scout", "worker"], chain)).toEqual(chainModels.goPrimary);
+    expect(selectWorkerModel(astra, [undefined], chain)).toEqual(chainModels.goPrimary);
+    // With the operator's exact reviewed-route grant the chain head serves the same run.
+    expect(selectWorkerModel(astra, ["scout", "worker"], chain, { approvePaidRoute: () => true })).toEqual(chainModels.openRouter);
     // Reviewer role prefers the scarce Astra expert; with the expert route absent
     // from this registry, the legacy fallback still retains the parent exactly.
     expect(selectWorkerModel(astra, ["worker", "reviewer"], chain)).toBe(astra);
@@ -275,7 +283,7 @@ describe("synthetic: GPT coding-plan route policy", () => {
     // subscription order. Astra is deliberately absent from the routine chains.
     expect([...EXPERT_TEXT_REVIEW_CHAIN]).toEqual([
       { provider: "openai-codex", id: "gpt-6-astra" },
-      { provider: "openai-codex", id: "gpt-6.1-terra" }, { provider: "opencode-go", id: "deepseek-v4.1-flash" }]);
+      OPENROUTER_STEP, GO_STEP, TERRA_STEP]);
     expect(EXPERT_MULTIMODAL_REVIEW_CHAIN).toEqual([
       { provider: "openai-codex", id: "gpt-6-astra" }, { provider: "openai-codex", id: "gpt-6.1-terra" },
       { provider: "xiaomi", id: "mimo-v2.6-flash" }]);
@@ -313,25 +321,39 @@ describe("synthetic: GPT coding-plan route policy", () => {
       workerChainFor({ provider: "xiaomi", id: "mimo-v2.6-pro" }, false),
       workerChainFor({ provider: "xiaomi", id: "mimo-v2.6-pro" }, true)]) {
       expect(chain.some((step) => step.id === ROUTINE_GPT_MODEL ||
-        ["zai", "z-ai", "inco", "openrouter"].includes(step.provider))).toBe(false);
+        ["zai", "z-ai", "inco"].includes(step.provider))).toBe(false);
     }
+    // The OpenRouter step is the one exact reviewed route the operator allowlists, never a sibling or alias.
+    expect(DEFAULT_TEXT_WORKER_CHAIN[0]).toEqual(OPENROUTER_STEP);
+    expect(DEFAULT_TEXT_WORKER_CHAIN.map((step) => `${step.provider}/${step.id}`))
+      .toEqual(["openrouter/deepseek/deepseek-v4.1-flash-1017:exacto", "opencode-go/deepseek-v4.1-flash", "openai-codex/gpt-6.1-terra"]);
   });
 
-  it("resolves the ordered text chain: MiMo Flash, then Codex OAuth Terra", () => {
-    // Text has a Terra fallback; the multimodal chain has no fallback.
-    expect([...DEFAULT_TEXT_WORKER_CHAIN]).toEqual([
-      { provider: "openai-codex", id: "gpt-6.1-terra" }, { provider: "opencode-go", id: "deepseek-v4.1-flash" }]);
+  it("resolves the ordered text chain: OpenRouter DeepSeek, then Go, then Codex OAuth Terra", () => {
+    // The default worker order since 2026-10-31: OpenRouter DeepSeek first, Go next, Terra last.
+    expect([...DEFAULT_TEXT_WORKER_CHAIN]).toEqual([OPENROUTER_STEP, GO_STEP, TERRA_STEP]);
     expect(DEFAULT_MULTIMODAL_WORKER_CHAIN).toEqual([{ provider: "openai-codex", id: "gpt-6.1-terra" }, { provider: "xiaomi", id: "mimo-v2.6-flash" }]);
-    // Both steps are actual subscription routes: selected with NO paid allowlist grant.
-    expect(selectChainedWorkerModel(chainRegistry(), DEFAULT_TEXT_WORKER_CHAIN)).toBe(chainModels.sol);
+    // Go and Terra are subscription routes: selected with NO paid allowlist grant.
+    expect(selectChainedWorkerModel(chainRegistry(), DEFAULT_TEXT_WORKER_CHAIN)).toBe(chainModels.goPrimary);
     expect(selectChainedWorkerModel(chainRegistry(), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => false }))
-      .toBe(chainModels.sol);
-    // MiMo unavailable: Codex OAuth Terra serves the text run, never retired Z.ai.
+      .toBe(chainModels.goPrimary);
+    // The reviewed OpenRouter Exacto route serves the head only under the operator's exact allowlist grant.
+    expect(selectChainedWorkerModel(chainRegistry(), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => true }))
+      .toBe(chainModels.openRouter);
+    // Its sibling id without :exacto is a different billing target and never satisfies the head step.
+    const sibling = { ...chainModels.openRouter, id: "deepseek/deepseek-v4.1-flash" } as Model;
+    expect(selectChainedWorkerModel(chainRegistry([sibling, chainModels.goPrimary]), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => true }))
+      .toBe(chainModels.goPrimary);
+    // A different baseUrl on the same id is a different billing target too.
+    const offEndpoint = { ...chainModels.openRouter, baseUrl: "https://openrouter.ai/api/v2" } as Model;
+    expect(selectChainedWorkerModel(chainRegistry([offEndpoint, chainModels.goPrimary]), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => true }))
+      .toBe(chainModels.goPrimary);
+    // OpenRouter and Go unavailable: Codex OAuth Terra serves the text run, never retired Z.ai.
     expect(selectChainedWorkerModel(chainRegistry([chainModels.sol, chainModels.zaiGlm]), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => false }))
       .toBe(chainModels.sol);
     expect(() => selectChainedWorkerModel(chainRegistry([chainModels.zaiGlm]), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => true }))
       .toThrow(/no fallback was selected/);
-    // Go routes are no automatic chain step and never satisfy one, whatever the grant.
+    // A lone Go route still resolves its own chain step, whatever the grant.
     expect(selectChainedWorkerModel(chainRegistry([chainModels.goPrimary]),
       DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => true })).toBe(chainModels.goPrimary);
   });
@@ -649,9 +671,21 @@ describe("synthetic: pre-output custom-chain fallback (real provider streams)", 
     for (const message of ["429 rate limit", "503 service unavailable", "temporarily overloaded", "subscription_quota_exceeded", "quota exhausted"]) {
       expect(eligibleChainFallback(message)).toBe(true);
     }
-    for (const message of ["401 auth failed", "403 permission denied", "region unsupported", "context length exceeded", "400 invalid request", "cancelled", "unknown failure"]) {
+    for (const message of ["401 auth failed", "403 permission denied", "region unsupported", "context length exceeded", "400 invalid request", "cancelled", "unknown failure", "404 model not found"]) {
       expect(eligibleChainFallback(message)).toBe(false);
     }
+    // OpenRouter's own pre-output refusals: a spent balance or a request no provider endpoint can serve.
+    for (const message of [
+      "402 Insufficient credits",
+      "HTTP 402: this request requires more credits",
+      "No endpoints found matching your data policy",
+      "404 No endpoints found for deepseek/deepseek-v4.1-flash-1017:exacto",
+      "0 endpoints out of 3 requested are available",
+    ]) {
+      expect(eligibleChainFallback(message), message).toBe(true);
+    }
+    // Auth still never hops, whatever credits wording sits beside it.
+    expect(eligibleChainFallback("401 auth failed after 402 Insufficient credits")).toBe(false);
     // Same-plan Go retry still refuses the exhaustion signal; only the chain may leave.
     expect(eligibleGoFallback("subscription_quota_exceeded")).toBe(false);
     expect(eligibleChainFallback("subscription_quota_exceeded")).toBe(true);
@@ -708,12 +742,12 @@ describe("synthetic: per-profile Token Plan chain heads (0.8.1)", () => {
   const flash = { provider: "xiaomi", id: "mimo-v2.6-flash" };
   const pro = { provider: "xiaomi", id: "mimo-v2.6-pro" };
   const sol = { provider: "openai-codex", id: "gpt-6.1-terra" };
-  it("leads routine workers with Flash and keeps a Pro head for Pro profiles", () => {
-    expect(DEFAULT_TEXT_WORKER_CHAIN).toEqual([sol, { provider: "opencode-go", id: "deepseek-v4.1-flash" }]);
+  it("leads routine workers with OpenRouter DeepSeek, then Go, then Terra, and keeps a Pro head for Pro profiles", () => {
+    expect(DEFAULT_TEXT_WORKER_CHAIN).toEqual([OPENROUTER_STEP, GO_STEP, TERRA_STEP]);
     expect(DEFAULT_MULTIMODAL_WORKER_CHAIN).toEqual([sol, flash]);
     expect(workerChainFor(pro, true)).toEqual([pro]);
     expect(workerChainFor(undefined, false)).toBe(DEFAULT_TEXT_WORKER_CHAIN);
-    // An explicit MiMo Flash profile keeps its own image route; only the automatic default leads with Terra.
+    // An explicit MiMo Flash profile keeps its own image route; only the automatic default leads with OpenRouter.
     expect(workerChainFor(flash, true)).toEqual([flash]);
     expect(workerChainFor(sol, true)).toBe(DEFAULT_MULTIMODAL_WORKER_CHAIN);
     expect(workerChainFor(pro, false)).toEqual([pro, sol]);

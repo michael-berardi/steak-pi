@@ -72,9 +72,10 @@ export const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
 export const DEFAULT_STARTUP_WINDOW_MS = 2 * GO_ACCOUNT_ROUTER_TIMEOUT_MS + 5_000;
 export const MAX_STARTUP_WINDOW_MS = 30_000;
 /** An implicit dispatch whose worker is refused on a provider quota or usage limit before any output re-runs
- * the same tasks on the next tier of Terra -> Go -> Claude. Each tier is tried at most once, so a wave makes at
- * most this many fall-throughs (Terra -> Go, Go -> Claude): there is no loop. */
-export const MAX_QUOTA_FALL_THROUGHS = 2;
+ * the same tasks on the next tier of OpenRouter DeepSeek -> Go -> Terra -> Claude. Each tier is tried at most
+ * once, so a wave makes at most this many fall-throughs (OpenRouter -> Go, Go -> Terra, Terra -> Claude): there
+ * is no loop. Three gated tiers plus the Claude tier, so three hops is the whole walk. */
+export const MAX_QUOTA_FALL_THROUGHS = 3;
 
 /** Operator-visible warning retained until a bounded teardown really settles. */
 export const RETAINED_LEASE_WARNING = "USAP checkpoint lease retained until an unsettled worker exits; new dispatch and resume are refused";
@@ -326,28 +327,17 @@ async function resolveNativeSelection(ctx: ExtensionContext, input: Parameters<t
     from, dependencies.profiles, undefined, { ...automaticChainOptions(dependencies), ...quota }), from);
   try {
     const selected = await resolve(registry);
-    // Go account stores deliberately contain no Codex auth. Prefer the new chain
-    // head through its own authenticated store even while Go itself is healthy.
-    if (ctx.model!.provider === "opencode-go" && selected.selection.source === "chain" &&
-        selected.selection.chainRoutes?.[0] === TERRA_MODEL_ROUTE &&
-        `${selected.selection.provider}/${selected.selection.modelId}` !== TERRA_MODEL_ROUTE &&
-        quota.skipRoute?.(TERRA_REVIEW_STEP) !== true) {
-      try {
-        const isolated = await registryForSolSelection(ctx.model!, { model: TERRA_MODEL_ROUTE }, ctx.modelRegistry,
-          dependencies.accountCommand, dependencies.createModelRuntime, dependencies.profiles);
-        if (isolated !== ctx.modelRegistry) {
-          const terra = await resolve(isolated);
-          if (`${terra.selection.provider}/${terra.selection.modelId}` === TERRA_MODEL_ROUTE) return { ...terra, registry: isolated };
-        }
-      } catch { /* Terra is unavailable: keep the authenticated Go selection. */ }
-    }
+    // No Terra bridge here: Terra is the LAST step of the default chain (OpenRouter DeepSeek -> Go ->
+    // Terra), so a Go parent whose store lacks Codex auth still resolves its chain order first. A Go
+    // parent only reaches the isolated Codex store when the chain found nothing else, in the catch below.
     return { ...selected, registry };
   }
   catch (failure) {
     // A Go parent's own store has no Codex login, so the default chain's Terra step cannot resolve there.
-    // When the chain found nothing else (Go skipped or unavailable), offer Terra the same isolated Codex
-    // store an explicit Terra dispatch gets. No eligible account, runtime or Terra model there leaves the
-    // original no-route error unchanged. A Terra step already vetoed for quota is not offered at all.
+    // When the chain found nothing else (OpenRouter unavailable, Go skipped or unavailable), offer Terra
+    // the same isolated Codex store an explicit Terra dispatch gets. No eligible account, runtime or Terra
+    // model there leaves the original no-route error unchanged. A Terra step already vetoed for quota is
+    // not offered at all.
     if (ctx.model!.provider === "opencode-go" && isDefaultTextChainExhausted(failure) && quota.skipRoute?.(TERRA_REVIEW_STEP) !== true &&
         failure.tried.some((step) => routeOfStep(step) === TERRA_MODEL_ROUTE)) {
       try {
@@ -373,7 +363,9 @@ type NativeSelection = Awaited<ReturnType<typeof resolveNativeSelection>>;
 function routeStepLabel(step: WorkerRouteStep): string {
   return step.provider === "openai-codex" && step.id === "gpt-6.1-terra" ? "GPT-6.1 Terra"
     : step.provider === "openai-codex" && step.id === "gpt-6.1-sol" ? "GPT-6.1 Sol"
-    : step.provider === "opencode-go" ? "OpenCode Go" : `${step.provider}/${step.id}`;
+    : step.provider === "opencode-go" ? "OpenCode Go"
+    : step.provider === "openrouter" && step.id === "deepseek/deepseek-v4.1-flash-1017:exacto" ? "OpenRouter DeepSeek V4.1 Flash"
+    : `${step.provider}/${step.id}`;
 }
 /** The router-gated step the automatic Terra review fallback would launch on. */
 const TERRA_REVIEW_STEP: WorkerRouteStep = { provider: "openai-codex", id: "gpt-6.1-terra" };
@@ -382,8 +374,8 @@ const routeOfStep = (step: WorkerRouteStep): string => `${step.provider}/${step.
 /** Receipts stay bounded: a router cause is echoed, never an unbounded blob. */
 const boundedReason = (text: string, limit = 480): string => text.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, limit);
 
-/** The router-gated tiers of the default implicit chain, in order. The Claude subscription tier follows
- * them and is not router-gated here. */
+/** The gated tiers of the default implicit chain, in order. OpenRouter has no router meter (it is tracked
+ * so a run's own refusal holds it out); the Claude subscription tier follows these and is not router-gated. */
 const QUOTA_CHAIN: readonly QuotaProvider[] = ["openrouter", "opencode-go", "codex"];
 /** A fall-through receipt carries the refused tier's cause beside the router's, so it may be longer than a plain one. */
 const FALLBACK_REASON_LIMIT = 720;
@@ -461,8 +453,8 @@ interface ImplicitWorkerRoute {
  *  2. a router-gated Terra/Go route is kept unless the router proves EVERY configured account of
  *     that provider unavailable (cooling down, signed out, or a 100% window). Busy, unknown and
  *     unreadable are not exhaustion, so a busy Go stays Go;
- *  3. an exhausted route is never selected: the built-in default chain (Terra -> Go) is walked
- *     with the exhausted providers skipped;
+ *  3. an exhausted route is never selected: the built-in default chain (OpenRouter DeepSeek ->
+ *     Go -> Terra) is walked with the exhausted providers skipped;
  *  4. when both are out (or neither is configured), the wave goes to the official claude-code
  *     subscription route on the cheapest capable tier (Haiku 5.5 or Sonnet 5.5), never to the
  *     paid claude-code-api route and never past a proven-ineligible Claude account. If no
@@ -484,19 +476,33 @@ async function resolveImplicitWorkerRoute(
     const provider = quotaProviderOf(step);
     if (provider === undefined || !spent.has(provider)) return routeQuotaBlock(snapshot, step);
     const failed = fallThroughs.find((item) => item.providers.includes(provider));
+    // A tier ahead of the refused one in chain order is out too, whatever the router now says: the walk is
+    // strictly downward, so an earlier route is never retried after a later tier was refused.
     return failed ? `run ${failed.runId} was refused on a usage limit before any output (${failed.cause})`
-      : routeQuotaBlock(snapshot, step) ?? "an earlier tier of this chain was refused on a usage limit, so it is not retried";
+      : routeQuotaBlock(snapshot, step) ?? "this route was already out when the chain moved on to a later tier that was refused on a usage limit, so it is not retried";
   };
+  // A tier this walk already refused before output is out whatever the router says, and so is everything ahead
+  // of it in chain order. The veto needs no router meter, so it also holds an OpenRouter head that a snapshot
+  // cannot gate: without it the head would be re-launched and refused again on every attempt.
+  const spentSkip = (step: WorkerRouteStep) => {
+    const provider = quotaProviderOf(step);
+    return provider !== undefined && spent.has(provider);
+  };
+  const skipStep = (step: WorkerRouteStep, snapshot: QuotaSnapshot | undefined) =>
+    spentSkip(step) || (snapshot !== undefined && tierBlock(snapshot, step) !== undefined);
   let first: NativeSelection | undefined;
   let failure: unknown;
   // A Go parent needs a cross-store Terra lookup. Read quota before opening it,
   // so a proven-exhausted GPT plan is never offered an isolated runtime.
   let quota: QuotaSnapshot | undefined = ctx.model!.provider === "opencode-go" ? await readQuota() : undefined;
-  try { first = await resolveNativeSelection(ctx, requested, dependencies, quota ? { skipRoute: step => tierBlock(quota!, step) !== undefined } : {}); } catch (error) { failure = error; }
+  try { first = await resolveNativeSelection(ctx, requested, dependencies, { skipRoute: step => skipStep(step, quota) }); } catch (error) { failure = error; }
   if (!first && !isDefaultTextChainExhausted(failure)) throw failure;
   if (first) {
     const step = stepOfSelection(first.selection);
-    if (quotaProviderOf(step) === undefined) return { resolved: first, tried: [], causes: [] };
+    const gated = quotaProviderOf(step);
+    // The account router meters Go, Codex and Claude only: an OpenRouter head has no meter to consult, so its
+    // launch is never gated by a router read (its own 402/no-endpoint refusal is the only evidence it spent).
+    if (gated === undefined || gated === "openrouter") return { resolved: first, tried: [], causes: [] };
     quota ??= await readQuota();
     const cause = tierBlock(quota, step);
     if (cause === undefined) {
@@ -510,9 +516,8 @@ async function resolveImplicitWorkerRoute(
       return { resolved: first, tried: [], causes };
     }
     // The resolved route is out of quota: leave it, continue down the default chain.
-    const skip = (candidate: WorkerRouteStep) => tierBlock(quota!, candidate) !== undefined;
     try {
-      const next = await resolveNativeSelection(ctx, requested, dependencies, { forceDefaultChain: true, skipRoute: skip });
+      const next = await resolveNativeSelection(ctx, requested, dependencies, { forceDefaultChain: true, skipRoute: step => skipStep(step, quota) });
       return { resolved: next, tried: [], causes: [`${routeStepLabel(step)}: ${cause}`] };
     } catch (error) {
       if (!isDefaultTextChainExhausted(error)) throw error;
@@ -522,7 +527,7 @@ async function resolveImplicitWorkerRoute(
   quota ??= await readQuota();
   const exhausted = failure as NoChainRouteError;
   const causes = exhausted.tried.map((step) =>
-    `${routeStepLabel(step)}: ${tierBlock(quota!, step) ?? "no authenticated route is available in this session"}`);
+    `${routeStepLabel(step)}: ${tierBlock(quota!, step) ?? "no authenticated route is available in this session and the reviewed route is not approved in ~/.pi/agent/paid-routes.json"}`);
   const claudeBlock = claudeQuotaBlock(quota);
   const effortBlock = requested.thinking !== undefined && requested.thinking !== "xhigh"
     ? `the Claude subscription tier runs only at xhigh effort and thinking ${requested.thinking} is not silently overridden` : undefined;
@@ -1733,8 +1738,8 @@ export function createUltratermSubagentsExtension(
           throw new Error(`USAP implicit review cannot run: Claude subscription tier: ${claudeBlock} | GPT-6.1 Terra review fallback: ${solBlock}. No review was started and no fallback was selected; wait for a window to return or name a route explicitly.`);
         }
       }
-      // Quota-aware default route for an implicit routine text wave (Terra -> Go -> Claude Haiku/Sonnet
-      // 5.5). A Claude Code CLI route is not a Pi provider, so it cannot be a step of the Pi chain
+      // Quota-aware default route for an implicit routine text wave (OpenRouter DeepSeek -> Go -> Terra ->
+      // Claude Haiku/Sonnet 5.5). A Claude Code CLI route is not a Pi provider, so it cannot be a step of the Pi chain
       // and is reached here instead, only when the default chain cannot launch, never past a
       // proven-ineligible Claude account and never on the paid claude-code-api route. Explicit
       // selections and image waves stay exact.
@@ -1777,7 +1782,7 @@ export function createUltratermSubagentsExtension(
       const fallThroughNote = fallThroughs.length > 0
         ? `Fall-through: ${fallThroughSummary(fallThroughs)}. The same tasks were re-run here on the next tier, with no parent re-dispatch.\n` : "";
       const routeNote = fallThroughNote + (claudeTier
-        ? `Route note: neither ${tierTried.map(routeStepLabel).join(" nor ")} could launch (${quotaCauses.join(" | ")}), so this implicit wave runs ${claudeTier.route} at xhigh (subscription) on the ${tierName} tier: ${claudeTier.reason}. `
+        ? `Route note: none of ${tierTried.map(routeStepLabel).join(", ")} could launch (${quotaCauses.join(" | ")}), so this implicit wave runs ${claudeTier.route} at xhigh (subscription) on the ${tierName} tier: ${claudeTier.reason}. `
           + `Claude account: ${tierAccount ? `${tierAccount.label} (an eligible account in the router snapshot, the least used)` : "the parent's own Claude login (the router listed no Claude account to pin)"}. `
           + `${tierName} work needs verification: review it with an Opus 5.5 reviewer wave (all-reviewer waves default to model ${CLAUDE_CODE_OPUS_ROUTE}).\n`
         : nativeResolved && quotaCauses.length > 0
@@ -1959,7 +1964,7 @@ export function createUltratermSubagentsExtension(
           : `Cancellation was requested for the whole run, but ${stillRunning.map((task) => `[${taskLabel(task)}]`).join(", ")} had not stopped within ${STARTUP_CANCEL_SETTLE_MS} ms and may still be shutting down; the run record is still ${final?.state ?? "running"} (inspect it with ultraterm_hub status ${run.id}).`;
         const failureText = (causes.length > 0 ? causes : startupFailures).map(startupCause).join(" | ");
         // An implicit wave refused on a provider quota or usage limit before any output moves to the next
-        // tier of Terra -> Go -> Claude instead of failing: only for a router-gated Pi tier, only once per
+        // tier of OpenRouter DeepSeek -> Go -> Terra -> Claude instead of failing: only for a router-gated Pi tier, only once per
         // tier, only when the whole run settled (so nothing can still be running or have written), and
         // never after the operator aborted. An explicit route, the Claude tier and every non-quota failure
         // (auth, route, spawn) fall through to the error below.
@@ -2004,15 +2009,15 @@ export function createUltratermSubagentsExtension(
     pi.registerTool({
       name: "ultraterm_subagents",
       label: "UltraTerm Subagents",
-      description: "Dispatch 1-8 bounded tasks through Pi or the official headless Claude Code CLI. All-reviewer waves default to Opus 5.5 xhigh; other claude-code waves run Sonnet 5.5 xhigh. Implicit routine waves run Terra, then Go, and the router's quota is checked first: a provider whose every account is cooling down or at 100% is skipped, and when both are out the wave runs on the claude-code subscription at the cheapest capable tier (Haiku 5.5, or Sonnet 5.5 for substantial code work; verify with Opus 5.5). Explicit routes win and are never rerouted; an explicit route in an exhausted provider is refused with the router's cause. A worker that fails before its first model output fails this call itself, background or not, except that an implicit wave refused on a provider quota or usage limit (Go GoUsageLimitError, Codex usage limit, a cooling-down router refusal) re-runs the same tasks once on the next tier (Terra, Go, then Claude Haiku/Sonnet) inside this call, before Started. Foreground default; ownedPaths grants guarded writes on either harness; allowBash is unsandboxed shell except Claude read-only reviewers get no Bash. Claude image review uses native Read on staged files under cwd.",
+      description: "Dispatch 1-8 bounded tasks through Pi or the official headless Claude Code CLI. All-reviewer waves default to Opus 5.5 xhigh; other claude-code waves run Sonnet 5.5 xhigh. Implicit routine waves run DeepSeek V4.1 Flash on OpenRouter (the exacto route), then OpenCode Go, then GPT-6.1 Terra, then the Claude subscription tier; DeepSeek work is verified by Opus 5.5. The router's quota is checked first: a provider whose every account is cooling down or at 100% is skipped, and when all of them are out the wave runs on the claude-code subscription at the cheapest capable tier (Haiku 5.5, or Sonnet 5.5 for substantial code work; verify with Opus 5.5). Explicit routes win and are never rerouted; an explicit route in an exhausted provider is refused with the router's cause. A worker that fails before its first model output fails this call itself, background or not, except that an implicit wave refused on a provider quota or usage limit (OpenRouter 402 / insufficient credits / no endpoints found, Go GoUsageLimitError, Codex usage limit, a cooling-down router refusal) re-runs the same tasks once on the next tier (OpenRouter DeepSeek, Go, Terra, then Claude Haiku/Sonnet) inside this call, before Started. Foreground default; ownedPaths grants guarded writes on either harness; allowBash is unsandboxed shell except Claude read-only reviewers get no Bash. Claude image review uses native Read on staged files under cwd.",
       promptSnippet: "Dispatch bounded independent child tasks with explicit permissions and path ownership",
       promptGuidelines: [
-        "Fan out by default: independent leaves (disjoint files, modules, screens, angles) dispatch in ONE parallel wave — width defaults to min(8, task count); automatic Terra/Go chain lanes fill 8, explicit Luna lanes stay at 6 or fewer.",
+        "Fan out by default: independent leaves (disjoint files, modules, screens, angles) dispatch in ONE parallel wave — width defaults to min(8, task count); automatic OpenRouter/Go/Terra chain lanes fill 8, explicit Luna lanes stay at 6 or fewer.",
         "Delegation must buy completion speed; modest token premiums for real throughput are correct. Trivial or tightly coupled edits and direct answers stay in the parent.",
         "Parent owns decomposition, integration, verification; workers own leaves end to end. With exact disjoint paths and acceptance contracts in hand, dispatch in the first tool turn without pre-reading child-owned files; do not duplicate child discovery in the parent.",
-        "Terra implementation requires one bounded Opus 5.5 xhigh completion verification through the parent; Go implementation requires Sonnet 5.5, Haiku implementation requires Opus 5.5. Read-only and report-only work need no automatic gate. Security-audit work stays Go/Haiku, never any GPT.",
-        "model or profile picks an explicit authenticated route (mutually exclusive, overrides roles). Every GPT choice requires paid openai-codex OAuth — never OpenRouter, API-key, or batch GPT. Do not select GPT-6 Astra; use GPT-6.1 Terra by default; GPT-6.1 Sol remains explicitly selectable. requireImages=true for visual critics or render inspection.",
-        "Claude work defaults to Sonnet 5.5: harness claude-code (or model claude-code/claude-sonnet-5-5) runs Sonnet 5.5 xhigh, nearly Opus-level at far less quota. Escalate to Opus 5.5 (model claude-code/claude-opus-5-5) only for frontier needs: expert review and sign-off (all-reviewer waves default to it), hard architecture or security reasoning, or a leaf Sonnet already failed. When neither Terra nor Go can launch (not authenticated, not configured, or every account cooling down / at a 100% window per the account router; busy or unknown is NOT exhaustion), an implicit routine text wave runs on the claude-code subscription with no re-dispatch: Haiku 5.5 for ordinary leaves, Sonnet 5.5 when any leaf may edit AND run a shell or thinking xhigh is requested (the tier and why are named in the dispatch note and receipts); verify that work with an Opus 5.5 review. That fallback never uses the paid claude-code-api route, never passes a proven-ineligible Claude account, and if no route can launch the call is refused synchronously naming every cause. A spent Go plan is invisible to the router (no usage API), so an implicit wave whose worker is refused on a provider usage limit before any output falls through to the next tier by itself within the same call (each tier once; the refused run stays failed; the receipt names it; both causes are named if the next tier also cannot launch); auth, route and spawn failures and a bare 429 still fail synchronously. An explicit route whose Go or GPT provider is exhausted is refused with the router cause, not rerouted. mayEdit+ownedPaths are CLI-enforced; allowBash is unsandboxed except read-only reviewers get no shell, even when requested. Stage git evidence for review. requireImages=true admits native Read-image of files staged under cwd, not inline attachments. Explicit routes never fall back; implicit automatic text review may use GPT-6.1 Terra only on proven Claude quota/auth unavailability before output. Hub send/redirect steers running Claude workers through stream-json stdin; replies use the same run-local inbox. Native Pi resume is unavailable on this harness. The exact model claude-code-api/claude-sonnet-5-5 (or claude-code-api/claude-opus-5-5) runs this same headless CLI on approved Claude API credits: explicit only, never a default or fallback, admitted per dispatch and launch by the operator's task-scoped approval record with hard per-session budget ceilings, and a failure never falls back to the subscription or any GPT. Promotional API credits cover headless runs only, never interactive Claude Code.",
+        "DeepSeek V4.1 Flash on OpenRouter is the default worker; DeepSeek and Terra implementation each require one bounded Opus 5.5 xhigh completion verification through the parent; Go implementation requires Sonnet 5.5, Haiku implementation requires Opus 5.5. Read-only and report-only work need no automatic gate. Security-audit work stays Go/Haiku, never any GPT.",
+        "model or profile picks an explicit authenticated route (mutually exclusive, overrides roles). Every GPT choice requires paid openai-codex OAuth — never OpenRouter, API-key, or batch GPT. Do not select GPT-6 Astra; routine text work stays on the automatic chain (OpenRouter DeepSeek V4.1 Flash, then Go, then GPT-6.1 Terra); GPT-6.1 Sol remains explicitly selectable. requireImages=true for visual critics or render inspection.",
+        "Claude work defaults to Sonnet 5.5: harness claude-code (or model claude-code/claude-sonnet-5-5) runs Sonnet 5.5 xhigh, nearly Opus-level at far less quota. Escalate to Opus 5.5 (model claude-code/claude-opus-5-5) only for frontier needs: expert review and sign-off (all-reviewer waves default to it), hard architecture or security reasoning, or a leaf Sonnet already failed. When none of OpenRouter DeepSeek, Go or Terra can launch (not authenticated, not configured, not approved in ~/.pi/agent/paid-routes.json, or every account cooling down / at a 100% window per the account router; busy or unknown is NOT exhaustion), an implicit routine text wave runs on the claude-code subscription with no re-dispatch: Haiku 5.5 for ordinary leaves, Sonnet 5.5 when any leaf may edit AND run a shell or thinking xhigh is requested (the tier and why are named in the dispatch note and receipts); verify that work with an Opus 5.5 review. That fallback never uses the paid claude-code-api route, never passes a proven-ineligible Claude account, and if no route can launch the call is refused synchronously naming every cause. A spent Go plan is invisible to the router (no usage API), and OpenRouter's 402 / insufficient credits or no-endpoints-found refusal only arrives at the request, so an implicit wave whose worker is refused on a provider usage limit before any output falls through to the next tier by itself within the same call (each tier once; the refused run stays failed; the receipt names it; both causes are named if the next tier also cannot launch); auth, route and spawn failures and a bare 429 still fail synchronously. An explicit route whose Go or GPT provider is exhausted is refused with the router cause, not rerouted. mayEdit+ownedPaths are CLI-enforced; allowBash is unsandboxed except read-only reviewers get no shell, even when requested. Stage git evidence for review. requireImages=true admits native Read-image of files staged under cwd, not inline attachments. Explicit routes never fall back; implicit automatic text review may use GPT-6.1 Terra only on proven Claude quota/auth unavailability before output. Hub send/redirect steers running Claude workers through stream-json stdin; replies use the same run-local inbox. Native Pi resume is unavailable on this harness. The exact model claude-code-api/claude-sonnet-5-5 (or claude-code-api/claude-opus-5-5) runs this same headless CLI on approved Claude API credits: explicit only, never a default or fallback, admitted per dispatch and launch by the operator's task-scoped approval record with hard per-session budget ceilings, and a failure never falls back to the subscription or any GPT. Promotional API credits cover headless runs only, never interactive Claude Code.",
         "Background only when the parent can integrate while children run, then one bounded ultraterm_hub wait. Never start a background run merely to wait immediately. A background dispatch holds up to ~25 s for each launched worker to produce its first model output: `Started` means no launched worker has died yet, and a worker that fails before it (router refusal, auth, route, spawn, a first request that errors) makes the call throw with that cause and cancels its siblings (a provider quota or usage-limit refusal on an implicit wave instead re-runs the same tasks on the next tier before `Started`).",
         "For read-only tasks omit ownedPaths and state the read scope in task text; mayEdit requires ownedPaths. allowBash bypasses ownedPaths — grant only when operator-level shell access is necessary.",
       ],
@@ -2022,8 +2027,9 @@ export function createUltratermSubagentsExtension(
       renderResult: renderSubagentResult,
       async execute(_toolCallId, rawParams, signal, onUpdate, ctx) {
         // An implicit wave whose worker is refused on a provider usage limit before any output re-runs the same
-        // tasks on the next tier (Terra -> Go -> Claude) right here, so the parent never re-dispatches. Each tier
-        // is tried at most once; explicit routes and every other failure surface as the error they are.
+        // tasks on the next tier (OpenRouter DeepSeek -> Go -> Terra -> Claude) right here, so the parent never
+        // re-dispatches. Each tier is tried at most once; explicit routes and every other failure surface as
+        // the error they are.
         const fallThroughs: QuotaFallThrough[] = [];
         for (;;) {
           // An Esc during a fall-through's router reads must not still launch the next tier.

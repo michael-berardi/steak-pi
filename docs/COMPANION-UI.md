@@ -94,7 +94,7 @@ The bundled `ultraterm-ui` bridge exposes the current Pi model scope and saved-s
 
 In UltraTerm UI Mode, `/session` opens the saved-session picker, as does `/resume`. Native Pi's `/session` command still shows session statistics. The picker supports filtering and preview; its search input has no focus ring or glow.
 
-Selecting a model does not authorize paid inference. Explicit paid routes still require the approved launch flag and matching allowlisted provider, model and endpoint. Default workers retain subscription-first routing.
+Selecting a model does not authorize paid inference. A metered route is admitted only when the operator's `~/.pi/agent/paid-routes.json` allowlist carries that exact provider, model and endpoint; an explicit paid selection also accepts the approved launch flag. Default workers lead with the reviewed OpenRouter DeepSeek Exacto route, then OpenCode Go, then GPT-6.1 Terra; a metered head launches only while its exact allowlist entry is present.
 
 ## Theme neutrality
 

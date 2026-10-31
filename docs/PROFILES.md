@@ -29,7 +29,7 @@ conflicting selectors and unavailable routes fail before launch.
 
 ## Per-parent defaults
 
-Routine workers and scouts default to **GPT-6.1 Terra on Codex OAuth** (`openai-codex/gpt-6.1-terra`, profile `steak-pi/gpt-6-1-terra`, thinking `high`), then canonical **Go DeepSeek V4.1 Flash** (`opencode-go/deepseek-v4.1-flash`), then Claude Haiku/Sonnet on usage limits or proven unavailability (image runs have no fallback). GLM 5.3, GLM 5.3 Flash and the Z.ai plan were retired on 2026-10-03; GLM or `zai/` selectors are refused. The main app's launch model is unchanged (MiMo V2.6 Pro). Explicitly native-Pi reviewer runs (`harness: "pi"` or an explicit native model/profile) resolve the automatic MiMo V2.6 Pro → GPT-6.1 Terra chain: no expert model is ever selected automatically in the native review chain, and the shipped "expert review chain" label is a legacy native-Pi routing flag, not expert sign-off.
+Routine workers and scouts default to **DeepSeek V4.1 Flash on OpenRouter** (profile `steak-pi/deepseek-openrouter`, route `openrouter/deepseek/deepseek-v4.1-flash-1017:exacto`, thinking `high`; approved in `~/.pi/agent/paid-routes.json`), then canonical **Go DeepSeek V4.1 Flash** (`opencode-go/deepseek-v4.1-flash`), then **GPT-6.1 Terra on Codex OAuth** (`openai-codex/gpt-6.1-terra`, profile `steak-pi/gpt-6-1-terra`), then Claude Haiku/Sonnet on usage limits or proven unavailability (image runs have no fallback). Paid routes are allowed under the operator's exact reviewed-route allowlist; the old "subscription first, no paid fallback" rule is revoked. An OpenRouter 402 / insufficient credits, persistent 429, 5xx or "no endpoints found" refusal moves the wave to the next tier. GLM 5.3, GLM 5.3 Flash and the Z.ai plan were retired on 2026-10-03; GLM or `zai/` selectors are refused. The main app's launch model is unchanged (MiMo V2.6 Pro). Explicitly native-Pi reviewer runs (`harness: "pi"` or an explicit native model/profile) resolve the automatic MiMo V2.6 Pro → GPT-6.1 Terra chain: no expert model is ever selected automatically in the native review chain, and the shipped "expert review chain" label is a legacy native-Pi routing flag, not expert sign-off.
 
 All-reviewer waves with no explicit harness/model/profile use the **Opus Pass**:
 `claude-code/claude-opus-5-5`, official Claude Code CLI, `xhigh` effort and
@@ -52,8 +52,8 @@ routes are separate: the same headless worker on approved API credits, never a
 default or fallback, and never offered as an interactive profile (promotional API
 credits do not cover interactive Claude Code). See [CLAUDE-API-ROUTE.md](./CLAUDE-API-ROUTE.md).
 
-Writable Terra/Go/Haiku implementation requests verification through the parent:
-Opus 5.5 for Terra or Haiku, Sonnet 5.5 for Go. Explicit Sol work and read-only
+Writable DeepSeek/Terra/Go/Haiku implementation requests verification through the parent:
+Opus 5.5 for OpenRouter DeepSeek, Terra or Haiku, Sonnet 5.5 for Go. Explicit Sol work and read-only
 leaves receive no automatic end-gate; report-only work does not require one. Explicit task or
 contract output formats override default report headings. USAP never grants
 permission to release. Explicit native Pi
