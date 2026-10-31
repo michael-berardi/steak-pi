@@ -29,6 +29,7 @@ import {
   prepareNativeTranscript,
   prepareTools,
   piToolName,
+  type ClaudeToolNames,
 } from "./transcript.ts";
 
 interface IndexedText {
@@ -122,7 +123,7 @@ function comparableContent(content: AssistantMessage["content"]): unknown[] {
   });
 }
 
-function nativeContent(content: NativeContentBlock[], toolNames: Set<string>): AssistantMessage["content"] {
+function nativeContent(content: NativeContentBlock[], toolNames: ClaudeToolNames): AssistantMessage["content"] {
   const converted: AssistantMessage["content"] = [];
   for (const block of content) {
     if (block.type === "text") {
@@ -156,7 +157,7 @@ class EventTranslator {
     private readonly model: Model<any>,
     private readonly output: AssistantMessage,
     private readonly stream: AssistantMessageEventStream,
-    private readonly toolNames: Set<string>,
+    private readonly toolNames: ClaudeToolNames,
   ) {}
 
   event(event: AnthropicStreamEvent): void {

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   getDeclaredTools,
   getInitialSystemMessage,
@@ -18,16 +19,40 @@ import type { NativeContentBlock, NativeFrame, NativeMessage } from "./native-ty
 export const TOOL_PREFIX = "mcp__pi__";
 
 /**
+ * The API caps tool names at 64 characters and TOOL_PREFIX takes 9, so a Pi tool name can use 50.
+ * Longer or non-ASCII names (Pi registers MCP tools as mcp__<server>__<tool>, for example the 52-character
+ * mcp__overseer__overseer_coordinator_note_disposition) get a stable alias: a readable head plus the first
+ * 8 hex digits of the full name's SHA-256. Short ASCII names are sent unchanged.
+ */
+export const MAX_CLAUDE_TOOL_NAME = 50;
+const CLAUDE_TOOL_NAME = /^[A-Za-z0-9_-]{1,50}$/u;
+
+export function claudeToolName(name: string): string {
+  if (CLAUDE_TOOL_NAME.test(name)) return name;
+  const hash = createHash("sha256").update(name).digest("hex").slice(0, 8);
+  const head = name.replace(/[^A-Za-z0-9_-]/gu, "_").slice(0, MAX_CLAUDE_TOOL_NAME - hash.length - 1) || "tool";
+  return `${head}_${hash}`;
+}
+
+/**
+ * The tools offered on one request: a map of wire (alias) name -> Pi tool name, or, for callers whose tool
+ * names all fit unchanged, the plain set of names (each is its own wire name).
+ */
+export type ClaudeToolNames = ReadonlyMap<string, string> | ReadonlySet<string>;
+
+/**
  * Pi tool name for a tool_use the model emitted. Models sometimes drop the MCP prefix and
  * call a Pi tool by its bare name ("bash" for "mcp__pi__bash"); that is the same call, so
  * accept it when the bare name is one of Pi's current tools. Any other name is not Pi's.
+ * An aliased long name maps back to the Pi tool it stands for.
  */
-export function piToolName(emitted: string, toolNames: ReadonlySet<string>): string {
-  const name = emitted.startsWith(TOOL_PREFIX) ? emitted.slice(TOOL_PREFIX.length) : emitted;
-  if (!toolNames.has(name)) {
+export function piToolName(emitted: string, toolNames: ClaudeToolNames): string {
+  const wire = emitted.startsWith(TOOL_PREFIX) ? emitted.slice(TOOL_PREFIX.length) : emitted;
+  const name = toolNames instanceof Map ? toolNames.get(wire) : (toolNames as ReadonlySet<string>).has(wire) ? wire : undefined;
+  if (name === undefined) {
     throw new Error(
       emitted.startsWith(TOOL_PREFIX)
-        ? `Claude Code returned unavailable tool ${name}`
+        ? `Claude Code returned unavailable tool ${wire}`
         : `Claude Code returned unexpected tool ${emitted}`,
     );
   }
@@ -169,7 +194,7 @@ function canonicalAssistantContent(message: AssistantMessage): NativeContentBloc
       blocks.push({
         type: "tool_use",
         id: block.id,
-        name: `${TOOL_PREFIX}${block.name}`,
+        name: `${TOOL_PREFIX}${claudeToolName(block.name)}`,
         input: clone(block.arguments) as Record<string, unknown>,
       });
     }
@@ -287,21 +312,29 @@ export interface ToolManifestEntry {
 export function prepareTools(tools: Tool[]): {
   manifest: ToolManifestEntry[];
   nativeTools: Array<Record<string, unknown>>;
-  names: Set<string>;
+  /** Wire (alias) name -> Pi tool name. */
+  names: Map<string, string>;
 } {
-  const names = new Set<string>();
+  const names = new Map<string, string>();
+  const real = new Set<string>();
   const manifest: ToolManifestEntry[] = [];
   const nativeTools: Array<Record<string, unknown>> = [];
 
   for (const tool of tools) {
-    if (!/^[A-Za-z0-9_-]{1,50}$/u.test(tool.name) || names.has(tool.name)) {
-      throw new Error("Claude Code tool names must be unique ASCII identifiers of at most 50 characters");
+    if (!tool.name || real.has(tool.name)) {
+      throw new Error(`Claude Code tool names must be unique and non-empty; "${tool.name}" is offered twice or empty`);
     }
-    names.add(tool.name);
+    const wire = claudeToolName(tool.name);
+    const clash = names.get(wire);
+    if (clash !== undefined) {
+      throw new Error(`Pi tools "${clash}" and "${tool.name}" map to the same Claude tool name "${wire}"; rename one of them`);
+    }
+    real.add(tool.name);
+    names.set(wire, tool.name);
     const schema = normalizeInputSchema(tool.parameters);
-    manifest.push({ name: tool.name, description: tool.description, inputSchema: schema });
+    manifest.push({ name: wire, description: tool.description, inputSchema: schema });
     nativeTools.push({
-      name: `${TOOL_PREFIX}${tool.name}`,
+      name: `${TOOL_PREFIX}${wire}`,
       description: tool.description,
       input_schema: schema,
     });
@@ -316,13 +349,13 @@ function nativeSystemBlocks(message: SystemMessage): Array<Record<string, unknow
   for (const tool of message.toolsRemoved ?? []) {
     blocks.push({
       type: "tool_removal",
-      tool: { type: "tool_reference", name: `${TOOL_PREFIX}${tool.name}` },
+      tool: { type: "tool_reference", name: `${TOOL_PREFIX}${claudeToolName(tool.name)}` },
     });
   }
   for (const tool of message.toolsAdded ?? []) {
     blocks.push({
       type: "tool_addition",
-      tool: { type: "tool_reference", name: `${TOOL_PREFIX}${tool.name}` },
+      tool: { type: "tool_reference", name: `${TOOL_PREFIX}${claudeToolName(tool.name)}` },
     });
   }
   return blocks;
@@ -343,7 +376,7 @@ export function prepareNativeTranscript(
   const declared = getDeclaredTools(messages);
   const prepared = prepareTools(declared);
   const nativeByName = new Map(
-    prepared.nativeTools.map((tool) => [String(tool.name).slice(TOOL_PREFIX.length), tool]),
+    prepared.nativeTools.map((tool) => [prepared.names.get(String(tool.name).slice(TOOL_PREFIX.length))!, tool]),
   );
   const initialNames = new Set(initialTools.map((tool) => tool.name));
   const initialNative = initialTools.map((tool) => structuredClone(nativeByName.get(tool.name)!));
