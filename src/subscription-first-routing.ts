@@ -22,7 +22,7 @@ function createNativeStream(): NativeStream {
   }
   return streamFactory!();
 }
-export const SUBSCRIPTION_FIRST_ERROR = "Paid route denied by subscription-first policy. Select an explicitly approved paid profile or a subscription route. No paid fallback was selected.";
+export const SUBSCRIPTION_FIRST_ERROR = "Paid route denied: this exact metered route is not in the reviewed paid-route table and ~/.pi/agent/paid-routes.json. Add it there (OpenRouter DeepSeek V4.1 Flash is the approved default) or select an approved or subscription route.";
 const MAX_GRANT_MS = 5 * 60_000;
 const STATE = Symbol.for("steak-pi.subscription-first.v1");
 const GENERATION = Symbol.for("steak-pi.subscription-first.generation.v1");

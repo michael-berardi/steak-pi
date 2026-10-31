@@ -65,9 +65,13 @@ export type ChainFallbackInput = Omit<ChainFallbackOptions, "registry">;
  * never generic PAYG. Auth, permission, region, context and 400-class failures
  * never hop, whatever transient wording they carry.
  */
+/** OpenRouter's own pre-output refusals that another route can serve: spent credits (402) and no provider endpoint
+ * available for the request (404 guardrail/endpoint filter). Checked before the generic 4xx refusal below. */
+export const OPENROUTER_ROUTE_UNAVAILABLE = /\b402\b|insufficient[_ ]credits|requires more credits|more credits|no endpoints? (?:found|available)|endpoints? out of \d+ requested are available/i;
 export function eligibleChainFallback(message: string): boolean {
+  if (OPENROUTER_ROUTE_UNAVAILABLE.test(message)) return true;
   if (/abort|cancel|auth|permission|region|context|invalid|\b(?:400|401|403|404)\b/i.test(message)) return false;
-  return eligibleGoFallback(message) || /subscription_quota_exceeded|quota[_ -]?(?:exhausted|exceeded|reached)/i.test(message);
+  return eligibleGoFallback(message) || /subscription_quota_exceeded|GoUsageLimitError|usage limit|quota[_ -]?(?:exhausted|exceeded|reached)/i.test(message);
 }
 /** Never auto-selected: the operator scope removed automatic Luna workers/reviewers. */
 export const ROUTINE_GPT_MODEL = "gpt-5.6-luna";
@@ -315,9 +319,12 @@ export interface WorkerRouteStep { provider: string; id: string }
  * canonical Go DeepSeek V4.1 Flash if Terra is unavailable at selection. Go child runtime
  * failures stay account-bound and fail honestly; no ambient-auth stream hop.
  * Explicit identities and legacy profile-specific MiMo chains remain exact. */
+/** Mike 2026-10-31: DeepSeek V4.1 Flash on OpenRouter first (paid per token, cheapest per finished task), then the
+ * OpenCode Go plan, then GPT-6.1 Terra on Codex OAuth. Claude Haiku is the USAP extension's last tier after this chain. */
 export const DEFAULT_TEXT_WORKER_CHAIN: readonly WorkerRouteStep[] = [
-  { provider: "openai-codex", id: "gpt-6.1-terra" },
+  { provider: "openrouter", id: "deepseek/deepseek-v4.1-flash-1017:exacto" },
   { provider: "opencode-go", id: "deepseek-v4.1-flash" },
+  { provider: "openai-codex", id: "gpt-6.1-terra" },
 ];
 /** Automatic image runs use GPT-6.1 Terra, which reads images, then MiMo V2.6 Flash
  * (2026-10-29: the MiMo-only chain refused every image dispatch that named no model or
