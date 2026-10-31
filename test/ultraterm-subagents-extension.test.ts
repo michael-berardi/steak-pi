@@ -1059,6 +1059,24 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
     await h.handlers.get("session_shutdown")!({}, h.ctx);
   });
 
+  it("synthetic: a busy parent mid-tool is not shown as an unconfirmed delivery, and turn_end confirms the receipt (2026-10-30)", async () => {
+    vi.useFakeTimers();
+    const receipts: any[] = [];
+    const h = harness(() => async () => ({ state: "done", output: "ready", turns: 1, usage: emptyUsage() }));
+    h.ctx.sessionManager = { ...h.ctx.sessionManager, getEntries: () => receipts };
+    h.ctx.isIdle = () => false;  // the parent is busy (a long bash call) when the run is dispatched and when it finishes
+    await h.tools.get("ultraterm_subagents").execute("call", { goal: "busy", background: true, tasks: [{ label: "one", task: "one" }] }, undefined, undefined, h.ctx);
+    await flush();
+    await vi.advanceTimersByTimeAsync(3000);  // every bounded receipt check passes while the steer waits for the step boundary
+    expect(h.messages).toHaveLength(1);
+    expect(h.statuses.some((text) => text?.includes("delivery unconfirmed"))).toBe(false);
+    receipts.push({ type: "custom_message", ...h.messages[0].message });  // the steer lands when the tool call ends
+    await h.handlers.get("turn_end")!({}, h.ctx);
+    expect(h.messages).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+
   it("bounds unconfirmed receipt checks and surfaces the retained result", async () => {
     vi.useFakeTimers();
     const h = harness(() => async () => ({ state: "done", output: "ready", turns: 1, usage: emptyUsage() }));
