@@ -22,7 +22,7 @@ import type {
   NativeResult,
   NativeUsage,
 } from "./native-types.ts";
-import { piToolName, type NativeSystemInjection, type ToolManifestEntry } from "./transcript.ts";
+import { piToolName, type ClaudeToolNames, type NativeSystemInjection, type ToolManifestEntry } from "./transcript.ts";
 
 export const INSTALL_HINT =
   "Claude Code is not installed. Install it with `npm install -g @anthropic-ai/claude-code` " +
@@ -48,7 +48,7 @@ export interface RunClaudeInput {
   systemPrompt: string;
   manifest: ToolManifestEntry[];
   extraBody: Record<string, unknown>;
-  toolNames: Set<string>;
+  toolNames: ClaudeToolNames;
   signal?: AbortSignal;
   timeoutMs?: number;
   env?: Record<string, string | undefined>;

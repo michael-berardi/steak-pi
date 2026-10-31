@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.15.4 (2026-10-31)
+
+- Long MCP tool names now work on the Claude Code route. Pi names MCP tools `mcp__<server>__<tool>`, and a name over
+  50 characters (for example `mcp__overseer__overseer_coordinator_note_disposition`, 52) used to fail the whole turn
+  with "Claude Code tool names must be unique ASCII identifiers of at most 50 characters". Such names, and names with
+  characters the API does not accept, are now sent as a stable alias: a readable head plus 8 hex digits of the full
+  name's SHA-256. Calls map back to the real Pi tool, and the transcript keeps the real name. Names that already fit
+  are sent unchanged, so existing sessions are unaffected. Two tools that would share an alias are refused by name.
+
 ## 0.15.3 (2026-10-30)
 
 - A background subagent result that arrives while the parent is in a long tool call no longer shows "USAP delivery unconfirmed".
