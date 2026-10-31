@@ -384,7 +384,7 @@ const boundedReason = (text: string, limit = 480): string => text.replace(/[\u00
 
 /** The router-gated tiers of the default implicit chain, in order. The Claude subscription tier follows
  * them and is not router-gated here. */
-const QUOTA_CHAIN: readonly QuotaProvider[] = ["codex", "opencode-go"];
+const QUOTA_CHAIN: readonly QuotaProvider[] = ["openrouter", "opencode-go", "codex"];
 /** A fall-through receipt carries the refused tier's cause beside the router's, so it may be longer than a plain one. */
 const FALLBACK_REASON_LIMIT = 720;
 

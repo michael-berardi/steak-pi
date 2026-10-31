@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { assertActiveModelIdentity } from "../src/retired-model-selection.ts";
 import { createRegistryGuard } from "../src/model-route-policy.ts";
 import { activeTemporaryWorkerRoute, preferredFreeMetadata, selectPreferredFreePhysical, temporaryFreeStartupProvider } from "../src/temporary-free-route.ts";
-import { createExplicitPaidApproval, createSelectedRouteApproval, PAID_ROUTE_FLAG } from "../src/explicit-paid-route.ts";
+import { createExplicitPaidApproval, createSelectedRouteApproval, isAllowlistedPaidRoute, PAID_ROUTE_FLAG } from "../src/explicit-paid-route.ts";
 
 import { terraStartupProvider } from "../src/codex-models.ts";
 
@@ -26,7 +26,9 @@ export default function modelRoutePolicy(pi: ExtensionAPI): void {
   let selected: Model | undefined;
   let launch: ((model: Model) => boolean) | undefined;
   const selectedRoute = createSelectedRouteApproval(() => selected);
-  const approval = (model: Model) => launch?.(model) === true || selectedRoute(model);
+  // Mike 2026-10-31: paid routes are allowed. Any exact reviewed route the user allowlisted may serve a request
+  // (including a chain hop), not only the one selected at launch; removing the allowlist entry still revokes it.
+  const approval = (model: Model) => launch?.(model) === true || selectedRoute(model) || isAllowlistedPaidRoute(model);
   let install = createRegistryGuard(approval);
   pi.on("session_start", (_event, ctx) => {
     selected = ctx.model;

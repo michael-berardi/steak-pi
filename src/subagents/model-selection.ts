@@ -31,28 +31,33 @@ export interface WorkerProfile {
 /** Explicit model identities are unchanged. Routine role defaults use Terra;
  * legacy native-review profiles keep their exact Pro/image chain. The dispatch
  * boundary handles automatic Opus -> Terra separately, never as a worker chain. */
+export const DEEPSEEK_OPENROUTER_PROFILE = "steak-pi/deepseek-openrouter";
+export const DEEPSEEK_OPENROUTER_ROUTE = "openrouter/deepseek/deepseek-v4.1-flash-1017:exacto";
 export const BUILTIN_WORKER_PROFILES: readonly WorkerProfile[] = [
+  // Mike 2026-10-31: the default worker is DeepSeek V4.1 Flash on OpenRouter; its chain continues to Go, then Terra.
+  { id: DEEPSEEK_OPENROUTER_PROFILE, model: DEEPSEEK_OPENROUTER_ROUTE, thinking: "high", autoChain: true,
+    workerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE }, reviewerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE } },
   { id: TERRA_PROFILE, model: TERRA_MODEL_ROUTE, thinking: "high", autoChain: true,
-    workerDefault: { profile: TERRA_PROFILE }, reviewerDefault: { profile: TERRA_PROFILE } },
+    workerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE }, reviewerDefault: { profile: TERRA_PROFILE } },
   { id: PREFERRED_FREE_PROFILE, model: PREFERRED_FREE_PROFILE, thinking: "high",
-    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+    workerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: FREE_PROFILE, model: `openrouter/${FREE_MODEL}`, thinking: "high",
-    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+    workerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: "steak-pi/gpt-6-astra", model: "openai-codex/gpt-6-astra", thinking: "medium", autoReviewChain: true,
-    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+    workerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: SOL_PROFILE, model: SOL_MODEL_ROUTE, thinking: "high",
-    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+    workerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: "steak-pi/gpt-6-luna", model: "openai-codex/gpt-6-luna", thinking: "high",
-    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+    workerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: "steak-pi/mimo-v2-6-flash", model: "xiaomi/mimo-v2.6-flash", thinking: "high", autoChain: true,
-    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+    workerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: "steak-pi/mimo-v2-6-pro", model: "xiaomi/mimo-v2.6-pro", thinking: "high", autoChain: true,
-    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+    workerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: "steak-pi/opencode-go", model: "opencode-go/deepseek-v4.1-flash", thinking: "high", autoChain: true,
-    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+    workerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
 ];
-/** The built-in automatic profile whose head resolves the default text chain (Terra -> Go). */
-const DEFAULT_CHAIN_PROFILE = "steak-pi/opencode-go";
+/** The built-in automatic profile whose head resolves the default text chain (OpenRouter DeepSeek -> Go -> Terra). */
+const DEFAULT_CHAIN_PROFILE = DEEPSEEK_OPENROUTER_PROFILE;
 const PI_FAMILY_HARNESSES = new Set(["pi", "steak-pi"]);
 const thinkingLevels = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
 

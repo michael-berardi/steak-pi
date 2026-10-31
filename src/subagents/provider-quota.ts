@@ -2,9 +2,11 @@ import { isManagedCodexRoute } from "../codex-models.ts";
 import { providerAccountCommand, type AccountCommand } from "./provider-accounts.ts";
 
 /** Router provider keys whose accounts gate a launch: GPT Terra/Sol (`codex`), OpenCode Go and Claude. */
-export type QuotaProvider = "codex" | "opencode-go" | "claude";
+/** "openrouter" is a chain tier the fall-through walk tracks (2026-10-31 default worker); the account router has no
+ * OpenRouter meter, so a snapshot never carries it and only a run's own refusal proves it spent. */
+export type QuotaProvider = "openrouter" | "codex" | "opencode-go" | "claude";
 
-const PROVIDER_NAMES: Record<QuotaProvider, string> = { codex: "GPT", "opencode-go": "Go", claude: "Claude" };
+const PROVIDER_NAMES: Record<QuotaProvider, string> = { openrouter: "OpenRouter", codex: "GPT", "opencode-go": "Go", claude: "Claude" };
 const DETAIL_LIMIT = 120;
 
 /** One configured account as the router's `status` reported it. */
@@ -147,6 +149,11 @@ const USAGE_LIMIT_WORDING: ReadonlyArray<readonly [RegExp, string]> = [
   // Pi rewrites every Codex usage_limit_reached / 429 into this sentence before a worker sees it
   // (pi-coding-agent openai-codex-responses), so it is the wording a real Sol refusal arrives with.
   [/hit your ChatGPT usage limit/i, "ChatGPT usage limit reached"],
+  // OpenRouter (the default worker tier since 2026-10-31): spent credits arrive as HTTP 402 "Insufficient credits"
+  // / "requires more credits", and a request no provider endpoint can serve as "No endpoints found" / "0 endpoints out
+  // of N requested are available". Either way the next tier (Go) must take the wave.
+  [/\b402\b|insufficient[_ ]credits|requires more credits/i, "OpenRouter credits exhausted"],
+  [/no endpoints? (?:found|available)|endpoints? out of \d+ requested are available/i, "OpenRouter has no endpoint for this request"],
 ];
 
 /** The plan-exhaustion wording found in `text` (Go `GoUsageLimitError` / "Go usage limit exceeded",
@@ -189,6 +196,7 @@ export function isQuotaLaunchFailure(text: string): boolean {
 export function quotaProviderOf(step: { provider: string; id: string }): QuotaProvider | undefined {
   if (isManagedCodexRoute(`${step.provider}/${step.id}`)) return "codex";
   if (step.provider === "opencode-go") return "opencode-go";
+  if (step.provider === "openrouter") return "openrouter";
   return undefined;
 }
 
