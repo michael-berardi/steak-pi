@@ -181,3 +181,13 @@ describe("finish guard settings", () => {
     expect(finishGuardSettings().maxPushes).toBe(2);
   });
 });
+
+describe("quoted wording", () => {
+  it("does not count unfinished-work phrases inside quotes or code", () => {
+    expect(openWorkPhrases('The guard matched the words "open work" and "next step" in my explanation.')).toEqual([]);
+    expect(openWorkPhrases("Kate wrote “next step: call your CPA”.")).toEqual([]);
+    expect(openWorkPhrases("Run `still failing` as a filter.")).toEqual([]);
+    expect(openWorkPhrases("```\nnext step\n```")).toEqual([]);
+    expect(openWorkPhrases("The tests are still failing.")).toEqual(["still failing"]);
+  });
+});

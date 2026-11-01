@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.18.6 (2026-11-01)
+
+- **Finish guard ignores quoted wording.** Phrases inside quotes ("...", “...”), inline code and code blocks are words
+  being cited or shown, so they no longer count as the reply reporting unfinished work. A reply that explains what the
+  guard matched, or quotes someone's advice, is no longer pushed back. Unquoted wording still counts.
+
 ## 0.18.5 (2026-11-01)
 
 - **`routeConditions`.** An `onlyWhen` condition can now be attached to a plain `"provider/model"` chain step from a
