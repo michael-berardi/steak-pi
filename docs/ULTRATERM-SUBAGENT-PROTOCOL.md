@@ -378,7 +378,7 @@ The parent may choose either execution mode:
 - **Quota-aware routing:** an implicit routine wave asks the account router first.
   A provider whose every configured account is cooling down, signed out or at a
   100% window is skipped (Go -> OpenRouter DeepSeek -> Terra; the router meters
-  Go, Codex and Claude only, so an OpenRouter head launches without a router
+  Go, Codex and Claude only, so the OpenRouter tier launches without a router
   read); when all of them are out the wave runs on the
   claude-code subscription at the cheapest capable tier (Haiku 5.5, or Sonnet 5.5
   for mayEdit+allowBash leaves and xhigh effort), pinned on the
@@ -403,7 +403,7 @@ The parent may choose either execution mode:
   causes. An auth, route or spawn failure, a bare 429 and every explicit route fail
   synchronously and never fall through. Go's usage limit is recorded with the router as
   plan exhaustion (`limit --kind usage`), so the next dispatch's preflight skips it. Each
-  tier gets its own startup window, so a wave that falls through OpenRouter -> Go -> Terra -> Claude can hold
+  tier gets its own startup window, so a wave that falls through Go -> OpenRouter -> Terra -> Claude can hold
   the dispatch call for up to three 25 s windows plus the sibling settles and router reads in
   between (about 130 s worst case) before it returns `Started` or fails with every cause
   named. A worker whose first request fails with a 429 also reports the cooldown and releases
@@ -619,9 +619,9 @@ turn.
 ## 8. Model guidance
 
 Routine bounded scouting and implementation use the configured parent profile
-defaults: built-in routine workers and scouts resolve OpenRouter DeepSeek V4.1 Flash
-(the exact `:exacto` route, approved in `~/.pi/agent/paid-routes.json`) → canonical
-Go DeepSeek V4.1 Flash → GPT-6.1 Terra on Codex OAuth → Claude Haiku/Sonnet on usage
+defaults: built-in routine workers and scouts resolve canonical Go DeepSeek V4.1 Flash
+→ OpenRouter DeepSeek V4.1 Flash (the exact `:exacto` route, approved in
+`~/.pi/agent/paid-routes.json`) → GPT-6.1 Terra on Codex OAuth → Claude Haiku/Sonnet on usage
 limits or proven unavailability (text; images MiMo only), and explicitly native-Pi reviewer chains resolve MiMo V2.6 Pro →
 GPT-6.1 Terra — the legacy "expert review chain" name is a native-Pi routing label, not
 expert sign-off. All-reviewer waves with no explicit route use the official Claude Code

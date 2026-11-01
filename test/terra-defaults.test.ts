@@ -11,7 +11,8 @@ import { validateTemporaryWorkerRoute } from "../src/temporary-free-route.ts";
 
 const sol = { ...TERRA_MODEL, id: "gpt-6.1-sol", name: "GPT-6.1 Sol" };
 const go = { ...sol, provider: "opencode-go", id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", api: "openai-completions", baseUrl: "https://opencode.ai/zen/go/v1" } as typeof sol;
-// The default worker head since 2026-10-31: DeepSeek V4.1 Flash on OpenRouter's Exacto sort.
+// The second default worker tier since 2026-10-31: DeepSeek V4.1 Flash on OpenRouter's Exacto sort,
+// reached once the prepaid Go plan is used up.
 const openRouter = { ...go, provider: "openrouter", id: "deepseek/deepseek-v4.1-flash-1017:exacto", baseUrl: "https://openrouter.ai/api/v1" } as typeof sol;
 const models = [sol, TERRA_MODEL, go];
 const registry = {
@@ -24,28 +25,43 @@ function openRouterRegistry() {
   return { ...registry, find: (provider: string, id: string) => all.find(model => model.provider === provider && model.id === id),
     getAll: () => all, getAvailable: () => all } as never;
 }
+/** The same catalog without the Go tier: Go is used up, so the chain moves to OpenRouter. */
+function openRouterOnlyRegistry() {
+  const all = [sol, TERRA_MODEL, openRouter];
+  return { ...registry, find: (provider: string, id: string) => all.find(model => model.provider === provider && model.id === id),
+    getAll: () => all, getAvailable: () => all } as never;
+}
 function select(selector = {}, role: "worker" | "scout" = "worker") {
   return resolveWorkerSelection(sol, "high", { ...selector, tasks: [{ label: "synthetic", task: "Inspect", role }] }, registry as never, BUILTIN_WORKER_PROFILES, "", {}, {});
 }
 describe("synthetic: Terra defaults and compatibility", () => {
   it.each(["worker", "scout"] as const)("resolves the default worker chain for implicit %s waves with auditable order", role => {
-    // No OpenRouter route is authenticated in this registry: Go serves the chain, Terra stays its last tier.
+    // No OpenRouter route is authenticated in this registry: Go serves the chain head, Terra stays its last tier.
     const selected = select({}, role);
     expect(selected.model).toBe(go);
     expect(selected.selection).toMatchObject({ provider: "opencode-go", modelId: "deepseek-v4.1-flash", source: "chain",
-      chainRoutes: ["openrouter/deepseek/deepseek-v4.1-flash-1017:exacto", "opencode-go/deepseek-v4.1-flash", "openai-codex/gpt-6.1-terra"] });
-    expect(DEFAULT_TEXT_WORKER_CHAIN[0]).toEqual({ provider: "openrouter", id: "deepseek/deepseek-v4.1-flash-1017:exacto" });
+      chainRoutes: ["opencode-go/deepseek-v4.1-flash", "openrouter/deepseek/deepseek-v4.1-flash-1017:exacto", "openai-codex/gpt-6.1-terra"] });
+    expect(DEFAULT_TEXT_WORKER_CHAIN[0]).toEqual({ provider: "opencode-go", id: "deepseek-v4.1-flash" });
   });
-  it("selects OpenRouter DeepSeek first when its reviewed Exacto route is allowlisted", () => {
-    const selected = resolveWorkerSelection(sol, "high", { tasks: [{ label: "synthetic", task: "Inspect" }] },
-      openRouterRegistry(), BUILTIN_WORKER_PROFILES, "", { approvePaidRoute: () => true }, {});
+  it("selects OpenRouter DeepSeek once Go is used up and its reviewed Exacto route is allowlisted", () => {
+    const request = { tasks: [{ label: "synthetic", task: "Inspect" }] };
+    // Go leads the chain: while its prepaid plan resolves, the reviewed OpenRouter tier waits its turn.
+    expect(resolveWorkerSelection(sol, "high", request, openRouterRegistry(), BUILTIN_WORKER_PROFILES, "",
+      { approvePaidRoute: () => true }, {}).model).toBe(go);
+    // Go used up (absent from the authenticated catalog): the allowlisted OpenRouter tier serves the run.
+    const selected = resolveWorkerSelection(sol, "high", request,
+      openRouterOnlyRegistry(), BUILTIN_WORKER_PROFILES, "", { approvePaidRoute: () => true }, {});
     expect(selected.model).toBe(openRouter);
     expect(selected.selection).toMatchObject({ provider: "openrouter", modelId: "deepseek/deepseek-v4.1-flash-1017:exacto", source: "chain" });
   });
-  it("skips an OpenRouter head whose route the allowlist does not carry and keeps the subscription tiers", () => {
+  it("skips an OpenRouter tier whose route the allowlist does not carry and keeps the subscription tiers", () => {
+    // Go still serves while it resolves, whatever the OpenRouter grant.
     const selected = resolveWorkerSelection(sol, "high", { tasks: [{ label: "synthetic", task: "Inspect" }] },
       openRouterRegistry(), BUILTIN_WORKER_PROFILES, "", {}, {});
     expect(selected.model).toBe(go);
+    // With Go used up and no grant for the reviewed Exacto route, the chain skips OpenRouter and reaches Terra.
+    expect(resolveWorkerSelection(sol, "high", { tasks: [{ label: "synthetic", task: "Inspect" }] },
+      openRouterOnlyRegistry(), BUILTIN_WORKER_PROFILES, "", {}, {}).model).toBe(TERRA_MODEL);
   });
   it.each([{ model: SOL_MODEL_ROUTE }, { profile: SOL_PROFILE }, { profile: "gpt-6-1-sol" }])("honors explicit Sol %j", selector => {
     expect(select(selector).model).toBe(sol);
@@ -54,13 +70,13 @@ describe("synthetic: Terra defaults and compatibility", () => {
   });
   it("declares the exact high-effort Terra profile and role metadata", () => {
     // The Terra profile stays a valid explicit/automatic chain profile, but routine workers default to the
-    // OpenRouter DeepSeek profile (its head); reviewers keep Terra.
+    // Go DeepSeek profile (the chain head); reviewers keep Terra.
     expect(BUILTIN_WORKER_PROFILES.find(profile => profile.id === "steak-pi/gpt-6-1-terra")).toMatchObject({
-      model: "openai-codex/gpt-6.1-terra", thinking: "high", workerDefault: { profile: "steak-pi/deepseek-openrouter" }, reviewerDefault: { profile: "steak-pi/gpt-6-1-terra" },
+      model: "openai-codex/gpt-6.1-terra", thinking: "high", workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/gpt-6-1-terra" },
     });
     expect(BUILTIN_WORKER_PROFILES.find(profile => profile.id === "steak-pi/deepseek-openrouter")).toMatchObject({
       model: "openrouter/deepseek/deepseek-v4.1-flash-1017:exacto", thinking: "high", autoChain: true,
-      workerDefault: { profile: "steak-pi/deepseek-openrouter" }, reviewerDefault: { profile: "steak-pi/deepseek-openrouter" },
+      workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/deepseek-openrouter" },
     });
   });
   it("keeps the named 6.0 retirement error and never remaps it", () => {
