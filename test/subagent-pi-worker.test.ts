@@ -1125,7 +1125,7 @@ describe("Go account-isolated worker lifecycle", () => {
     expect(results.map(result => result.state)).toEqual(["done", "done"]);
     expect(captured.map(options => options.agentDir).sort()).toEqual([agentDir("primary"), agentDir("b")].sort());
     expect(command.mock.calls.filter(([args]) => args[0] === "release")).toHaveLength(2);
-    expect(records.map(record => record.providerAccount?.label)).toEqual(["Go 1", "Go 2"]);
+    expect(records.map(record => record.providerAccount?.label)).toEqual(["primary", "b"]);
     expect(process.env.PI_CODING_AGENT_DIR).toBe(original);
   });
   it.each(["factory-failure", "late-abort"])("releases after %s without leaking an initializing session", async stage => {
@@ -1308,7 +1308,7 @@ describe.each(["gpt-6.1-sol", "gpt-6.1-terra"])("synthetic: %s account-isolated 
       } });
     const results = await Promise.all(records.map(record => runner({ run: run("/tmp", record), task: record, signal: new AbortController().signal, onProgress: vi.fn() })));
     expect(results.map(result => result.state)).toEqual(["done", "done"]);
-    expect(records.map(record => record.providerAccount?.label)).toEqual(["GPT1", "GPT2"]);
+    expect(records.map(record => record.providerAccount?.label)).toEqual(["primary", "fallback"]);
     expect(captured.map(options => options.agentDir).sort()).toEqual([isolatedCodexAgentDir("primary"), isolatedCodexAgentDir("fallback")].sort());
     expect(captured.map(options => options.modelRuntime)).toEqual(createdRuntimes);
     for (const id of ["primary", "fallback"] as const) {

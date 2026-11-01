@@ -57,9 +57,9 @@
     ] }
   ],
   "providerQuotaFallback": [
-    { "quota": "opencode-go", "provider": "opencode-go", "label": "Go" },
+    { "quota": "opencode-go", "provider": "opencode-go", "label": "Go", "accountRouter": true, "baseUrl": "https://opencode.ai/zen/go/v1" },
     { "quota": "openrouter", "provider": "openrouter", "metered": false, "label": "OpenRouter" },
-    { "quota": "codex", "provider": "openai-codex", "models": ["gpt-6.1-terra", "gpt-6.1-sol"], "label": "GPT" }
+    { "quota": "codex", "provider": "openai-codex", "models": ["gpt-6.1-terra", "gpt-6.1-sol"], "label": "GPT", "accountRouter": true }
   ],
   "hiddenModelPatterns": [
     { "provider": "openrouter", "pattern": "^(?:deepseek-v4(?:\\.1)?-flash(?:-(?:latest|\\d{4}))?|deepseek-flash-latest)(?::batch)?$" }
@@ -83,6 +83,10 @@
     { "match": "^openai-codex/gpt-6\\.1-terra$", "reviewer": "claude-code/claude-opus-5-5", "fallback": "openai-codex/gpt-6.1-terra" },
     { "match": "^opencode-go/", "reviewer": "claude-code/claude-sonnet-5-5", "fallback": "openai-codex/gpt-6.1-terra" },
     { "match": "(?:^|/)(?:claude-)?haiku(?:[-.]|$)", "reviewer": "claude-code/claude-opus-5-5", "fallback": "openai-codex/gpt-6.1-terra" }
+  ],
+  "temporaryFreeExclusions": [
+    { "provider": "openrouter", "pattern": "(?:^|[^a-z0-9])(?:chat)?gpt" },
+    { "provider": "openrouter", "pattern": "(?:^|[/:])(?:zai|z-ai|xiaomi)/|(?:^|[^a-z0-9])glm(?:[^a-z]|$)|(?:^|[/_. -])(?:openai|codex|mimo|anthropic|claude)" }
   ],
   "routeLabels": {
     "openai-codex/gpt-6.1-terra": "GPT-6.1 Terra",

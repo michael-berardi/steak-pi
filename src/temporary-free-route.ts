@@ -43,8 +43,8 @@ const failConfig = (): never => { throw new TemporaryFreeRouteConfigError("Tempo
 export function isSupportedTemporaryFreeIdentity(provider: unknown, id: unknown, name = ""): boolean {
   return provider === FREE_PROVIDER && typeof id === "string" && id.length <= 256 &&
     /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*:free$/.test(id) &&
-    !/(?:^|[^a-z0-9])(?:chat)?gpt/i.test(`${id} ${name}`) &&
-    !/(?:^|[/:])(?:zai|z-ai|xiaomi)\/|(?:^|[^a-z0-9])glm(?:[^a-z]|$)|(?:^|[/_. -])(?:openai|codex|mimo|anthropic|claude)/i.test(`${id} ${name}`) &&
+    !(routingConfigOrEmpty().temporaryFreeExclusions ?? []).some((entry) =>
+      entry.provider === provider && entry.pattern.test(`${id} ${name}`)) &&
     !isRetiredModelSelector(id) && !isRetiredModelSelector(name) &&
     !isHiddenModel({ provider: FREE_PROVIDER, id: id.replace(/:free$/, "") });
 }

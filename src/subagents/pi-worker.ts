@@ -1,6 +1,6 @@
 import { isCatalogExtraRoute, registerCatalogExtras } from "../catalog-extras.ts";
 import { routingConfigOrEmpty } from "../routing-config.ts";
-import { CODEX_QUOTA, isQuotaTierRoute } from "./provider-quota.ts";
+import { CODEX_QUOTA, isQuotaTierRoute, quotaTiers } from "./provider-quota.ts";
 import {
   GO_ACCOUNT_LEASE_RENEW_INTERVAL_MS,
   GO_ACCOUNT_LEASE_TTL_SECONDS,
@@ -1037,14 +1037,31 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       signal.throwIfAborted();
       if (!runtime?.model || !runtime.thinkingLevel) throw new Error(`No child runtime resolved for ${run.id}`);
       assertModelRoute(runtime.model);
-      if (runtime.model.provider === "opencode-go") {
-        if (runtime.model.baseUrl !== "https://opencode.ai/zen/go/v1") throw new Error("Go account routing requires the canonical Go endpoint");
-        // Reservation cannot be cancelled midway: capture the lease even if abort
-        // arrives while the bounded router request is settling, then release below.
-        account = await reserveGoAccount(`${run.id}/${task.id}`, accountCommand,
-          resuming && task.providerAccount?.provider === "opencode-go" ? task.providerAccount.id : undefined);
-        accountProvider = "opencode-go";
-        task.providerAccount = { provider: "opencode-go", id: account.id, label: account.label, lease: account.lease };
+      // Account leasing is operator configuration: a providerQuotaFallback tier marked
+      // accountRouter leases from the provider account router for its routes. The canonical
+      // endpoint, when configured, must match. With no such tier no lease is taken.
+      const routerTier = quotaTiers().find((tier) => tier.accountRouter === true && tier.provider === runtime.model.provider);
+      if (routerTier) {
+        if (routerTier.baseUrl && runtime.model.baseUrl !== routerTier.baseUrl) {
+          throw new Error(`${routerTier.label ?? routerTier.quota} account routing requires the canonical endpoint`);
+        }
+        if (routerTier.quota === "codex") {
+          // preferred-free is deliberately NOT included: its virtual call boundary
+          // signals return-to-normal instead of borrowing ambient Codex credentials.
+          // A normal-profile checkpointed relaunch must enter this reservation path.
+          // Every account-leased Codex-tier child gets its own router reservation, never the parent store.
+          account = await reserveCodexAccount(`${run.id}/${task.id}`, accountCommand,
+            resuming && task.providerAccount?.provider === "codex" ? task.providerAccount.id : undefined);
+          accountProvider = "codex";
+          task.providerAccount = { provider: "codex", id: account.id, label: account.label, lease: account.lease };
+        } else {
+          // Reservation cannot be cancelled midway: capture the lease even if abort
+          // arrives while the bounded router request is settling, then release below.
+          account = await reserveGoAccount(`${run.id}/${task.id}`, accountCommand,
+            resuming && task.providerAccount?.provider === "opencode-go" ? task.providerAccount.id : undefined);
+          accountProvider = "opencode-go";
+          task.providerAccount = { provider: "opencode-go", id: account.id, label: account.label, lease: account.lease };
+        }
       } else if (isQuotaTierRoute(`${runtime.model.provider}/${runtime.model.id}`, CODEX_QUOTA)) {
         // preferred-free is deliberately NOT included: its virtual call boundary
         // signals return-to-normal instead of borrowing ambient Codex credentials.

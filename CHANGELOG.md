@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.18.2 (2026-11-01)
+
+- **Config-driven provider accounts.** The Go and Codex provider-account labels are no longer hard-coded
+  "Go 1"/"Go 2"/"GPT1"/"GPT2"; each label comes from the account router's own record, falling back to the
+  account id. The Go endpoint base URL and which quota tiers lease accounts now come from the operator's
+  `providerQuotaFallback` (`accountRouter`, `baseUrl`) instead of being baked into the worker.
+- **Config-driven temporary-free exclusions.** The temporary free route's model-family exclusion list
+  (GPT/ChatGPT, ZAI/Xiaomi/GLM, OpenAI/Codex/MiMo/Anthropic/Claude) moved from code into
+  `temporaryFreeExclusions` in `routing.json`; with no config it refuses those families by default and
+  names the key to set. The neutrality test still excludes tests' synthetic fixtures.
+- **No behaviour change when configured.** The operator's own `routing.json` carries the same exclusions and
+  account-router settings, so the live route chain and free-route guards are unchanged.
 ## 0.18.1 (2026-11-01)
 
 - **Documentation corrections.** `docs/MODEL-ROUTING.md` and this changelog described version 1

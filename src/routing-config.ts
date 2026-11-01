@@ -89,8 +89,14 @@ export interface QuotaTierConfig {
    * only tracked so a run's own refusal holds it out of a fall-through walk. */
   metered: boolean;
   label?: string;
+  /** True when routes in this tier lease an account from the provider account router
+   * (`select --provider <quota>`); absent means no account leasing. */
+  accountRouter?: boolean;
+  /** Exact base URL the router requires for this tier's routes; absent accepts any. */
+  baseUrl?: string;
 }
 export interface HiddenModelPattern { provider: string; pattern: RegExp }
+export interface TemporaryFreeExclusion { provider: string; pattern: RegExp }
 export interface SubscriptionRouteCheck {
   provider: string;
   /** Exact https hostname of the subscription endpoint. */
@@ -129,6 +135,8 @@ export interface RoutingConfig {
   catalogExtras?: readonly CatalogExtra[];
   providerQuotaFallback?: readonly QuotaTierConfig[];
   hiddenModelPatterns?: readonly HiddenModelPattern[];
+  /** Families never usable as a temporary free identity (adapter/provider families). */
+  temporaryFreeExclusions?: readonly TemporaryFreeExclusion[];
   subscriptionRouteChecks?: readonly SubscriptionRouteCheck[];
   subscriptionFirstProvider?: string;
   claudeFallbackTier?: ClaudeFallbackTierConfig;
@@ -282,6 +290,8 @@ export function parseRoutingConfig(raw: unknown): RoutingConfig {
         ...(entry.models !== undefined ? { models: array(entry.models, `${key}.models`).map((id, at) => text(id, `${key}.models[${at}]`)) } : {}),
         metered: bool(entry.metered, `${key}.metered`, true),
         ...(entry.label !== undefined ? { label: text(entry.label, `${key}.label`) } : {}),
+        ...(entry.accountRouter !== undefined ? { accountRouter: bool(entry.accountRouter, `${key}.accountRouter`, false) } : {}),
+        ...(entry.baseUrl !== undefined ? { baseUrl: text(entry.baseUrl, `${key}.baseUrl`, 2048) } : {}),
       };
     });
   }
@@ -290,6 +300,13 @@ export function parseRoutingConfig(raw: unknown): RoutingConfig {
       const key = `hiddenModelPatterns[${index}]`;
       if (!object(entry)) return fail(key, "expected { provider, pattern }");
       return { provider: text(entry.provider, `${key}.provider`), pattern: regex(entry.pattern, `${key}.pattern`, "") };
+    });
+  }
+  if (raw.temporaryFreeExclusions !== undefined) {
+    config.temporaryFreeExclusions = array(raw.temporaryFreeExclusions, "temporaryFreeExclusions").map((entry, index) => {
+      const key = `temporaryFreeExclusions[${index}]`;
+      if (!object(entry)) return fail(key, "expected { provider, pattern }");
+      return { provider: text(entry.provider, `${key}.provider`), pattern: regex(entry.pattern, `${key}.pattern`) };
     });
   }
   if (raw.subscriptionRouteChecks !== undefined) {
