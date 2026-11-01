@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.18.4 (2026-11-01)
+
+- **Config-driven `onlyWhen` semi-fallback.** A `textWorkerChain` step may now be an object
+  `{provider, id, onlyWhen: {provider, everyAccount: {remainingBelow, behindPaceAbove}}}` instead of a plain
+  route string. The step is eligible only while EVERY configured account of the named router provider is out
+  (exhausted or ineligible/signed out), has under `remainingBelow` percent left, or is more than
+  `behindPaceAbove` points behind its weekly pace. Unknown or stale usage is not short. A false condition skips
+  the step with its named reason in the dispatch note; a step with no `onlyWhen` behaves as before. No model or
+  provider names ship in the defaults.
+- **Dispatch note.** A skipped `onlyWhen` step names its condition instead of a quota read, in both the success
+  path and the no-route error path.
+
 ## 0.18.3 (2026-11-01)
 
 - **Finish guard.** A turn can no longer end while the todo plan has open items or the final reply reports
