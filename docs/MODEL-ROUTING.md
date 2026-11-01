@@ -8,15 +8,16 @@ The parent session has no provider fallback. Child worker runs have exactly one
 ordered automatic chain (below); every other selection is exact.
 
 Implicit routine workers and scouts default to **DeepSeek V4.1 Flash on
-OpenRouter → OpenCode Go → GPT-6.1 Terra → Claude Haiku/Sonnet** on proven
-unavailability or usage limits. The default worker profile is
-`steak-pi/deepseek-openrouter` on the exact reviewed route
-`openrouter/deepseek/deepseek-v4.1-flash-1017:exacto` (OpenRouter's quality-first
-Exacto provider sort, `https://openrouter.ai/api/v1`), which launches only while
-the operator's `~/.pi/agent/paid-routes.json` allowlist carries that exact route;
-removing the entry revokes the head and the chain starts at Go. Paid routes are
-allowed under that exact reviewed-route allowlist — the earlier "subscription
-first, no paid fallback" rule is revoked. Terra uses
+OpenCode Go → DeepSeek V4.1 Flash on OpenRouter → GPT-6.1 Terra → Claude
+Haiku/Sonnet** on proven unavailability or usage limits. The default worker
+profile is `steak-pi/opencode-go` on the prepaid `opencode-go/deepseek-v4.1-flash`
+plan; once Go is used up the chain moves to the reviewed
+`openrouter/deepseek/deepseek-v4.1-flash-1017:exacto` route (OpenRouter's
+quality-first Exacto provider sort, `https://openrouter.ai/api/v1`), which
+launches only while the operator's `~/.pi/agent/paid-routes.json` allowlist
+carries that exact route; removing the entry revokes that tier and the chain
+continues at Terra. Paid routes are allowed under that exact reviewed-route
+allowlist — the earlier "subscription first, no paid fallback" rule is revoked. Terra uses
 `openai-codex/gpt-6.1-terra`, profile `steak-pi/gpt-6-1-terra` at high effort,
 and native Codex catalog registration (text+image input, 1,050,000 context,
 128,000 output). Writable DeepSeek or Terra implementation requests Opus 5.5
@@ -96,11 +97,11 @@ selectors (`workerDefault` / `reviewerDefault`) first, then the matching parent
 profile metadata. Explicit model/profile selection always wins. Custom selectors
 are preserved; the operator's routine default is `steak-pi/opencode-go`.
 
-- Routine text workers/scouts: the reviewed `openrouter/deepseek/deepseek-v4.1-flash-1017:exacto`
-  head, then canonical `opencode-go/deepseek-v4.1-flash`, then
-  `openai-codex/gpt-6.1-terra`. A step the registry cannot resolve (no OpenRouter
-  route, no approved allowlist entry) is skipped at selection; when no step can
-  launch, an implicit wave moves to the Claude tier below.
+- Routine text workers/scouts: canonical `opencode-go/deepseek-v4.1-flash` first,
+  then the reviewed `openrouter/deepseek/deepseek-v4.1-flash-1017:exacto` route,
+  then `openai-codex/gpt-6.1-terra`. A step the registry cannot resolve (no Go
+  route, no OpenRouter route or approved allowlist entry) is skipped at selection;
+  when no step can launch, an implicit wave moves to the Claude tier below.
 - **Quota preflight.** For an *implicit* route (no `harness`/`model`/`profile`/`claudeAccount`)
   the dispatch reads the account router (`ut-provider-accounts status`, one call, only when the
   resolved route is a router-gated Go or Terra route) before it returns a selection, so an
@@ -117,7 +118,7 @@ are preserved; the operator's routine default is `steak-pi/opencode-go`.
   explicit Sol dispatch),
   the receipt records the whole chain (`source: "chain"`, `chainRoutes`) and the router cause
   (`selection.fallbackReason`), and the dispatch text carries a route note.
-- **Claude tier.** When none of OpenRouter DeepSeek, Go or Terra can launch (exhausted or
+- **Claude tier.** When none of OpenCode Go, OpenRouter DeepSeek or Terra can launch (exhausted or
   unconfigured per the router, not approved in `~/.pi/agent/paid-routes.json`, or not authenticated
   in the session), an implicit routine text wave (no reviewer, no
   `requireImages`, effort unset or `xhigh`) runs on the official Claude Code subscription
@@ -146,12 +147,12 @@ are preserved; the operator's routine default is `steak-pi/opencode-go`.
   and each router cause. Work on either tier **needs an Opus 5.5 review**; an all-reviewer wave
   already defaults to it.
 - **When nothing can launch the dispatch refuses synchronously**, before any checkpoint, relay
-  peer or worker exists, naming every cause (OpenRouter DeepSeek, Go, Terra and the Claude tier,
-  each with the router's own words or the missing allowlist entry, e.g. `OpenRouter DeepSeek V4.1
+  peer or worker exists, naming every cause (Go, OpenRouter DeepSeek, Terra and the Claude tier,
+  each with the router's own words or the missing allowlist entry, e.g. `OpenCode Go: every Go
+  account is unavailable (Go 1: cooling down until Mon 02:59; Go 2: …) | OpenRouter DeepSeek V4.1
   Flash: no authenticated route is available in this session and the reviewed route is not approved
-  in ~/.pi/agent/paid-routes.json | OpenCode Go: every Go account is unavailable (Go 1: cooling down
-  until Mon 02:59; Go 2: …) | GPT-6.1 Terra: … | Claude subscription tier: every Claude account is
-  ineligible (…)`). An implicit review whose Claude accounts are proven unavailable and whose
+  in ~/.pi/agent/paid-routes.json | GPT-6.1 Terra: … | Claude subscription tier: every Claude account
+  is ineligible (…)`). An implicit review whose Claude accounts are proven unavailable and whose
   Terra review fallback is exhausted refuses the same way. An implicit read-only review on a
   healthy Claude whose Terra review fallback is exhausted installs no fallback (it would only
   trade a Claude quota/auth failure for a router refusal after `Started`) and the dispatch note
@@ -192,9 +193,9 @@ are preserved; the operator's routine default is `steak-pi/opencode-go`.
   the quota preflight) the startup gate therefore does not fail the dispatch on such a cause:
   it re-runs the **same tasks** once on the next tier of Go -> OpenRouter DeepSeek -> Terra ->
   Claude Haiku 5.5 / Sonnet 5.5 (the tier by the rule above, pinned on a router-eligible Claude
-  account), with no parent re-dispatch. An OpenRouter head's own 402 "Insufficient credits" /
+  account), with no parent re-dispatch. The OpenRouter tier's own 402 "Insufficient credits" /
   "requires more credits" or "No endpoints found" refusal is a quota cause too, and the router
-  never meters it, so the head launches without a router read. It happens inside the startup window, before `Started`, for foreground and
+  never meters it, so that tier launches without a router read. It happens inside the startup window, before `Started`, for foreground and
   background runs alike (each attempt has its own window, so a wave that falls through every
   tier can hold the call for about 130 s in the worst case before it returns or fails with every
   cause named). *A quota cause* is the provider's own words for a spent plan: Go's
@@ -306,7 +307,7 @@ claim expert approval that did not happen. Astra keeps its medium
 reasoning default; reviewer role alone does not raise effort. Astra is never a
 routine worker default: parent-added `steak-pi/gpt-6-1-sol` and
 `steak-pi/gpt-6-luna` profiles are explicit-selection routes only, whose own
-`workerDefault` keeps routine workers on Terra → Go selection.
+`workerDefault` keeps routine workers on the default Go → OpenRouter DeepSeek → Terra chain.
 
 The first step that is authenticated, present in the operator's available
 catalog, capability-matching, has a native streaming adapter, and is spendable
@@ -476,7 +477,7 @@ chain as workers, never an automatic expert step), and that an explicit
 selector is never upgraded into chain provenance.
 `test/provider-quota.test.ts`, `test/subagent-model-selection.test.ts` and the quota block of
 `test/ultraterm-subagents-extension.test.ts` prove the quota rules: an exhausted implicit
-OpenRouter -> Go -> Terra, all three out -> Haiku (plain leaves) or Sonnet (mayEdit+allowBash, xhigh), busy or
+Go -> OpenRouter -> Terra, all three out -> Haiku (plain leaves) or Sonnet (mayEdit+allowBash, xhigh), busy or
 unknown stays on its route, an exhausted explicit route is refused with no reroute, everything
 out refuses naming each cause, a worker that fails before its first output rejects the dispatch
 with its cause, and a usage-limit refusal falls through each tier once.

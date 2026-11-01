@@ -2,6 +2,15 @@
 
 ## 0.17.0 (2026-10-31)
 
+- **The automatic text worker chain is Go-first.** USAP routine text workers and scouts now run **DeepSeek V4.1
+  Flash on OpenCode Go** (`opencode-go/deepseek-v4.1-flash`, profile `steak-pi/opencode-go`; the prepaid plan),
+  then **DeepSeek V4.1 Flash on OpenRouter** once Go is used up (the exact
+  `openrouter/deepseek/deepseek-v4.1-flash-1017:exacto` route, profile `steak-pi/deepseek-openrouter`, launched
+  only while the operator's reviewed-route allowlist carries it), then **GPT-6.1 Terra on Codex OAuth**, then the
+  Claude subscription tier. An exhausted tier falls through to the next; a busy or unknown account never moves a
+  wave; explicit routes stay exact; a sibling OpenRouter id or a different baseUrl is still refused as a different
+  billing target. Image runs keep their Terra → MiMo V2.6 Flash chain, and `MAX_QUOTA_FALL_THROUGHS` stays three
+  because the same three gated tiers are walked in the new order.
 - **Update available, in one line.** An interactive session checks GitHub's latest release in the background at most
   once every 6 hours per machine (one shared cache file, no polling, nothing on the startup path, no check in print
   mode or CI). When a newer release exists the footer shows `Steak Pi <new> available (you have <old>) · /steak-update`.
