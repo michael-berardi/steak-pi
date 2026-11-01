@@ -64,10 +64,13 @@ export function openTodos(items: readonly GuardTodo[]): GuardTodo[] {
   });
 }
 
+/** Quoted spans ("...", “...”, `...`) and code blocks are words being cited or shown, not the reply's own report. */
+const QUOTED = /```[\s\S]*?```|`[^`\n]*`|"[^"\n]{0,200}"|“[^”\n]{0,200}”/g;
+
 export function openWorkPhrases(text: string): string[] {
   const found: string[] = [];
   if (!text) return found;
-  const scan = text.length > SCAN_LIMIT ? text.slice(-SCAN_LIMIT) : text;
+  const scan = (text.length > SCAN_LIMIT ? text.slice(-SCAN_LIMIT) : text).replace(QUOTED, " ");
   for (const pattern of OPEN_WORK) {
     const match = pattern.exec(scan);
     if (match) found.push(match[0]);
