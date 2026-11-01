@@ -138,8 +138,8 @@ node - "$TMP/config/settings.json" "$STEAK_PACKAGE" <<'NODE'
 const fs = require("node:fs");
 const [file, root] = process.argv.slice(2);
 fs.writeFileSync(file, JSON.stringify({
-  defaultProvider: "xiaomi",
-  defaultModel: "mimo-v2.6-flash",
+  defaultProvider: "offline-fixture",
+  defaultModel: "fixture-model",
   defaultThinkingLevel: "high",
   defaultProjectTrust: "always",
   enableInstallTelemetry: false,
@@ -155,9 +155,9 @@ const iso = new Date(now - 60_000).toISOString();
 const lines = [
   { type: "session", version: 3, id: "11111111-1111-4111-8111-111111111111", timestamp: iso, cwd },
   { type: "message", id: "a1b2c3d4", parentId: null, timestamp: iso, message: { role: "user", content: "fixture-resume-marker", timestamp: now - 60_000 } },
-  { type: "message", id: "b2c3d4e5", parentId: "a1b2c3d4", timestamp: iso, message: { role: "assistant", content: [{ type: "text", text: "fixture restored" }], api: "openai-completions", provider: "xiaomi", model: "mimo-v2.6-flash", usage: { input: 16200, output: 450, cacheRead: 8000, cacheWrite: 200, totalTokens: 24850, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 1.234 } }, stopReason: "stop", timestamp: now - 59_000 } },
+  { type: "message", id: "b2c3d4e5", parentId: "a1b2c3d4", timestamp: iso, message: { role: "assistant", content: [{ type: "text", text: "fixture restored" }], api: "openai-completions", provider: "offline-fixture", model: "fixture-model", usage: { input: 16200, output: 450, cacheRead: 8000, cacheWrite: 200, totalTokens: 24850, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 1.234 } }, stopReason: "stop", timestamp: now - 59_000 } },
 ];
-const run = { runId: "run-visual-fixture", goal: "Verify the subagent workgroup", state: "failed", model: "xiaomi/mimo-v2.6-flash", createdAt: now - 60_000, endedAt: now - 1_000, tasks: [
+const run = { runId: "run-visual-fixture", goal: "Verify the subagent workgroup", state: "failed", model: "offline-fixture/fixture-model", createdAt: now - 60_000, endedAt: now - 1_000, tasks: [
   { taskId: "one", label: "Source review", state: "done", turns: 8, toolSuccesses: 6, toolErrors: 0, startedAt: now - 60_000, endedAt: now - 10_000, output: "Reviewed implementation and retained evidence." },
   { taskId: "two", label: "Long-running verification", state: "failed", turns: 64, toolSuccesses: 55, toolErrors: 1, startedAt: now - 60_000, endedAt: now - 1_000, error: "Turn budget reached — partial work retained", output: "Partial verification report is available for inspection." },
 ] };
@@ -177,20 +177,20 @@ import { emptyUsage } from "$ROOT/src/subagents/types.ts";
 export default function(pi) {
   // A credential-free, network-denied model keeps real model/context metadata
   // available in both stock themes. Any accidental request fails explicitly.
-  pi.registerProvider("xiaomi", {
-    baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1", api: "openai-completions", apiKey: "offline-fixture",
-    models: [{ id: "mimo-v2.6-flash", name: "Offline TUI fixture", reasoning: true, input: ["text"],
+  pi.registerProvider("offline-fixture", {
+    baseUrl: "https://offline-fixture.invalid/v1", api: "openai-completions", apiKey: "offline-fixture",
+    models: [{ id: "fixture-model", name: "Offline TUI fixture", reasoning: true, input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1000000, maxTokens: 1000 }],
     streamSimple() { throw new Error("Network forbidden in offline TUI fixture"); },
   });
   const tools = new Map();
-  const model = { provider: "xiaomi", id: "mimo-v2.6-flash", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1", input: ["text"] };
+  const model = { provider: "offline-fixture", id: "fixture-model", baseUrl: "https://offline-fixture.invalid/v1", input: ["text"] };
   createUltratermSubagentsExtension({ checkpointRoot: "$TMP/completion-checkpoints", profiles: [], idFactory: () => "completion-proof", createRunner: () => async () => ({ state: "done", output: "offline proof", turns: 1, usage: emptyUsage() }) })({
     registerTool: (tool) => tools.set(tool.name, tool), on: () => {},
     appendEntry: (...args) => pi.appendEntry(...args), sendMessage: (...args) => pi.sendMessage(...args),
   });
   pi.registerCommand("usap-smoke", { description: "Offline completion proof", handler: async (_args, ctx) => {
-    await tools.get("ultraterm_subagents").execute("proof", { goal: "offline completion proof", model: "xiaomi/mimo-v2.6-flash", background: true, tasks: [{ label: "Completion delivery verified", task: "offline" }] }, undefined, undefined, {
+    await tools.get("ultraterm_subagents").execute("proof", { goal: "offline completion proof", model: "offline-fixture/fixture-model", background: true, tasks: [{ label: "Completion delivery verified", task: "offline" }] }, undefined, undefined, {
       ...ctx, model, thinkingLevel: "medium",
       modelRegistry: { isUsingOAuth: () => false, hasConfiguredAuth: () => true, getAvailable: () => [model], find: () => model, getProvider: () => ({ streamSimple() {} }) },
     });
@@ -338,9 +338,9 @@ cat >"$TMP/paste-proof.ts" <<EOF
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
 import { appendFileSync, writeFileSync } from "node:fs";
 export default function(pi) {
-  pi.registerProvider("xiaomi", {
-    baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1", api: "openai-completions", apiKey: "offline-fixture",
-    models: [{ id: "mimo-v2.6-flash", name: "Offline paste fixture", reasoning: false, input: ["text"],
+  pi.registerProvider("offline-fixture", {
+    baseUrl: "https://offline-fixture.invalid/v1", api: "openai-completions", apiKey: "offline-fixture",
+    models: [{ id: "fixture-model", name: "Offline paste fixture", reasoning: false, input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 1000 }],
     streamSimple(model, context, options) {
       // No network or inference: capture exactly what reaches the provider API.

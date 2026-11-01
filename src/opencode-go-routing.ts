@@ -4,12 +4,9 @@ import { authHeadersMatch, beginGoAttempt, observeGoQuota } from "./subscription
 type Registry = ExtensionContext["modelRegistry"];
 type Provider = NonNullable<ReturnType<Registry["getProvider"]>>;
 type Model = NonNullable<ExtensionContext["model"]>;
-/** Go primary model. The same-provider Go GLM retry was retired with GLM 5.3 on
- * 2026-10-03: a Go failure is now reported as itself, with no hop. */
-export const GO_PRIMARY_MODEL = "deepseek-v4.1-flash";
+/** Go transport adapter. There is no same-provider model retry: a Go failure is reported
+ * as itself, and any cross-route hop belongs to the operator's configured chain. */
 export const GO_FALLBACK_MODEL: string | undefined = undefined;
-const PRIMARY = GO_PRIMARY_MODEL;
-const FALLBACK = GO_FALLBACK_MODEL;
 /** Symbol.for keeps the guard idempotent across module reloads. */
 export const GO_ROUTING_MARKER = Symbol.for("steak-pi.opencode-go-routing.v1");
 
@@ -45,29 +42,9 @@ export function withOpenCodeGoRouting(provider: Provider): Provider {
     const Stream = first.constructor as new () => typeof first;
     const output = new Stream();
     void (async () => {
-      let emittedContent = false;
       let terminal = false;
       try {
         for await (const event of first) {
-          // A start event is just metadata; content/tool starts permanently prohibit retry.
-          if (event.type !== "start" && event.type !== "error") emittedContent = true;
-          if (event.type === "error" && model.id === PRIMARY && !emittedContent &&
-              !options.signal?.aborted && event.error.stopReason !== "aborted" &&
-              eligibleGoFallback(event.error.errorMessage ?? "")) {
-            const fallback = FALLBACK ? provider.getModels().find((m) => m.id === FALLBACK && m.provider === "opencode-go") : undefined;
-            if (fallback) {
-              // Do not rewrite the model to the requested primary: transcripts/usage must name the fallback.
-              for await (const next of invoke(fallback)) {
-                if (next.type === "done") observe(fallback, "success");
-                if (next.type === "error") observe(fallback, "error", next.error.errorMessage);
-                output.push(next);
-                if (next.type === "done" || next.type === "error") terminal = true;
-              }
-              if (!terminal) throw new Error("OpenCode Go fallback stream ended without a terminal event.");
-              output.end();
-              return;
-            }
-          }
           if (event.type === "done") observe(model, "success");
           if (event.type === "error") observe(model, "error", event.error.errorMessage);
           output.push(event);

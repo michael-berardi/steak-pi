@@ -1,6 +1,6 @@
 {
   "name": "steak-pi",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "bin": {
     "steak-pi": "bin/steak-pi"
   },
@@ -20,8 +20,8 @@
     "CONTRIBUTING.md",
     "SECURITY.md",
     "benchmarks/usap/README.md",
-    "benchmarks/usap/results/glm53-live-calibration-2026-09-04.md",
-    "benchmarks/usap/results/glm53-live-mirror-2026-09-09.md",
+    "benchmarks/usap/results/live-calibration-2026-09-04.md",
+    "benchmarks/usap/results/live-mirror-2026-09-09.md",
     "benchmarks/overhead/README.md",
     "extensions",
     "scripts/usap-claude-api.ts",

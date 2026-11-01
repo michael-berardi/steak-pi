@@ -81,7 +81,7 @@ describe("ultraterm_subagents explicit Claude API route", () => {
     const runner = vi.fn(done);
     const h = harness(runner);
     await expect(h.tools.get("ultraterm_subagents").execute("api", wave({ model: SONNET }), undefined, undefined, h.ctx))
-      .rejects.toThrow(/ClaudeApiAdmissionError\[approval-missing\].*no subscription, Sol or other fallback was selected/s);
+      .rejects.toThrow(/ClaudeApiAdmissionError\[approval-missing\].*no subscription or other fallback was selected/s);
     expect(runner).not.toHaveBeenCalled();
     const listed = await h.tools.get("ultraterm_hub").execute("list", { action: "list" }, undefined, undefined, h.ctx);
     expect(listed.details.runs).toEqual([]);

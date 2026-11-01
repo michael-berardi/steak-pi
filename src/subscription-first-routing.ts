@@ -3,6 +3,7 @@ import { createRequire, findPackageJSON } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { routingConfigOrEmpty, type SubscriptionRouteCheck } from "./routing-config.ts";
 
 type Model = NonNullable<ExtensionContext["model"]>;
 type NativeProvider = NonNullable<ReturnType<ExtensionContext["modelRegistry"]["getProvider"]>>;
@@ -22,7 +23,7 @@ function createNativeStream(): NativeStream {
   }
   return streamFactory!();
 }
-export const SUBSCRIPTION_FIRST_ERROR = "Paid route denied: this exact metered route is not in the reviewed paid-route table and ~/.pi/agent/paid-routes.json. Add it there (OpenRouter DeepSeek V4.1 Flash is the approved default) or select an approved or subscription route.";
+export const SUBSCRIPTION_FIRST_ERROR = "Paid route denied: this exact metered route is not in the operator's reviewed paid-route table and allowlist (~/.pi/agent/paid-routes.json). Review and allow it there, or select an approved or subscription route.";
 const MAX_GRANT_MS = 5 * 60_000;
 const STATE = Symbol.for("steak-pi.subscription-first.v1");
 const GENERATION = Symbol.for("steak-pi.subscription-first.generation.v1");
@@ -34,7 +35,22 @@ const exhausted = (globalState[STATE] ??= new Map<string, number>()) as Map<stri
 const generation = (globalState[GENERATION] ??= { current: 0 }) as { current: number };
 const fingerprint = (key: string) => createHash("sha256").update(key).digest("hex");
 
-/** Route identity matters: provider names alone do not authorize billing exceptions. */
+/** The operator's subscription endpoints (`subscriptionRouteChecks` in routing.json). */
+export const subscriptionRouteChecks = (): readonly SubscriptionRouteCheck[] => routingConfigOrEmpty().subscriptionRouteChecks ?? [];
+
+/** One exact endpoint match: https, no port or credentials, exact host, configured path. */
+export function matchesSubscriptionCheck(check: SubscriptionRouteCheck, model: Pick<Model, "provider" | "baseUrl">): boolean {
+  let url: URL;
+  try { url = new URL(model.baseUrl); } catch { return false; }
+  if (model.provider !== check.provider || url.protocol !== "https:" || url.port || url.username || url.password) return false;
+  if (url.hostname !== check.host) return false;
+  if (check.pathPattern && !check.pathPattern.test(url.pathname)) return false;
+  return !check.exact || (!url.search && !url.hash);
+}
+
+/** Route identity matters: provider names alone do not authorize billing exceptions.
+ * Local endpoints and the built-in Claude Code CLI adapter are subscription/local by
+ * construction; every other subscription endpoint is the operator's configuration. */
 export function isSubscriptionOrLocalRoute(model: Pick<Model, "provider" | "baseUrl">, oauth: boolean): boolean {
   let url: URL;
   try { url = new URL(model.baseUrl); } catch { return false; }
@@ -43,18 +59,7 @@ export function isSubscriptionOrLocalRoute(model: Pick<Model, "provider" | "base
   // Claude Code spends the operator's own Claude subscription through the installed
   // CLI; the built-in adapter refuses API keys, proxies and usage-credit overage itself.
   if (model.provider === "claude-code") return model.baseUrl === "process://claude-code";
-  if (url.protocol !== "https:" || url.port) return false;
-  if (model.provider === "opencode-go") return url.hostname === "opencode.ai" && /^\/zen\/go(?:\/|$)/.test(url.pathname);
-  // The dedicated Singapore Token Plan endpoint spends prepaid subscription
-  // credits, not the separate Xiaomi pay-as-you-go account balance.
-  if (model.provider === "xiaomi") return url.hostname === "token-plan-sgp.xiaomimimo.com" &&
-    /^\/(?:v1|anthropic)\/?$/.test(url.pathname) && !url.search && !url.hash;
-  if (!oauth) return false;
-  if (model.provider === "openai-codex") return url.hostname === "chatgpt.com" && /^\/backend-api(?:\/|$)/.test(url.pathname);
-  if (model.provider === "anthropic") return url.hostname === "api.anthropic.com";
-  if (model.provider === "github-copilot") return /^(?:api\.)?githubcopilot\.com$/.test(url.hostname);
-  if (model.provider === "google-gemini-cli") return url.hostname === "cloudcode-pa.googleapis.com";
-  return false;
+  return subscriptionRouteChecks().some((check) => (!check.oauth || oauth) && matchesSubscriptionCheck(check, model));
 }
 
 /** Explicit auth headers must not silently substitute a different billing identity. */

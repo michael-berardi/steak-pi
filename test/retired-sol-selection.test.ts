@@ -3,12 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { assertModelRoute, assertSubscriptionRequest, guardProvider, isModelRouteAllowed, selectWorkerModel } from "../src/model-route-policy.ts";
-import { RetiredModelSelectionError, SOL_MODEL_ID, SOL_MODEL_ROUTE, SOL_PROFILE } from "../src/retired-model-selection.ts";
-import { BUILTIN_WORKER_PROFILES, loadWorkerProfiles, resolveWorkerSelection } from "../src/subagents/model-selection.ts";
+import { RetiredModelSelectionError } from "../src/retired-model-selection.ts";
+import { loadWorkerProfiles, resolveWorkerSelection } from "../src/subagents/model-selection.ts";
 import { normalizeDispatch } from "../src/subagents/policy.ts";
 import { catalogModels, decodeRequest, readProfiles } from "../extensions/ultraterm-ui.ts";
 import modelRoutePolicy from "../extensions/model-route-policy.ts";
 import { readHarnessProfiles } from "../src/harness-profiles.ts";
+import { SOL_MODEL_ID, SOL_MODEL_ROUTE, SOL_PROFILE, BUILTIN_WORKER_PROFILES } from "./helpers/routing-fixture.ts";
 
 type Model = Parameters<typeof resolveWorkerSelection>[0];
 const astra = { id: "gpt-6-astra", name: "GPT-6 Astra", provider: "openai-codex", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text", "image"] } as Model;

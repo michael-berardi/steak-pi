@@ -16,7 +16,7 @@ The current runner only replays frozen synthetic trace plans. It does not launch
 Paid runs must live in a separate, approval-gated harness. They must retain the same case definitions and scoring semantics, record raw traces, and label their output `paid-live` rather than merging it with synthetic results. This scaffold intentionally has no provider adapter and cannot make a paid call.
 
 The first separately controlled live calibration is recorded in
-[`results/glm53-live-calibration-2026-09-04.md`](./results/glm53-live-calibration-2026-09-04.md).
+[`results/live-calibration-2026-09-04.md`](./results/live-calibration-2026-09-04.md).
 It includes its small sample sizes, accounting caveats, variance, and explicit
 non-claim status; it does not alter the frozen synthetic fixture.
 
@@ -26,7 +26,7 @@ non-claim status; it does not alter the frozen synthetic fixture.
 
 | Control | Required value |
 | --- | --- |
-| Model | `zai/glm-5.3-flash` |
+| Model | `provider-a/model-name` |
 | Thinking level | `high` |
 | Fallback | `disabled` |
 | Fallback model list | empty |

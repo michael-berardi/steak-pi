@@ -1,10 +1,10 @@
-# GLM-5.3-Flash live calibration — 2026-09-04
+# Flash-tier model live calibration — 2026-09-04
 
 Status: **paid live synthetic calibration; not a product benchmark claim**.
 
 ## Controls
 
-- Model: `zai/glm-5.3-flash`
+- Model: `provider-a/model-name` (the operator's flash-tier benchmark model at the time)
 - Thinking: `high`
 - Fallback: disabled
 - Fresh fixture and ephemeral session per run
@@ -57,7 +57,7 @@ USAP and OMP totals include nested worker usage emitted at the tool boundary. Le
 
 ## Native lifecycle/security probes
 
-Separate real GLM-5.3-Flash probes verified:
+Separate real flash-tier model probes verified:
 
 - background launch → immediate whole-run cancellation → bounded wait: both children aborted and no replacement launched;
 - a 1,000 ms run deadline: child settled `timed_out`, run settled `failed`, no work leaked;

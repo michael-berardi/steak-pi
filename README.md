@@ -21,13 +21,13 @@ serious sessions need: parallel subagents with hard limits, compaction that
 costs no model calls, checks that run after every edit, and a status line that
 tells you what the agent is doing.
 
-Current release: **0.17.0**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
+Current release: **0.18.0**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
 [UltraTerm](https://paretocybernetics.com/software/).
 
 ## Install
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.17.0
+pi install git:github.com/michael-berardi/steak-pi@v0.18.0
 ```
 
 Or from the release archive, without Git:
@@ -98,8 +98,8 @@ or `ut-overseer temporary-worker-route` CLI to list, preview, activate, inspect
 or clear an approved free route. Preferences are data, not package updates:
 subsequent model calls pick up changes without restarting workers. Activation
 requires the operator's authorization, an exact supported free model and a UTC
-expiry; no paid fallback or paid plugin is permitted. OpenRouter is the first
-adapter. See [model routing](./docs/MODEL-ROUTING.md).
+expiry; no paid fallback or paid plugin is permitted. One free-tier gateway is the
+first adapter. See [model routing](./docs/MODEL-ROUTING.md).
 
 ## Claude Code on your coding plan
 
@@ -109,11 +109,11 @@ approvals; the official Claude Code CLI only talks to the model.
 
 ```sh
 npm install -g @anthropic-ai/claude-code && claude auth login   # once
-pi --model claude-code/claude-opus-5-5
+pi --model claude-code/<model>
 ```
 
-Models: `claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5-5`,
-`claude-haiku-5-5`. `/claude-code-status` checks the login.
+Models: the CLI's own catalog (listed in [docs/CLAUDE-CODE.md](./docs/CLAUDE-CODE.md)).
+`/claude-code-status` checks the login.
 
 Billing: usage draws from your subscription limits. Anthropic has announced
 that `claude -p` usage could move to a separate API-rate credit and has put that
@@ -143,7 +143,8 @@ parent
 ```
 
 - **Limits:** eight tasks and eight concurrent workers per run. Each session
-  runs at most six Codex and eight other workers (fourteen combined), within
+  runs at most eight workers per provider (fourteen combined; lower per-provider
+  ceilings come from your `~/.config/steak-pi/usap-caps.json`), within
   machine-wide caps shared by every session on the computer.
 - **Ownership:** read-only workers have no edit tools. Writers may only touch
   their own paths, and overlapping ownership is refused before the run starts.
@@ -171,35 +172,24 @@ parent
   would end the same way): Steak Pi names the failure, keeps the model and
   reasoning level, and continues once in smaller steps.
 
-**Models.** Implicit routine workers and scouts default to **DeepSeek V4.1 Flash
-on OpenCode Go** (`opencode-go/deepseek-v4.1-flash`), then DeepSeek V4.1 Flash on
-OpenRouter once the Go plan is used up (the exact
-`openrouter/deepseek/deepseek-v4.1-flash-1017:exacto` route, approved in
-`~/.pi/agent/paid-routes.json`), then GPT-6.1 Terra on Codex OAuth, then Claude
-Haiku/Sonnet on proven unavailability or usage limits; configured role defaults
-remain supported. Paid routes are allowed under the operator's exact
-reviewed-route allowlist. DeepSeek and Terra implementation requests Opus 5.5
-completion verification; Go implementation requests Sonnet 5.5 and Haiku
-implementation requests Opus 5.5. An OpenRouter 402 / insufficient credits,
-persistent 429, 5xx or "no endpoints found" refusal moves the wave to the next
-tier instead of stalling.
-Security-audit work stays on Go/Haiku, never GPT. An approved,
-active free preference applies to implicit workers until its expiry; explicit
-selections remain exact. Go accounts stay isolated and balanced. Implicit reviewers prefer Opus 5.5; when Claude
-is provably unavailable before output, text reviews use GPT-6.1 Terra on Codex
-OAuth. Go-only parents resolve Terra through separate Codex account stores,
-without copying credentials or changing the parent environment. The router meters
-Go, Codex and Claude only: OpenRouter has no router meter, so that tier launches
-without a router read and only its own refusal proves the route spent. Explicit routes
-remain exact, and image reviews never silently switch to the automatic text-review fallback. GLM 5.3 and the Z.ai plan were
-retired on 2026-10-03, and selecting them is refused. GPT-6.0 Sol was retired on
-2026-10-05: GPT-6.1 Sol remains explicitly selectable, and selecting the old model is refused
-with an error that names the replacement. An explicit `model`, `profile` or `harness`
-always wins. A wave of reviewers with no explicit route goes to the **Opus
-Pass**: the official Claude Code CLI on Opus 5.5 at `xhigh` effort, using your
-existing Claude login. GPT models run only through Codex OAuth, never an API
-key. Missing credentials fail the run instead of falling back to something
-that bills differently. Details: [model routing](./docs/MODEL-ROUTING.md),
+**Models.** Steak Pi is provider-neutral: it ships no model id, fallback chain,
+provider preference, worker profile or paid-route grant. Your
+`~/.config/ultraterm/routing.json` supplies them — the implicit worker chain
+(`textWorkerChain`, `multimodalWorkerChain`), worker profiles, the expert
+reviewer, quota tiers, subscription endpoints, the Claude fallback tier and the
+implicit review route — and `~/.pi/agent/paid-routes.json` (version 2) carries
+the reviewed paid routes and the subset you allow. With nothing configured the
+tool still starts and every explicit `model`, `profile` or `harness` works; an
+implicit dispatch fails with the config key to set. Paid routes spend only
+while reviewed **and** allowed; deleting the entry revokes them. A gateway's
+402 / insufficient credits or "no endpoints found" refusal, or a provider's
+usage-limit refusal, moves an implicit wave to the next configured tier instead
+of stalling. An approved, active free preference applies to implicit workers
+until its expiry; explicit selections remain exact. Account-leased subscription
+routes stay isolated and balanced, without copying credentials or changing the
+parent environment. Image reviews never silently switch to the automatic
+text-review fallback. Missing credentials fail the run instead of falling back
+to something that bills differently. Details: [model routing](./docs/MODEL-ROUTING.md),
 [profiles](./docs/PROFILES.md).
 
 **Claude accounts (Steak Pi 0.10.0; UltraTerm's next managed runtime):** add `claudeAccount: "primary"`

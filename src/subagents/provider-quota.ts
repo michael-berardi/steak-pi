@@ -1,13 +1,29 @@
-import { isManagedCodexRoute } from "../codex-models.ts";
 import { providerAccountCommand, type AccountCommand } from "./provider-accounts.ts";
+import { routingConfigOrEmpty, type QuotaTierConfig } from "../routing-config.ts";
 
-/** Chain tiers whose accounts gate a launch: OpenRouter DeepSeek, OpenCode Go, GPT Terra/Sol (`codex`) and
- * Claude. "openrouter" is tracked for the fall-through walk only (2026-10-31 default worker): the account
- * router has no OpenRouter meter, so a snapshot never carries it (see {@link readProviderQuota}) and only a
- * run's own refusal proves it spent. */
-export type QuotaProvider = "openrouter" | "codex" | "opencode-go" | "claude";
+/** Account-router provider keys. The quota tiers a chain walks, and which routes belong to each,
+ * are operator configuration (`providerQuotaFallback` in routing.json); "claude" is the Claude
+ * Code adapter's own key. A tier with `metered: false` has no router meter: a snapshot never
+ * carries it (see {@link readProviderQuota}) and only a run's own refusal proves it spent. */
+export type QuotaProvider = string;
+export const CLAUDE_QUOTA = "claude";
+/** The router's account-leased Codex namespace (`select --provider codex`). */
+export const CODEX_QUOTA = "codex";
 
-const PROVIDER_NAMES: Record<QuotaProvider, string> = { openrouter: "OpenRouter", codex: "GPT", "opencode-go": "Go", claude: "Claude" };
+/** The operator's quota tiers in fall-through order. */
+export const quotaTiers = (): readonly QuotaTierConfig[] => routingConfigOrEmpty().providerQuotaFallback ?? [];
+const providerName = (provider: QuotaProvider): string =>
+  provider === CLAUDE_QUOTA ? "Claude" : quotaTiers().find((tier) => tier.quota === provider)?.label ?? provider;
+/** The ordered router keys of the configured fall-through walk (duplicates collapsed). */
+export const quotaChain = (): readonly QuotaProvider[] => [...new Set(quotaTiers().map((tier) => tier.quota))];
+/** True when the tier has a router meter worth preflighting. */
+export const isMeteredQuota = (provider: QuotaProvider): boolean =>
+  provider === CLAUDE_QUOTA || quotaTiers().some((tier) => tier.quota === provider && tier.metered);
+/** True when `route` belongs to the configured tier `quota` (for example the router's account-leased routes). */
+export function isQuotaTierRoute(route: string, quota: QuotaProvider): boolean {
+  const slash = route.indexOf("/");
+  return slash > 0 && quotaProviderOf({ provider: route.slice(0, slash), id: route.slice(slash + 1) }) === quota;
+}
 const DETAIL_LIMIT = 120;
 
 /** One configured account as the router's `status` reported it. */
@@ -91,7 +107,7 @@ function exhaustionEvidence(account: Record<string, unknown>, now: number): { de
 
 function evaluateProvider(provider: QuotaProvider, block: unknown, now: number): ProviderQuota | undefined {
   if (!record(block) || !Array.isArray(block.accounts)) return undefined;
-  const name = PROVIDER_NAMES[provider];
+  const name = providerName(provider);
   const accounts = block.accounts.filter(record).filter((account) => account.configured !== false);
   if (accounts.length === 0) {
     return { provider, accounts: 0, rows: [], exhausted: false, unconfigured: true, ineligible: false,
@@ -133,9 +149,10 @@ export async function readProviderQuota(command: AccountCommand = providerAccoun
   }
   const now = finite(status.time) ?? nowMs / 1000;
   const providers: QuotaSnapshot["providers"] = {};
-  // "openrouter" is deliberately absent: the router manages Go/Codex/Claude accounts and has no OpenRouter
-  // meter. An OpenRouter route is never preflight-blocked; only its own 402/no-endpoint refusal proves it spent.
-  for (const provider of ["codex", "opencode-go", "claude"] as const) {
+  // Unmetered tiers are deliberately absent: the router has no meter for them, so such a route is never
+  // preflight-blocked; only its own refusal (402 / no endpoint) proves it spent.
+  const metered = [...new Set([...quotaTiers().filter((tier) => tier.metered).map((tier) => tier.quota), CLAUDE_QUOTA])];
+  for (const provider of metered) {
     const evaluated = evaluateProvider(provider, status.providers[provider], now);
     if (evaluated) providers[provider] = evaluated;
   }
@@ -150,13 +167,13 @@ const USAGE_LIMIT_WORDING: ReadonlyArray<readonly [RegExp, string]> = [
   [/GoUsageLimitError|Go usage limit exceeded/i, "Go usage limit exceeded"],
   [/usage[_ ]limit[_ ](?:has[_ ]been[_ ])?(?:reached|exceeded)/i, "usage limit reached"],
   // Pi rewrites every Codex usage_limit_reached / 429 into this sentence before a worker sees it
-  // (pi-coding-agent openai-codex-responses), so it is the wording a real Sol refusal arrives with.
+  // (pi-coding-agent openai-codex-responses), so it is the wording a real subscription refusal arrives with.
   [/hit your ChatGPT usage limit/i, "ChatGPT usage limit reached"],
-  // OpenRouter (the default worker tier since 2026-10-31): spent credits arrive as HTTP 402 "Insufficient credits"
-  // / "requires more credits", and a request no provider endpoint can serve as "No endpoints found" / "0 endpoints out
-  // of N requested are available". Either way the next tier (Terra) must take the wave.
-  [/\b402\b|insufficient[_ ]credits|requires more credits/i, "OpenRouter credits exhausted"],
-  [/no endpoints? (?:found|available)|endpoints? out of \d+ requested are available/i, "OpenRouter has no endpoint for this request"],
+  // A metered gateway's spent credits arrive as HTTP 402 "Insufficient credits" / "requires more credits", and a
+  // request no provider endpoint can serve as "No endpoints found" / "0 endpoints out of N requested are
+  // available". Either way the next configured tier must take the wave.
+  [/\b402\b|insufficient[_ ]credits|requires more credits/i, "gateway credits exhausted"],
+  [/no endpoints? (?:found|available)|endpoints? out of \d+ requested are available/i, "gateway has no endpoint for this request"],
 ];
 
 /** The plan-exhaustion wording found in `text` (Go `GoUsageLimitError` / "Go usage limit exceeded",
@@ -194,13 +211,11 @@ export function isQuotaLaunchFailure(text: string): boolean {
   return providerUsageLimit(text) !== undefined || /quota[_ -]?(?:exhausted|exceeded|reached)/i.test(text) || ROUTER_COOLING_REFUSAL.test(text);
 }
 
-/** The router-managed provider a chain step launches on, or undefined for a route the
- * router does not gate (MiMo, Astra, Luna, local models). */
+/** The configured quota tier a chain step launches on (the first `providerQuotaFallback`
+ * entry naming its provider and, when listed, its exact model id), or undefined for a
+ * route the operator did not put in a tier (local models, unlisted providers). */
 export function quotaProviderOf(step: { provider: string; id: string }): QuotaProvider | undefined {
-  if (isManagedCodexRoute(`${step.provider}/${step.id}`)) return "codex";
-  if (step.provider === "opencode-go") return "opencode-go";
-  if (step.provider === "openrouter") return "openrouter";
-  return undefined;
+  return quotaTiers().find((tier) => tier.provider === step.provider && (!tier.models || tier.models.includes(step.id)))?.quota;
 }
 
 /** Why `step` cannot launch, or undefined (including for unknown, busy and ungated routes).

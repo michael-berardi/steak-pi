@@ -1,13 +1,14 @@
-import { TERRA_MODEL_ROUTE, TERRA_PROFILE } from "../codex-models.ts";
 import { readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { assertActiveModelIdentity, assertActiveModelSelector, SOL_MODEL_ROUTE, SOL_PROFILE } from "../retired-model-selection.ts";
+import { assertActiveModelIdentity, assertActiveModelSelector, isRetiredRoute, retiredRouteError } from "../retired-model-selection.ts";
 import { assertModelRoute, assertSubscriptionRequest, selectChainedWorkerModel, selectWorkerModel, selectWorkerThinking,
-  DEFAULT_MULTIMODAL_WORKER_CHAIN, DEFAULT_TEXT_WORKER_CHAIN, workerChainFor, type ChainOptions } from "../model-route-policy.ts";
+  workerChainFor, type ChainOptions } from "../model-route-policy.ts";
+import { routingConfig, routingConfigPath } from "../routing-config.ts";
 import type { DispatchInput, ModelSelection, SubagentTaskInput } from "./types.ts";
-import { activeTemporaryWorkerRoute, assertTemporaryFreeRequest, FREE_MODEL, FREE_PROFILE, isTemporaryFreeModel, PREFERRED_FREE_PROFILE } from "../temporary-free-route.ts";
+import { activeTemporaryWorkerRoute, assertTemporaryFreeRequest, isTemporaryFreeModel, PREFERRED_FREE_PROFILE } from "../temporary-free-route.ts";
+export { retiredRouteError } from "../retired-model-selection.ts";
 
 type Model = NonNullable<ExtensionContext["model"]>;
 type Registry = ExtensionContext["modelRegistry"];
@@ -20,59 +21,40 @@ export interface WorkerProfile {
   workerDefault?: WorkerSelector;
   reviewerDefault?: WorkerSelector;
   /** Resolve the final automatic worker chain instead of this profile's head model.
-   * Only the built-in default profile declares it; explicit selectors never chain. */
+   * Only operator-configured profiles declare it; explicit selectors never chain. */
   autoChain?: boolean;
   /** Legacy native-Pi reviewer-chain label: reviewer-role automatic defaults
    * resolve the same routine subscription chain as workers instead of freezing
    * on this profile's head expert model. It is a routing flag, NOT expert
-   * sign-off; reviews still need the explicit Opus Pass or override route. */
+   * sign-off; reviews still need the explicit expert or override route. */
   autoReviewChain?: boolean;
 }
-/** Explicit model identities are unchanged. Routine role defaults use DeepSeek V4.1 Flash on OpenCode Go, then the same
- * model on OpenRouter once Go is used up (Mike 2026-10-31); legacy native-review profiles keep their exact Pro/image chain. The dispatch
- * boundary handles automatic Opus -> Terra separately, never as a worker chain. */
-export const DEEPSEEK_OPENROUTER_PROFILE = "steak-pi/deepseek-openrouter";
-export const DEEPSEEK_OPENROUTER_ROUTE = "openrouter/deepseek/deepseek-v4.1-flash-1017:exacto";
+/** The only built-in profile is the neutral virtual temporary-free route; it names no model.
+ * Every other worker profile is operator configuration (`workerProfiles` in routing.json)
+ * or a harness manifest. Explicit model identities are unchanged. */
 export const BUILTIN_WORKER_PROFILES: readonly WorkerProfile[] = [
-  // Mike 2026-10-31: the default worker is DeepSeek V4.1 Flash on OpenCode Go; once Go is used up the same model on OpenRouter
-  // (this profile), then Terra.
-  { id: DEEPSEEK_OPENROUTER_PROFILE, model: DEEPSEEK_OPENROUTER_ROUTE, thinking: "high", autoChain: true,
-    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE } },
-  { id: TERRA_PROFILE, model: TERRA_MODEL_ROUTE, thinking: "high", autoChain: true,
-    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: TERRA_PROFILE } },
-  { id: PREFERRED_FREE_PROFILE, model: PREFERRED_FREE_PROFILE, thinking: "high",
-    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
-  { id: FREE_PROFILE, model: `openrouter/${FREE_MODEL}`, thinking: "high",
-    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
-  { id: "steak-pi/gpt-6-astra", model: "openai-codex/gpt-6-astra", thinking: "medium", autoReviewChain: true,
-    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
-  { id: SOL_PROFILE, model: SOL_MODEL_ROUTE, thinking: "high",
-    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
-  { id: "steak-pi/gpt-6-luna", model: "openai-codex/gpt-6-luna", thinking: "high",
-    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
-  { id: "steak-pi/mimo-v2-6-flash", model: "xiaomi/mimo-v2.6-flash", thinking: "high", autoChain: true,
-    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
-  { id: "steak-pi/mimo-v2-6-pro", model: "xiaomi/mimo-v2.6-pro", thinking: "high", autoChain: true,
-    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
-  { id: "steak-pi/opencode-go", model: "opencode-go/deepseek-v4.1-flash", thinking: "high", autoChain: true,
-    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+  { id: PREFERRED_FREE_PROFILE, model: PREFERRED_FREE_PROFILE, thinking: "high" },
 ];
-/** The built-in automatic profile whose head resolves the default text chain (Go -> OpenRouter DeepSeek -> Terra). */
-const DEFAULT_CHAIN_PROFILE = "steak-pi/opencode-go";
+/** The operator's configured profiles (`workerProfiles`), after the built-in virtual route. */
+export function configuredWorkerProfiles(): WorkerProfile[] {
+  const profiles = new Map(BUILTIN_WORKER_PROFILES.map((profile) => [profile.id, { ...profile }]));
+  for (const profile of routingConfig().workerProfiles ?? []) profiles.set(profile.id, { ...profile });
+  return [...profiles.values()];
+}
+/** The configured profile whose head resolves the default text chain when an exhausted provider is left (`defaultChainProfile`). */
+const defaultChainProfile = (): string | undefined => routingConfig().defaultChainProfile;
 const PI_FAMILY_HARNESSES = new Set(["pi", "steak-pi"]);
 const thinkingLevels = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
 
-/** GLM 5.3, GLM 5.3 Flash and the Z.ai plan were retired by the operator on 2026-10-03. */
-export const RETIRED_ROUTE = /(?:^|[/:])(?:zai|z-ai)\/|(?:^|\/)glm[-.]/i;
-export const retiredRouteError = (route: string) =>
-  `${route} is retired: GLM 5.3 and the Z.ai plan were removed on 2026-10-03. Use steak-pi/gpt-6-1-terra (openai-codex/gpt-6.1-terra) or the automatic default.`;
+/** @deprecated Retired routes are operator configuration (`retiredModelPatterns`); use `isRetiredRoute`. */
+export const RETIRED_ROUTE = { test: (route: string): boolean => isRetiredRoute(route) };
 
 function selector(value: WorkerSelector, label: string): WorkerSelector {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be a model/profile selector.`);
   assertActiveModelSelector(value.model);
   assertActiveModelSelector(value.profile);
   for (const route of [value.model, value.profile]) {
-    if (typeof route === "string" && RETIRED_ROUTE.test(route)) throw new Error(`${label}: ${retiredRouteError(route)}`);
+    if (typeof route === "string" && isRetiredRoute(route)) throw new Error(`${label}: ${retiredRouteError(route)}`);
   }
   if (value.model !== undefined && value.profile !== undefined) throw new Error(`${label}: model and profile conflict; specify exactly one.`);
   for (const [key, field] of Object.entries(value)) {
@@ -86,7 +68,7 @@ function selector(value: WorkerSelector, label: string): WorkerSelector {
 
 export interface RoleDefaults { workerDefault?: WorkerSelector; reviewerDefault?: WorkerSelector }
 /** Role metadata only; no launch args, credentials, or paid-route grants. */
-export function loadRoleDefaults(path = join(homedir(), ".config", "ultraterm", "routing.json")): RoleDefaults {
+export function loadRoleDefaults(path = routingConfigPath()): RoleDefaults {
   let config: any;
   try { config = JSON.parse(readFileSync(path, "utf8")); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {}; throw new Error("USAP routing.json cannot be read or parsed"); }
@@ -97,7 +79,8 @@ export function loadRoleDefaults(path = join(homedir(), ".config", "ultraterm", 
 
 /** Read route metadata only. Never execute profile args, commands, or credentials. */
 export function loadWorkerProfiles(directory = join(homedir(), ".config", "ultraterm", "harnesses")): WorkerProfile[] {
-  const profiles = new Map(BUILTIN_WORKER_PROFILES.map((profile) => [profile.id, { ...profile }]));
+  const profiles = new Map(configuredWorkerProfiles().map((profile) => [profile.id, { ...profile }]));
+  const retired = new Set(routingConfig().retiredProfiles ?? []);
   let files: string[];
   try { files = readdirSync(directory).filter((name) => !name.startsWith(".") && name.endsWith(".json")).sort(); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return [...profiles.values()]; throw new Error("USAP profile catalog cannot be read."); }
@@ -113,9 +96,9 @@ export function loadWorkerProfiles(directory = join(homedir(), ".config", "ultra
     const executable = typeof manifest.executable === "string" ? basename(manifest.executable) : "";
     const piFamily = PI_FAMILY_HARNESSES.has(manifest.id) || PI_FAMILY_HARNESSES.has(executable);
     for (const entry of manifest.profiles) {
-      if (manifest.id === "steak-pi" && entry.id === "claude-opus-5-5") continue;
+      if (manifest.id === "steak-pi" && typeof entry.id === "string" && retired.has(entry.id)) continue;
       if (typeof entry.id !== "string") continue;
-      // Retired Sol is refused wherever the manifest names it, before any
+      // Operator-retired models are refused wherever the manifest names them, before any
       // CLI-only or foreign-harness skip, so a retired route cannot hide there.
       assertActiveModelSelector(entry.id);
       assertActiveModelSelector(entry.name);
@@ -156,108 +139,10 @@ export function loadWorkerProfiles(directory = join(homedir(), ".config", "ultra
   return [...profiles.values()];
 }
 
-/** Exact spellings pinned by the candidate manifest (docs/opus-5-5.models.json):
- * model ids `claude-sonnet-5-5` and `claude-opus-5-5`. The `claude-code`
- * provider namespace is deliberately NOT `anthropic/…`: that Pi registry route
- * would imply API-key billing, which this harness never touches (CLI OAuth
- * existing auth only, with API-key/billing override env stripped at spawn). */
-export const CLAUDE_CODE_OPUS_MODEL = "claude-opus-5-5" as const;
-export const CLAUDE_CODE_SONNET_MODEL = "claude-sonnet-5-5" as const;
-/** Haiku 5.5 is the cheapest capable tier of the automatic quota fallback. It is an internal
- * tier only: it is not an explicit worker route (`CLAUDE_CODE_ROUTES` omits it), so a caller
- * naming it is refused exactly like any other unlisted model, and it is never admitted for
- * image review. */
-export const CLAUDE_CODE_HAIKU_MODEL = "claude-haiku-5-5" as const;
-/** The Opus Pass model, kept under its historical name for callers. */
-export const CLAUDE_CODE_MODEL = CLAUDE_CODE_OPUS_MODEL;
-export const CLAUDE_CODE_EFFORT = "xhigh" as const;
-export const CLAUDE_CODE_OPUS_ROUTE = `claude-code/${CLAUDE_CODE_OPUS_MODEL}` as const;
-export const CLAUDE_CODE_SONNET_ROUTE = `claude-code/${CLAUDE_CODE_SONNET_MODEL}` as const;
-export const CLAUDE_CODE_HAIKU_ROUTE = `claude-code/${CLAUDE_CODE_HAIKU_MODEL}` as const;
-/** The Opus Pass route (expert review and explicit Opus escalation). */
-export const CLAUDE_CODE_ROUTE = CLAUDE_CODE_OPUS_ROUTE;
-export type ClaudeCodeModel = typeof CLAUDE_CODE_OPUS_MODEL | typeof CLAUDE_CODE_SONNET_MODEL | typeof CLAUDE_CODE_HAIKU_MODEL;
-/** Routes a caller may name explicitly. Haiku is deliberately absent: only the automatic
- * quota fallback ({@link claudeFallbackTier}) ever selects it. */
-export const CLAUDE_CODE_ROUTES: readonly string[] = [CLAUDE_CODE_SONNET_ROUTE, CLAUDE_CODE_OPUS_ROUTE];
-export type ClaudeCodeFallbackRoute = typeof CLAUDE_CODE_HAIKU_ROUTE | typeof CLAUDE_CODE_SONNET_ROUTE;
-
-/** The pinned Claude model behind a `claude-code/…` route, or undefined for
- * anything else (never a prefix or fuzzy match). */
-export function claudeCodeModelOf(route: string | undefined): ClaudeCodeModel | undefined {
-  if (route === CLAUDE_CODE_OPUS_ROUTE) return CLAUDE_CODE_OPUS_MODEL;
-  if (route === CLAUDE_CODE_SONNET_ROUTE) return CLAUDE_CODE_SONNET_MODEL;
-  if (route === CLAUDE_CODE_HAIKU_ROUTE) return CLAUDE_CODE_HAIKU_MODEL;
-  return undefined;
-}
-
-/** Product name for messages: "Opus 5.5" / "Sonnet 5.5" / "Haiku 5.5". */
-export function claudeCodeModelName(model: ClaudeCodeModel): string {
-  return model === CLAUDE_CODE_OPUS_MODEL ? "Opus 5.5" : model === CLAUDE_CODE_HAIKU_MODEL ? "Haiku 5.5" : "Sonnet 5.5";
-}
-
-export interface ClaudeFallbackTier {
-  route: ClaudeCodeFallbackRoute;
-  model: typeof CLAUDE_CODE_HAIKU_MODEL | typeof CLAUDE_CODE_SONNET_MODEL;
-  /** Why this tier, in the words a receipt and the dispatch note both carry. */
-  reason: string;
-}
-
-/** The tier for a wave whose default worker chain (Go, OpenRouter DeepSeek and Terra) is out of quota:
- * whatever will likely get the job done at least cost. Haiku 5.5 takes ordinary leaves; Sonnet 5.5 takes substantial code work (a
- * leaf that may edit AND run a shell), any requested high/xhigh reasoning and every reviewer. The
- * choice reads only the dispatch's own declared capabilities, never the task text. */
-export function claudeFallbackTier(
-  input: Pick<DispatchInput, "thinking"> & { tasks: readonly Partial<SubagentTaskInput>[] },
-): ClaudeFallbackTier {
-  const sonnet = (reason: string): ClaudeFallbackTier => ({ route: CLAUDE_CODE_SONNET_ROUTE, model: CLAUDE_CODE_SONNET_MODEL, reason });
-  if (input.tasks.some((task) => task.role === "reviewer")) return sonnet("a reviewer leaf needs Sonnet 5.5");
-  if (input.thinking === "high" || input.thinking === "xhigh") return sonnet(`thinking ${input.thinking} was requested`);
-  if (input.tasks.some((task) => task.mayEdit === true && task.allowBash === true)) {
-    return sonnet("substantial code work: a leaf may edit files and run a shell");
-  }
-  return { route: CLAUDE_CODE_HAIKU_ROUTE, model: CLAUDE_CODE_HAIKU_MODEL,
-    reason: "ordinary leaves (no leaf may both edit and run a shell, no high reasoning requested): the cheapest capable Claude tier" };
-}
-
-/** Which Claude model a claude-code wave runs when the caller named none:
- * all-reviewer waves are expert review and take the Opus Pass; every other
- * wave is routine work and takes Sonnet 5.5, which preserves Opus quota. */
-export function defaultClaudeCodeRoute(tasks: readonly { role?: string }[]): string {
-  return tasks.length > 0 && tasks.every((task) => task.role === "reviewer") ? CLAUDE_CODE_OPUS_ROUTE : CLAUDE_CODE_SONNET_ROUTE;
-}
-
-/** The explicit foreign-harness routes in this USAP slice: the official
- * headless Claude Code CLI at xhigh effort on Sonnet 5.5 (the default Claude
- * worker) or Opus 5.5 (the operator's "Opus Pass" route for expert review and
- * frontier work). Both are override-provenance, never an automatic chain step,
- * and neither falls back to the other or to any other model. */
-export function resolveClaudeCodeSelection(model: ClaudeCodeModel = CLAUDE_CODE_OPUS_MODEL): ModelSelection {
-  return {
-    provider: "claude-code",
-    modelId: model,
-    source: "override",
-    harness: "claude-code",
-    // Image review (P-0579) is the CLI's native Read tool on image files staged
-    // under the run cwd. It is not an inline attachment or relay capability and
-    // it never widens the Read/Grep/Glob allowlist, so it is advertised on both
-    // pinned routes and nowhere else.
-    images: true,
-    tools: true,
-  };
-}
-
-/** Admission for `requireImages: true` on the claude-code harness: only the exact
- * pinned Sonnet 5.5 or Opus 5.5 route passes, and the caller keeps the route it
- * asked for. There is no fallback, default or auth change; anything that is not
- * an exact route (undefined, prefix, fuzzy, other provider) fails closed. */
-export function assertClaudeCodeImageAdmission(route: string | undefined): Exclude<ClaudeCodeModel, typeof CLAUDE_CODE_HAIKU_MODEL> {
-  const model = claudeCodeModelOf(route);
-  if (model === undefined || model === CLAUDE_CODE_HAIKU_MODEL) {
-    throw new Error(`USAP claude-code image review admits only ${CLAUDE_CODE_SONNET_ROUTE} or ${CLAUDE_CODE_OPUS_ROUTE} (staged image files read natively under cwd); no fallback was selected.`);
-  }
-  return model;
-}
+export { CLAUDE_CODE_OPUS_MODEL, CLAUDE_CODE_SONNET_MODEL, CLAUDE_CODE_HAIKU_MODEL, CLAUDE_CODE_MODEL, CLAUDE_CODE_EFFORT,
+  CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_SONNET_ROUTE, CLAUDE_CODE_HAIKU_ROUTE, CLAUDE_CODE_ROUTE, CLAUDE_CODE_ROUTES,
+  claudeCodeModelOf, claudeCodeModelName, claudeFallbackTier, defaultClaudeCodeRoute, resolveClaudeCodeSelection,
+  assertClaudeCodeImageAdmission, type ClaudeCodeModel, type ClaudeCodeFallbackRoute, type ClaudeFallbackTier } from "./claude-code-models.ts";
 
 function route(model: Model): string { return `${model.provider}/${model.id}`; }
 function findModel(key: string, registry: Registry): Model {
@@ -314,8 +199,7 @@ export function resolveWorkerSelection(
     if (matches.length !== 1) throw new Error(`USAP profile ${id} is unavailable or ambiguous; use its harness/profile identity.`);
     assertActiveModelSelector(matches[0].id);
     assertActiveModelSelector(matches[0].model);
-    if ((matches[0].id === FREE_PROFILE && matches[0].model !== `openrouter/${FREE_MODEL}`) ||
-        (matches[0].id === PREFERRED_FREE_PROFILE && matches[0].model !== PREFERRED_FREE_PROFILE)) {
+    if (matches[0].id === PREFERRED_FREE_PROFILE && matches[0].model !== PREFERRED_FREE_PROFILE) {
       throw new Error("USAP approved free profile identity cannot be overridden by manifest metadata.");
     }
     return matches[0];
@@ -326,20 +210,21 @@ export function resolveWorkerSelection(
   const parentProfile = namedParent && namedParent.model === parentKey ? namedParent : parents.length === 1 ? parents[0] : undefined;
   const review = input.tasks.some((task) => task.role === "reviewer");
   // An implicit dispatch whose profile default landed on an exhausted provider re-resolves the
-  // built-in default text chain (Go -> OpenRouter DeepSeek -> Terra) with that provider skipped. An explicit selector
+  // configured default text chain (`textWorkerChain`) with that provider skipped. An explicit selector
   // never takes this path, and neither do reviewer or image waves.
   const forceChain = options.forceDefaultChain === true && !explicit && !review && input.requireImages !== true;
   // Only ordinary implicit text workers observe the temporary preference;
   // explicit model/profile/harness and all review/image gates remain exact.
   const temporary = !explicit && !review && !forceChain && !input.harness && !input.requireImages ? activeTemporaryWorkerRoute() : undefined;
   const defaults = explicit || temporary || forceChain ? {} : roleDefaults ?? loadRoleDefaults();
-  const configured = temporary ? { profile: PREFERRED_FREE_PROFILE } : forceChain ? { profile: DEFAULT_CHAIN_PROFILE } : review ? defaults.reviewerDefault ?? parentProfile?.reviewerDefault ?? parentProfile?.workerDefault : defaults.workerDefault ?? parentProfile?.workerDefault;
+  const chainProfile = forceChain ? defaultChainProfile() : undefined;
+  const configured = temporary ? { profile: PREFERRED_FREE_PROFILE } : forceChain ? (chainProfile ? { profile: chainProfile } : undefined) : review ? defaults.reviewerDefault ?? parentProfile?.reviewerDefault ?? parentProfile?.workerDefault : defaults.workerDefault ?? parentProfile?.workerDefault;
   const chosen = explicit ? selector({ ...(requested.model !== undefined ? { model: requested.model } : {}), ...(requested.profile !== undefined ? { profile: requested.profile } : {}) }, "USAP selection") : configured ? selector(configured, "USAP profile default") : undefined;
   const profile = forceChain
-    ? profiles.find((candidate) => candidate.id === DEFAULT_CHAIN_PROFILE) ?? BUILTIN_WORKER_PROFILES.find((candidate) => candidate.id === DEFAULT_CHAIN_PROFILE)
+    ? (chainProfile ? profiles.find((candidate) => candidate.id === chainProfile) ?? configuredWorkerProfiles().find((candidate) => candidate.id === chainProfile) : undefined)
     : chosen?.profile ? profileById(chosen.profile) : undefined;
   // Automatic defaults resolve the final chain; an explicit selector stays exact.
-  const automatic = !explicit && (chosen === undefined || (chosen.model === undefined && (profile?.autoChain === true || (review && profile?.autoReviewChain === true))));
+  const automatic = forceChain || (!explicit && (chosen === undefined || (chosen.model === undefined && (profile?.autoChain === true || (review && profile?.autoReviewChain === true)))));
   // Explicit native Pi reviewer waves retain configured role metadata. Implicit
   // all-reviewer waves are admitted separately by the official Claude boundary.
   const headRoute = (key: string | undefined) => {
@@ -347,10 +232,19 @@ export function resolveWorkerSelection(
     return key && slash > 0 ? { provider: key.slice(0, slash), id: key.slice(slash + 1) } : undefined;
   };
   const chainImages = input.requireImages === true;
-  const profileChain = workerChainFor(headRoute(profile?.model), chainImages);
-  const chain = review && !["mimo-v2.6-pro", "mimo-v2.6-flash"].includes(headRoute(profile?.model)?.id ?? "")
-    ? workerChainFor({ provider: "xiaomi", id: "mimo-v2.6-pro" }, chainImages)
-    : profileChain;
+  // Chains are resolved only for automatic selections, so an explicit selector never needs
+  // (or fails on) a configured chain. A reviewer wave whose profile head keeps no chain of its
+  // own leads with the operator's `reviewerChainHead`, when one is configured.
+  const resolveChain = (): readonly { provider: string; id: string }[] => {
+    if (forceChain) return workerChainFor(undefined, chainImages);
+    const head = headRoute(profile?.model);
+    const config = routingConfig();
+    const ownHead = head !== undefined && (config.tokenPlanChainHeads ?? []).some((entry) => entry.head.provider === head.provider && entry.head.id === head.id);
+    return review && config.reviewerChainHead && !ownHead
+      ? workerChainFor(config.reviewerChainHead, chainImages)
+      : workerChainFor(head, chainImages);
+  };
+  const chain = automatic ? resolveChain() : [];
   const key = automatic ? undefined : profile?.model ?? chosen?.model;
   const model = automatic
     ? selectChainedWorkerModel(registry, chain, { ...options, requireImages: input.requireImages === true })
@@ -361,7 +255,7 @@ export function resolveWorkerSelection(
   if (isTemporaryFreeModel(model)) assertTemporaryFreeRequest(model, undefined, undefined, false);
   // Authentication and dispatch membership consult the published catalog, never the
   // curated picker snapshot: an operator can still dispatch an authenticated route
-  // that is deliberately not a picker choice (the ordered chain's Go fallback).
+  // that is deliberately not a picker choice (an ordered chain step).
   const dispatchCatalog = registry.getAll?.() ?? registry.getAvailable();
   if (!registry.hasConfiguredAuth(model) || !dispatchCatalog.some((candidate) => route(candidate) === route(model))) {
     throw new Error(`USAP model ${route(model)} is not available with configured authentication. Authenticate that provider in Pi; no fallback was selected.`);

@@ -1,70 +1,101 @@
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { paidRoutesConfigPath } from "./routing-config.ts";
 
 export const PAID_ROUTE_FLAG = "steak-pi-paid-route";
-/** The one verified Inco endpoint. A swallowed trailing slash, path, port, query
- * or alternate host is a different billing target and never matches by substring. */
-export const PAID_INCO_BASE_URL = "https://api.inco.ai/v1";
-export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
-/** Default worker since 2026-10-31 (Mike): DeepSeek V4.1 Flash on OpenRouter, Exacto quality-first provider sort. */
-export const OPENROUTER_DEEPSEEK_ID = "deepseek/deepseek-v4.1-flash-1017:exacto";
 export type Route = { provider: string; id: string; baseUrl: string };
-// These reviewed exceptions authorize the user-requested Inco products and Xiaomi Singapore Token Plan models
-// at their exact verified endpoints, plus the default worker route: DeepSeek V4.1 Flash on OpenRouter's
-// quality-first Exacto sort (Mike 2026-10-31). Adding an entry here is a spending grant, so it stays an exact,
-// hand-maintained list: no wildcard, no provider prefix match. The OpenRouter entry is the one reviewed route
-// the automatic worker chain leads with; every other entry stays explicit-selection only.
-export const PAID_ROUTES: readonly Route[] = [
-  { provider: "openrouter", id: OPENROUTER_DEEPSEEK_ID, baseUrl: OPENROUTER_BASE_URL },
-  { provider: "inco", id: "deepseek-v4.1-flash:fast", baseUrl: PAID_INCO_BASE_URL },
-  { provider: "xiaomi", id: "mimo-v2.6-pro", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1" },
-  { provider: "xiaomi", id: "mimo-v2.6-flash", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1" },
-];
 const label = (route: Route) => `${route.provider}/${route.id}`;
 const sameRoute = (route: Route, model: Route | undefined) => model !== undefined &&
   model.provider === route.provider && model.id === route.id && model.baseUrl === route.baseUrl;
-/** One default user-owned approval file; exact reviewed-route entries only. */
-export const PAID_ROUTES_CONFIG_PATH = join(homedir(), ".pi", "agent", "paid-routes.json");
+/** The operator's paid-route file: `STEAK_PI_PAID_ROUTES`, else `~/.pi/agent/paid-routes.json`.
+ * Resolved per call, so a test or operator override applies without a reload. */
+export const paidRoutesPath = (): string => paidRoutesConfigPath();
+/** @deprecated Resolved at import time; use {@link paidRoutesPath}. */
+export const PAID_ROUTES_CONFIG_PATH = paidRoutesPath();
+
+type PaidRoutesFile = { version: 1 | 2; reviewed?: unknown[]; allow: unknown[] };
+function readPaidRoutesFile(configPath: string): PaidRoutesFile | undefined {
+  try {
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    if ((config?.version !== 1 && config?.version !== 2) || !Array.isArray(config.allow)) return undefined;
+    // A reviewed table may appear in either format: version 2 made it explicit, but a
+    // version 1 file can carry one so one operator file serves both the released
+    // 0.17.0 (which reads only `allow`) and this build (which reads `reviewed`).
+    if (config.reviewed !== undefined && !Array.isArray(config.reviewed)) return undefined;
+    return config as PaidRoutesFile;
+  } catch { return undefined; }
+}
+/** Exact `{ provider, model, baseUrl }` entries only; anything else is skipped, never coerced. */
+function entries(list: readonly unknown[] | undefined): Route[] {
+  const routes: Route[] = [];
+  for (const entry of list ?? []) {
+    if (entry === null || typeof entry !== "object") continue;
+    const { provider, model, baseUrl } = entry as Record<string, unknown>;
+    if (typeof provider !== "string" || typeof model !== "string" || typeof baseUrl !== "string") continue;
+    if (!provider || !model || !baseUrl) continue;
+    routes.push({ provider, id: model, baseUrl });
+  }
+  return routes;
+}
+
+/**
+ * The operator's reviewed paid-route catalog: the `reviewed` table of a paid-routes.json,
+ * read from either format. Steak Pi ships no reviewed route of its own; adding an entry
+ * there is a spending review, so it stays an exact list (no wildcard, no provider prefix
+ * match). Version 2 introduced the explicit table; a version 1 file may carry the same
+ * `reviewed` array so a single operator file serves both the released 0.17.0 (which reads
+ * only `allow`) and this build. A version 1 file without a table of its own is checked
+ * against the operator's catalog file; with no reviewed table anywhere nothing is reviewed.
+ */
+export function reviewedPaidRoutes(configPath = paidRoutesPath()): Route[] {
+  const own = readPaidRoutesFile(configPath);
+  // Version 2 owns its table: a version 2 file without `reviewed` reviews nothing and
+  // never borrows the operator's catalog (that fallback would grant routes the file
+  // deliberately left out).
+  if (own?.version === 2) return entries(own.reviewed);
+  // Version 1 may carry the same table so one operator file serves both builds.
+  if (own?.reviewed !== undefined) return entries(own.reviewed);
+  const catalogPath = paidRoutesPath();
+  if (catalogPath === configPath) return [];
+  const catalog = readPaidRoutesFile(catalogPath);
+  return catalog ? entries(catalog.reviewed) : [];
+}
+/** @deprecated The reviewed table is operator configuration now; this is always empty. Use {@link reviewedPaidRoutes}. */
+export const PAID_ROUTES: readonly Route[] = Object.freeze([]);
 
 /** Exact reviewed route identity. A friendly name, provider prefix, or trailing
  * slash is a different billing target and never resolves to a reviewed route. */
-export function findPaidRoute(model: { provider: string; id: string; baseUrl: string }): Route | undefined {
-  return PAID_ROUTES.find(candidate => sameRoute(candidate, model as Route));
+export function findPaidRoute(model: { provider: string; id: string; baseUrl: string }, configPath = paidRoutesPath()): Route | undefined {
+  return reviewedPaidRoutes(configPath).find(candidate => sameRoute(candidate, model as Route));
 }
 
 /** Re-read the user allowlist for revocation. Missing, malformed, unreadable, or
  * unmatched entries grant nothing, and entries outside the reviewed table are
  * never promoted into reviewed routes. */
-export function readApprovedPaidRoutes(configPath = PAID_ROUTES_CONFIG_PATH): Route[] {
-  try {
-    const config = JSON.parse(readFileSync(configPath, "utf8"));
-    if (config?.version !== 1 || !Array.isArray(config.allow)) return [];
-    const approved: Route[] = [];
-    for (const entry of config.allow) {
-      if (entry === null || typeof entry !== "object") continue;
-      const { provider, model, baseUrl } = entry as Record<string, unknown>;
-      if (typeof provider !== "string" || typeof model !== "string" || typeof baseUrl !== "string") continue;
-      const route = PAID_ROUTES.find(candidate => sameRoute(candidate, { provider, id: model, baseUrl }));
-      if (route) approved.push(route);
-    }
-    return approved;
-  } catch { return []; }
+export function readApprovedPaidRoutes(configPath = paidRoutesPath()): Route[] {
+  const config = readPaidRoutesFile(configPath);
+  if (!config) return [];
+  const reviewed = reviewedPaidRoutes(configPath);
+  const approved: Route[] = [];
+  for (const entry of entries(config.allow)) {
+    const route = reviewed.find(candidate => sameRoute(candidate, entry));
+    if (route) approved.push(route);
+  }
+  return approved;
 }
 
 /** The user allowlist itself is the spending grant for one exact reviewed route. */
 export function isAllowlistedPaidRoute(
   model: { provider: string; id: string; baseUrl: string },
-  configPath = PAID_ROUTES_CONFIG_PATH,
+  configPath = paidRoutesPath(),
 ): boolean {
-  const route = findPaidRoute(model);
+  const route = findPaidRoute(model, configPath);
   return route !== undefined && readApprovedPaidRoutes(configPath).some(candidate => sameRoute(route, candidate));
 }
 
 /** Allowlist-only approval for automatic default routing. The called model must
  * itself be the reviewed route; approval is never inherited by a sibling route. */
-export function createAllowlistApproval(configPath = PAID_ROUTES_CONFIG_PATH): (model: Route) => boolean {
-  return (model) => isAllowlistedPaidRoute(model, configPath);
+export function createAllowlistApproval(configPath?: string): (model: Route) => boolean {
+  return (model) => isAllowlistedPaidRoute(model, configPath ?? paidRoutesPath());
 }
 
 /** Operator `/model` switching without launch-profile locking: the dispatched
@@ -73,12 +104,13 @@ export function createAllowlistApproval(configPath = PAID_ROUTES_CONFIG_PATH): (
  * dispatched one, and the allowlist is re-read on every dispatch for revocation. */
 export function createSelectedRouteApproval(
   getSelected: () => Route | undefined,
-  configPath = PAID_ROUTES_CONFIG_PATH,
+  configPath?: string,
 ): (model: Route) => boolean {
   return (model) => {
+    const path = configPath ?? paidRoutesPath();
     const selected = getSelected();
-    const route = findPaidRoute(model);
-    return route !== undefined && selected !== undefined && sameRoute(route, selected) && isAllowlistedPaidRoute(route, configPath);
+    const route = findPaidRoute(model, path);
+    return route !== undefined && selected !== undefined && sameRoute(route, selected) && isAllowlistedPaidRoute(route, path);
   };
 }
 
@@ -90,22 +122,16 @@ export function createSelectedRouteApproval(
 export function createExplicitPaidApproval(
   flag: unknown,
   selected: Route | undefined,
-  configPath = PAID_ROUTES_CONFIG_PATH,
+  configPath = paidRoutesPath(),
 ): (model: Route) => boolean {
-  const route = typeof flag === "string" ? PAID_ROUTES.find(candidate => label(candidate) === flag) : undefined;
+  const route = typeof flag === "string" ? reviewedPaidRoutes(configPath).find(candidate => label(candidate) === flag) : undefined;
   const launched = route !== undefined && sameRoute(route, selected);
   return (model) => {
     // The flag's own route, never merely "some approved route", must be the
     // dispatched model: a mismatched or extra selected route cannot spend.
     if (route === undefined || !launched || !sameRoute(route, model)) return false;
-    try {
-      // Re-read for revocation; missing, malformed, or unreadable files fail closed.
-      const config = JSON.parse(readFileSync(configPath, "utf8"));
-      return config?.version === 1 && Array.isArray(config.allow) && config.allow.some(
-        (entry: unknown) => entry !== null && typeof entry === "object" &&
-          "provider" in entry && "model" in entry && "baseUrl" in entry &&
-          sameRoute(route, { provider: entry.provider, id: entry.model, baseUrl: entry.baseUrl } as Route),
-      );
-    } catch { return false; }
+    // Re-read for revocation (both the reviewed table and the allowlist); missing,
+    // malformed, or unreadable files fail closed.
+    return isAllowlistedPaidRoute(route, configPath);
   };
 }

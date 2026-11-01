@@ -64,7 +64,7 @@ export type ClaudeApiAdmissionCode =
 export class ClaudeApiAdmissionError extends Error {
   readonly code: ClaudeApiAdmissionCode;
   constructor(code: ClaudeApiAdmissionCode, message: string) {
-    super(`ClaudeApiAdmissionError[${code}]: ${message}; no subscription, Sol or other fallback was selected`);
+    super(`ClaudeApiAdmissionError[${code}]: ${message}; no subscription or other fallback was selected`);
     this.name = "ClaudeApiAdmissionError";
     this.code = code;
   }

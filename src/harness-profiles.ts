@@ -29,6 +29,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertActiveModelSelector, RetiredModelSelectionError } from "./retired-model-selection.ts";
+import { routingConfigOrEmpty } from "./routing-config.ts";
 
 const LIMIT = 1024 * 1024;
 export const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -51,10 +52,10 @@ const MAX_LABEL_BYTES = 256;
 const MAX_ARGUMENT_BYTES = 4096;
 const MAX_ARGUMENTS = 64;
 const MAX_MANIFEST_BYTES = 128 * 1024;
-/** First-party Steak Pi profile retired in 2.2.0; the bundled catalog ships the
- * same route as the canonical `opencode-go` profile without the removed flag. */
+/** First-party Steak Pi profile ids the operator retired (`retiredProfiles` in routing.json):
+ * a live manifest entry with one of these ids is dropped from the merge. None by default. */
 const STEAK_PI_HARNESS = "steak-pi";
-const RETIRED_STEAK_PI_PROFILES = new Set(["opencode-go-dsh", "claude-opus-5-5"]);
+const retiredSteakPiProfiles = (): ReadonlySet<string> => new Set(routingConfigOrEmpty().retiredProfiles ?? []);
 
 const object = (x: unknown): x is Record<string, any> => !!x && typeof x === "object" && !Array.isArray(x);
 const clean = (x: unknown): x is string => typeof x === "string" && x.length > 0 && !/[\x00-\x1f\x7f-\x9f]/u.test(x);
@@ -117,11 +118,11 @@ function sourcesOf(sources: string | readonly string[]): readonly string[] {
   return typeof sources === "string" ? [sources] : sources;
 }
 
-/** True only for the retired first-party Steak Pi DSH profile. Every other
+/** True only for an operator-retired first-party Steak Pi profile. Every other
  * harness and profile id — including a custom harness that happens to reuse the
  * retired string — is user-owned and is never rewritten or dropped. */
 function isRetiredFirstPartyProfile(harness: string, profileId: unknown): boolean {
-  return harness === STEAK_PI_HARNESS && typeof profileId === "string" && RETIRED_STEAK_PI_PROFILES.has(profileId);
+  return harness === STEAK_PI_HARNESS && typeof profileId === "string" && retiredSteakPiProfiles().has(profileId);
 }
 
 /** The native `validate()` rules a manifest must satisfy, minus
@@ -154,7 +155,7 @@ function nativeManifestError(config: Record<string, any>, builtIn: boolean): str
   return undefined;
 }
 
-/** GPT-6.0 Sol is retired: refuse it wherever a manifest profile names it (id,
+/** Operator-retired models are refused wherever a manifest profile names them (id,
  * label, model arguments, worker/reviewer defaults), before any shape skip so a
  * retired route cannot hide in an entry the curated extraction would drop. */
 function assertProfileActive(p: unknown, harness: unknown): void {
@@ -262,8 +263,8 @@ function externalCandidate(directory: string, harness: string): Candidate | unde
  * (`manifests_at`/`merge_external_profiles`/`add_external_manifests`). The
  * external manifest may only *append* profiles to a bundled harness with the
  * same identity, a generic launcher, static profiles and the same executable;
- * colliding profile ids keep the bundled route, the retired first-party DSH
- * profile is normalized away, and an invalid, incompatible or ambiguous
+ * colliding profile ids keep the bundled route, operator-retired first-party
+ * profiles are normalized away, and an invalid, incompatible or ambiguous
  * external manifest is ignored so the bundled catalog survives intact. An
  * external manifest without a bundled counterpart is a registered custom
  * harness and stands alone. A harness with no manifest anywhere is *unknown*.

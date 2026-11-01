@@ -10,7 +10,7 @@
  * The CLI flag surface below is the exact operator-confirmed set for the
  * installed CLI:
  *   --print --output-format stream-json --input-format stream-json
- *   --replay-user-messages --verbose --model <claude-sonnet-5-5|claude-opus-5-5>
+ *   --replay-user-messages --verbose --model <a pinned claude-code adapter model>
  *   --effort xhigh --no-session-persistence --permission-mode dontAsk
  *   --safe-mode --restricted --setting-sources "" --strict-mcp-config
  *   --max-turns <run budget> --tools <allowlist> [--allowedTools <rules>]

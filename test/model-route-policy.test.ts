@@ -1,18 +1,12 @@
-import { TERRA_MODEL } from "../src/codex-models.ts";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sdkPiAiUrl } from "./helpers/pi-sdk-dependencies.ts";
-import {
-  assertModelRoute, assertSubscriptionRequest, guardProvider, selectWorkerModel, selectWorkerThinking,
-  createRegistryGuard, GPT_ROUTE_ERROR, isModelRouteAllowed, guardModelRuntime, isExpertReviewModel,
-  selectChainedWorkerModel, DEFAULT_TEXT_WORKER_CHAIN, DEFAULT_MULTIMODAL_WORKER_CHAIN, ROUTINE_GPT_MODEL,
-  EXPERT_TEXT_REVIEW_CHAIN, EXPERT_MULTIMODAL_REVIEW_CHAIN,
-  eligibleChainFallback, workerChainFor, recordedWorkerChain, type WorkerRouteStep,
-} from "../src/model-route-policy.ts";
+import { assertModelRoute, assertSubscriptionRequest, guardProvider, selectWorkerModel, selectWorkerThinking, createRegistryGuard, GPT_ROUTE_ERROR, isModelRouteAllowed, guardModelRuntime, isExpertReviewModel, selectChainedWorkerModel, eligibleChainFallback, workerChainFor, recordedWorkerChain, type WorkerRouteStep } from "../src/model-route-policy.ts";
 import { workerChainFallback } from "../src/subagents/pi-worker.ts";
 import { eligibleGoFallback } from "../src/opencode-go-routing.ts";
+import { TERRA_MODEL, DEFAULT_TEXT_WORKER_CHAIN, DEFAULT_MULTIMODAL_WORKER_CHAIN, ROUTINE_GPT_MODEL, EXPERT_TEXT_REVIEW_CHAIN, EXPERT_MULTIMODAL_REVIEW_CHAIN } from "./helpers/routing-fixture.ts";
 
 // The SDK's own pi-ai event stream: chain tests exercise real provider streams.
 const { createAssistantMessageEventStream } = await import(/* @vite-ignore */ sdkPiAiUrl);

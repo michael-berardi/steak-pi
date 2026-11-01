@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Live paid mirror benchmark: stock Pi vs Steak Pi (USAP), GLM-5.3-Flash.
+ * Live paid mirror benchmark: stock Pi vs Steak Pi (USAP), on the operator's benchmark model.
  *
- * Mirrors the frozen controls of results/glm53-live-calibration-2026-09-04.md:
- * - model zai/glm-5.3-flash, thinking high, no fallback
+ * Mirrors the frozen controls of results/live-calibration-2026-09-04.md:
+ * - model USAP_BENCH_PROVIDER/USAP_BENCH_MODEL (required; no default), thinking high, no fallback
  * - fresh fixture + ephemeral session per run, sequential top-level runs
  * - balanced arm ordering, identical prompts and file sets per case
  * - deterministic post-run verification, raw JSONL retained locally
@@ -17,8 +17,13 @@ import { join } from "node:path";
 
 const ROOT = "/tmp/audit/steak-usap-live-" + new Date().toISOString().replace(/[:.]/g, "-");
 const PI = "pi";
-const MODEL = "glm-5.3-flash";
-const PROVIDER = "zai";
+// The benchmark ships no model choice: the operator names the exact route to measure.
+const MODEL = process.env.USAP_BENCH_MODEL;
+const PROVIDER = process.env.USAP_BENCH_PROVIDER;
+if (!MODEL || !PROVIDER) {
+  console.error("Set USAP_BENCH_PROVIDER and USAP_BENCH_MODEL to the exact route to benchmark.");
+  process.exit(2);
+}
 const STEAK_EXT = [
   "-e", join(process.env.HOME, "dev/steak-pi/extensions/ultraterm-subagents.ts"),
   "-e", join(process.env.HOME, "dev/steak-pi/extensions/todo.ts"),

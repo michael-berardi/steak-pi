@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.18.0 (2026-11-01)
+
+- **Steak Pi is provider-neutral.** The shipped tool no longer carries any model id, fallback chain, provider
+  preference, worker profile, expert reviewer, paid-route grant, retired-model list, catalog extra, hidden-model
+  rule, quota tier, Claude fallback tier or personal name. Every routing choice is now operator configuration,
+  read by the new `src/routing-config.ts` from `~/.config/ultraterm/routing.json` (override
+  `STEAK_PI_ROUTING_CONFIG`) and `~/.pi/agent/paid-routes.json` (override `STEAK_PI_PAID_ROUTES`). Missing files
+  are an empty configuration: the tool starts and every explicit `model`/`profile`/`harness` selector works, while
+  an implicit dispatch fails naming the key to set (`No text worker chain configured: set textWorkerChain in
+  ~/.config/ultraterm/routing.json.`). A malformed file fails the decision that needs it with a
+  `RoutingConfigError` naming the key, never at import time.
+- **New routing.json keys** (documented with placeholders in `docs/MODEL-ROUTING.md`; `workerDefault` and
+  `reviewerDefault` are unchanged): `textWorkerChain`, `multimodalWorkerChain`, `defaultChainProfile`,
+  `tokenPlanChainHeads`, `reviewerChainHead`, `expertReview`, `workerProfiles`, `retiredModelPatterns`,
+  `retiredProfiles`, `catalogExtras`, `providerQuotaFallback`, `hiddenModelPatterns`, `subscriptionRouteChecks`
+  (including `modelPattern` family pins), `subscriptionFirstProvider`, `claudeFallbackTier`,
+  `claudeCodeDefaults`, `implicitReview`, `verificationGates` and `routeLabels`.
+- **paid-routes.json version 2**: `{ "version": 2, "reviewed": [...], "allow": [...] }`. `reviewed` is the
+  operator's approved paid-route catalog and `allow` the granted subset; a route spends only when it is in both.
+  Version 1 files keep working: a v1 allow entry grants only when the route is also in a reviewed table (the
+  operator's v2 catalog file); with no reviewed table nothing is granted. Every reader still fails closed on a
+  missing or malformed file. `reviewedPaidRoutes()` is new; the deprecated `PAID_ROUTES` export is empty.
+- Per-provider session/machine concurrency ceilings are no longer built in (every provider gets the default);
+  set them in `~/.config/steak-pi/usap-caps.json`. The Claude Code CLI adapter keeps its own pinned model catalog
+  (`src/subagents/claude-code-models.ts`), but no default selects from it.
+- The live benchmark runner needs `USAP_BENCH_PROVIDER` and `USAP_BENCH_MODEL`; benchmark result files were renamed
+  without a model name. `test/neutrality.test.ts` scans every shipped file for concrete model ids and personal
+  names, and the suite runs against a synthetic operator fixture (`test/fixtures/`), never the machine's own files.
+
 ## 0.17.0 (2026-10-31)
 
 - **The automatic text worker chain is Go-first.** USAP routine text workers and scouts now run **DeepSeek V4.1

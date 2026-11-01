@@ -29,7 +29,7 @@ describe("USAP benchmark manifest hard gates", () => {
     });
     const mutable = structuredClone(USAP_BENCHMARK_MANIFEST);
 
-    expect(() => validateBenchmarkManifest(wrongModel)).toThrow(/zai\/glm-5\.3-flash/);
+    expect(() => validateBenchmarkManifest(wrongModel)).toThrow(/provider-a\/model-name/);
     expect(() => validateBenchmarkManifest(fallbackEnabled)).toThrow(/fallbackModels must be empty/);
     expect(() => validateBenchmarkManifest(providerEnabled)).toThrow(/providerCalls must be forbidden/);
     expect(() => validateBenchmarkManifest(mutable)).toThrow(/recursively frozen/);
@@ -149,7 +149,7 @@ describe("USAP benchmark metric math", () => {
     expect(first.systems).toHaveLength(4);
     expect(first.systems.every((system) => system.cases.length === 9)).toBe(true);
     expect(first.fairness).toMatchObject({
-      model: "zai/glm-5.3-flash",
+      model: "provider-a/model-name",
       thinkingLevel: "high",
       fallback: "disabled",
       providerCalls: "forbidden",

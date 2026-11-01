@@ -2,10 +2,10 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { BUILTIN_WORKER_PROFILES, CLAUDE_CODE_HAIKU_ROUTE, CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_ROUTES, CLAUDE_CODE_SONNET_ROUTE, assertClaudeCodeImageAdmission, claudeCodeModelName, claudeCodeModelOf, claudeFallbackTier, loadWorkerProfiles, loadRoleDefaults,
-  resolveClaudeCodeSelection, resolveWorkerSelection, RETIRED_ROUTE, retiredRouteError } from "../src/subagents/model-selection.ts";
-import { DEFAULT_TEXT_WORKER_CHAIN, NoChainRouteError, type ChainOptions } from "../src/model-route-policy.ts";
+import { CLAUDE_CODE_HAIKU_ROUTE, CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_ROUTES, CLAUDE_CODE_SONNET_ROUTE, assertClaudeCodeImageAdmission, claudeCodeModelName, claudeCodeModelOf, claudeFallbackTier, loadWorkerProfiles, loadRoleDefaults, resolveClaudeCodeSelection, resolveWorkerSelection, RETIRED_ROUTE, retiredRouteError } from "../src/subagents/model-selection.ts";
+import { NoChainRouteError, type ChainOptions } from "../src/model-route-policy.ts";
 import type { DispatchInput, SubagentTaskInput } from "../src/subagents/types.ts";
+import { BUILTIN_WORKER_PROFILES, DEFAULT_TEXT_WORKER_CHAIN } from "./helpers/routing-fixture.ts";
 
 type Model = Parameters<typeof resolveWorkerSelection>[0];
 const astra = { id: "gpt-6-astra", name: "GPT-6 Astra", provider: "openai-codex", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text", "image"] } as Model;
@@ -320,17 +320,17 @@ describe("synthetic: USAP 1.1 explicit model/profile contract", () => {
   });
   it.each(["openrouter", "openai", "azure"])('rejects explicit GPT on %s', (provider) => {
     const model = { ...astra, provider };
-    expect(() => choose(sol, { model: `${provider}/${model.id}` }, registry([model]))).toThrow(/paid/);
+    expect(() => choose(sol, { model: `${provider}/${model.id}` }, registry([model]))).toThrow(/pinned to its configured subscription route/);
   });
   it("rejects batch, API-key Codex, and forged Codex endpoints", () => {
     const batch = { ...astra, id: "gpt-6-astra-batch" };
-    expect(() => choose(sol, { model: `openai-codex/${batch.id}` }, registry([batch]))).toThrow(/paid/);
+    expect(() => choose(sol, { model: `openai-codex/${batch.id}` }, registry([batch]))).toThrow(/pinned to its configured subscription route/);
     const r = registry(); r.isUsingOAuth.mockReturnValue(false);
-    expect(() => choose(sol, { model: "openai-codex/gpt-6-astra" }, r)).toThrow(/paid/);
-    expect(() => choose(sol, { model: "openai-codex/gpt-6-astra" }, registry([{ ...astra, baseUrl: "https://example.test" }]))).toThrow(/paid/);
+    expect(() => choose(sol, { model: "openai-codex/gpt-6-astra" }, r)).toThrow(/pinned to its configured subscription route/);
+    expect(() => choose(sol, { model: "openai-codex/gpt-6-astra" }, registry([{ ...astra, baseUrl: "https://example.test" }]))).toThrow(/pinned to its configured subscription route/);
     // The generic chain helper permits local routes, but a Codex-labelled
     // localhost route must still fail the USAP subscription dispatch guard.
-    expect(() => choose(astra, {}, registry([{ ...sol, baseUrl: "http://localhost:8080/v1" } as Model]))).toThrow(/paid/);
+    expect(() => choose(astra, {}, registry([{ ...sol, baseUrl: "http://localhost:8080/v1" } as Model]))).toThrow(/pinned to its configured subscription route/);
   });
   it("checks image input and native tool-adapter availability before dispatch", () => {
     const text = { ...sol, input: ["text"] } as Model;
@@ -432,7 +432,7 @@ describe("synthetic: automatic quota fallback tier (cheapest capable Claude mode
     ]) {
       expect(claudeFallbackTier({ tasks })).toMatchObject({ route: CLAUDE_CODE_HAIKU_ROUTE, model: "claude-haiku-5-5" });
     }
-    expect(claudeFallbackTier({ tasks: [leaf()], thinking: "medium" }).route).toBe(CLAUDE_CODE_HAIKU_ROUTE);
+    expect(claudeFallbackTier({ tasks: [leaf()], thinking: "medium" })!.route).toBe(CLAUDE_CODE_HAIKU_ROUTE);
   });
   it("takes Sonnet 5.5 for substantial code work, requested high/xhigh reasoning and every reviewer, and says why", () => {
     const cases = [
@@ -445,7 +445,7 @@ describe("synthetic: automatic quota fallback tier (cheapest capable Claude mode
     for (const { why, ...dispatch } of cases) {
       const tier = claudeFallbackTier(dispatch);
       expect(tier).toMatchObject({ route: CLAUDE_CODE_SONNET_ROUTE, model: "claude-sonnet-5-5" });
-      expect(tier.reason).toMatch(why);
+      expect(tier!.reason).toMatch(why);
     }
   });
   it("keeps Haiku an internal tier: pinned to its exact route, never an explicit route and never admitted for images", () => {

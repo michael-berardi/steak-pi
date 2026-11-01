@@ -28,7 +28,7 @@ native-to-Steak editor swap also preserves content pasted during startup.
 
 [Pi's native transcript and tool rendering]
 
-◆ mimo-v2.6-flash · high · ● responding ━━━━━━──────────── ◫ 18%/131k · 11.9k tok · 80% cache · $0.018
+◆ model-name · high · ● responding ━━━━━━──────────── ◫ 18%/131k · 11.9k tok · 80% cache · $0.018
 ╰─ Message
 [extension status appears here only when present]
 ```
@@ -94,7 +94,7 @@ The bundled `ultraterm-ui` bridge exposes the current Pi model scope and saved-s
 
 In UltraTerm UI Mode, `/session` opens the saved-session picker, as does `/resume`. Native Pi's `/session` command still shows session statistics. The picker supports filtering and preview; its search input has no focus ring or glow.
 
-Selecting a model does not authorize paid inference. A metered route is admitted only when the operator's `~/.pi/agent/paid-routes.json` allowlist carries that exact provider, model and endpoint; an explicit paid selection also accepts the approved launch flag. Default workers lead with OpenCode Go DeepSeek V4.1 Flash, then the reviewed OpenRouter DeepSeek Exacto route once Go is used up, then GPT-6.1 Terra; a metered tier launches only while its exact allowlist entry is present.
+Selecting a model does not authorize paid inference. A metered route is admitted only when the operator's `~/.pi/agent/paid-routes.json` allowlist carries that exact provider, model and endpoint; an explicit paid selection also accepts the approved launch flag. Default workers follow the operator's configured `textWorkerChain`; a metered tier launches only while its exact route is reviewed and allowed in paid-routes.json.
 
 ## Theme neutrality
 
@@ -137,7 +137,7 @@ Final visual acceptance still runs against the installed Pi TUI inside UltraTerm
 
 - Every rendered line is within 20, 24, 32, 40, 80, 120, and 192 columns.
 - ANSI styling never changes measured layout width.
-- Astra, Luna, and MiMo model labels omit provider names and routing prefixes.
+- Model labels omit provider names and routing prefixes.
 - Truncation never splits an emoji/grapheme.
 - Session resume never clears transcript state.
 - Editor submit/history/escape and resize remain deterministic in simulation.

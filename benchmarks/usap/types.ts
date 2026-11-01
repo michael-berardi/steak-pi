@@ -32,7 +32,7 @@ export type WorkResult =
   | "unsafe-accept";
 
 export interface FairnessControls {
-  readonly model: "zai/glm-5.3-flash";
+  readonly model: "provider-a/model-name";
   readonly thinkingLevel: "high";
   readonly fallback: "disabled";
   readonly fallbackModels: readonly [];

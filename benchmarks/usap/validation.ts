@@ -239,7 +239,7 @@ export function validateBenchmarkManifest(value: unknown): asserts value is Benc
     ["model", "thinkingLevel", "fallback", "fallbackModels", "providerCalls", "fixtureMode"],
     "fairness",
   );
-  if (fairness.model !== "zai/glm-5.3-flash") fail("fairness.model must be zai/glm-5.3-flash");
+  if (fairness.model !== "provider-a/model-name") fail("fairness.model must be provider-a/model-name");
   if (fairness.thinkingLevel !== "high") fail("fairness.thinkingLevel must be high");
   if (fairness.fallback !== "disabled") fail("fairness.fallback must be disabled");
   if (!Array.isArray(fairness.fallbackModels) || fairness.fallbackModels.length !== 0) {

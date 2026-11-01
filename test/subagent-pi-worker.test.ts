@@ -28,11 +28,7 @@ import {
   workerTurnBudget,
   type PiWorkerSession,
 } from "../src/subagents/pi-worker.ts";
-import {
-  AUTOMATIC_CHAIN_APPROVAL,
-  DEFAULT_MULTIMODAL_WORKER_CHAIN,
-  DEFAULT_TEXT_WORKER_CHAIN,
-} from "../src/model-route-policy.ts";
+import { AUTOMATIC_CHAIN_APPROVAL } from "../src/model-route-policy.ts";
 import { isolatedCodexAgentDir, isolatedAgentPaths } from "../src/subagents/provider-accounts.ts";
 import { RelayBroker } from "../src/subagents/relay.ts";
 import { TURN_BUDGET_NOTICE_REMAINING, turnBudgetNotice } from "../src/subagents/turn-budget.ts";
@@ -48,6 +44,7 @@ import {
   type UsageTotals,
   type WorkerProgress,
 } from "../src/subagents/types.ts";
+import { DEFAULT_MULTIMODAL_WORKER_CHAIN, DEFAULT_TEXT_WORKER_CHAIN } from "./helpers/routing-fixture.ts";
 
 function usage(seed = 1): UsageTotals {
   return {
