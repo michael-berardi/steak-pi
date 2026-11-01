@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.18.1 (2026-11-01)
+
+- **Documentation corrections.** `docs/MODEL-ROUTING.md` and this changelog described version 1
+  paid-routes files as able to take a reviewed table only from a version 2 operator file. The code
+  reads a `reviewed` array inside a version 1 file too, which is what the live operator file uses;
+  the docs now say so and state that a version 2 file without `reviewed` reviews nothing and never
+  borrows the catalog.
+- **Removed-defaults documentation.** The protocol reference and skill no longer describe built-in
+  provider-specific concurrency ceilings or an always-on GPT OAuth pin; both are operator
+  configuration (`usap-caps.json`, `subscriptionRouteChecks`).
+- **Stronger neutrality test.** The neutrality test now scans `CONTRIBUTING.md` and `SECURITY.md`,
+  matches people's names case-insensitively, catches product/tier names as well as route spellings,
+  and exempts personal names only inside distribution URL forms in six named shipped files
+  (`README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `bin/steak-pi`, `src/update-check.ts`,
+  `extensions/ultracompress/index.ts`). Each of those files is checked to still contain a real hit,
+  so the exemption cannot cover nothing; text outside the URL on the same line is still scanned.
+  The tool description and protocol/skill docs no longer name the operator's Claude account labels.
+  Install commands and badges keep the real repository owner so links and updates resolve.
+- **Test coverage.** Added a paid-routes case proving a version 2 file without a reviewed table
+  grants nothing and never borrows the operator's catalog.
+- No routing, selection, quota or paid-route behaviour changed.
+
 ## 0.18.0 (2026-11-01)
 
 - **Steak Pi is provider-neutral.** The shipped tool no longer carries any model id, fallback chain, provider
@@ -19,8 +41,10 @@
   `claudeCodeDefaults`, `implicitReview`, `verificationGates` and `routeLabels`.
 - **paid-routes.json version 2**: `{ "version": 2, "reviewed": [...], "allow": [...] }`. `reviewed` is the
   operator's approved paid-route catalog and `allow` the granted subset; a route spends only when it is in both.
-  Version 1 files keep working: a v1 allow entry grants only when the route is also in a reviewed table (the
-  operator's v2 catalog file); with no reviewed table nothing is granted. Every reader still fails closed on a
+  Version 1 files keep working: a v1 allow entry grants only when the route is also in the reviewed table. A
+  version 1 file may carry its own `reviewed` array so one operator file serves both 0.17.0 (which reads only
+  `allow`) and this build; a version 1 file without one is checked against the operator's catalog file. A
+  version 2 file uses only its own table and never borrows the catalog. Every reader still fails closed on a
   missing or malformed file. `reviewedPaidRoutes()` is new; the deprecated `PAID_ROUTES` export is empty.
 - Per-provider session/machine concurrency ceilings are no longer built in (every provider gets the default);
   set them in `~/.config/steak-pi/usap-caps.json`. The Claude Code CLI adapter keeps its own pinned model catalog

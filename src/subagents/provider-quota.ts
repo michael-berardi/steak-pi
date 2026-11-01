@@ -184,7 +184,7 @@ export function providerUsageLimit(text: string): string | undefined {
 }
 
 /** Whether a usage-limit failure should hold the account out as a spent plan (`usage`) rather than a
- * transient `rate` limit. Pi turns every Codex 429 with a JSON body (including a short burst
+ * transient `rate` limit. Pi turns every Codex rate-limit response with a JSON body (including a short burst
  * rate_limit_exceeded) into "You have hit your ChatGPT usage limit", and adds "Try again in ~N min."
  * only when the server sent a reset time; without it the sentence is reported as `rate`, so a burst
  * never takes a GPT account out for a plan's worth of time. Other plan wording is always `usage`. */
@@ -246,9 +246,9 @@ export interface ClaudeAccountPick {
 /**
  * The Claude subscription account an automatic fallback worker is pinned on. Only an account the
  * router's own snapshot shows `eligible: true` is ever picked; a launch without a pinned account
- * would run on the parent's default login (Claude 1), which the same snapshot may show cooling down.
+ * would run on the parent's default login, which the same snapshot may show cooling down.
  * Among eligible accounts the least-used window wins (unmeasured accounts last), then the fewest
- * live leases, then router order, so successive waves spread across Claude 1 and Claude 2.
+ * live leases, then router order, so successive waves spread across the configured accounts.
  *
  * An unreadable router, or one that lists no Claude account, proves nothing about any login: it
  * returns neither an account nor a cause, and the caller keeps its pre-existing behaviour.

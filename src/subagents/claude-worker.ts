@@ -667,7 +667,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     const apiModel = claudeApiModelOf(run.model);
     const pinnedModel = claudeCodeModelOf(run.model) ?? apiModel;
     if (pinnedModel === undefined || run.thinkingLevel !== CLAUDE_CODE_EFFORT) {
-      return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "Claude Code requires the exact Sonnet 5.5 or Opus 5.5 xhigh route" };
+      return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "Claude Code requires the configured Claude Code route at xhigh effort" };
     }
     if (run.claudeAccount !== undefined && apiModel !== undefined) return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "claudeAccount cannot select API billing; no inference started" };
     const resuming = typeof task.claudeSessionId === "string" && CLAUDE_SESSION_ID.test(task.claudeSessionId);

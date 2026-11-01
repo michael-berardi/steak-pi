@@ -117,7 +117,7 @@ const TaskSchema = Type.Object({
 export const ultratermSubagentsSchema = Type.Object({
   goal: Type.String({ minLength: 1, maxLength: 8_000 }),
   model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Exact authenticated provider/model for all tasks; mutually exclusive with profile." })),
-  claudeAccount: Type.Optional(Type.Unsafe<"primary" | "b">({ type: "string", enum: ["primary", "b"], description: "Task-scoped Claude subscription account (primary = Claude 1, b = Claude 2). Requires a Claude subscription route; unknown, unavailable, Pi and API selections fail closed. Never changes defaults or enables credits." })),
+  claudeAccount: Type.Optional(Type.Unsafe<"primary" | "b">({ type: "string", enum: ["primary", "b"], description: "Task-scoped Claude subscription account id. Requires a Claude subscription route; unknown, unavailable, Pi and API selections fail closed. Never changes defaults or enables credits." })),
   profile: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Native harness/profile route (e.g. steak-pi/profile-name); mutually exclusive with model. Operator-retired routes are rejected." })),
   harness: Type.Optional(Type.Unsafe<"pi" | "claude-code">({ type: "string", enum: ["pi", "claude-code"], description: "Execution harness. pi (default) is the native runner; claude-code is the official headless Claude CLI at xhigh on the operator's claudeCodeDefaults model unless model names one of its pinned routes; workers, scouts and reviewers alike, with CLI-enforced ownedPaths; no Bash for read-only reviewers. Image review reads staged files under cwd with native Read." })),
   requireImages: Type.Optional(Type.Boolean({ description: "Require advertised image input; no silent fallback. Claude Code uses native Read on staged image files under cwd, not inline attachments." })),
@@ -1044,8 +1044,8 @@ export function createUltratermSubagentsExtension(
     let runtime: SessionRuntime | undefined;
     let clearedStatusUi: ExtensionContext["ui"] | undefined;
     // Replacements share leases with any late-disposing prior initialization.
-    // Session-wide ceiling comes from usap-caps.json (default 14 = 8 + 6 Codex
-    // Codex); each run stays capped at MAX_CONCURRENCY by dispatch validation.
+    // Session-wide ceiling comes from usap-caps.json; each run stays capped at
+    // MAX_CONCURRENCY by dispatch validation.
     const scheduler = dependencies.createScheduler?.() ?? new SessionScheduler();
     /** Teardowns whose workers had not settled at the bounded deadline. Their
      * checkpoint lease and live state stay retained (never force-released, never

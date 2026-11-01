@@ -176,12 +176,14 @@ default selects any of them; automatic order comes only from the keys above.
 granted subset. A route spends only when it is in both, matched exactly
 (provider, model id, base URL: a trailing slash, path, port, query or alias is a
 different billing target). There is no wildcard and no provider-prefix match.
-Version 1 files (`{ "version": 1, "allow": [...] }`) keep working as before: a v1
-allow entry grants only when the route is also in the reviewed table, which a v1
-file can only take from the operator's catalog file (`STEAK_PI_PAID_ROUTES` or
-`~/.pi/agent/paid-routes.json`, when that file is version 2); with no reviewed
-table nothing is granted. Missing, malformed, unreadable or unmatched files fail
-closed. Both tables are re-read on every decision, so deleting an entry revokes it.
+Version 1 files (`{ "version": 1, ... }`) keep working as before: a v1 allow entry
+grants only when the route is also in the reviewed table. A version 1 file may carry
+its own `reviewed` array, so one operator file serves both the released 0.17.0 (which
+reads only `allow`) and this build; when a version 1 file has no `reviewed` table it is
+checked against the operator's catalog file instead. A version 2 file uses only its own
+`reviewed` table: without one it reviews nothing and never borrows the catalog. Missing,
+malformed, unreadable or unmatched files fail closed. Both tables are re-read on every
+decision, so deleting an entry revokes it.
 
 `readApprovedPaidRoutes`, `findPaidRoute`, `isAllowlistedPaidRoute`,
 `createAllowlistApproval`, `createSelectedRouteApproval` and

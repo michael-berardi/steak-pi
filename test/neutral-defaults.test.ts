@@ -177,6 +177,26 @@ describe("operator files", () => {
     expect(isAllowlistedPaidRoute(route)).toBe(false);
   });
 
+  it("a version 2 file without a reviewed table grants nothing and never borrows", () => {
+    const route = { provider: "provider-b", id: "model-name", baseUrl: "https://gateway.example/api/v1" };
+    const entry = { provider: route.provider, model: route.id, baseUrl: route.baseUrl };
+    // The operator's own file reviews and grants the route.
+    writeFileSync(join(dir, "paid-routes.json"), JSON.stringify({ version: 2, reviewed: [entry], allow: [entry] }));
+    expect(isAllowlistedPaidRoute(route)).toBe(true);
+    // A separate version 2 file with only `allow` must fail closed: a v2 file owns its
+    // table and never borrows the operator's reviewed catalog.
+    const v2 = join(dir, "v2-allow-only.json");
+    writeFileSync(v2, JSON.stringify({ version: 2, allow: [entry] }));
+    expect(reviewedPaidRoutes(v2)).toEqual([]);
+    expect(readApprovedPaidRoutes(v2)).toEqual([]);
+    expect(isAllowlistedPaidRoute(route, v2)).toBe(false);
+    // Version 1 without `reviewed` still borrows from the operator's catalog, as before.
+    const v1 = join(dir, "v1-allow-only.json");
+    writeFileSync(v1, JSON.stringify({ version: 1, allow: [entry] }));
+    expect(readApprovedPaidRoutes(v1)).toEqual([route]);
+    expect(isAllowlistedPaidRoute(route, v1)).toBe(true);
+  });
+
   it("keeps version 1 allow files working only against a reviewed table", () => {
     const route = { provider: "provider-b", id: "model-name", baseUrl: "https://gateway.example/api/v1" };
     const v1 = join(dir, "v1.json");

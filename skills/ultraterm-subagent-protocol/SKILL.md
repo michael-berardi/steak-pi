@@ -45,10 +45,11 @@ Use adaptive concurrency, never padding work:
 - **6–8:** long multi-aspect work with many disjoint leaves; fill the wave
   instead of executing serially in the parent.
 
-Launch width defaults to min(8, task count), subject to capacity. Defaults:
-per-session Codex 6 / other providers 8, global 14; machine-wide
-Codex 12 / other providers 12, global 24. These provider-bucketed
-capacity defaults are configurable; each run still accepts at most eight tasks. Stop delegating
+Launch width defaults to min(8, task count), subject to capacity. Provider
+session and machine ceilings are not built in: set them in
+`~/.config/steak-pi/usap-caps.json`. When absent the defaults are 8 per provider
+per session, 14 per session combined, and 24 machine-wide. Each run still
+accepts at most eight tasks. Stop delegating
 when briefing cost exceeds the remaining work, and dispatch more workers only
 when they buy completion speed.
 
@@ -117,12 +118,12 @@ needs a specific tier. Existing first-party Claude subscription login is require
 quota exhaustion is a failed task due to quota, never model approval or permission
 for credits or silent fallback.
 For a task-scoped subscription account, pair the Claude harness or exact
-subscription model with `claudeAccount: "primary"` (Claude 1) or `"b"`
-(Claude 2). Available in Steak Pi 0.9.18; UltraTerm receives it through its next
+subscription model with `claudeAccount: "primary"` (the primary Claude account) or `"b"`
+(the second Claude account). Available in Steak Pi 0.9.18; UltraTerm receives it through its next
 managed runtime release. Never hand-install managed helpers. The account router must admit that exact account at
 dispatch and each launch. Unknown/unavailable accounts, Pi, profile and API
 routes fail closed, with no fallback, credits or global-default change.
-Claude 1 unsets `CLAUDE_CONFIG_DIR`; setting `~/.claude` explicitly is a distinct
+The primary Claude account unsets `CLAUDE_CONFIG_DIR`; setting `~/.claude` explicitly is a distinct
 auth namespace. Omitted selectors preserve validated inheritance. Inspect each
 leaf's `subscriptionReceipt`: namespace, hashed actual CLI login identity and
 separate preflight/init attestations. It contains no raw login identity or

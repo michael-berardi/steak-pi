@@ -254,8 +254,8 @@ describe("API runner", () => {
     const f = fresh();
     const { spawn, calls } = fakeSpawn(() => {});
     const runner = createClaudeWorkerRunner(options(f, spawn));
-    expect((await runner(ctx(run(SONNET, { thinkingLevel: "high" }), task()))).error).toMatch(/exact Sonnet 5.5 or Opus 5.5 xhigh route/);
-    expect((await runner(ctx(run("claude-code-api/claude-sonnet-5-5-other"), task()))).error).toMatch(/exact Sonnet 5.5 or Opus 5.5 xhigh route/);
+    expect((await runner(ctx(run(SONNET, { thinkingLevel: "high" }), task()))).error).toMatch(/configured Claude Code route at xhigh effort/);
+    expect((await runner(ctx(run("claude-code-api/claude-sonnet-5-5-other"), task()))).error).toMatch(/configured Claude Code route at xhigh effort/);
     expect(calls).toHaveLength(0);
   });
 });
