@@ -16,7 +16,7 @@ import { assertClaudeAccountId, resolveClaudeAccount } from "../src/subagents/cl
 import { assertActiveModelSelector } from "../src/retired-model-selection.ts";
 import { resolveWorkerSelection, resolveClaudeCodeSelection, assertClaudeCodeImageAdmission, claudeCodeModelOf, claudeCodeModelName, claudeFallbackTier, defaultClaudeCodeRoute, CLAUDE_CODE_ROUTES, type ClaudeFallbackTier, type WorkerProfile } from "../src/subagents/model-selection.ts";
 import { admitClaudeApiRoute, anyClaudeRouteModelOf, claudeApiConcurrency, claudeApiModelOf, CLAUDE_API_ROUTES, formatClaudeApiReceipt, isClaudeApiRoute, resolveClaudeApiSelection, stampClaudeApiRun } from "../src/subagents/claude-api-route.ts";
-import { AUTOMATIC_CHAIN_APPROVAL, NoChainRouteError, isDefaultTextChainExhausted, type ChainOptions, type WorkerRouteStep } from "../src/model-route-policy.ts";
+import { AUTOMATIC_CHAIN_APPROVAL, NoChainRouteError, isDefaultTextChainExhausted, onlyWhenSkipReason, textWorkerChain, type ChainOptions, type WorkerRouteStep } from "../src/model-route-policy.ts";
 import { isSubscriptionOrLocalRoute } from "../src/subscription-first-routing.ts";
 import {
   RelayBroker,
@@ -320,7 +320,7 @@ async function resolvePiSelection(
 }
 
 async function resolveNativeSelection(ctx: ExtensionContext, input: Parameters<typeof resolveWorkerSelection>[2], dependencies: UltratermSubagentsDependencies,
-  quota: Pick<ChainOptions, "skipRoute" | "forceDefaultChain"> = {}) {
+  quota: Pick<ChainOptions, "skipRoute" | "forceDefaultChain" | "quotaSnapshot"> = {}) {
   const registry = await registryForSolSelection(ctx.model!, input, ctx.modelRegistry,
     dependencies.accountCommand, dependencies.createModelRuntime, dependencies.profiles);
   const resolve = (from: ExtensionContext["modelRegistry"]) => resolvePiSelection(() => resolveWorkerSelection(ctx.model!, ctx.thinkingLevel, input,
@@ -472,6 +472,10 @@ async function resolveImplicitWorkerRoute(
 ): Promise<ImplicitWorkerRoute> {
   const spent = spentProviders(fallThroughs);
   const tierBlock = (snapshot: QuotaSnapshot, step: WorkerRouteStep): string | undefined => {
+    // A config-driven onlyWhen condition is checked first: when it is false the step is skipped
+    // with its named reason, whatever the quota meter says about the step's own provider.
+    const onlyWhen = step.onlyWhen ? onlyWhenSkipReason(step.onlyWhen, { quotaSnapshot: snapshot }) : undefined;
+    if (onlyWhen !== undefined) return onlyWhen;
     const provider = quotaProviderOf(step);
     if (provider === undefined || !spent.has(provider)) return routeQuotaBlock(snapshot, step);
     const failed = fallThroughs.find((item) => item.providers.includes(provider));
@@ -495,7 +499,7 @@ async function resolveImplicitWorkerRoute(
   // opening it, so a proven-exhausted plan is never offered an isolated runtime.
   const parentTier = quotaProviderOf(ctx.model!);
   let quota: QuotaSnapshot | undefined = parentTier !== undefined && parentTier !== CODEX_QUOTA && isMeteredQuota(parentTier) ? await readQuota() : undefined;
-  try { first = await resolveNativeSelection(ctx, requested, dependencies, { skipRoute: step => skipStep(step, quota) }); } catch (error) { failure = error; }
+  try { first = await resolveNativeSelection(ctx, requested, dependencies, { skipRoute: step => skipStep(step, quota), quotaSnapshot: quota }); } catch (error) { failure = error; }
   if (!first && !isDefaultTextChainExhausted(failure)) throw failure;
   if (first) {
     const step = stepOfSelection(first.selection);
@@ -510,14 +514,16 @@ async function resolveImplicitWorkerRoute(
       const causes = earlier.flatMap(route => {
         const slash = route.indexOf("/");
         const prior = { provider: route.slice(0, slash), id: route.slice(slash + 1) };
-        const block = tierBlock(quota!, prior);
-        return block === undefined ? [] : [`${routeStepLabel(prior)}: ${block}`];
+        // Keep the configured step so a skipped `onlyWhen` step names its condition, not a quota read.
+        const configured = textWorkerChain().find((step) => step.provider === prior.provider && step.id === prior.id) ?? prior;
+        const block = tierBlock(quota!, configured);
+        return block === undefined ? [] : [`${routeStepLabel(configured)}: ${block}`];
       });
       return { resolved: first, tried: [], causes };
     }
     // The resolved route is out of quota: leave it, continue down the default chain.
     try {
-      const next = await resolveNativeSelection(ctx, requested, dependencies, { forceDefaultChain: true, skipRoute: step => skipStep(step, quota) });
+      const next = await resolveNativeSelection(ctx, requested, dependencies, { forceDefaultChain: true, skipRoute: step => skipStep(step, quota), quotaSnapshot: quota });
       return { resolved: next, tried: [], causes: [`${routeStepLabel(step)}: ${cause}`] };
     } catch (error) {
       if (!isDefaultTextChainExhausted(error)) throw error;

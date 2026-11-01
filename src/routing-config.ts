@@ -39,7 +39,11 @@ export class RoutingConfigError extends Error { override name = "RoutingConfigEr
 export const missingConfigKey = (what: string, key: string): string =>
   `No ${what} configured: set ${key} in ${ROUTING_CONFIG_LABEL}.`;
 
-export interface RouteStep { provider: string; id: string }
+export interface OnlyWhenCondition {
+  provider: string;
+  everyAccount: { remainingBelow: number; behindPaceAbove: number };
+}
+export interface RouteStep { provider: string; id: string; onlyWhen?: OnlyWhenCondition }
 type Thinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 export interface RouteSelector { model?: string; profile?: string }
 
@@ -157,6 +161,10 @@ const text = (value: unknown, key: string, limit = 256): string => {
   return value;
 };
 const optionalText = (value: unknown, key: string, limit = 256): string | undefined => value === undefined ? undefined : text(value, key, limit);
+const numeric = (value: unknown, key: string): number => {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return fail(key, "expected a nonnegative number");
+  return value;
+};
 const bool = (value: unknown, key: string, fallback: boolean): boolean => {
   if (value === undefined) return fallback;
   if (typeof value !== "boolean") return fail(key, "expected true or false");
@@ -172,12 +180,31 @@ const array = (value: unknown, key: string): unknown[] => {
   return value;
 };
 
-/** `provider/model` (split at the first slash, so a model id may contain slashes). */
+/** `provider/model` (split at the first slash, so a model id may contain slashes), or an object with `provider`, `id`, and optional `onlyWhen`. */
+function parseOnlyWhen(value: unknown, key: string): OnlyWhenCondition | undefined {
+  if (value === undefined) return undefined;
+  if (!object(value)) return fail(key, "expected an onlyWhen object { provider, everyAccount: { remainingBelow, behindPaceAbove } }");
+  const provider = text(value.provider, `${key}.provider`);
+  if (!object(value.everyAccount)) return fail(`${key}.everyAccount`, "expected { remainingBelow, behindPaceAbove }");
+  const remainingBelow = numeric(value.everyAccount.remainingBelow, `${key}.everyAccount.remainingBelow`);
+  const behindPaceAbove = numeric(value.everyAccount.behindPaceAbove, `${key}.everyAccount.behindPaceAbove`);
+  return { provider, everyAccount: { remainingBelow, behindPaceAbove } };
+}
+
 export function parseRoute(value: unknown, key = "route"): RouteStep {
-  const route = text(value, key);
-  const slash = route.indexOf("/");
-  if (slash < 1 || slash === route.length - 1) return fail(key, `${JSON.stringify(route)} must use the exact provider/model form`);
-  return { provider: route.slice(0, slash), id: route.slice(slash + 1) };
+  if (typeof value === "string") {
+    const route = text(value, key);
+    const slash = route.indexOf("/");
+    if (slash < 1 || slash === route.length - 1) return fail(key, `${JSON.stringify(route)} must use the exact provider/model form`);
+    return { provider: route.slice(0, slash), id: route.slice(slash + 1) };
+  }
+  if (object(value)) {
+    const provider = text(value.provider, `${key}.provider`);
+    const id = text(value.id, `${key}.id`);
+    const onlyWhen = parseOnlyWhen(value.onlyWhen, `${key}.onlyWhen`);
+    return { provider, id, ...(onlyWhen !== undefined ? { onlyWhen } : {}) };
+  }
+  return fail(key, `expected "provider/model" or { provider, id, onlyWhen }`);
 }
 export const routeKey = (step: RouteStep): string => `${step.provider}/${step.id}`;
 const routes = (value: unknown, key: string): RouteStep[] => array(value, key).map((entry, index) => parseRoute(entry, `${key}[${index}]`));

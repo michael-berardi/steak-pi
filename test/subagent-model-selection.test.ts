@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { CLAUDE_CODE_HAIKU_ROUTE, CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_ROUTES, CLAUDE_CODE_SONNET_ROUTE, assertClaudeCodeImageAdmission, claudeCodeModelName, claudeCodeModelOf, claudeFallbackTier, loadWorkerProfiles, loadRoleDefaults, resolveClaudeCodeSelection, resolveWorkerSelection, RETIRED_ROUTE, retiredRouteError } from "../src/subagents/model-selection.ts";
 import { NoChainRouteError, type ChainOptions } from "../src/model-route-policy.ts";
+import type { QuotaSnapshot } from "../src/subagents/provider-quota.ts";
 import type { DispatchInput, SubagentTaskInput } from "../src/subagents/types.ts";
 import { BUILTIN_WORKER_PROFILES, DEFAULT_TEXT_WORKER_CHAIN } from "./helpers/routing-fixture.ts";
 
@@ -94,17 +95,17 @@ describe("synthetic: USAP 1.1 explicit model/profile contract", () => {
     expect(choose(astra, { model: "custom/custom-vision" }).model).toBe(other);
   });
   it("keeps automatic native-Pi roles on the default worker chain without retired routes", () => {
-    // Both roles use automatic chains, never Z.ai. The worker chain is Go DeepSeek -> OpenRouter DeepSeek ->
-    // Terra; with no OpenRouter route authenticated here its Go head serves the run.
+    // Both roles use automatic chains, never Z.ai. The worker chain is Go DeepSeek -> Terra ->
+    // OpenRouter DeepSeek; with no OpenRouter route authenticated here its Go head serves the run.
     const worker = choose(other, { tasks: [{ label: "leaf", task: "test", role: "worker" }] });
     expect(worker.model).toBe(go);
     expect(worker.selection).toMatchObject({ source: "chain", chainRoutes: CHAIN_ROUTES });
     // Go still heads the chain even when the reviewed OpenRouter route and the grant are present.
     expect(choose(other, { tasks: [{ label: "leaf", task: "test", role: "worker" }] }, registry([...all, openRouter]),
       BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => true }).model).toBe(go);
-    // Once Go is used up, the reviewed OpenRouter tier serves the same run under the operator's exact grant.
+    // Once Go is used up, Terra serves the same run.
     expect(choose(other, { tasks: [{ label: "leaf", task: "test", role: "worker" }] }, registry([astra, sol, openRouter]),
-      BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => true }).model).toBe(openRouter);
+      BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => true }).model).toBe(sol);
     // Reviewers keep their MiMo V2.6 Pro head; only routine workers moved to the default worker chain.
     const reviewer = choose(other, { tasks: [{ label: "leaf", task: "test", role: "reviewer" }] });
     expect(reviewer.model).toBe(mimoPro);
@@ -118,10 +119,10 @@ describe("synthetic: USAP 1.1 explicit model/profile contract", () => {
       BUILTIN_WORKER_PROFILES, "", {}, { workerDefault: { profile: "steak-pi/gpt-6-1-terra" } });
     expect(result.selection).toMatchObject({ provider: "opencode-go", modelId: "deepseek-v4.1-flash", profile: "steak-pi/gpt-6-1-terra" });
     expect(result.model).toBe(go);
-    // With Go used up and the reviewed OpenRouter route authenticated and allowlisted, that tier serves it.
+    // With Go used up and Terra authenticated and allowlisted, that tier serves it.
     expect(resolveWorkerSelection(astra, "high", input(), registry([astra, sol, openRouter]) as never,
       BUILTIN_WORKER_PROFILES, "", { approvePaidRoute: () => true }, { workerDefault: { profile: "steak-pi/gpt-6-1-terra" } }).model)
-      .toBe(openRouter);
+      .toBe(sol);
   });
   it("selects Terra→Codex OAuth and retains Astra medium", () => {
     const result = choose(sol, { model: "openai-codex/gpt-6-astra" });
@@ -145,7 +146,7 @@ describe("synthetic: USAP 1.1 explicit model/profile contract", () => {
     expect(configured.selection.chainRoutes).toBeUndefined();
   });
   it("routes automatic defaults through the final default worker chain with chain provenance", () => {
-    // Luna and Astra never enter the automatic worker chain; Go DeepSeek leads it, OpenRouter DeepSeek and Terra follow.
+    // Luna and Astra never enter the automatic worker chain; Go DeepSeek leads it, Terra and OpenRouter DeepSeek follow.
     const result = choose(astra);
     expect(result.model).toBe(go);
     expect(result.selection).toMatchObject({ provider: "opencode-go", modelId: "deepseek-v4.1-flash", source: "chain",
@@ -155,9 +156,9 @@ describe("synthetic: USAP 1.1 explicit model/profile contract", () => {
       .toBe(go);
     expect(choose(astra, {}, registry([...all, openRouter]), BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => false }).model)
       .toBe(go);
-    // Go used up: the reviewed OpenRouter tier serves the run once its exact allowlist grant covers it...
+    // Go used up: Terra serves the run once its exact allowlist grant covers it...
     expect(choose(astra, {}, registry([astra, sol, openRouter]), BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => true }).model)
-      .toBe(openRouter);
+      .toBe(sol);
     // ...while without that grant the metered tier is skipped and Terra serves the run.
     expect(choose(astra, {}, registry([astra, sol, openRouter]), BUILTIN_WORKER_PROFILES, { approvePaidRoute: () => false }).model)
       .toBe(sol);
@@ -466,14 +467,20 @@ describe("synthetic: exhausted-provider chain skipping for implicit routes", () 
   const skipTerra: ChainOptions = { forceDefaultChain: true, skipRoute: step => step.provider === "openai-codex" && step.id === "gpt-6.1-terra" };
   const skipGo: ChainOptions = { forceDefaultChain: true, skipRoute: step => step.provider === "opencode-go" };
   const skipOpenRouter: ChainOptions = { forceDefaultChain: true, skipRoute: step => step.provider === "openrouter" };
+  // Claude short: satisfies the OpenRouter semi-fallback tier's onlyWhen gate.
+  const claudeShort = { known: true, providers: { claude: { provider: "claude", accounts: 2,
+    rows: [{ id: "primary", label: "Primary", usedPercent: 85, why: "" }],
+    exhausted: false, unconfigured: false, ineligible: false, cause: "" } } } as unknown as QuotaSnapshot;
+  const skipGoAndTerra: ChainOptions = { forceDefaultChain: true,
+    skipRoute: step => step.provider === "opencode-go" || (step.provider === "openai-codex" && step.id === "gpt-6.1-terra") };
   it("resolves the default chain's Go step from the Terra profile default when nothing is skipped", () => {
     const resolved = choose(sol, {}, registry(), solFirst);
     expect(resolved.model).toBe(go);
     expect(resolved.selection).toMatchObject({ source: "chain", profile: "steak-pi/gpt-6-1-terra" });
     expect(resolved.selection.chainRoutes).toEqual(CHAIN_ROUTES);
   });
-  it("resolves the reviewed OpenRouter tier from the Terra profile default once Go is used up and its Exacto route is allowlisted", () => {
-    const resolved = choose(sol, {}, registry([...all, openRouter]), solFirst, { ...skipGo, approvePaidRoute: () => true });
+  it("resolves the reviewed OpenRouter tier from the Terra profile default once Go and Terra are used up and its Exacto route is allowlisted", () => {
+    const resolved = choose(sol, {}, registry([...all, openRouter]), solFirst, { ...skipGoAndTerra, approvePaidRoute: () => true, quotaSnapshot: claudeShort });
     expect(resolved.model).toBe(openRouter);
     expect(resolved.selection).toMatchObject({ source: "chain", provider: "openrouter", modelId: "deepseek/deepseek-v4.1-flash-1017:exacto",
       profile: "steak-pi/opencode-go", chainRoutes: CHAIN_ROUTES });

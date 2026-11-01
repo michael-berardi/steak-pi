@@ -34,6 +34,13 @@ export interface QuotaAccount {
   eligible?: boolean;
   usedPercent?: number;
   leases?: number;
+  /** True when the router's own evidence proves this account cannot launch right now:
+   * cooling down, signed out or at a 100% usage window. Busy or unmeasured is NOT out. */
+  exhausted?: boolean;
+  /** The account's top-level reset time in epoch seconds, when the router reported one. */
+  resetAt?: number;
+  /** The router's usage windows for this account (for example `seven_day`). */
+  windows?: ReadonlyArray<{ name?: string; usedPercent?: number; resetAt?: number }>;
   /** Why the router (or the usage evidence) says this account cannot launch; empty when it can. */
   why: string;
 }
@@ -113,16 +120,25 @@ function evaluateProvider(provider: QuotaProvider, block: unknown, now: number):
     return { provider, accounts: 0, rows: [], exhausted: false, unconfigured: true, ineligible: false,
       cause: `${name} has no configured account in the provider account router` };
   }
-  const rows = accounts.map((account, index) => ({
-    id: printable(account.id, `account ${index + 1}`, 40),
-    label: printable(account.label, printable(account.id, `account ${index + 1}`, 40), 40),
-    evidence: exhaustionEvidence(account, now),
-    eligible: typeof account.eligible === "boolean" ? account.eligible : undefined,
-    eligibleFalse: account.eligible === false,
-    usedPercent: finite(account.usedPercent),
-    leases: finite(account.leases),
-    why: printable(account.stateText, printable(account.ineligibleReason, "ineligible")),
-  }));
+  const rows = accounts.map((account, index) => {
+    const windows = Array.isArray(account.windows) ? account.windows.filter(record).map((w) => ({
+      name: typeof w.name === "string" ? w.name : undefined,
+      usedPercent: finite(w.usedPercent),
+      resetAt: finite(w.resetAt),
+    })) : undefined;
+    return {
+      id: printable(account.id, `account ${index + 1}`, 40),
+      label: printable(account.label, printable(account.id, `account ${index + 1}`, 40), 40),
+      evidence: exhaustionEvidence(account, now),
+      eligible: typeof account.eligible === "boolean" ? account.eligible : undefined,
+      eligibleFalse: account.eligible === false,
+      usedPercent: finite(account.usedPercent),
+      leases: finite(account.leases),
+      why: printable(account.stateText, printable(account.ineligibleReason, "ineligible")),
+      resetAt: finite(account.resetAt),
+      windows,
+    };
+  });
   const exhausted = rows.every((row) => row.evidence !== undefined);
   const ineligible = rows.every((row) => row.eligibleFalse);
   const returns = rows.map((row) => row.evidence?.returnsAt).filter((value): value is number => value !== undefined);
@@ -133,6 +149,8 @@ function evaluateProvider(provider: QuotaProvider, block: unknown, now: number):
   const listed: QuotaAccount[] = rows.map((row) => ({
     id: row.id, label: row.label, ...(row.eligible !== undefined ? { eligible: row.eligible } : {}),
     ...(row.usedPercent !== undefined ? { usedPercent: row.usedPercent } : {}), ...(row.leases !== undefined ? { leases: row.leases } : {}),
+    ...(row.resetAt !== undefined ? { resetAt: row.resetAt } : {}), ...(row.windows !== undefined ? { windows: row.windows } : {}),
+    exhausted: row.evidence !== undefined,
     why: row.eligible === true ? "" : row.evidence?.detail ?? (row.eligible === false ? row.why : "the router did not report it eligible"),
   }));
   return { provider, accounts: accounts.length, rows: listed, exhausted, unconfigured: false, ineligible, ...(earliestReturn !== undefined ? { earliestReturn } : {}), cause };
