@@ -323,11 +323,11 @@ export interface WorkerRouteStep { provider: string; id: string }
  * canonical Go DeepSeek V4.1 Flash if Terra is unavailable at selection. Go child runtime
  * failures stay account-bound and fail honestly; no ambient-auth stream hop.
  * Explicit identities and legacy profile-specific MiMo chains remain exact. */
-/** Mike 2026-10-31: DeepSeek V4.1 Flash on OpenRouter first (paid per token, cheapest per finished task), then the
- * OpenCode Go plan, then GPT-6.1 Terra on Codex OAuth. Claude Haiku is the USAP extension's last tier after this chain. */
+/** Mike 2026-10-31: OpenCode Go DeepSeek V4.1 Flash first (prepaid plan), then the same model on OpenRouter once Go is
+ * used up (paid per token), then GPT-6.1 Terra on Codex OAuth. Claude Haiku is the USAP extension's last tier. */
 export const DEFAULT_TEXT_WORKER_CHAIN: readonly WorkerRouteStep[] = [
-  { provider: "openrouter", id: "deepseek/deepseek-v4.1-flash-1017:exacto" },
   { provider: "opencode-go", id: "deepseek-v4.1-flash" },
+  { provider: "openrouter", id: "deepseek/deepseek-v4.1-flash-1017:exacto" },
   { provider: "openai-codex", id: "gpt-6.1-terra" },
 ];
 /** Automatic image runs use GPT-6.1 Terra, which reads images, then MiMo V2.6 Flash
@@ -398,7 +398,7 @@ export function isDefaultTextChainExhausted(error: unknown): error is NoChainRou
  * resolves the routine subscription chain instead, and an expert review that fails
  * at runtime fails visibly — it is never silently downgraded to a weaker model. */
 export const EXPERT_REVIEW_MODEL: WorkerRouteStep = { provider: "openai-codex", id: "gpt-6-astra" };
-/** Astra first, then the default worker chain in its own order (OpenRouter DeepSeek -> Go -> Terra). */
+/** Astra first, then the default worker chain in its own order (Go -> OpenRouter DeepSeek -> Terra). */
 export const EXPERT_TEXT_REVIEW_CHAIN: readonly WorkerRouteStep[] = [
   EXPERT_REVIEW_MODEL, ...DEFAULT_TEXT_WORKER_CHAIN,
 ];
@@ -417,7 +417,7 @@ export type ChainOptions = {
    * exhausted is skipped, so selection never lands on a route that cannot launch. A
    * skipped step is still part of the chain that was tried (see {@link NoChainRouteError}). */
   skipRoute?: (step: WorkerRouteStep) => boolean;
-  /** Resolve the built-in default text chain (OpenRouter DeepSeek -> Go -> Terra) instead of a profile default or
+  /** Resolve the built-in default text chain (Go -> OpenRouter DeepSeek -> Terra) instead of a profile default or
    * the legacy parent route. Only an implicit dispatch that must leave an exhausted
    * provider sets it; an explicit selector never does. */
   forceDefaultChain?: boolean;

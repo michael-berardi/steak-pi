@@ -72,7 +72,7 @@ export const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
 export const DEFAULT_STARTUP_WINDOW_MS = 2 * GO_ACCOUNT_ROUTER_TIMEOUT_MS + 5_000;
 export const MAX_STARTUP_WINDOW_MS = 30_000;
 /** An implicit dispatch whose worker is refused on a provider quota or usage limit before any output re-runs
- * the same tasks on the next tier of OpenRouter DeepSeek -> Go -> Terra -> Claude. Each tier is tried at most
+ * the same tasks on the next tier of Go -> OpenRouter DeepSeek -> Terra -> Claude. Each tier is tried at most
  * once, so a wave makes at most this many fall-throughs (OpenRouter -> Go, Go -> Terra, Terra -> Claude): there
  * is no loop. Three gated tiers plus the Claude tier, so three hops is the whole walk. */
 export const MAX_QUOTA_FALL_THROUGHS = 3;
@@ -376,7 +376,7 @@ const boundedReason = (text: string, limit = 480): string => text.replace(/[\u00
 
 /** The gated tiers of the default implicit chain, in order. OpenRouter has no router meter (it is tracked
  * so a run's own refusal holds it out); the Claude subscription tier follows these and is not router-gated. */
-const QUOTA_CHAIN: readonly QuotaProvider[] = ["openrouter", "opencode-go", "codex"];
+const QUOTA_CHAIN: readonly QuotaProvider[] = ["opencode-go", "openrouter", "codex"];
 /** A fall-through receipt carries the refused tier's cause beside the router's, so it may be longer than a plain one. */
 const FALLBACK_REASON_LIMIT = 720;
 
@@ -1738,7 +1738,7 @@ export function createUltratermSubagentsExtension(
           throw new Error(`USAP implicit review cannot run: Claude subscription tier: ${claudeBlock} | GPT-6.1 Terra review fallback: ${solBlock}. No review was started and no fallback was selected; wait for a window to return or name a route explicitly.`);
         }
       }
-      // Quota-aware default route for an implicit routine text wave (OpenRouter DeepSeek -> Go -> Terra ->
+      // Quota-aware default route for an implicit routine text wave (Go -> OpenRouter DeepSeek -> Terra ->
       // Claude Haiku/Sonnet 5.5). A Claude Code CLI route is not a Pi provider, so it cannot be a step of the Pi chain
       // and is reached here instead, only when the default chain cannot launch, never past a
       // proven-ineligible Claude account and never on the paid claude-code-api route. Explicit
@@ -1964,7 +1964,7 @@ export function createUltratermSubagentsExtension(
           : `Cancellation was requested for the whole run, but ${stillRunning.map((task) => `[${taskLabel(task)}]`).join(", ")} had not stopped within ${STARTUP_CANCEL_SETTLE_MS} ms and may still be shutting down; the run record is still ${final?.state ?? "running"} (inspect it with ultraterm_hub status ${run.id}).`;
         const failureText = (causes.length > 0 ? causes : startupFailures).map(startupCause).join(" | ");
         // An implicit wave refused on a provider quota or usage limit before any output moves to the next
-        // tier of OpenRouter DeepSeek -> Go -> Terra -> Claude instead of failing: only for a router-gated Pi tier, only once per
+        // tier of Go -> OpenRouter DeepSeek -> Terra -> Claude instead of failing: only for a router-gated Pi tier, only once per
         // tier, only when the whole run settled (so nothing can still be running or have written), and
         // never after the operator aborted. An explicit route, the Claude tier and every non-quota failure
         // (auth, route, spawn) fall through to the error below.
@@ -2027,7 +2027,7 @@ export function createUltratermSubagentsExtension(
       renderResult: renderSubagentResult,
       async execute(_toolCallId, rawParams, signal, onUpdate, ctx) {
         // An implicit wave whose worker is refused on a provider usage limit before any output re-runs the same
-        // tasks on the next tier (OpenRouter DeepSeek -> Go -> Terra -> Claude) right here, so the parent never
+        // tasks on the next tier (Go -> OpenRouter DeepSeek -> Terra -> Claude) right here, so the parent never
         // re-dispatches. Each tier is tried at most once; explicit routes and every other failure surface as
         // the error they are.
         const fallThroughs: QuotaFallThrough[] = [];

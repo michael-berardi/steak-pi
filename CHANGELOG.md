@@ -1,12 +1,24 @@
 # Changelog
 
+## 0.17.0 (2026-10-31)
+
+- **Update available, in one line.** An interactive session checks GitHub's latest release in the background at most
+  once every 6 hours per machine (one shared cache file, no polling, nothing on the startup path, no check in print
+  mode or CI). When a newer release exists the footer shows `Steak Pi <new> available (you have <old>) · /steak-update`.
+  Turn it off with `STEAK_PI_NO_UPDATE_CHECK=1`.
+- **One-step update.** `/steak-update` installs the latest release and reloads the session; `/steak-update check`
+  only reports. Agents and scripts use `steak-pi update` (or `steak-pi update --check`).
+- `steak-pi update` now handles release-folder installs (`.../steak-pi/releases/<version>/package`, the layout
+  UltraTerm uses): it downloads the tag into a new folder, installs its full dependency set, re-points Pi's settings
+  atomically and keeps exactly one rollback. A failed download or install names its cause and changes nothing.
+
 ## 0.16.0 (2026-10-31)
 
 - The default worker is now **DeepSeek V4.1 Flash on OpenRouter**, the exact
   `openrouter/deepseek/deepseek-v4.1-flash-1017:exacto` route (OpenRouter's
   quality-first Exacto provider sort) at `https://openrouter.ai/api/v1`, approved in
   `~/.pi/agent/paid-routes.json` and launched under the operator's exact
-  reviewed-route allowlist. Fallback order: OpenRouter DeepSeek -> OpenCode Go
+  reviewed-route allowlist. Fallback order: OpenCode Go -> OpenRouter DeepSeek
   DeepSeek V4.1 Flash -> GPT-6.1 Terra on Codex OAuth -> the Claude subscription
   tier. DeepSeek and Terra implementation work needs an Opus 5.5 verification.
 - Paid routes are allowed: the earlier "subscription first, no paid fallback" rule is

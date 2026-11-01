@@ -21,13 +21,13 @@ serious sessions need: parallel subagents with hard limits, compaction that
 costs no model calls, checks that run after every edit, and a status line that
 tells you what the agent is doing.
 
-Current release: **0.16.0**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
+Current release: **0.17.0**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
 [UltraTerm](https://paretocybernetics.com/software/).
 
 ## Install
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.13.0
+pi install git:github.com/michael-berardi/steak-pi@v0.17.0
 ```
 
 Or from the release archive, without Git:
@@ -50,6 +50,7 @@ where you have not set them yourself:
 steak-pi run          # same arguments as pi
 steak-pi env          # show what it sets
 steak-pi status       # what is installed and how it is managed
+steak-pi update       # install the latest release (--check only reports)
 ```
 
 For UltraTerm-managed launches, update the supported Homebrew package with
@@ -60,6 +61,12 @@ loaded runtime; never overwrite their runtime trees or hand-copy managed helpers
 
 Local compaction also needs the [`ultracompress`](#compaction-ultracompress)
 binary. Without it, Steak Pi uses Pi's built-in compaction.
+
+## Updating
+
+When a newer release is out, the footer shows `Steak Pi <new> available (you have <old>) · /steak-update`.
+Run `/steak-update` in Pi to install it and reload, or `steak-pi update` from a shell (agents use the same
+command). The check runs at most every 6 hours, in the background; `STEAK_PI_NO_UPDATE_CHECK=1` turns it off.
 
 ## What you get
 

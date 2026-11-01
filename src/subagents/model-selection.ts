@@ -28,36 +28,37 @@ export interface WorkerProfile {
    * sign-off; reviews still need the explicit Opus Pass or override route. */
   autoReviewChain?: boolean;
 }
-/** Explicit model identities are unchanged. Routine role defaults use DeepSeek V4.1 Flash on OpenRouter
- * (Mike 2026-10-31); legacy native-review profiles keep their exact Pro/image chain. The dispatch
+/** Explicit model identities are unchanged. Routine role defaults use DeepSeek V4.1 Flash on OpenCode Go, then the same
+ * model on OpenRouter once Go is used up (Mike 2026-10-31); legacy native-review profiles keep their exact Pro/image chain. The dispatch
  * boundary handles automatic Opus -> Terra separately, never as a worker chain. */
 export const DEEPSEEK_OPENROUTER_PROFILE = "steak-pi/deepseek-openrouter";
 export const DEEPSEEK_OPENROUTER_ROUTE = "openrouter/deepseek/deepseek-v4.1-flash-1017:exacto";
 export const BUILTIN_WORKER_PROFILES: readonly WorkerProfile[] = [
-  // Mike 2026-10-31: the default worker is DeepSeek V4.1 Flash on OpenRouter; its chain continues to Go, then Terra.
+  // Mike 2026-10-31: the default worker is DeepSeek V4.1 Flash on OpenCode Go; once Go is used up the same model on OpenRouter
+  // (this profile), then Terra.
   { id: DEEPSEEK_OPENROUTER_PROFILE, model: DEEPSEEK_OPENROUTER_ROUTE, thinking: "high", autoChain: true,
-    workerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE }, reviewerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE } },
+    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE } },
   { id: TERRA_PROFILE, model: TERRA_MODEL_ROUTE, thinking: "high", autoChain: true,
-    workerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE }, reviewerDefault: { profile: TERRA_PROFILE } },
+    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: TERRA_PROFILE } },
   { id: PREFERRED_FREE_PROFILE, model: PREFERRED_FREE_PROFILE, thinking: "high",
-    workerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: FREE_PROFILE, model: `openrouter/${FREE_MODEL}`, thinking: "high",
-    workerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: "steak-pi/gpt-6-astra", model: "openai-codex/gpt-6-astra", thinking: "medium", autoReviewChain: true,
-    workerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: SOL_PROFILE, model: SOL_MODEL_ROUTE, thinking: "high",
-    workerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: "steak-pi/gpt-6-luna", model: "openai-codex/gpt-6-luna", thinking: "high",
-    workerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: "steak-pi/mimo-v2-6-flash", model: "xiaomi/mimo-v2.6-flash", thinking: "high", autoChain: true,
-    workerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: "steak-pi/mimo-v2-6-pro", model: "xiaomi/mimo-v2.6-pro", thinking: "high", autoChain: true,
-    workerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
   { id: "steak-pi/opencode-go", model: "opencode-go/deepseek-v4.1-flash", thinking: "high", autoChain: true,
-    workerDefault: { profile: DEEPSEEK_OPENROUTER_PROFILE }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
+    workerDefault: { profile: "steak-pi/opencode-go" }, reviewerDefault: { profile: "steak-pi/mimo-v2-6-pro" } },
 ];
-/** The built-in automatic profile whose head resolves the default text chain (OpenRouter DeepSeek -> Go -> Terra). */
-const DEFAULT_CHAIN_PROFILE = DEEPSEEK_OPENROUTER_PROFILE;
+/** The built-in automatic profile whose head resolves the default text chain (Go -> OpenRouter DeepSeek -> Terra). */
+const DEFAULT_CHAIN_PROFILE = "steak-pi/opencode-go";
 const PI_FAMILY_HARNESSES = new Set(["pi", "steak-pi"]);
 const thinkingLevels = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
 
@@ -202,7 +203,7 @@ export interface ClaudeFallbackTier {
   reason: string;
 }
 
-/** The tier for a wave whose default worker chain (OpenRouter DeepSeek, Go and Terra) is out of quota:
+/** The tier for a wave whose default worker chain (Go, OpenRouter DeepSeek and Terra) is out of quota:
  * whatever will likely get the job done at least cost. Haiku 5.5 takes ordinary leaves; Sonnet 5.5 takes substantial code work (a
  * leaf that may edit AND run a shell), any requested high/xhigh reasoning and every reviewer. The
  * choice reads only the dispatch's own declared capabilities, never the task text. */
@@ -325,7 +326,7 @@ export function resolveWorkerSelection(
   const parentProfile = namedParent && namedParent.model === parentKey ? namedParent : parents.length === 1 ? parents[0] : undefined;
   const review = input.tasks.some((task) => task.role === "reviewer");
   // An implicit dispatch whose profile default landed on an exhausted provider re-resolves the
-  // built-in default text chain (OpenRouter DeepSeek -> Go -> Terra) with that provider skipped. An explicit selector
+  // built-in default text chain (Go -> OpenRouter DeepSeek -> Terra) with that provider skipped. An explicit selector
   // never takes this path, and neither do reviewer or image waves.
   const forceChain = options.forceDefaultChain === true && !explicit && !review && input.requireImages !== true;
   // Only ordinary implicit text workers observe the temporary preference;
