@@ -154,7 +154,7 @@ const USAGE_LIMIT_WORDING: ReadonlyArray<readonly [RegExp, string]> = [
   [/hit your ChatGPT usage limit/i, "ChatGPT usage limit reached"],
   // OpenRouter (the default worker tier since 2026-10-31): spent credits arrive as HTTP 402 "Insufficient credits"
   // / "requires more credits", and a request no provider endpoint can serve as "No endpoints found" / "0 endpoints out
-  // of N requested are available". Either way the next tier (Go) must take the wave.
+  // of N requested are available". Either way the next tier (Terra) must take the wave.
   [/\b402\b|insufficient[_ ]credits|requires more credits/i, "OpenRouter credits exhausted"],
   [/no endpoints? (?:found|available)|endpoints? out of \d+ requested are available/i, "OpenRouter has no endpoint for this request"],
 ];

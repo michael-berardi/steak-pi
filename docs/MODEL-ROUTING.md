@@ -112,7 +112,7 @@ are preserved; the operator's routine default is `steak-pi/opencode-go`.
   provider the router does not list and an unreadable router are **not** exhaustion (the route
   stays as selected and the launch-time router remains the authority). A provider the router
   lists with no configured account cannot launch and counts as blocked. An exhausted route is
-  never selected: the built-in default chain (OpenRouter DeepSeek -> Go -> Terra) is re-resolved
+  never selected: the built-in default chain (Go -> OpenRouter DeepSeek -> Terra) is re-resolved
   with that provider skipped (a Go parent offers Terra its isolated Codex store, as for an
   explicit Sol dispatch),
   the receipt records the whole chain (`source: "chain"`, `chainRoutes`) and the router cause
@@ -190,7 +190,7 @@ are preserved; the operator's routine default is `steak-pi/opencode-go`.
   eligible, and the first request is the first evidence (`429: {"type":"GoUsageLimitError",
   "message":"Go usage limit exceeded"}`). For an *implicit* routine wave (the same condition as
   the quota preflight) the startup gate therefore does not fail the dispatch on such a cause:
-  it re-runs the **same tasks** once on the next tier of OpenRouter DeepSeek -> Go -> Terra ->
+  it re-runs the **same tasks** once on the next tier of Go -> OpenRouter DeepSeek -> Terra ->
   Claude Haiku 5.5 / Sonnet 5.5 (the tier by the rule above, pinned on a router-eligible Claude
   account), with no parent re-dispatch. An OpenRouter head's own 402 "Insufficient credits" /
   "requires more credits" or "No endpoints found" refusal is a quota cause too, and the router

@@ -86,7 +86,11 @@ for (const mode of ["error", "abort", "exit"] as const) {
         const stream = streamClaudeCode(model, context, {
           ...options,
           signal: AbortSignal.any([options!.signal!, controller.signal]),
-          timeoutMs: mode === "exit" ? 700 : 10_000,
+          // The short idle deadline is for the stalled stream after the failed bash only. Applied to the first turn too,
+          // it also had to cover starting the fake CLI (a Node process), and on a loaded host that start alone took
+          // longer, so the first turn timed out before the bash ever ran and steering was never queued (2 of 8 runs on
+          // main failed this way). The first turn now gets the normal deadline.
+          timeoutMs: mode === "exit" && failed ? 2_000 : 10_000,
           env: { PI_CLAUDE_CODE_COMMAND: executable, HOLDERS: holders, STALL_MODE: mode },
         });
         if (failed && !queued) {
@@ -110,7 +114,7 @@ for (const mode of ["error", "abort", "exit"] as const) {
     let settled = false;
     void running.then(() => { settled = true; }, () => { settled = true; });
     try {
-      await within(running, 5_000);
+      await within(running, 10_000);
       await abortTask;
       assert.equal(queued, true);
       assert.ok(starts.length >= 2, "failed tool must be followed by a new stream start");
@@ -149,5 +153,5 @@ for (const mode of ["error", "abort", "exit"] as const) {
       await within(closeClaudeProcesses(), 4_000);
       await rm(root, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 30_000);
 }

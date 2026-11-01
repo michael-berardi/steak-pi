@@ -2,8 +2,9 @@
 # steak-pi — installer/updater for the Steak Pi pi-package (Pareto Cybernetics).
 #
 #   steak-pi install   Install or re-point the Steak Pi package for the pi CLI.
-#   steak-pi update    First-class update: Homebrew upgrade + Pi re-pin (brew),
-#                      or latest GitHub release re-pin (git/npm installs).
+#   steak-pi update    First-class update: Homebrew upgrade + Pi re-pin (brew), a new
+#                      versioned folder for release-folder installs, or the latest
+#                      GitHub release re-pin (git/npm installs). --check only reports.
 #   steak-pi status    Show what is installed and how it is managed.
 #   steak-pi version   Print the CLI/package version.
 #   steak-pi remove    Remove the Pi-side package.
@@ -47,12 +48,16 @@ pi_spec() {
   [ -f "$SETTINGS" ] || return 1
   hit=$(grep -o "\"[^\"]*$REPO@[^\"]*\"" "$SETTINGS" | head -n 1)
   [ -n "$hit" ] && { printf '%s' "$hit" | tr -d '"'; return 0; }
+  # A release-folder entry may be relative to the Pi agent dir ("../../.local/share/steak-pi/releases/<v>/package").
+  hit=$(grep -o "\"[^\"']*steak-pi/releases/[^\"/]*/package\"" "$SETTINGS" | head -n 1)
+  [ -n "$hit" ] && { printf '%s' "$hit" | tr -d '"'; return 0; }
   hit=$(grep -o "\"/[^\"']*steak-pi[^\"]*\"" "$SETTINGS" | head -n 1)
   [ -n "$hit" ] && { printf '%s' "$hit" | tr -d '"'; return 0; }
   return 1
 }
 
 latest_tag() {
+  [ -n "${STEAK_PI_LATEST_TAG:-}" ] && { printf '%s\n' "$STEAK_PI_LATEST_TAG"; return 0; }
   command -v curl >/dev/null 2>&1 || return 1
   response=$(curl -fsSL --max-time 20 "https://api.github.com/repos/${REPO#github.com/}/releases/latest") || return 1
   printf '%s\n' "$response" |
@@ -76,7 +81,73 @@ cmd_install() {
   exec pi install "$TARGET"
 }
 
+# Release-folder installs: <root>/releases/<version>/package, pinned in Pi settings by path.
+# The update downloads the tagged release into a new sibling folder, installs its full dependency
+# set (the extensions import Pi's own packages, so --omit=dev breaks loading), re-points settings
+# atomically, and keeps exactly one rollback folder (the version that was running).
+release_root() {
+  current=$(pi_spec) || return 1
+  case "$current" in
+    */steak-pi/releases/*/package) ;;
+    *) return 1;;
+  esac
+  case "$current" in /*) abs="$current";; *) abs="$PI_DIR/$current";; esac
+  abs=$(CDPATH= cd -- "$abs/../.." 2>/dev/null && pwd -P) || return 1
+  printf '%s' "$abs"
+}
+
+update_release_folder() {
+  root="$1"; tag="$2"; ver="${tag#v}"
+  command -v git >/dev/null 2>&1 || die "git not found; needed to download $tag."
+  command -v npm >/dev/null 2>&1 || die "npm not found; needed to install $tag's dependencies."
+  dest="$root/$ver"
+  if [ ! -f "$dest/package/package.json" ]; then
+    stage=$(mktemp -d "$root/.staging-$ver.XXXXXX") || die "cannot create a staging folder in $root"
+    trap 'rm -rf "$stage"' EXIT INT TERM
+    say "Downloading Steak Pi $tag..."
+    src="${STEAK_PI_RELEASE_SOURCE:-https://$REPO.git}"
+    git clone -q --depth 1 --branch "$tag" "$src" "$stage/package" 2>/dev/null || die "download of $tag failed (git clone $src)"
+    rm -rf "$stage/package/.git"
+    say "Installing dependencies..."
+    (cd "$stage/package" && npm ci --ignore-scripts --no-audit --no-fund >/dev/null 2>&1) || die "npm ci failed for $tag in $stage/package; nothing was changed"
+    [ "$(pkg_version "$stage/package")" = "$ver" ] || die "downloaded package does not report version $ver"
+    rm -rf "$dest"; mkdir -p "$dest" && chmod 700 "$dest" && mv "$stage/package" "$dest/package" || die "cannot move $tag into $dest"
+    rm -rf "$stage"; trap - EXIT INT TERM
+  fi
+  node -e '
+    const fs = require("node:fs"); const [file, root, ver] = process.argv.slice(1);
+    const s = JSON.parse(fs.readFileSync(file, "utf8"));
+    const rel = (p) => /steak-pi\/releases\/[^/]+\/package$/.test(typeof p === "string" ? p : p?.source ?? "");
+    let hit = false;
+    s.packages = (s.packages || []).map((p) => { if (!rel(p)) return p; hit = true;
+      const src = typeof p === "string" ? p : p.source; const next = src.replace(/releases\/[^/]+\/package$/, "releases/" + ver + "/package");
+      return typeof p === "string" ? next : { ...p, source: next }; });
+    if (!hit) { console.error("no release-folder entry in " + file); process.exit(1); }
+    const tmp = file + ".steak-pi-update.tmp"; fs.writeFileSync(tmp, JSON.stringify(s, null, 2) + "\n", { mode: 0o600 }); fs.renameSync(tmp, file);
+  ' "$SETTINGS" "$root" "$ver" || die "could not re-point $SETTINGS at $ver"
+  # Exactly one rollback: keep the version that was running, remove every other old release.
+  for old in "$root"/*/; do
+    old=${old%/}; name=${old##*/}
+    case "$name" in "$ver"|"$VERSION"|.staging-*) continue;; esac
+    rm -rf "$old"
+  done
+  say "Steak Pi updated: $VERSION -> $ver (rollback kept: $root/$VERSION). Restart Pi or run /reload."
+}
+
 cmd_update() {
+  if [ "${1:-}" = "--check" ]; then
+    TAG=$(latest_tag) || die "cannot reach GitHub to check for updates."
+    [ -n "$TAG" ] || die "no published release found."
+    if [ "${TAG#v}" = "$VERSION" ]; then say "Steak Pi is up to date ($VERSION)."; else say "Steak Pi ${TAG#v} is available (you have $VERSION). Run: steak-pi update"; fi
+    exit 0
+  fi
+  if root=$(release_root); then
+    TAG=$(latest_tag) || die "cannot reach GitHub to find the latest release."
+    [ -n "$TAG" ] || die "no published release found."
+    if [ "${TAG#v}" = "$VERSION" ]; then say "Steak Pi is up to date ($VERSION)."; exit 0; fi
+    update_release_folder "$root" "$TAG"
+    exit 0
+  fi
   if [ "$BREW_MODE" -eq 1 ]; then
     command -v brew >/dev/null 2>&1 || die "brew not found; this copy is Homebrew-managed."
     say "Upgrading Homebrew formula ${STEAK_PI_FORMULA:-steak-pi}..."
@@ -179,7 +250,7 @@ cmd_usap_api() {
 
 case "${1:-help}" in
   install) cmd_install;;
-  update)  cmd_update;;
+  update)  shift; cmd_update "$@";;
   status)  cmd_status;;
   version|--version|-V) cmd_version;;
   remove|uninstall) cmd_remove;;
@@ -189,7 +260,7 @@ case "${1:-help}" in
   help|--help|-h|*)
     say "usage: steak-pi <install|update|status|version|remove|run|usap-api|env>"
     say "  install   add Steak Pi to the pi coding agent (or re-point at this copy)"
-    say "  update    upgrade through Homebrew and keep pi on the same release"
+    say "  update    install the latest release (--check only reports whether one is available)"
     say "  status    show installed versions and management mode"
     say "  version   print the CLI/package version"
     say "  remove    remove the pi-side package"

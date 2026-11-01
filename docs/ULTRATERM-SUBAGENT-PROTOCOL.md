@@ -377,7 +377,7 @@ The parent may choose either execution mode:
   applies to foreground dispatches as well.
 - **Quota-aware routing:** an implicit routine wave asks the account router first.
   A provider whose every configured account is cooling down, signed out or at a
-  100% window is skipped (OpenRouter DeepSeek -> Go -> Terra; the router meters
+  100% window is skipped (Go -> OpenRouter DeepSeek -> Terra; the router meters
   Go, Codex and Claude only, so an OpenRouter head launches without a router
   read); when all of them are out the wave runs on the
   claude-code subscription at the cheapest capable tier (Haiku 5.5, or Sonnet 5.5
@@ -393,7 +393,7 @@ The parent may choose either execution mode:
   usage limit (Go `GoUsageLimitError`, Codex `usage limit has been reached` /
   `subscription_quota_exceeded`, a router refusal that says cooling down), no worker
   produced output and the run settled, the same dispatch call re-runs the same tasks once
-  on the next tier (OpenRouter DeepSeek -> Go -> Terra -> Claude Haiku 5.5 /
+  on the next tier (Go -> OpenRouter DeepSeek -> Terra -> Claude Haiku 5.5 /
   Sonnet 5.5) with no parent re-dispatch, inside the startup window and before
   `Started`. An OpenRouter 402 "Insufficient credits" / "No endpoints found"
   refusal is such a cause. Each tier is tried at most
