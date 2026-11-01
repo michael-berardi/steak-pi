@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.18.5 (2026-11-01)
+
+- **`routeConditions`.** An `onlyWhen` condition can now be attached to a plain `"provider/model"` chain step from a
+  separate top-level key: `"routeConditions": { "provider/model": { provider, everyAccount: { remainingBelow,
+  behindPaceAbove } } }`. The chain itself stays a list of strings, so a `routing.json` that uses it is still read by
+  releases that only know string steps (they ignore unknown keys). An inline object step stopped those releases from
+  parsing the whole file. An inline `onlyWhen` wins over a `routeConditions` entry for the same route; a malformed
+  condition is refused with its key named.
+
 ## 0.18.4 (2026-11-01)
 
 - **Config-driven `onlyWhen` semi-fallback.** A `textWorkerChain` step may now be an object

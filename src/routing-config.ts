@@ -227,6 +227,23 @@ export function parseRoutingConfig(raw: unknown): RoutingConfig {
   if (raw.reviewerDefault !== undefined) config.reviewerDefault = selectorOf(raw.reviewerDefault, "reviewerDefault");
   if (raw.textWorkerChain !== undefined) config.textWorkerChain = routes(raw.textWorkerChain, "textWorkerChain");
   if (raw.multimodalWorkerChain !== undefined) config.multimodalWorkerChain = routes(raw.multimodalWorkerChain, "multimodalWorkerChain");
+  // `routeConditions` attaches an `onlyWhen` to plain "provider/model" chain steps by their route key. It lives in its
+  // own top-level key so a routing.json that uses it stays readable by releases that only know plain string steps
+  // (they ignore unknown keys); an inline object step would stop those releases from parsing the file at all.
+  if (raw.routeConditions !== undefined) {
+    if (!object(raw.routeConditions)) return fail("routeConditions", 'expected { "provider/model": { provider, everyAccount: { remainingBelow, behindPaceAbove } } }');
+    const conditions = new Map<string, OnlyWhenCondition>();
+    for (const [route, condition] of Object.entries(raw.routeConditions)) {
+      const parsed = parseOnlyWhen(condition, `routeConditions.${route}`);
+      if (parsed) conditions.set(route, parsed);
+    }
+    const apply = (chain: readonly RouteStep[] | undefined) => chain?.map((step) => {
+      const condition = step.onlyWhen ?? conditions.get(routeKey(step));
+      return condition ? { ...step, onlyWhen: condition } : step;
+    });
+    config.textWorkerChain = apply(config.textWorkerChain);
+    config.multimodalWorkerChain = apply(config.multimodalWorkerChain);
+  }
   if (raw.defaultChainProfile !== undefined) config.defaultChainProfile = text(raw.defaultChainProfile, "defaultChainProfile");
   if (raw.tokenPlanChainHeads !== undefined) {
     config.tokenPlanChainHeads = array(raw.tokenPlanChainHeads, "tokenPlanChainHeads").map((entry, index) => {
