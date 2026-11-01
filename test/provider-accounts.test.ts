@@ -23,7 +23,7 @@ describe("credential-free account contract", () => {
   it("reserves canonical Go account dirs and never changes parent environment", async () => {
     const original = process.env.PI_CODING_AGENT_DIR;
     const command = vi.fn(async (_args: string[]) => ({ ok: true, account: { id: "b", agentDir: dir("b") }, lease: "abcd" }));
-    expect(await reserveGoAccount("owner", command)).toEqual({ id: "b", label: "Go 2", agentDir: dir("b"), lease: "abcd" });
+    expect(await reserveGoAccount("owner", command)).toEqual({ id: "b", label: "b", agentDir: dir("b"), lease: "abcd" });
     expect(command.mock.calls[0][0]).toEqual(["select", "--provider", "opencode-go", "--reserve", "--owner", "owner", "--ttl", "3600"]);
     expect(process.env.PI_CODING_AGENT_DIR).toBe(original);
   });
@@ -297,7 +297,7 @@ describe("Codex account metadata validation", () => {
   it.each(["primary", "fallback"] as const)("pins canonical %s with GPT labels", async id => {
     const command = vi.fn(async (_args: string[]) => ({ ok: true, account: { id, agentDir: isolatedCodexAgentDir(id) }, lease: "codex-lease" }));
     const account = await reserveCodexAccount("child", command, id);
-    expect(account.label).toBe(id === "primary" ? "GPT1" : "GPT2");
+    expect(account.label).toBe(id);
     expect(command.mock.calls[0][0]).toEqual(["select", "--provider", "codex", "--reserve", "--owner", "child", "--ttl", "3600", "--account", id]);
   });
   it("releases mismatched pins and noncanonical directories", async () => {

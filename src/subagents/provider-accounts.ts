@@ -76,7 +76,7 @@ export async function reserveGoAccount(owner: string, command = providerAccountC
         account.agentDir !== join(homedir(), ".ultraterm", "provider-accounts", "opencode-go", account.id, "agent")) {
       throw new Error("Unsafe Go provider account selection; no ambient credentials selected");
     }
-    return { id: account.id, label: account.id === "primary" ? "Go 1" : "Go 2", agentDir: account.agentDir, lease };
+    return { id: account.id, label: typeof account.label === "string" && account.label.length > 0 ? account.label : account.id, agentDir: account.agentDir, lease };
   } catch (error) {
     if (typeof lease === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(lease)) await command(["release", "--lease", lease]);
     throw error;
@@ -296,7 +296,7 @@ export async function selectCodexAccount(command = providerAccountCommand, owner
     if (validLease) await command(["release", "--lease", lease]);
     throw new Error("Unsafe Codex provider account selection; no ambient credentials selected");
   }
-  return { id: account.id, label: account.id === "primary" ? "GPT1" : "GPT2", agentDir: account.agentDir,
+  return { id: account.id, label: typeof account.label === "string" && account.label.length > 0 ? account.label : account.id, agentDir: account.agentDir,
     ...(owner !== undefined ? { lease } : {}) };
 }
 export async function reserveCodexAccount(owner: string, command = providerAccountCommand, pinnedId?: CodexAccountId): Promise<CodexAccountLease> {
