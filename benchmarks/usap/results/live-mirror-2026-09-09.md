@@ -1,17 +1,17 @@
-# GLM-5.3-Flash live mirror benchmark — 2026-09-09 (final 0.5.x build)
+# Flash-tier model live mirror benchmark — 2026-09-09 (final 0.5.x build)
 
 Status: **paid live mirror of the 2026-09-04 calibration; not a general product claim.**
 Operator approval for paid runs: Michael, 2026-09-09 (Steak Pi performance session).
 This document reflects the shipped 0.5.x build (trimmed prompt surface, hardened
-machine slots, machine-wide GLM cap 6). Earlier same-day matrices on candidate
+machine slots, machine-wide provider cap 6). Earlier same-day matrices on candidate
 builds are retained in `/tmp/audit/steak-usap-live-*` for engineering history
 and are not quoted here.
 
 ## What changed since 2026-09-04
 
 - Adaptive wave sizing: unsized dispatches launch `min(8, task count)` wide (was fixed 4).
-- Session concurrency ceiling 8 (GLM) / 6 (Luna) with provider-bucketed session slots.
-- New machine-wide provider caps shared across all local sessions: 8 GLM, 12 Luna,
+- Session concurrency ceiling 8 (provider A) / 6 (provider B) with provider-bucketed session slots.
+- New machine-wide provider caps shared across all local sessions: 8 provider A, 12 provider B,
   global bound 24, implemented as crash-safe cross-process slot files.
 - Parent guidelines rewritten parallel-first with an explicit delegation-speed
   contract: extra workers must buy completion speed; modest token premiums are
@@ -20,7 +20,7 @@ and are not quoted here.
 
 ## Controls
 
-- Model `zai/glm-5.3-flash`, thinking `high`, fallback disabled
+- Model `provider-a/model-name` (the operator's flash-tier benchmark model at the time), thinking `high`, fallback disabled
 - Fresh fixture and ephemeral session per run; sequential top-level runs
 - Balanced arm ordering; identical prompts, file sets, and deterministic verification
 - Model identity verified from provider responses in every run; first-pass
@@ -54,12 +54,12 @@ modules win — Steak Pi 22% faster than stock Pi — reproduced across two
 independent same-day matrices (44.2 vs 57.1 s earlier, before the final
 prompt-surface trim).
 
-### Machine-capacity gate (shipped default: 6 GLM workers machine-wide)
+### Machine-capacity gate (shipped default: 6 provider-A workers machine-wide)
 
 Two concurrent sessions each dispatched eight constant fixes (16 workers
-requested) under the machine-wide zai cap:
+requested) under the machine-wide provider cap:
 
-- Peak observed concurrent zai slots: **6** — the shipped cap held under
+- Peak observed concurrent provider slots: **6** — the shipped cap held under
   concurrent load from three pi processes (validated at 8 earlier the same day
   before the operator lowered the default).
 - All sessions verified **8/8 fixes each**; no provider errors, no leaked slots.
@@ -77,7 +77,7 @@ requested) under the machine-wide zai cap:
   modules row (the only directly Sept-comparable delegation case) used 57,372
   median accounted tokens vs 78,834 in the Sept calibration: **~27% leaner**
   with the tightened guidelines and adaptive wave defaults.
-- **On GLM flash today, forced delegation lost wall time to inline work at
+- **On the flash-tier model today, forced delegation lost wall time to inline work at
   every fixture size** (worker spawn + per-worker turns dominate when the
   provider executes inline edits in seconds). Doctrine mode resolved this
   correctly: the shipped guidelines kept all three cases in the parent and
@@ -101,7 +101,7 @@ requested) under the machine-wide zai cap:
   representative.
 - Fixtures are deliberately small and fully specified. Real leaves with deep
   multi-turn work favor fan-out more than these fixtures can show.
-- GLM flash's inline speed on 2026-09-09 was substantially higher than on
+- the flash-tier model's inline speed on 2026-09-09 was substantially higher than on
   2026-09-04 (stock modules 58.4 s vs 118.0 s), so cross-day wall-time
   comparisons are environment-bound. Token accounting is the stable metric.
 - The synthetic frozen scaffold remains the contract/regression harness; paid

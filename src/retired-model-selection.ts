@@ -1,26 +1,44 @@
-/** Operator decision, 2026-10-05: Sol is GPT-6.1 only. Never migrate a selector. */
-export const SOL_MODEL_ID = "gpt-6.1-sol";
-export const SOL_MODEL_ROUTE = `openai-codex/${SOL_MODEL_ID}`;
-export const SOL_PROFILE = "steak-pi/gpt-6-1-sol";
+import { routingConfigOrEmpty, type RetiredModelPattern } from "./routing-config.ts";
 
+/** Retired routes are operator configuration (`retiredModelPatterns` in routing.json);
+ * Steak Pi retires nothing by itself. Never migrate a selector: a retired one is refused. */
 export class RetiredModelSelectionError extends Error {
-  constructor() {
-    super(`RetiredModelSelectionError: GPT-6.0 Sol was retired on 2026-10-05. Select ${SOL_MODEL_ROUTE} or ${SOL_PROFILE} explicitly; no fallback was selected.`);
+  constructor(message = "this model was retired by the operator (retiredModelPatterns); no fallback was selected.") {
+    super(message.startsWith("RetiredModelSelectionError") ? message : `RetiredModelSelectionError: ${message}`);
     this.name = "RetiredModelSelectionError";
   }
 }
 
-/** Qualified selectors and native shorthand share the same terminal identity.
- * Display-name matching also covers opaque catalog aliases, not Astra or Luna. */
-export function isRetiredSolSelector(value: unknown): boolean {
-  if (typeof value !== "string") return false;
-  return /(?:^|[/:])gpt-6-sol(?:$|[-:/])/i.test(value.trim()) ||
-    /(?:^|[/:])gpt-6[.-]0-sol(?:$|[-:/])/i.test(value.trim()) ||
-    /^GPT[ -]?6(?:\.0)?[ -]Sol(?:$|[^a-z0-9])/i.test(value.trim());
+const patterns = (): readonly RetiredModelPattern[] => routingConfigOrEmpty().retiredModelPatterns ?? [];
+/** `selection` also applies `selectorsOnly` entries, which refuse a route only where it is
+ * named as a dispatch or role-default selection, never in a catalog or resolved identity. */
+const matching = (value: unknown, selection: boolean): RetiredModelPattern | undefined => {
+  if (typeof value !== "string") return undefined;
+  const subject = value.trim();
+  return patterns().find((entry) => (selection || !entry.selectorsOnly) && entry.pattern.test(subject));
+};
+const messageFor = (entry: RetiredModelPattern, route: string) => entry.message.replaceAll("{route}", route);
+
+/** True when an operator-retired pattern matches this selector or identity string. */
+export function isRetiredModelSelector(value: unknown): boolean {
+  return matching(value, false) !== undefined;
+}
+/** @deprecated Former name of {@link isRetiredModelSelector}; it reads the operator patterns. */
+export const isRetiredSolSelector = isRetiredModelSelector;
+/** True when a selection-only or general retirement refuses this selection string. */
+export function isRetiredRoute(route: string): boolean {
+  return matching(route, true) !== undefined;
+}
+
+/** The operator's retirement message for a selection string, or a neutral default. */
+export function retiredRouteError(route: string): string {
+  const entry = matching(route, true);
+  return entry ? messageFor(entry, route) : `${route} is retired by the operator; no fallback was selected.`;
 }
 
 export function assertActiveModelSelector(value: unknown): void {
-  if (isRetiredSolSelector(value)) throw new RetiredModelSelectionError();
+  const entry = matching(value, false);
+  if (entry) throw new RetiredModelSelectionError(messageFor(entry, String(value).trim()));
 }
 
 export function assertActiveModelIdentity(model: { id: string; name?: string }): void {

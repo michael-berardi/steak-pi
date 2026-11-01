@@ -1,13 +1,13 @@
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
-import { TERRA_MODEL, terraStartupProvider, withTerraCatalog, registerTerraRuntime } from "../src/codex-models.ts";
 import modelRoutePolicy from "../extensions/model-route-policy.ts";
-import { assertSubscriptionRequest, DEFAULT_TEXT_WORKER_CHAIN } from "../src/model-route-policy.ts";
-import { BUILTIN_WORKER_PROFILES, resolveWorkerSelection } from "../src/subagents/model-selection.ts";
-import { SOL_MODEL_ROUTE, SOL_PROFILE, RetiredModelSelectionError } from "../src/retired-model-selection.ts";
+import { assertSubscriptionRequest } from "../src/model-route-policy.ts";
+import { resolveWorkerSelection } from "../src/subagents/model-selection.ts";
+import { RetiredModelSelectionError } from "../src/retired-model-selection.ts";
 import { recordReviewFallback } from "../src/subagents/reviewer-fallback.ts";
 import { quotaProviderOf } from "../src/subagents/provider-quota.ts";
 import { validateTemporaryWorkerRoute } from "../src/temporary-free-route.ts";
+import { TERRA_MODEL, terraStartupProvider, withTerraCatalog, registerTerraRuntime, DEFAULT_TEXT_WORKER_CHAIN, BUILTIN_WORKER_PROFILES, SOL_MODEL_ROUTE, SOL_PROFILE } from "./helpers/routing-fixture.ts";
 
 const sol = { ...TERRA_MODEL, id: "gpt-6.1-sol", name: "GPT-6.1 Sol" };
 const go = { ...sol, provider: "opencode-go", id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", api: "openai-completions", baseUrl: "https://opencode.ai/zen/go/v1" } as typeof sol;

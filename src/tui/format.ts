@@ -87,7 +87,7 @@ export function shortModel(model: unknown): string {
   const id = oneLine((model as { id?: unknown } | undefined)?.id);
   if (!id) return "no model";
   const tail = id.split("/").at(-1) ?? id;
-  return truncatePlain(tail.replace(/^glm-/, "glm"), 24);
+  return truncatePlain(tail, 24);
 }
 
 export function compactCwd(cwd: string, home = process.env.HOME): string {

@@ -146,8 +146,8 @@ describe("responsive semantic rendering", () => {
   it.each([
     ["openai-codex", "openai-codex/gpt-6-astra", "gpt-6-astra"],
     ["OpenAI Codex", "gpt-5.6-luna", "gpt-5.6-luna"],
-    ["openrouter", "openrouter/z-ai/glm-5.3-flash", "glm5.3-flash"],
-    ["zai", "glm-5.3-flash", "glm5.3-flash"],
+    ["openrouter", "openrouter/z-ai/glm-5.3-flash", "glm-5.3-flash"],
+    ["zai", "glm-5.3-flash", "glm-5.3-flash"],
   ])("shows model only, never provider %s", (provider, id, label) => {
     for (const width of [40, 48, 59, 80, 120, 192]) {
       const output = rowsAt(width, { ...snapshot, provider, model: { id } }).join("\n");

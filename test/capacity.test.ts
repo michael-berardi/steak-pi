@@ -20,16 +20,16 @@ afterEach(() => {
 });
 
 describe("capacity config", () => {
-  it("defaults to Codex 6 plus default provider capacity per session and machine-wide totals", () => {
+  it("ships no provider-specific ceiling: every provider gets the default session and machine capacity", () => {
     const config = loadCapacityConfig(undefined as unknown as string);
-    expect(config.session.providers).toEqual({ "openai-codex": 6 });
-    expect(config.machine.providers).toEqual({ "openai-codex": 12 });
+    expect(config.session.providers).toEqual({});
+    expect(config.machine.providers).toEqual({});
     expect(sessionCap(config, "zai")).toBe(sessionCap(config, "unknown"));
     expect(machineCap(config, "zai")).toBe(machineCap(config, "unknown"));
     expect(sessionCap(config, "zai")).toBe(8);
     expect(machineCap(config, "zai")).toBe(12);
     expect(sessionCap(config, "xiaomi")).toBe(8);
-    expect(sessionCap(config, "openai-codex")).toBe(6);
+    expect(sessionCap(config, "openai-codex")).toBe(8);
     expect(machineCap(config, "xiaomi")).toBe(12);
     expect(machineCap(config, "openai-codex")).toBe(12);
     expect(config.machine.global).toBe(24);
@@ -40,7 +40,7 @@ describe("capacity config", () => {
     const scheduler = new SessionScheduler();
     expect(scheduler.maxConcurrency).toBe(14);
     expect(scheduler.capFor("xiaomi")).toBe(8);
-    expect(scheduler.capFor("openai-codex")).toBe(6);
+    expect(scheduler.capFor("openai-codex")).toBe(8);
   });
 
   it("loads overrides and falls back on malformed files", () => {

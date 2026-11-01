@@ -7,7 +7,7 @@ import * as stagedRuntime from "../src/subagents/staged-runtime.ts";
 import { registryForSolSelection } from "../src/subagents/codex-selection.ts";
 import { resolveWorkerSelection } from "../src/subagents/model-selection.ts";
 import { isolatedAgentPaths, isolatedCodexAgentDir } from "../src/subagents/provider-accounts.ts";
-import { SOL_MODEL_ROUTE } from "../src/retired-model-selection.ts";
+import { SOL_MODEL_ROUTE } from "./helpers/routing-fixture.ts";
 
 let fixtureHome: string;
 beforeEach(() => {

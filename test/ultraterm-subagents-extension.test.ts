@@ -2,7 +2,7 @@ import { mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from "no
 import { RetiredModelSelectionError } from "../src/retired-model-selection.ts";
 import { CheckpointStore } from "../src/subagents/checkpoints.ts";
 import { normalizeDispatch } from "../src/subagents/policy.ts";
-import { BUILTIN_WORKER_PROFILES, claudeCodeModelOf, resolveClaudeCodeSelection, retiredRouteError } from "../src/subagents/model-selection.ts";
+import { claudeCodeModelOf, resolveClaudeCodeSelection, retiredRouteError } from "../src/subagents/model-selection.ts";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { GO_ACCOUNT_ROUTER_TIMEOUT_MS, isolatedCodexAgentDir, isolatedAgentPaths } from "../src/subagents/provider-accounts.ts";
@@ -22,6 +22,7 @@ import {
 } from "../extensions/ultraterm-subagents.ts";
 import type { RelayBroker } from "../src/subagents/relay.ts";
 import { emptyUsage, type UsageTotals, type WorkerRunner, type TaskRecord } from "../src/subagents/types.ts";
+import { BUILTIN_WORKER_PROFILES } from "./helpers/routing-fixture.ts";
 
 const dirs: string[] = [];
 
@@ -527,7 +528,7 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
     const h = harness(runnerFactory);
     const tasks = [{ label: "Work", task: "Inspect", role: "worker" }, { label: "Review", task: "Review", role: "reviewer" }];
     await expect(h.tools.get("ultraterm_subagents").execute("mixed", { goal: "Mixed", tasks }, undefined, undefined, h.ctx))
-      .rejects.toThrow(/split routine workers from the Opus review wave/);
+      .rejects.toThrow(/split routine workers from the review wave/);
     expect(runnerFactory).not.toHaveBeenCalled();
     for (const route of [{ harness: "pi" }, { model: "openai-codex/gpt-6.1-terra" }]) {
       const result = await h.tools.get("ultraterm_subagents").execute("explicit-mixed", { goal: "Explicit native review", ...route, tasks }, undefined, undefined, h.ctx);
@@ -732,11 +733,12 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
     const h = harness(() => async () => ({ state: "done", output: "ok", turns: 1, usage: usage(1) }));
     expect([...h.tools.keys()]).toEqual(["ultraterm_subagents", "ultraterm_hub"]);
     const guidelines = h.tools.get("ultraterm_subagents").promptGuidelines.join(" ");
-    expect(guidelines).toContain("DeepSeek V4.1 Flash on OpenCode Go is the default worker, then DeepSeek on OpenRouter once Go is used up");
-    expect(guidelines).toContain("Go, OpenRouter DeepSeek, Terra and Haiku implementation each require one bounded Opus 5.5 xhigh");
-    expect(guidelines).toContain("routine text work stays on the automatic chain (OpenCode Go DeepSeek V4.1 Flash, then OpenRouter DeepSeek, then GPT-6.1 Terra)");
-    expect(guidelines).toContain("GPT-6.1 Sol remains explicitly selectable");
-    expect(guidelines).toContain("Security-audit work stays Go/Haiku, never any GPT");
+    // The shipped guidance names config keys, never a model or provider choice.
+    expect(guidelines).toContain("The operator's routing.json decides the default worker chain, the expert reviewer and which routes need a bounded expert verification (verificationGates)");
+    expect(guidelines).toContain("Routine text work stays on the configured automatic chain");
+    expect(guidelines).toContain("runs on the configured claudeFallbackTier");
+    expect(guidelines).not.toMatch(/deepseek|gpt-\d|opencode-go\/|claude-[a-z]+-\d-\d/i);
+    expect(h.tools.get("ultraterm_subagents").description).not.toMatch(/deepseek|gpt-\d|opencode-go\/|claude-[a-z]+-\d-\d/i);
     expect(guidelines).toContain("Fan out by default");
     expect(guidelines).toContain("Parent owns decomposition");
     expect(guidelines).toContain("Delegation must buy completion speed");
@@ -1818,7 +1820,7 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
       const launches: string[] = [];
       const h = harness(() => async ({ task }) => { launches.push(task.id); return { state: "done", output: "finished", turns: 1, usage: emptyUsage() }; }, durable);
       await h.handlers.get("session_start")!({}, h.ctx);
-      await expect(resume(h, run.id)).rejects.toThrow(/Resume refused: "Metadata signoff" reached Terra only through the automatic review fallback/);
+      await expect(resume(h, run.id)).rejects.toThrow(/Resume refused: "Metadata signoff" reached Pi only through the automatic review fallback/);
       const listed = await h.tools.get("ultraterm_hub").execute("l", { action: "list" }, undefined, undefined, h.ctx);
       expect(listed.details.runs.every((view: any) => view.resumedAs === undefined)).toBe(true);
       expect(launches).toEqual([]);
@@ -2068,9 +2070,9 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
         expect(run.selection.fallbackReason).toMatch(tierText);
         expect(run.selection.fallbackReason).toMatch(/OpenCode Go: every Go account is unavailable.*GPT-6\.1 Terra: every GPT account is unavailable/);
         expect(result.content[0].text).toMatch(/Route note: none of OpenCode Go, OpenRouter DeepSeek V4\.1 Flash, GPT-6\.1 Terra could launch/);
-        expect(result.content[0].text).toContain(`work needs verification: review it with an Opus 5.5 reviewer wave (all-reviewer waves default to model ${OPUS_ROUTE})`);
+        expect(result.content[0].text).toContain(`work needs verification: review it with an expert reviewer wave (all-reviewer waves default to model ${OPUS_ROUTE})`);
         expect(result.content[0].text).toContain(`${expected.endsWith("haiku-5-5") ? "Haiku" : "Sonnet"} 5.5 work needs verification`);
-        expect(renderRunResult(run)).toContain("tier: requires Opus 5.5 verification");
+        expect(renderRunResult(run)).toContain("tier: requires expert verification");
         expect(runner.mock.calls[0][0].run).toMatchObject({ model: expected, harness: "claude-code", thinkingLevel: "xhigh" });
         expect(run.tasks[0].apiReceipt).toBeUndefined();
       } finally { await shutdown(h); }

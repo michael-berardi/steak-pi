@@ -1,12 +1,13 @@
-import { withTerraCatalog } from "./codex-models.ts";
+import { withCatalogExtras } from "./catalog-extras.ts";
 import type { ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { activeTemporaryWorkerRoute, ensureTemporaryFreeMetadata, assertTemporaryFreeRequest, isTemporaryFreeModel, preferredFreeMetadata, selectPreferredFreePhysical, temporaryFreeOptions, withTemporaryFreeCatalog, TemporaryFreeRouteRequestError } from "./temporary-free-route.ts";
+import { activeTemporaryWorkerRoute, ensureTemporaryFreeMetadata, FREE_PROVIDER, assertTemporaryFreeRequest, isTemporaryFreeModel, preferredFreeMetadata, selectPreferredFreePhysical, temporaryFreeOptions, withTemporaryFreeCatalog, TemporaryFreeRouteRequestError } from "./temporary-free-route.ts";
 import { createAllowlistApproval, findPaidRoute } from "./explicit-paid-route.ts";
 import { curatedPickerScope } from "./harness-profiles.ts";
 import { curatedPickerModels, sharedPickerModels } from "./model-visibility.ts";
 import { eligibleGoFallback, withOpenCodeGoRouting } from "./opencode-go-routing.ts";
-import { assertActiveModelIdentity, isRetiredSolSelector } from "./retired-model-selection.ts";
-import { authHeadersMatch, gatedMeteredStream, isSubscriptionOrLocalRoute, SUBSCRIPTION_FIRST_ERROR } from "./subscription-first-routing.ts";
+import { assertActiveModelIdentity, isRetiredModelSelector } from "./retired-model-selection.ts";
+import { missingConfigKey, routingConfig, routingConfigOrEmpty, RoutingConfigError, type ExpertReviewConfig, type SubscriptionRouteCheck } from "./routing-config.ts";
+import { authHeadersMatch, gatedMeteredStream, isSubscriptionOrLocalRoute, matchesSubscriptionCheck, subscriptionRouteChecks, SUBSCRIPTION_FIRST_ERROR } from "./subscription-first-routing.ts";
 
 type Registry = ExtensionContext["modelRegistry"];
 type Model = NonNullable<ExtensionContext["model"]>;
@@ -24,7 +25,7 @@ const guardMark = (provider: Provider) => (provider as unknown as Record<symbol,
 
 /** Registry surface an ordered chain needs; Pi's ModelRegistry and ModelRuntime both satisfy it.
  * `getAll()` is the published dispatch catalog and is deliberately *not* the curated
- * picker snapshot: a fallback route (for example the Terra step) must stay reachable
+ * picker snapshot: a fallback route (for example a later chain step) must stay reachable
  * even when the operator's harness manifest does not offer it as a separate choice. */
 export interface ChainRegistry {
   find(provider: string, id: string): Model | undefined;
@@ -56,58 +57,66 @@ export interface ChainFallbackOptions {
 export type ChainFallbackInput = Omit<ChainFallbackOptions, "registry">;
 
 /**
- * Failure class that may leave a chain step for the *next* step. It is the class Go
- * already retries (`eligibleGoFallback`) plus one deliberate addition: a proven
- * exhausted Go subscription plan. Same-plan retry deliberately refuses that signal
- * (retrying an exhausted plan on the same plan cannot succeed), while the ordered
- * chain may leave the plan for the next route — and that route still has to be an
- * authenticated, separately approved reviewed subscription (Singapore Token Plan),
- * never generic PAYG. Auth, permission, region, context and 400-class failures
+ * Failure class that may leave a chain step for the *next* step. It is the class the
+ * subscription transport already retries (`eligibleGoFallback`) plus one deliberate
+ * addition: a proven exhausted subscription plan. Same-plan retry deliberately refuses
+ * that signal (retrying an exhausted plan on the same plan cannot succeed), while the
+ * ordered chain may leave the plan for the next route — and that route still has to be
+ * authenticated and either subscription/local or a separately approved reviewed paid
+ * route, never generic PAYG. Auth, permission, region, context and 400-class failures
  * never hop, whatever transient wording they carry.
  */
-/** OpenRouter's own pre-output refusals that another route can serve: spent credits (402 "Insufficient credits" /
- * "requires more credits") and a request no provider endpoint can serve ("No endpoints found" / "0 endpoints out
- * of N requested are available"). Checked after the hard auth/abort class and before the generic 404 refusal, so
- * the endpoint answer hops while a plain 404 stays put. */
-export const OPENROUTER_ROUTE_UNAVAILABLE = /\b402\b|insufficient[_ ]credits|requires more credits|no endpoints? (?:found|available)|endpoints? out of \d+ requested are available/i;
+/** A metered gateway's own pre-output refusals that another route can serve: spent credits (402 "Insufficient
+ * credits" / "requires more credits") and a request no provider endpoint can serve ("No endpoints found" / "0
+ * endpoints out of N requested are available"). Checked after the hard auth/abort class and before the generic
+ * 404 refusal, so the endpoint answer hops while a plain 404 stays put. */
+export const ROUTE_UNAVAILABLE_WORDING = /\b402\b|insufficient[_ ]credits|requires more credits|no endpoints? (?:found|available)|endpoints? out of \d+ requested are available/i;
+/** @deprecated Former name of {@link ROUTE_UNAVAILABLE_WORDING}. */
+export const OPENROUTER_ROUTE_UNAVAILABLE = ROUTE_UNAVAILABLE_WORDING;
 export function eligibleChainFallback(message: string): boolean {
   // Auth, permission, region, context and 400-class failures never hop, whatever transient wording they carry.
   if (/abort|cancel|auth|permission|region|context|invalid|\b(?:400|401|403)\b/i.test(message)) return false;
-  if (OPENROUTER_ROUTE_UNAVAILABLE.test(message)) return true;
+  if (ROUTE_UNAVAILABLE_WORDING.test(message)) return true;
   if (/\b404\b/i.test(message)) return false;
   return eligibleGoFallback(message) || /subscription_quota_exceeded|GoUsageLimitError|usage limit|quota[_ -]?(?:exhausted|exceeded|reached)/i.test(message);
 }
-/** Never auto-selected: the operator scope removed automatic Luna workers/reviewers. */
-export const ROUTINE_GPT_MODEL = "gpt-5.6-luna";
-export const GPT_ROUTE_ERROR = "GPT-family models require the paid openai-codex subscription route, non-batch. OpenRouter and API-key routes are not permitted.";
+export const PINNED_ROUTE_ERROR = "This model family is pinned to its configured subscription route (subscriptionRouteChecks modelPattern in ~/.config/ultraterm/routing.json); other routes, API keys and excluded transports are not permitted.";
+/** @deprecated Former name of {@link PINNED_ROUTE_ERROR}. */
+export const GPT_ROUTE_ERROR = PINNED_ROUTE_ERROR;
 
-export function isGptFamily(model: { id: string; name?: string }): boolean {
-  return /(?:^|[^a-z0-9])(?:chat)?gpt(?:[^a-z]|$)/i.test(`${model.id} ${model.name ?? ""}`);
+/** The operator's pinned-family checks whose `modelPattern` names this model (id or display name). */
+export function pinnedRouteChecks(model: { id: string; name?: string }, strict = false): SubscriptionRouteCheck[] {
+  const subject = `${model.id} ${model.name ?? ""}`;
+  // Dispatch-time checks read strictly: a malformed routing.json must not silently unpin a family.
+  const checks = strict ? routingConfig().subscriptionRouteChecks ?? [] : subscriptionRouteChecks();
+  return checks.filter((check) => check.modelPattern?.test(subject) === true);
+}
+/** True when an operator check pins this model family to one exact subscription route. */
+export function isPinnedFamily(model: { id: string; name?: string }): boolean {
+  return pinnedRouteChecks(model).length > 0;
 }
 
 /** Catalog filtering must not allocate exceptions for routinely excluded models. */
 export function isModelRouteAllowed(model: { id: string; name?: string; provider: string }): boolean {
-  return !isRetiredSolSelector(model.id) && !isRetiredSolSelector(model.name) &&
-    (!isGptFamily(model) || (model.provider === "openai-codex" && !/batch/i.test(model.id) &&
-    (!model.id.includes("/") || model.id.startsWith("openai-codex/"))));
+  if (isRetiredModelSelector(model.id) || isRetiredModelSelector(model.name)) return false;
+  const pinned = pinnedRouteChecks(model);
+  return pinned.length === 0 || pinned.some((check) => model.provider === check.provider &&
+    !check.excludeIdPattern?.test(model.id) && (!model.id.includes("/") || model.id.startsWith(`${check.provider}/`)));
 }
 
 /** Validate resolved identity, never infer a provider from a friendly model name. */
 export function assertModelRoute(model: { id: string; name?: string; provider: string }): void {
   assertActiveModelIdentity(model);
-  if (!isModelRouteAllowed(model)) throw new Error(GPT_ROUTE_ERROR);
+  if (!isModelRouteAllowed(model)) throw new Error(PINNED_ROUTE_ERROR);
 }
 
 export function assertSubscriptionRequest(model: Model, usingOAuth: boolean): void {
   assertModelRoute(model);
-  if (!isGptFamily(model)) return;
-  let url: URL;
-  try { url = new URL(model.baseUrl); } catch { throw new Error(GPT_ROUTE_ERROR); }
-  if (!usingOAuth || model.api !== "openai-codex-responses" || url.protocol !== "https:" ||
-      url.hostname !== "chatgpt.com" || url.port || url.username || url.password ||
-      !/^\/backend-api(?:\/codex)?\/?$/.test(url.pathname) || url.search || url.hash) {
-    throw new Error(GPT_ROUTE_ERROR);
-  }
+  const pinned = pinnedRouteChecks(model, true);
+  if (pinned.length === 0) return;
+  const served = pinned.some((check) => (!check.oauth || usingOAuth) && (!check.api || model.api === check.api) &&
+    matchesSubscriptionCheck({ ...check, exact: true }, model));
+  if (!served) throw new Error(PINNED_ROUTE_ERROR);
 }
 
 /** Supported native-provider composition; exceptions here stop dispatch, unlike event hooks. */
@@ -121,11 +130,11 @@ export function guardProvider(provider: Provider, usingOAuth: () => boolean,
   const previous = guardMark(provider);
   if (previous) provider = previous.root;
   const root = original ?? provider;
-  provider = withTerraCatalog(withOpenCodeGoRouting(provider));
+  provider = withCatalogExtras(withOpenCodeGoRouting(provider));
   const check = (model: Model) => {
     assertActiveModelIdentity(model);
-    if (model.provider !== provider.id) throw new Error(GPT_ROUTE_ERROR);
-    assertSubscriptionRequest(model, !isGptFamily(model) || usingOAuth());
+    if (model.provider !== provider.id) throw new Error(PINNED_ROUTE_ERROR);
+    assertSubscriptionRequest(model, !isPinnedFamily(model) || usingOAuth());
     if (isTemporaryFreeModel(model)) assertTemporaryFreeRequest(model, undefined, undefined, false);
   };
   // Registries without authentication introspection cannot gate metered routes.
@@ -161,7 +170,7 @@ export function guardProvider(provider: Provider, usingOAuth: () => boolean,
       // This snapshot is the choice source native `/model` renders and the one
       // the machine-UI catalog publishes, so both picker rules live here once,
       // never in a second model list: the curated harness-manifest scope and the
-      // removed OpenRouter DeepSeek Flash routes. Dispatch coverage stays intact
+      // operator's hidden routes. Dispatch coverage stays intact
       // because getModels() is untouched above.
       return curatedPickerModels(sharedPickerModels(filtered.filter(isModelRouteAllowed)), curatedPickerScope());
     },
@@ -225,10 +234,10 @@ export function createRegistryGuard(approval?: PaidApproval, chain?: ChainFallba
     // curated picker filter (filterModels below) and would leave pre-output chain
     // targets without the metering check. `active` is accepted for 0.7.0 callers.
     void active;
-    if (apisByProvider.has("openrouter")) {
+    if (apisByProvider.has(FREE_PROVIDER)) {
       // Augment the registered native root, not a recomposed config overlay;
       // otherwise every controlled turn can wrap yesterday's guard again.
-      const provider = registry.getRegisteredNativeProvider("openrouter") ?? registry.getProvider("openrouter");
+      const provider = registry.getRegisteredNativeProvider(FREE_PROVIDER) ?? registry.getProvider(FREE_PROVIDER);
       if (provider) {
         const augmented = withTemporaryFreeCatalog(provider);
         if (augmented !== provider) registry.registerProvider(augmented);
@@ -247,10 +256,14 @@ export function createRegistryGuard(approval?: PaidApproval, chain?: ChainFallba
       }
       const provider = registry.getProvider(id);
       if (!provider) continue;
+      // The operator's subscription-first plan (`subscriptionFirstProvider`): while its key is
+      // configured and not proven exhausted, metered routes stay denied. None configured, no veto.
       const getGoKey = registry.getProviderAuth ? async () => {
-        const auth = await registry.getProviderAuth!("opencode-go");
+        const first = routingConfig().subscriptionFirstProvider;
+        if (!first) return undefined;
+        const auth = await registry.getProviderAuth!(first);
         const key = auth?.auth.apiKey;
-        if (!key && (auth || registry.hasConfiguredAuth?.({ provider: "opencode-go" } as Model))) {
+        if (!key && (auth || registry.hasConfiguredAuth?.({ provider: first } as Model))) {
           throw new Error(SUBSCRIPTION_FIRST_ERROR);
         }
         return key;
@@ -300,8 +313,9 @@ export function guardModelRuntime(runtime: ModelRuntime, fallback?: ChainFallbac
   }, active);
 }
 
-/** Astra defaults to medium independently of the parent's current effort.
- * Escalation is explicit and needs a concrete task benefit, not role alone. */
+/** The operator's expert reviewer (`expertReview.thinking`, default medium) runs at its own
+ * effort independently of the parent's current effort. Escalation is explicit and needs a
+ * concrete task benefit, not role alone. */
 export function selectWorkerThinking(
   model: Pick<Model, "id">,
   inherited: ExtensionContext["thinkingLevel"],
@@ -314,51 +328,50 @@ export function selectWorkerThinking(
   if ((requested === "high" || requested === "xhigh") && (!reason || reason.trim().length < 16)) {
     throw new Error("High/xhigh worker thinking needs a concrete task benefit in thinkingReason.");
   }
-  return requested ?? (/(?:^|\/)gpt-6-astra$/i.test(model.id) ? "medium" : inherited ?? "off");
+  const expert = expertReviewConfig();
+  const isExpert = expert !== undefined && (model.id === expert.model.id || model.id === `${expert.model.provider}/${expert.model.id}`);
+  return requested ?? (isExpert ? expert.thinking ?? "medium" : inherited ?? "off");
 }
 
 export interface WorkerRouteStep { provider: string; id: string }
 
-/** Operator default (2026-10-28): authenticated GPT-6.1 Terra, then
- * canonical Go DeepSeek V4.1 Flash if Terra is unavailable at selection. Go child runtime
- * failures stay account-bound and fail honestly; no ambient-auth stream hop.
- * Explicit identities and legacy profile-specific MiMo chains remain exact. */
-/** Mike 2026-10-31: OpenCode Go DeepSeek V4.1 Flash first (prepaid plan), then the same model on OpenRouter once Go is
- * used up (paid per token), then GPT-6.1 Terra on Codex OAuth. Claude Haiku is the USAP extension's last tier. */
-export const DEFAULT_TEXT_WORKER_CHAIN: readonly WorkerRouteStep[] = [
-  { provider: "opencode-go", id: "deepseek-v4.1-flash" },
-  { provider: "openrouter", id: "deepseek/deepseek-v4.1-flash-1017:exacto" },
-  { provider: "openai-codex", id: "gpt-6.1-terra" },
-];
-/** Automatic image runs use GPT-6.1 Terra, which reads images, then MiMo V2.6 Flash
- * (2026-10-29: the MiMo-only chain refused every image dispatch that named no model or
- * the Terra profile, while explicit openai-codex/gpt-6.1-terra read scans correctly).
- * Go DeepSeek is text-only and never joins this chain. */
-export const DEFAULT_MULTIMODAL_WORKER_CHAIN: readonly WorkerRouteStep[] = [
-  { provider: "openai-codex", id: "gpt-6.1-terra" },
-  { provider: "xiaomi", id: "mimo-v2.6-flash" },
-];
-/** Token Plan routes an automatic profile may keep as its own chain head. A profile
- * naming MiMo V2.6 Pro (the reviewer default) resolves [Pro, Terra], never the Flash
- * worker head; every other automatic profile resolves the default chain. */
-const TOKEN_PLAN_CHAIN_HEADS: readonly WorkerRouteStep[] = [
-  { provider: "xiaomi", id: "mimo-v2.6-pro" },
-  { provider: "xiaomi", id: "mimo-v2.6-flash" },
-];
+/** The operator's automatic text worker chain (`textWorkerChain`); empty when none is configured. */
+export const textWorkerChain = (): readonly WorkerRouteStep[] => routingConfig().textWorkerChain ?? [];
+/** The operator's automatic image worker chain (`multimodalWorkerChain`); empty when none is configured. */
+export const multimodalWorkerChain = (): readonly WorkerRouteStep[] => routingConfig().multimodalWorkerChain ?? [];
+export const defaultWorkerChain = (requireImages: boolean): readonly WorkerRouteStep[] =>
+  requireImages ? multimodalWorkerChain() : textWorkerChain();
+/** The configured base chain, or a clear error naming the key an operator sets. */
+function requiredWorkerChain(requireImages: boolean): readonly WorkerRouteStep[] {
+  const chain = defaultWorkerChain(requireImages);
+  if (chain.length === 0) {
+    throw new RoutingConfigError(requireImages
+      ? missingConfigKey("multimodal worker chain", "multimodalWorkerChain")
+      : missingConfigKey("text worker chain", "textWorkerChain"));
+  }
+  return chain;
+}
 const sameStep = (a: WorkerRouteStep, b: WorkerRouteStep) => a.provider === b.provider && a.id === b.id;
+/** An automatic profile whose head is one of the operator's `tokenPlanChainHeads` keeps
+ * its own chain (`[head, ...then]`, or `[head, ...multimodalThen]` for images); every
+ * other automatic profile resolves the configured default chain. */
 export function workerChainFor(head: WorkerRouteStep | undefined, requireImages: boolean): readonly WorkerRouteStep[] {
-  const base = requireImages ? DEFAULT_MULTIMODAL_WORKER_CHAIN : DEFAULT_TEXT_WORKER_CHAIN;
-  if (!head || !TOKEN_PLAN_CHAIN_HEADS.some((step) => sameStep(step, head)) || sameStep(base[0], head)) return base;
-  return requireImages ? [head] : [head, { provider: "openai-codex", id: "gpt-6.1-terra" }];
+  const own = head && routingConfig().tokenPlanChainHeads?.find((entry) => sameStep(entry.head, head));
+  const base = defaultWorkerChain(requireImages);
+  if (!own || (base.length > 0 && sameStep(base[0], own.head))) return requiredWorkerChain(requireImages);
+  return [own.head, ...(requireImages ? own.multimodalThen : own.then)];
 }
 /** Rebuild a run's recorded chain (`selection.chainRoutes`) only when it is exactly a
- * chain this policy can produce; anything else falls back to the default chain. */
+ * chain this policy can produce; anything else falls back to the default chain, and
+ * to no chain at all when the operator no longer configures one. */
 export function recordedWorkerChain(routes: readonly string[] | undefined, requireImages: boolean): readonly WorkerRouteStep[] {
-  const base = requireImages ? DEFAULT_MULTIMODAL_WORKER_CHAIN : DEFAULT_TEXT_WORKER_CHAIN;
+  let base: readonly WorkerRouteStep[];
+  try { base = defaultWorkerChain(requireImages); } catch { return []; }
   if (!routes?.length) return base;
   const head = routes[0].split("/");
   if (head.length !== 2) return base;
-  const candidate = workerChainFor({ provider: head[0], id: head[1] }, requireImages);
+  let candidate: readonly WorkerRouteStep[];
+  try { candidate = workerChainFor({ provider: head[0], id: head[1] }, requireImages); } catch { return base; }
   const matches = candidate.length === routes.length
     && candidate.every((step, index) => `${step.provider}/${step.id}` === routes[index]);
   return matches ? candidate : base;
@@ -380,35 +393,34 @@ export class NoChainRouteError extends Error {
   }
 }
 
-/** True when `error` is exactly "the built-in default chain resolved nowhere": the text
- * default (OpenRouter DeepSeek, Go, Terra) and nothing else. A profile-default or reviewer chain that names MiMo
- * (Flash/Pro, Terra) is a different chain whose head was never the default's Terra step. */
+/** True when `error` is exactly "the configured default text chain resolved nowhere" and
+ * nothing else. A profile-default or reviewer chain with its own head is a different chain. */
 export function isDefaultTextChainExhausted(error: unknown): error is NoChainRouteError {
-  return error instanceof NoChainRouteError && !error.multimodal && error.tried.length === DEFAULT_TEXT_WORKER_CHAIN.length &&
-    error.tried.every((step, index) => sameStep(step, DEFAULT_TEXT_WORKER_CHAIN[index]));
+  if (!(error instanceof NoChainRouteError) || error.multimodal) return false;
+  const chain = routingConfigOrEmpty().textWorkerChain ?? [];
+  return chain.length > 0 && error.tried.length === chain.length &&
+    error.tried.every((step, index) => sameStep(step, chain[index]));
 }
 
-/** Astra (openai-codex/gpt-6-astra) is the scarce expert reviewer: hard planning and
- * debugging plus review/validation. It is never routine implementation or
- * orchestration, so it is deliberately absent from the routine worker chains above.
- * The default reviewer role prefers it through the paid Codex OAuth coding plan only:
- * eligibility below requires the exact subscription identity (OAuth, Codex API,
- * official chatgpt.com backend), so a batch id, API-key endpoint, or other metered
- * substitute never enters. When the expert route is unavailable the run honestly
- * resolves the routine subscription chain instead, and an expert review that fails
- * at runtime fails visibly — it is never silently downgraded to a weaker model. */
-export const EXPERT_REVIEW_MODEL: WorkerRouteStep = { provider: "openai-codex", id: "gpt-6-astra" };
-/** Astra first, then the default worker chain in its own order (Go -> OpenRouter DeepSeek -> Terra). */
-export const EXPERT_TEXT_REVIEW_CHAIN: readonly WorkerRouteStep[] = [
-  EXPERT_REVIEW_MODEL, ...DEFAULT_TEXT_WORKER_CHAIN,
-];
-export const EXPERT_MULTIMODAL_REVIEW_CHAIN: readonly WorkerRouteStep[] = [
-  EXPERT_REVIEW_MODEL, ...DEFAULT_MULTIMODAL_WORKER_CHAIN,
-];
-export const expertReviewChain = (requireImages: boolean): readonly WorkerRouteStep[] =>
-  requireImages ? EXPERT_MULTIMODAL_REVIEW_CHAIN : EXPERT_TEXT_REVIEW_CHAIN;
-export const isExpertReviewModel = (model: Pick<Model, "provider" | "id">): boolean =>
-  model.provider === EXPERT_REVIEW_MODEL.provider && model.id === EXPERT_REVIEW_MODEL.id;
+/** The operator's scarce expert reviewer (`expertReview`): hard planning and debugging plus
+ * review/validation, never routine implementation, so it is deliberately absent from the
+ * routine worker chains. Eligibility (below) requires the configured exact identity (OAuth,
+ * API and endpoint when set), so a batch id, API-key endpoint, or other metered substitute
+ * never enters. When the expert route is unavailable the run honestly resolves the routine
+ * chain instead, and an expert review that fails at runtime fails visibly — it is never
+ * silently downgraded to a weaker model. None is configured by default. */
+export const expertReviewConfig = (): ExpertReviewConfig | undefined => routingConfigOrEmpty().expertReview;
+export const expertReviewModel = (): WorkerRouteStep | undefined => expertReviewConfig()?.model;
+/** The expert first, then the default worker chain in its own order. */
+export const expertReviewChain = (requireImages: boolean): readonly WorkerRouteStep[] => {
+  const expert = expertReviewModel();
+  const base = defaultWorkerChain(requireImages);
+  return expert ? [expert, ...base] : base;
+};
+export const isExpertReviewModel = (model: Pick<Model, "provider" | "id">): boolean => {
+  const expert = expertReviewModel();
+  return expert !== undefined && model.provider === expert.provider && model.id === expert.id;
+};
 
 export type ChainOptions = {
   requireImages?: boolean;
@@ -417,14 +429,14 @@ export type ChainOptions = {
    * exhausted is skipped, so selection never lands on a route that cannot launch. A
    * skipped step is still part of the chain that was tried (see {@link NoChainRouteError}). */
   skipRoute?: (step: WorkerRouteStep) => boolean;
-  /** Resolve the built-in default text chain (Go -> OpenRouter DeepSeek -> Terra) instead of a profile default or
+  /** Resolve the configured default text chain (`textWorkerChain`) instead of a profile default or
    * the legacy parent route. Only an implicit dispatch that must leave an exhausted
    * provider sets it; an explicit selector never does. */
   forceDefaultChain?: boolean;
 };
 
 /** The user allowlist is the only spending grant for automatic chain routing: a
- * reviewed Token Plan step is reachable without inheriting a launch profile's paid
+ * reviewed paid step is reachable without inheriting a launch profile's paid
  * flag, and it is re-read on every call so revocation takes effect immediately. */
 export const AUTOMATIC_CHAIN_APPROVAL: PaidApproval = createAllowlistApproval();
 
@@ -437,19 +449,24 @@ function eligibleChainRoute(registry: ChainRegistry, step: WorkerRouteStep, requ
   if (!capable) return undefined;
   if (typeof registry.getProvider(model.provider)?.streamSimple !== "function") return undefined;
   if (!registry.hasConfiguredAuth(model)) return undefined;
-  // Expert reviews are Codex OAuth only. Localhost is normally a permitted
-  // no-spend route, but a local model labelled "openai-codex/gpt-6-astra"
+  // The expert keeps its configured exact identity. Localhost is normally a permitted
+  // no-spend route, but a local model labelled with the expert's route
   // must not impersonate the expert or inherit any paid-route approval.
-  if (isExpertReviewModel(model)) {
+  const expert = expertReviewConfig();
+  if (expert && isExpertReviewModel(model)) {
     let base: URL;
     try { base = new URL(model.baseUrl); } catch { return undefined; }
-    if (!registry.isUsingOAuth(model) || model.api !== "openai-codex-responses" ||
-        base.origin !== "https://chatgpt.com" || base.pathname.replace(/\/$/, "") !== "/backend-api" ||
-        base.search || base.hash) return undefined;
+    if (expert.requireOAuth && !registry.isUsingOAuth(model)) return undefined;
+    if (expert.api && model.api !== expert.api) return undefined;
+    if (expert.baseUrl) {
+      const want = new URL(expert.baseUrl);
+      if (base.origin !== want.origin || base.pathname.replace(/\/$/, "") !== want.pathname.replace(/\/$/, "") ||
+          base.search || base.hash) return undefined;
+    }
   }
   // Membership is checked against the published dispatch catalog, never the
   // curated picker snapshot: an ordered chain step may be reachable without
-  // being a separate picker choice (the Go fallback is the operator's example).
+  // being a separate picker choice.
   const catalog = registry.getAll?.() ?? registry.getAvailable();
   if (!catalog.some((candidate) => candidate.provider === model.provider && candidate.id === model.id)) return undefined;
   if (!isSubscriptionOrLocalRoute(model, registry.isUsingOAuth(model))) {
@@ -551,7 +568,7 @@ export function withPreOutputChainFallback(
   return output;
 }
 
-/** One authenticated chain route or a fail-closed error. Reviewed paid/Token Plan
+/** One authenticated chain route or a fail-closed error. Reviewed paid
  * steps need the operator's exact allowlist grant (re-read per selection); an
  * unreviewed metered endpoint never enters an automatic chain. */
 export function selectChainedWorkerModel(registry: Registry, chain: readonly WorkerRouteStep[], options: ChainOptions = {}): Model {
@@ -565,25 +582,25 @@ export function selectChainedWorkerModel(registry: Registry, chain: readonly Wor
 }
 
 /** Runs retain one explicit model for accurate telemetry; mixed/review runs stay frontier.
- * The default reviewer role prefers the scarce Astra expert when its authenticated
- * paid Codex OAuth route is available; any metered substitute is skipped and the
- * prior exact behavior applies (reviewers of a mapped-parent default never reach
- * this legacy path at all — they resolve the expert review chain). */
+ * The reviewer role prefers the operator's expert (`expertReview`) when its authenticated
+ * route is eligible; any metered substitute is skipped and the prior exact behavior applies
+ * (reviewers of a mapped-parent default never reach this legacy path at all — they resolve
+ * the expert review chain). */
 export function selectWorkerModel(parent: Model, roles: readonly (string | undefined)[], registry: Registry,
   options: ChainOptions = {}): Model {
   assertModelRoute(parent);
-  if (roles.some((role) => role === "reviewer")) {
-    const expert = eligibleChainRoute(registry, EXPERT_REVIEW_MODEL, options.requireImages === true,
+  const expert = expertReviewModel();
+  if (expert && roles.some((role) => role === "reviewer")) {
+    const eligible = eligibleChainRoute(registry, expert, options.requireImages === true,
       options.approvePaidRoute ?? AUTOMATIC_CHAIN_APPROVAL);
-    if (expert) return expert;
+    if (eligible) return eligible;
   }
-  if (!isGptFamily(parent)) return parent;
+  if (!isPinnedFamily(parent)) return parent;
   assertSubscriptionRequest(parent, registry.isUsingOAuth(parent));
   // Legacy unmapped-profile fallback: reviewers inherit the operator's own parent
-  // route and nothing else is auto-selected there (no implicit Luna, no paid GPT
-  // hop beyond the expert preference above). Defaulted runs resolve the
-  // capability-aware chain through reviewerDefault.
+  // route and nothing else is auto-selected there (no paid hop beyond the expert
+  // preference above). Defaulted runs resolve the capability-aware chain through
+  // reviewerDefault.
   if (roles.some((role) => role === "reviewer")) return parent;
-  return selectChainedWorkerModel(registry,
-    options.requireImages === true ? DEFAULT_MULTIMODAL_WORKER_CHAIN : DEFAULT_TEXT_WORKER_CHAIN, options);
+  return selectChainedWorkerModel(registry, requiredWorkerChain(options.requireImages === true), options);
 }

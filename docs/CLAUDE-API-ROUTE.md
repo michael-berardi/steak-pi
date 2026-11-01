@@ -4,10 +4,10 @@ USAP has two Claude route families that never resolve to each other.
 
 | Route | Auth | Reachable by |
 | --- | --- | --- |
-| `claude-code/claude-sonnet-5-5`, `claude-code/claude-opus-5-5` | Existing claude.ai subscription login. API keys, base URLs and billing overrides are stripped from the child environment. | Defaults, the Opus review default and explicit selection. |
-| `claude-code-api/claude-sonnet-5-5`, `claude-code-api/claude-opus-5-5` | An API key behind the approved `apiKeyHelper`, read by the official CLI in `--bare` mode (OAuth and keychain are never read). | An exact explicit model name, plus a current operator approval record. Never a default, chain step or fallback. |
+| `claude-code/<model>` (the adapter's pinned routes) | Existing claude.ai subscription login. API keys, base URLs and billing overrides are stripped from the child environment. | Explicit selection and the operator's configured `claudeCodeDefaults` / `implicitReview` / `claudeFallbackTier`. |
+| `claude-code-api/<model>` | An API key behind the approved `apiKeyHelper`, read by the official CLI in `--bare` mode (OAuth and keychain are never read). | An exact explicit model name, plus a current operator approval record. Never a default, chain step or fallback. |
 
-The subscription route and its checks (`assertClaudeSubscriptionStatus`, `claudeWorkerEnv`, `claudeWorkerArgs`) are unchanged. An API failure never falls back to the subscription, Sol or any other route, and a subscription failure never moves to the API.
+The subscription route and its checks (`assertClaudeSubscriptionStatus`, `claudeWorkerEnv`, `claudeWorkerArgs`) are unchanged. An API failure never falls back to the subscription or any other route, and a subscription failure never moves to the API.
 
 ## Interactive versus headless promotional credits
 
@@ -67,7 +67,7 @@ Each leaf records a sanitized `apiReceipt` (route, pinned and served model, the 
 
 ## Running API waves
 
-A running parent keeps the tool schema it loaded at start. New sessions accept `model: "claude-code-api/claude-sonnet-5-5"` in `ultraterm_subagents`. To run API waves from a parent that cannot restart, use the standalone entry point, which drives the same coordinator in a separate process (installed copies expose it as `steak-pi usap-api <admit|dispatch|resume>`):
+A running parent keeps the tool schema it loaded at start. New sessions accept `model: "claude-code-api/<model>"` in `ultraterm_subagents`. To run API waves from a parent that cannot restart, use the standalone entry point, which drives the same coordinator in a separate process (installed copies expose it as `steak-pi usap-api <admit|dispatch|resume>`):
 
 ```bash
 node scripts/usap-claude-api.ts admit --tasks 2 --role reviewer

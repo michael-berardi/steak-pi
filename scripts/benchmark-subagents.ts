@@ -33,7 +33,7 @@ const coordinator = new SubagentCoordinator(async ({ onProgress }: WorkerContext
 try {
   let last!: RunRecord;
   for (let wave = 0; wave < 16; wave++) {
-    const run = normalizeDispatch({ goal: "Offline benchmark", concurrency: 8, tasks: Array.from({ length: 8 }, (_, i) => ({ label: `Verify assignment ${i + 1}`, task: "Synthetic worker" })) }, root, "zai/glm-5.3-flash", "medium", Date.now(), () => `benchmark-${wave}`);
+    const run = normalizeDispatch({ goal: "Offline benchmark", concurrency: 8, tasks: Array.from({ length: 8 }, (_, i) => ({ label: `Verify assignment ${i + 1}`, task: "Synthetic worker" })) }, root, "provider-a/model-name", "medium", Date.now(), () => `benchmark-${wave}`);
     last = coordinator.start(run);
     await coordinator.wait(last.id, "all");
   }

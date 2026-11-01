@@ -83,7 +83,7 @@ const rawManifest: BenchmarkManifest = {
   benchmarkId: "usap-local-comparison",
   mode: "synthetic-local-only",
   fairness: {
-    model: "zai/glm-5.3-flash",
+    model: "provider-a/model-name",
     thinkingLevel: "high",
     fallback: "disabled",
     fallbackModels: [],

@@ -90,8 +90,9 @@ describe("synthetic: worker output contract", () => {
           const task = leaf({ mayEdit, ownedPaths: mayEdit ? [join(process.cwd(), "synthetic-owned.txt")] : [] });
           const prompt = build(run(task, model), task);
           if (mayEdit && reviewer) {
-            expect(prompt).toContain(`official Claude Code CLI ${reviewer} 5.5 at xhigh effort via the USAP claude-code route`);
-            expect(prompt).toContain("GPT-6.1 Terra fallback review");
+            // The fixture's verificationGates name the reviewer route and the explicit fallback.
+            expect(prompt).toContain(`request one bounded verification on claude-code/claude-${reviewer.toLowerCase()}-5-5 through the parent`);
+            expect(prompt).toContain("request the explicitly named openai-codex/gpt-6.1-terra fallback review");
             expect(prompt).toContain("if you produced implementation");
           } else {
             expect(prompt).not.toContain("End-gate:");

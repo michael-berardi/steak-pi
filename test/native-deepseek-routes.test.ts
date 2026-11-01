@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { createExplicitPaidApproval, PAID_INCO_BASE_URL } from "../src/explicit-paid-route.ts";
+import { createExplicitPaidApproval } from "../src/explicit-paid-route.ts";
 import { assertModelRoute, assertSubscriptionRequest, isModelRouteAllowed } from "../src/model-route-policy.ts";
-import { BUILTIN_WORKER_PROFILES } from "../src/subagents/model-selection.ts";
+import { PAID_INCO_BASE_URL, BUILTIN_WORKER_PROFILES } from "./helpers/routing-fixture.ts";
 
 // Regression coverage for the 0.7.1 removal of the DeepSeek-specific DSH
 // harness/launcher/vendor runtime: DeepSeek models must keep running through

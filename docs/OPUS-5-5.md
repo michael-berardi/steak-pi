@@ -34,7 +34,7 @@ No cache-warming metadata is enabled.
 The old `steak-pi/claude-opus-5-5` launch profile is retired in UltraTerm 2.3.5.
 Use the Claude Code harness for Opus instead. Keeping this file does not activate
 an Anthropic API route, alter credentials or grant paid-route approval.
-Routine workers use DeepSeek V4.1 Flash on OpenCode Go, then DeepSeek V4.1 Flash on OpenRouter (the exact `:exacto` route, approved in `~/.pi/agent/paid-routes.json`), then GPT-6.1 Terra on Codex OAuth; automatic reviews may use the bounded GPT-6.1 Terra (Codex OAuth) fallback only when Claude is unavailable; expert
+Steak Pi selects none of these models by default: routine workers, implicit reviews and the Claude fallback tier follow the operator's `~/.config/ultraterm/routing.json` (`textWorkerChain`, `implicitReview`, `claudeFallbackTier`, `claudeCodeDefaults`; see [MODEL-ROUTING.md](./MODEL-ROUTING.md)). This page documents the Claude Code adapter's pinned catalog only.
 review waves use the separate CLI route described in [PROFILES.md](./PROFILES.md).
 
 ## Compatibility proof and limits

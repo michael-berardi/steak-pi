@@ -25,7 +25,7 @@ function bucketCap(config: CapacityConfig, provider: string, globalCeiling: numb
  * Provider-bucketed in-process semaphore for worker launches. One module-level
  * instance is shared by every coordinator in a session, so independently
  * started runs share one launch budget. Limits apply per provider: a session
- * may run up to its GLM ceiling and its Luna ceiling simultaneously, bounded
+ * may run up to one provider's ceiling and another's simultaneously, bounded
  * by one session-wide global ceiling.
  */
 export class SessionScheduler {
@@ -106,8 +106,8 @@ export class SessionScheduler {
   }
 
   private drain(): void {
-    // Scan the whole queue: a full GLM bucket must not head-of-line block a
-    // Luna entry behind it.
+    // Scan the whole queue: one provider's full bucket must not head-of-line
+    // block another provider's entry behind it.
     for (let index = 0; index < this.queue.length; ) {
       const entry = this.queue[index];
       if (entry.signal?.aborted) {

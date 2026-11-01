@@ -4,14 +4,16 @@ import { homedir } from "node:os";
 import { dirname, join, parse } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { isRetiredSolSelector } from "./retired-model-selection.ts";
-import { isRemovedOpenRouterFlash } from "./model-visibility.ts";
+import { isRetiredModelSelector } from "./retired-model-selection.ts";
+import { isHiddenModel } from "./model-visibility.ts";
+import { routingConfigOrEmpty } from "./routing-config.ts";
 
 type Model = NonNullable<ExtensionContext["model"]>;
 type Provider = NonNullable<ReturnType<ExtensionContext["modelRegistry"]["getProvider"]>>;
+/** The temporary free route is an adapter for one provider's official zero-price catalog
+ * (its public models/endpoints metadata API). Which free model, if any, a worker prefers is
+ * the operator's temporary-worker-route.json; Steak Pi ships no free model choice. */
 export const FREE_PROVIDER = "openrouter";
-export const FREE_MODEL = "minimax/minimax-m3.1-flash:free";
-export const FREE_PROFILE = "steak-pi/minimax-m3-1-flash-free";
 export const FREE_BASE_URL = "https://openrouter.ai/api/v1";
 export const temporaryRoutePath = () => join(homedir(), ".config", "ultraterm", "temporary-worker-route.json");
 export class TemporaryFreeRouteConfigError extends Error { override name = "TemporaryFreeRouteConfigError"; }
@@ -22,17 +24,17 @@ export class TemporaryFreeRouteMetadataUnavailableError extends TemporaryFreeRou
   constructor(status = 503) { super(`Temporary free metadata ${status} unavailable; free preference retained, no model request selected.`); }
 }
 export const RETURN_TO_NORMAL = "TEMPORARY_FREE_ROUTE_RETURN_TO_NORMAL";
-/** Never dispatch ambient Codex OAuth from a virtual worker without its account lease. */
+/** Never dispatch ambient subscription OAuth from a virtual worker without its account lease. */
 export class TemporaryFreeRouteReturnToNormalError extends TemporaryFreeRouteUnavailableError {
   override name = "TemporaryFreeRouteReturnToNormalError";
   readonly code = RETURN_TO_NORMAL;
-  constructor() { super(`${RETURN_TO_NORMAL}: preferred free route inactive or unavailable; checkpointed normal-profile job switch required. No Codex request was selected.`); }
+  constructor() { super(`${RETURN_TO_NORMAL}: preferred free route inactive or unavailable; checkpointed normal-profile job switch required. No subscription request was selected.`); }
 }
 export interface TemporaryWorkerRoute {
   schemaVersion: 1;
   provider: string; model: string; harness: string; profile: string;
   startsAt: string; expiresAt: string;
-  fallbackHarness: "steak-pi"; fallbackProfile: "gpt-6-1-terra" | "gpt-6-1-sol";
+  fallbackHarness: "steak-pi"; fallbackProfile: string;
   zeroPriceOnly: true; source: string; evidence: string;
 }
 const failConfig = (): never => { throw new TemporaryFreeRouteConfigError("Temporary worker route configuration denied: invalid, unknown, or unsafe configuration."); };
@@ -43,17 +45,27 @@ export function isSupportedTemporaryFreeIdentity(provider: unknown, id: unknown,
     /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*:free$/.test(id) &&
     !/(?:^|[^a-z0-9])(?:chat)?gpt/i.test(`${id} ${name}`) &&
     !/(?:^|[/:])(?:zai|z-ai|xiaomi)\/|(?:^|[^a-z0-9])glm(?:[^a-z]|$)|(?:^|[/_. -])(?:openai|codex|mimo|anthropic|claude)/i.test(`${id} ${name}`) &&
-    !isRetiredSolSelector(id) && !isRetiredSolSelector(name) &&
-    !isRemovedOpenRouterFlash({ provider: FREE_PROVIDER, id: id.replace(/:free$/, "") });
+    !isRetiredModelSelector(id) && !isRetiredModelSelector(name) &&
+    !isHiddenModel({ provider: FREE_PROVIDER, id: id.replace(/:free$/, "") });
 }
+/** A free profile other than the virtual `preferred-free` must be one of the operator's
+ * configured worker profiles (`workerProfiles`) whose model is exactly this free route. */
+function isConfiguredFreeProfile(profile: unknown, provider: unknown, model: unknown): boolean {
+  if (typeof profile !== "string" || typeof provider !== "string" || typeof model !== "string") return false;
+  return (routingConfigOrEmpty().workerProfiles ?? []).some((entry) =>
+    entry.id === `steak-pi/${profile}` && entry.model === `${provider}/${model}`);
+}
+/** The normal-profile return target must be one of the operator's configured worker profiles. */
+const isConfiguredProfile = (profile: unknown): boolean => typeof profile === "string" &&
+  (routingConfigOrEmpty().workerProfiles ?? []).some((entry) => entry.id === `steak-pi/${profile}`);
 export function validateTemporaryWorkerRoute(value: unknown): TemporaryWorkerRoute {
   if (!value || typeof value !== "object" || Array.isArray(value)) return failConfig();
   const v = value as Record<string, unknown>;
   const keys = ["schemaVersion", "provider", "model", "harness", "profile", "startsAt", "expiresAt", "fallbackHarness", "fallbackProfile", "zeroPriceOnly", "source", "evidence"];
   if (Object.keys(v).length !== keys.length || keys.some(key => !Object.hasOwn(v, key)) || v.schemaVersion !== 1 ||
-      v.zeroPriceOnly !== true || v.fallbackHarness !== "steak-pi" || !["gpt-6-1-terra", "gpt-6-1-sol"].includes(v.fallbackProfile as string) ||
+      v.zeroPriceOnly !== true || v.fallbackHarness !== "steak-pi" || !isConfiguredProfile(v.fallbackProfile) ||
       !isSupportedTemporaryFreeIdentity(v.provider, v.model) || v.harness !== "steak-pi" ||
-      !(v.profile === "preferred-free" || (v.model === FREE_MODEL && v.profile === "minimax-m3-1-flash-free"))) return failConfig();
+      !(v.profile === "preferred-free" || isConfiguredFreeProfile(v.profile, v.provider, v.model))) return failConfig();
   for (const key of ["source", "evidence"]) if (typeof v[key] !== "string" || !(v[key] as string).trim() || (v[key] as string).length > 4096) return failConfig();
   const utc = (s: unknown): s is string => typeof s === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(s) && Number.isFinite(Date.parse(s)) && new Date(s).toISOString() === s.replace(/Z$/, s.includes(".") ? "Z" : ".000Z");
   if (!utc(v.startsAt) || !utc(v.expiresAt)) return failConfig();
@@ -186,7 +198,7 @@ export function assertTemporaryFreeRequest(model: Model, path = temporaryRoutePa
       !model.cost || [model.cost.input, model.cost.output, model.cost.cacheRead, model.cost.cacheWrite].some(price => price !== 0)) throw new TemporaryFreeRouteRequestError("Temporary free route denied: exact endpoint and fresh known zero prices required; no paid fallback was selected.");
 }
 /** Final payload guard AFTER the caller hook, immediately before native transport. */
-export function protectTemporaryFreePayload(payload: unknown, expectedModel = FREE_MODEL): Record<string, unknown> {
+export function protectTemporaryFreePayload(payload: unknown, expectedModel: string): Record<string, unknown> {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new TemporaryFreeRouteRequestError("Temporary free route denied: invalid request payload.");
   const p = payload as Record<string, unknown>;
   if (!isSupportedTemporaryFreeIdentity(FREE_PROVIDER, expectedModel) || p.model !== expectedModel || ["models", "route", "plugins", "transforms", "web_search_options"].some(key => key in p) ||
@@ -207,11 +219,9 @@ const CATALOG_MARK = Symbol.for("steak-pi.temporary-free-catalog.v2");
 /** Dynamic complete-provider composition preserves built-in transport/auth/models. */
 export function withTemporaryFreeCatalog(provider: Provider): Provider {
   if (provider.id !== FREE_PROVIDER || (provider as unknown as Record<symbol, unknown>)[CATALOG_MARK]) return provider;
-  // Preserve the original physical MiniMax alias for synchronous CLI selection.
-  // These limits are display metadata ONLY; dispatch still needs fresh proof.
-  const alias: Model = { id: FREE_MODEL, name: "MiniMax M3.1 Flash (free)", provider: FREE_PROVIDER, api: "openai-completions", baseUrl: FREE_BASE_URL,
-    reasoning: true, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1_000_000, maxTokens: 524_288 };
-  const additions = () => [alias, ...[...metadata.values()].map(e => e.model)];
+  // Only freshly proven free models join the catalog; a synchronous CLI alias for a
+  // free model is the operator's `catalogExtras`. Dispatch still needs fresh proof.
+  const additions = () => [...metadata.values()].map(e => e.model);
   const augmented: Provider = { ...provider, getModels: () => {
     const builtins = provider.getModels();
     return [...builtins, ...additions().filter((e, index, all) => !builtins.some(m => m.id === e.id) && all.findLastIndex(m => m.id === e.id) === index)];
@@ -238,8 +248,8 @@ export const preferredFreeMetadata = {
   thinkingLevels: ["high"] as const, input: ["text"] as ("text" | "image")[],
 };
 type RouteRegistry = Pick<ExtensionContext["modelRegistry"], "find" | "hasConfiguredAuth" | "isUsingOAuth">;
-/** Every request resolves a physical model. NEVER route unleased Sol in steak-pi's
- * namespace: backend must checkpoint/switch the settled job using normal ownership. */
+/** Every request resolves a physical model. NEVER route an unleased subscription model in
+ * steak-pi's namespace: backend must checkpoint/switch the settled job using normal ownership. */
 export async function selectPreferredFreePhysical(registry: RouteRegistry): Promise<{ model: Model; thinkingLevel: "high" }> {
   const config = activeTemporaryWorkerRoute();
   if (!config) throw new TemporaryFreeRouteReturnToNormalError();

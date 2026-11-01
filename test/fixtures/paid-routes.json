@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "reviewed": [
+    { "provider": "openrouter", "model": "deepseek/deepseek-v4.1-flash-1017:exacto", "baseUrl": "https://openrouter.ai/api/v1" },
+    { "provider": "inco", "model": "deepseek-v4.1-flash:fast", "baseUrl": "https://api.inco.ai/v1" },
+    { "provider": "xiaomi", "model": "mimo-v2.6-pro", "baseUrl": "https://token-plan-sgp.xiaomimimo.com/v1" },
+    { "provider": "xiaomi", "model": "mimo-v2.6-flash", "baseUrl": "https://token-plan-sgp.xiaomimimo.com/v1" }
+  ],
+  "allow": []
+}

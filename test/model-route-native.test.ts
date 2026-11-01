@@ -78,7 +78,9 @@ async function probe(source: Source, provider = "policy-test", allowed = false, 
       "--model", `${provider}/${id}`, "--print", ...attachment, "Reply OK",
     ], {
       cwd: temp, timeout: 45000, maxBuffer: 1024 * 1024,
-      env: { PATH: process.env.PATH, HOME: temp, PI_CODING_AGENT_DIR: temp, PI_OFFLINE: "1", PI_TELEMETRY: "0" },
+      // The child keeps the suite's synthetic operator fixture (vitest.config.ts), never the machine's.
+      env: { PATH: process.env.PATH, HOME: temp, PI_CODING_AGENT_DIR: temp, PI_OFFLINE: "1", PI_TELEMETRY: "0",
+        STEAK_PI_ROUTING_CONFIG: process.env.STEAK_PI_ROUTING_CONFIG, STEAK_PI_PAID_ROUTES: process.env.STEAK_PI_PAID_ROUTES },
     });
     pending.child.stdin?.end();
     const { stdout } = await pending;
@@ -104,7 +106,7 @@ it.each([
 ] as const)("native Pi denies GPT before network through %s / %s (alias %s)", async (source, provider, alias) => {
   const { message, requests } = await probe(source, provider, false, alias);
   expect(message.stopReason).toBe("error");
-  expect(message.errorMessage).toContain("paid openai-codex");
+  expect(message.errorMessage).toContain("pinned to its configured subscription route");
   expect(requests).toHaveLength(0);
 }, 60000);
 
@@ -131,7 +133,7 @@ it("re-guards the native worker runtime after a real model API refresh", async (
       const model = runtime.getModel("openrouter", "openai/gpt-4o")!;
       expect(model.api).toBe(api);
       const result = await runtime.completeSimple(model, { messages: [{ role: "user", content: "OK", timestamp: Date.now() }] });
-      expect(result.errorMessage).toContain("paid openai-codex");
+      expect(result.errorMessage).toContain("pinned to its configured subscription route");
       expect(requests).toBe(0);
     }
   } finally {

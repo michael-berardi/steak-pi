@@ -138,8 +138,8 @@ node - "$TMP/config/settings.json" "$STEAK_PACKAGE" <<'NODE'
 const fs = require("node:fs");
 const [file, root] = process.argv.slice(2);
 fs.writeFileSync(file, JSON.stringify({
-  defaultProvider: "xiaomi",
-  defaultModel: "mimo-v2.6-flash",
+  defaultProvider: "offline-fixture",
+  defaultModel: "fixture-model",
   defaultThinkingLevel: "high",
   defaultProjectTrust: "always",
   enableInstallTelemetry: false,
@@ -155,9 +155,9 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat"
 import { appendFileSync, writeFileSync } from "node:fs";
 export default function(pi) {
   pi.on("input", event => { appendFileSync("$TMP/input-events.jsonl", JSON.stringify({text:event.text,source:event.source}) + "\\n"); });
-  pi.registerProvider("xiaomi", {
-    baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1", api: "openai-completions", apiKey: "offline-fixture",
-    models: [{ id: "mimo-v2.6-flash", name: "Offline paste fixture", reasoning: false, input: ["text"],
+  pi.registerProvider("offline-fixture", {
+    baseUrl: "https://offline-fixture.invalid/v1", api: "openai-completions", apiKey: "offline-fixture",
+    models: [{ id: "fixture-model", name: "Offline paste fixture", reasoning: false, input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 1000 }],
     streamSimple(model, context, options) {
       // No network or inference: capture exactly what reaches the provider API.

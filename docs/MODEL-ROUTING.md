@@ -1,83 +1,200 @@
 # Model routing
 
-Steak Pi keeps the parent model selected by the operator. GPT-family requests
-require `openai-codex`, OAuth subscription credentials, the Codex Responses API,
-and the official HTTPS `chatgpt.com/backend-api` endpoint. OpenRouter, generic
-OpenAI API-key billing, custom endpoints, and batch GPT variants are rejected.
-The parent session has no provider fallback. Child worker runs have exactly one
-ordered automatic chain (below); every other selection is exact.
+Steak Pi is provider-neutral. It ships **no** model id, fallback chain, provider
+preference, worker profile, expert reviewer, paid-route grant or retired-model
+list of its own. Every routing choice is operator configuration, read from two
+user-owned files:
 
-Implicit routine workers and scouts default to **DeepSeek V4.1 Flash on
-OpenCode Go → DeepSeek V4.1 Flash on OpenRouter → GPT-6.1 Terra → Claude
-Haiku/Sonnet** on proven unavailability or usage limits. The default worker
-profile is `steak-pi/opencode-go` on the prepaid `opencode-go/deepseek-v4.1-flash`
-plan; once Go is used up the chain moves to the reviewed
-`openrouter/deepseek/deepseek-v4.1-flash-1017:exacto` route (OpenRouter's
-quality-first Exacto provider sort, `https://openrouter.ai/api/v1`), which
-launches only while the operator's `~/.pi/agent/paid-routes.json` allowlist
-carries that exact route; removing the entry revokes that tier and the chain
-continues at Terra. Paid routes are allowed under that exact reviewed-route
-allowlist — the earlier "subscription first, no paid fallback" rule is revoked. Terra uses
-`openai-codex/gpt-6.1-terra`, profile `steak-pi/gpt-6-1-terra` at high effort,
-and native Codex catalog registration (text+image input, 1,050,000 context,
-128,000 output). Writable DeepSeek or Terra implementation requests Opus 5.5
-verification through the parent; read-only and report-only work does not.
-Security-audit work stays Go/Haiku, never GPT. An OpenRouter 402 / insufficient
-credits, persistent 429, 5xx or "no endpoints found" refusal moves the wave to
-the next tier instead of stalling.
+| File | Override | Carries |
+| --- | --- | --- |
+| `~/.config/ultraterm/routing.json` | `STEAK_PI_ROUTING_CONFIG` | role defaults, chains, profiles, expert reviewer, quota tiers, subscription endpoints, Claude tiers, labels |
+| `~/.pi/agent/paid-routes.json` | `STEAK_PI_PAID_ROUTES` | the reviewed paid-route catalog and the operator's allowlist |
 
-## Sol retirement — 2026-10-05
+A missing file is an empty configuration: the tool starts, every explicit
+`model`/`profile`/`harness` selector works, and nothing is spent on a metered
+route the operator has not reviewed and allowed. An **implicit** dispatch that
+needs a chain nobody configured fails with the key to set, for example
+`No text worker chain configured: set textWorkerChain in ~/.config/ultraterm/routing.json.`
+A malformed file fails the routing decision that needs it with a
+`RoutingConfigError` naming the key; it never fails at import time. Files are
+re-read when their identity changes, so edits apply without a restart.
 
-**Sol means GPT-6.1 Sol only:** model `openai-codex/gpt-6.1-sol`, profile
-`steak-pi/gpt-6-1-sol`. The built-in profile for explicit Sol selection is the
-6.1 route, and it remains explicitly selectable; the automatic GPT step below is Terra.
-Unavailable 6.1 fails closed, never selecting another model. Other model routes
-and their defaults are unchanged; Astra is not retired Sol.
+The parent session keeps the model the operator selected and has no provider
+fallback. Child worker runs have exactly one ordered automatic chain (the
+operator's); every other selection is exact.
 
-GPT-6.0 Sol selectors (`gpt-6-sol`, `gpt-6.0-sol`, `gpt-6-0-sol`,
-`openai-codex/gpt-6-sol`, `steak-pi/gpt-6-sol`, shorthand and qualified
-`gpt-6-sol-*` variants, and display names such as "GPT-6 Sol" or "GPT-6.0 Sol")
-are rejected with **`RetiredModelSelectionError`**. Profile IDs, labels, model
-arguments, worker/reviewer defaults, UI control input, run normalization, and
-resolved child/request identities are checked. A friendly profile or opaque
-model alias cannot bypass rejection when its target or catalog display name
-identifies retired Sol. A retired selector is never rewritten to 6.1.
+## routing.json
 
-Restart keeps historical checkpoints inspectable and unchanged. Explicit resume
-rechecks the saved model and profile before reserving or launching a successor;
-a retired selection fails with the same error. Provider guards recheck streaming,
-deferred operations, restored sessions, compaction and controlled child turns.
-Event-hook validation alone is not an execution boundary: the provider guards
-remain authoritative. Explicit routes have no automatic Sol fallback; only the bounded automatic review exception below may change a Claude route.
+Every key is optional. Routes are exact `provider/model` strings (split at the
+first `/`, so model ids may contain slashes). Regular expressions are
+JavaScript sources, case-insensitive unless noted. Unknown keys are ignored
+(other UltraTerm tools share the file).
 
-## Explicit paid Inco profile
+```jsonc
+{
+  // Role defaults (unchanged since USAP 1.1): a model or profile selector.
+  "workerDefault": { "profile": "steak-pi/worker-a" },
+  "reviewerDefault": { "profile": "steak-pi/reviewer-a" },
 
-The user-owned `~/.pi/agent/paid-routes.json` must contain:
+  // Automatic chains, in order. Implicit text workers walk textWorkerChain; image
+  // workers (requireImages with no selector) walk multimodalWorkerChain.
+  "textWorkerChain": ["provider-a/model-name", "provider-b/model-name"],
+  "multimodalWorkerChain": ["provider-c/vision-model"],
 
-```json
-{"version":1,"allow":[{"provider":"inco","model":"deepseek-v4.1-flash:fast","baseUrl":"https://api.inco.ai/v1"}]}
+  // Profile whose metadata (thinking) applies when an implicit wave must leave an
+  // exhausted provider and re-resolve textWorkerChain.
+  "defaultChainProfile": "steak-pi/worker-a",
+
+  // Automatic profiles whose head keeps its own chain instead of the default one:
+  // text runs [head, ...then], image runs [head, ...multimodalThen].
+  "tokenPlanChainHeads": [
+    { "head": "provider-d/plan-model", "then": ["provider-b/model-name"], "multimodalThen": [] }
+  ],
+  // Head of the native reviewer chain when the profile head keeps no chain of its own.
+  "reviewerChainHead": "provider-d/plan-model",
+
+  // The scarce expert reviewer: preferred by legacy reviewer selection, at its own
+  // default effort, and only on its exact identity.
+  "expertReview": {
+    "model": "provider-x/expert-model", "thinking": "medium",
+    "requireOAuth": true, "api": "provider-x-api", "baseUrl": "https://expert.example/api"
+  },
+
+  // Worker profiles (same shape harness manifests resolve to). autoChain: an
+  // implicit run resolves the final chain instead of the profile head;
+  // autoReviewChain: reviewer defaults do the same.
+  "workerProfiles": [
+    { "id": "steak-pi/worker-a", "model": "provider-a/model-name", "thinking": "high", "autoChain": true,
+      "workerDefault": { "profile": "steak-pi/worker-a" }, "reviewerDefault": { "profile": "steak-pi/reviewer-a" } }
+  ],
+
+  // Retired selectors and identities, refused with RetiredModelSelectionError and
+  // the message ({route} is replaced). selectorsOnly: refuse only where the route is
+  // named as a dispatch or role-default selection, never in a catalog or identity.
+  "retiredModelPatterns": [
+    { "pattern": "(?:^|/)old-model(?:$|[-:/])", "message": "{route} was retired; select provider-a/model-name explicitly." }
+  ],
+  // First-party steak-pi harness profile ids dropped from a live manifest merge.
+  "retiredProfiles": ["old-profile"],
+
+  // Model metadata injected into a native provider's catalog (missing ids only),
+  // registered at startup and in every isolated child runtime.
+  "catalogExtras": [
+    { "provider": "provider-x", "models": [
+      { "id": "new-model", "name": "New Model", "api": "provider-x-api", "baseUrl": "https://provider-x.example/api",
+        "reasoning": true, "input": ["text", "image"], "contextWindow": 1000000, "maxTokens": 128000,
+        "cost": { "input": 1, "output": 5, "cacheRead": 0.1, "cacheWrite": 1 } }
+    ] }
+  ],
+
+  // Account-router quota tiers, in fall-through order. quota is the router's provider
+  // key; models (optional) limits the tier to exact ids; metered:false = the router has
+  // no meter for it (never preflight-gated, only held out after its own refusal).
+  // A tier whose quota key is "codex" is account-leased through the router's Codex store.
+  "providerQuotaFallback": [
+    { "quota": "provider-a", "provider": "provider-a", "label": "Plan A" },
+    { "quota": "gateway", "provider": "provider-b", "metered": false, "label": "Gateway" }
+  ],
+
+  // Picker-hidden routes: provider-scoped, matched exactly (case-sensitive) against the
+  // model's local slug (the id after its last "/"). Dispatch coverage is unchanged.
+  "hiddenModelPatterns": [{ "provider": "provider-b", "pattern": "^duplicate-model(?::batch)?$" }],
+
+  // Subscription endpoints (no paid grant needed): https, no port/credentials, exact host,
+  // optional exact-case pathPattern; oauth: only with an OAuth credential; exact: no
+  // query/fragment. A check with modelPattern also PINS every model whose id or name
+  // matches to that exact route (oauth, api, host, path), refusing excludeIdPattern ids.
+  "subscriptionRouteChecks": [
+    { "provider": "provider-a", "host": "plan.provider-a.example", "pathPattern": "^/v1(?:/|$)" },
+    { "provider": "provider-x", "host": "provider-x.example", "pathPattern": "^/api/?$", "oauth": true, "exact": true,
+      "api": "provider-x-api", "modelPattern": "(?:^|[^a-z0-9])family-x(?:[^a-z]|$)", "excludeIdPattern": "batch" }
+  ],
+  // While this provider's key is configured and not proven exhausted, metered routes
+  // without an explicit grant stay denied ("subscription first"). None: no veto.
+  "subscriptionFirstProvider": "provider-a",
+
+  // Claude Code CLI adapter choices (routes are the adapter's pinned claude-code/<model> ids).
+  "claudeFallbackTier": { "ordinary": "claude-code/<small-model>", "substantial": "claude-code/<medium-model>" },
+  "claudeCodeDefaults": { "worker": "claude-code/<medium-model>", "reviewer": "claude-code/<large-model>" },
+  // Implicit all-reviewer waves run route; fallback is the Pi route used only on proven
+  // Claude quota/auth unavailability before output (read-only reviewers only).
+  "implicitReview": { "route": "claude-code/<large-model>", "fallback": "provider-x/model-name" },
+
+  // Routes whose writable work needs a bounded expert verification through the parent.
+  "verificationGates": [
+    { "match": "^provider-a/", "reviewer": "claude-code/<large-model>", "fallback": "provider-x/model-name" }
+  ],
+
+  // Display names for dispatch notes and receipts.
+  "routeLabels": { "provider-a/model-name": "Plan A" }
+}
 ```
 
-Launch that exact selected model with the extension flag
-`--steak-pi-paid-route=inco/deepseek-v4.1-flash:fast`. Both the flag and allowlist are
-required; this narrow exception only supports that Inco product and exact URL
-(no trailing slash, query, alternate endpoint, or model alias). Permission is
-captured from the selected model at session start. Switching away does not
-approve another route; returning to the same route and compaction on that route
-retain approval. Reloading captures the then-selected model again. The file is
-re-read at request dispatch so deleting or editing the entry revokes permission.
+What each key replaces, and what happens without it:
 
-This is intentional direct paid selection, independent of Go quota. It neither
-creates quota-exhaustion evidence nor changes worker defaults. Worker runtime
-guards do not receive the parent launch permission, even when reusing a provider
-previously guarded for the parent. GPT-family restrictions remain mandatory.
-Automatic metered requests while Go is configured still require the existing
-strict, short-lived, credential-bound quota evidence; unknown quota, outages,
-and authentication failures do not grant access. Xiaomi's dedicated Singapore Token Plan endpoint is a prepaid subscription, not its separate pay-as-you-go API. It does not need a paid-route grant. General Xiaomi API endpoints remain metered and guarded. A parent session's Inco approval never widens worker permissions.
+| Key | Without it |
+| --- | --- |
+| `textWorkerChain` / `multimodalWorkerChain` | implicit waves fail with the key to set; explicit selectors work |
+| `defaultChainProfile` | the forced re-resolve uses the chain with inherited thinking |
+| `tokenPlanChainHeads`, `reviewerChainHead` | every automatic profile and reviewer wave resolves the default chain |
+| `expertReview` | no expert preference; reviewers resolve like any role default |
+| `workerProfiles` | only the neutral virtual `steak-pi/preferred-free` and harness-manifest profiles exist |
+| `retiredModelPatterns`, `retiredProfiles` | nothing is retired |
+| `catalogExtras` | provider catalogs are exactly what Pi ships |
+| `providerQuotaFallback` | no quota preflight or fall-through walk; routes launch as selected |
+| `hiddenModelPatterns` | pickers hide nothing beyond the harness scope |
+| `subscriptionRouteChecks` | only local endpoints and the Claude Code CLI adapter are subscription/local; no family is pinned |
+| `subscriptionFirstProvider` | no subscription-first veto |
+| `claudeFallbackTier` | an implicit wave whose chain is out fails naming every cause |
+| `claudeCodeDefaults` | `harness: "claude-code"` needs an explicit `model` |
+| `implicitReview` | implicit all-reviewer waves resolve the native reviewer chain |
+| `verificationGates` | no worker is told to request a verification |
+| `routeLabels` | notes show `provider/model` |
 
-Policy denials use a deterministic message without transient-status keywords.
-Pi's native retry classifier treats this denial as nonretryable; real transient
-provider failures retain the existing retry behavior.
+Provider-specific *adapter* code stays: the Claude Code CLI adapter keeps its
+own pinned model catalog (`src/subagents/claude-code-models.ts`,
+`extensions/claude-code/model-catalog.ts`), the subscription-plan transport
+adapter keeps its session headers, the account router keeps its provider keys,
+and the temporary free route keeps its official zero-price metadata API. No
+default selects any of them; automatic order comes only from the keys above.
+
+## paid-routes.json (version 2)
+
+```json
+{
+  "version": 2,
+  "reviewed": [
+    { "provider": "provider-b", "model": "model-name", "baseUrl": "https://gateway.example/api/v1" }
+  ],
+  "allow": [
+    { "provider": "provider-b", "model": "model-name", "baseUrl": "https://gateway.example/api/v1" }
+  ]
+}
+```
+
+`reviewed` **is** the operator's approved paid-route catalog; `allow` is the
+granted subset. A route spends only when it is in both, matched exactly
+(provider, model id, base URL: a trailing slash, path, port, query or alias is a
+different billing target). There is no wildcard and no provider-prefix match.
+Version 1 files (`{ "version": 1, "allow": [...] }`) keep working as before: a v1
+allow entry grants only when the route is also in the reviewed table, which a v1
+file can only take from the operator's catalog file (`STEAK_PI_PAID_ROUTES` or
+`~/.pi/agent/paid-routes.json`, when that file is version 2); with no reviewed
+table nothing is granted. Missing, malformed, unreadable or unmatched files fail
+closed. Both tables are re-read on every decision, so deleting an entry revokes it.
+
+`readApprovedPaidRoutes`, `findPaidRoute`, `isAllowlistedPaidRoute`,
+`createAllowlistApproval`, `createSelectedRouteApproval` and
+`createExplicitPaidApproval` all read this file. `reviewedPaidRoutes()` returns
+the reviewed table; the deprecated `PAID_ROUTES` export is always empty.
+
+Launching with `--steak-pi-paid-route=<provider>/<model>` additionally approves
+that exact reviewed, allowed route when it is the model Pi resolved at launch.
+Operator `/model` switching approves the selected route while it stays reviewed
+and allowed; switching away approves nothing else.
+
+Policy denials use a deterministic message without transient-status keywords, so
+Pi's native retry classifier treats them as nonretryable.
 
 ## Native USAP selection
 
@@ -85,486 +202,169 @@ Each run uses one frozen model for all its tasks. Set **either** `model` to an
 exact authenticated `provider/model` or `profile` to a native `harness/profile`
 route. Explicit selection takes precedence over roles and defaults, including
 reviewers, and is **exact**: an explicitly chosen route never gains
-cross-provider spending, even when the chosen route happens to be a step of an
-automatic chain. For example, an Astra manager can dispatch
-`profile: "steak-pi/gpt-6-1-sol"`; a MiMo manager can explicitly choose an
-available Codex model; explicitly selecting
-`opencode-go/deepseek-v4.1-flash` keeps that route with only OpenCode Go's own
-same-plan retry. No CLI is launched to resolve a profile.
+cross-provider spending, even when it happens to be a step of an automatic
+chain. No CLI is launched to resolve a profile.
 
-Omitting both selectors consults `~/.config/ultraterm/routing.json` role
-selectors (`workerDefault` / `reviewerDefault`) first, then the matching parent
-profile metadata. Explicit model/profile selection always wins. Custom selectors
-are preserved; the operator's routine default is `steak-pi/opencode-go`.
+Omitting both selectors consults `workerDefault` / `reviewerDefault` first, then
+the matching parent profile's metadata. An automatic profile (`autoChain`)
+resolves the configured chain:
 
-- Routine text workers/scouts: canonical `opencode-go/deepseek-v4.1-flash` first,
-  then the reviewed `openrouter/deepseek/deepseek-v4.1-flash-1017:exacto` route,
-  then `openai-codex/gpt-6.1-terra`. A step the registry cannot resolve (no Go
-  route, no OpenRouter route or approved allowlist entry) is skipped at selection;
-  when no step can launch, an implicit wave moves to the Claude tier below.
+- **Chain selection.** The first step that is authenticated, present in the
+  published dispatch catalog (`registry.getAll()`, not the curated picker),
+  capability-matching, has a native streaming adapter and is spendable
+  (subscription/local per `subscriptionRouteChecks`, or reviewed **and** allowed
+  in paid-routes.json) serves the run. The receipt records `source: "chain"` and
+  the ordered `chainRoutes`.
 - **Quota preflight.** For an *implicit* route (no `harness`/`model`/`profile`/`claudeAccount`)
-  the dispatch reads the account router (`ut-provider-accounts status`, one call, only when the
-  resolved route is a router-gated Go or Terra route) before it returns a selection, so an
-  exhausted provider is found at dispatch instead of at worker launch, after `Started`. A
-  provider is **exhausted** only when it has at least one configured account and the router's
-  own fields prove *every* one unavailable: `state: "cooling-down"` (or a live
-  `cooldown.until`), `signedOut`, or a usage window at 100% that has not yet reset.
-  `eligible: true` always wins; `eligible: false` alone, a busy account, unmeasured usage, a
-  provider the router does not list and an unreadable router are **not** exhaustion (the route
-  stays as selected and the launch-time router remains the authority). A provider the router
-  lists with no configured account cannot launch and counts as blocked. An exhausted route is
-  never selected: the built-in default chain (Go -> OpenRouter DeepSeek -> Terra) is re-resolved
-  with that provider skipped (a Go parent offers Terra its isolated Codex store, as for an
-  explicit Sol dispatch),
-  the receipt records the whole chain (`source: "chain"`, `chainRoutes`) and the router cause
-  (`selection.fallbackReason`), and the dispatch text carries a route note.
-- **Claude tier.** When none of OpenCode Go, OpenRouter DeepSeek or Terra can launch (exhausted or
-  unconfigured per the router, not approved in `~/.pi/agent/paid-routes.json`, or not authenticated
-  in the session), an implicit routine text wave (no reviewer, no
-  `requireImages`, effort unset or `xhigh`) runs on the official Claude Code subscription
-  route with no re-dispatch by the parent: **Haiku 5.5** (`claude-code/claude-haiku-5-5`) for
-  ordinary leaves, **Sonnet 5.5** (`claude-code/claude-sonnet-5-5`) for any leaf that may both
-  edit (`mayEdit`) and run a shell (`allowBash`) or a requested `thinking` of xhigh. The
-  choice reads only the dispatch's declared capabilities, never the task text.
-  A Claude Code CLI route is not a Pi provider, so it is never a step of the Pi chain; the
-  dispatch boundary reaches it from the router quota or the typed `NoChainRouteError`, which
-  carries the steps actually tried and must be exactly the built-in default text chain
-  `[Terra, Go]` (a profile-default MiMo chain, a router error or any other failure never engages
-  it). Auth is the existing Claude Code subscription login only; the `claude-code-api` route
-  is never a fallback. The tier worker is **pinned** (`run.claudeAccount`) on a Claude account
-  the same router snapshot shows `eligible: true`, balanced across the eligible ones (least-used
-  window, then fewest live leases, then router order; unmeasured accounts last); the dispatch
-  asks the router to `select` it and, if the router refuses, fails naming the account and the
-  router's words. When the router lists Claude accounts and none is eligible the call refuses
-  (`Claude subscription tier: the router shows no eligible Claude account (…)`); an unreadable
-  router, or one that lists no Claude account, proves nothing and the worker launches on the
-  parent's login. The Claude route runs only at `xhigh`, and an explicit non-`xhigh` effort is
-  never silently overridden, so `thinking: "high"` with the default chain out refuses. Haiku is
-  an internal tier: `claude-code/claude-haiku-5-5` is not an explicit route (it is refused like
-  any unlisted model) and is never admitted for image review. The run records
-  `source: "chain"` with `chainRoutes` ending in the tier route (only the steps really tried,
-  then the tier), `independence: "requires-opus"` and `fallbackReason` naming the tier, why,
-  and each router cause. Work on either tier **needs an Opus 5.5 review**; an all-reviewer wave
-  already defaults to it.
+  the dispatch reads the account router once (`ut-provider-accounts status`) when the
+  resolved route is in a metered `providerQuotaFallback` tier. A provider is
+  **exhausted** only when every configured account is proven unavailable
+  (`state: "cooling-down"` or a live `cooldown.until`, `signedOut`, or a usage window at 100%
+  that has not reset). `eligible: true` always wins; busy, unmeasured, unlisted and
+  unreadable are **not** exhaustion. An exhausted route is never selected: `textWorkerChain`
+  is re-resolved with that provider skipped, and the receipt carries the router cause in
+  `selection.fallbackReason`. A parent on another account-leased tier may reach a `codex`-tier
+  step through an isolated, router-reserved account store.
+- **Claude tier.** When no chain step can launch, an implicit routine text wave (no reviewer,
+  no `requireImages`, effort unset or `xhigh`) runs on `claudeFallbackTier` through the
+  official Claude Code subscription CLI with no parent re-dispatch: `ordinary` for plain leaves,
+  `substantial` for a leaf that may both edit and run a shell, a requested high/xhigh effort, or
+  a reviewer. The choice reads only declared capabilities, never task text. The worker is pinned
+  on a router-eligible Claude account (least-used window, then fewest leases). The run records
+  `independence: "requires-opus"` (historical value: it needs an expert verification) and a
+  `fallbackReason` naming the tier and each cause. The paid `claude-code-api` route is never a
+  fallback.
 - **When nothing can launch the dispatch refuses synchronously**, before any checkpoint, relay
-  peer or worker exists, naming every cause (Go, OpenRouter DeepSeek, Terra and the Claude tier,
-  each with the router's own words or the missing allowlist entry, e.g. `OpenCode Go: every Go
-  account is unavailable (Go 1: cooling down until Mon 02:59; Go 2: …) | OpenRouter DeepSeek V4.1
-  Flash: no authenticated route is available in this session and the reviewed route is not approved
-  in ~/.pi/agent/paid-routes.json | GPT-6.1 Terra: … | Claude subscription tier: every Claude account
-  is ineligible (…)`). An implicit review whose Claude accounts are proven unavailable and whose
-  Terra review fallback is exhausted refuses the same way. An implicit read-only review on a
-  healthy Claude whose Terra review fallback is exhausted installs no fallback (it would only
-  trade a Claude quota/auth failure for a router refusal after `Started`) and the dispatch note
-  says so (`Review note: the GPT-6.1 Terra review fallback is unavailable (…)`).
-- **Explicit routes stay exact.** An explicit `model`/`profile`/`harness` selection is never
-  rerouted; if it resolves to a Go or Terra route whose provider is exhausted it is refused
-  synchronously with the router cause (`USAP explicit route openai-codex/gpt-6.1-sol cannot
-  launch: …`). A busy or unknown provider launches as before.
+  peer or worker exists, naming every cause.
+- **Explicit routes stay exact.** An explicit route whose provider the router proves exhausted
+  is refused with the router's cause; it is never rerouted.
 - **A worker that fails before its first model output fails the dispatch** (router refusal,
-  auth, route, spawn, a first request that errors), background or not. Workers report their
-  first model output as soon as it arrives (`WorkerProgress.outputStarted`, recorded as
-  `TaskRecord.outputStarted`: the Pi runner on the first streamed delta, tool start or billed
-  message, the Claude runner on its first message), and the dispatch holds up to
-  `startupWindowMs` (default 25000 ms, two bounded router calls plus 5 s; maximum 30000, `0`
-  disables) for each launched worker to reach it or fail. `turns` cannot decide this: a Pi
-  worker counts a turn when its request starts, so a first request refused with a 429 or an
-  expired login still ends with `turns >= 1`. A task waiting on run width, session or machine
-  capacity is not launching and is not waited on. A task that settles `failed` without that
-  output (and is not a budget stop) throws from the tool with the named cause (`USAP dispatch
-  failed before any worker produced model output (run …): [label] <cause>`), cancels the
-  run's siblings so no half-started wave keeps running, leaves the run record `failed` with
-  each cause, and queues no completion message: the checkpoint is marked delivered in the same
-  step, so a session reload does not queue one either. The error states only what the settled
-  snapshot shows: a sibling that had not stopped inside the 5 s settle wait is named as
-  possibly still shutting down, not reported as cancelled. Within the window an unfinished
-  launch is reported `Started`; a failure after the window is the run's ordinary failure
-  (a worker whose first request fails with a 429 also reports the cooldown and releases its
-  lease before it settles, which can land after the window when the router answers near its
-  10 s timeout; the failure then arrives as an ordinary completion naming the cause). The one
-  bounded `hub resume` is not gated, and neither is the explicit paid `claude-code-api` route,
-  which keeps its settled-result contract. The one exception to "fails the dispatch" is a
-  provider quota or usage-limit refusal on an implicit wave, which falls through to the next
-  tier (below).
-- **A usage-limit refusal before any output falls through to the next tier.** The preflight
-  cannot see a spent Go plan: Go has no usage API, so its accounts read "usage unknown" and
-  eligible, and the first request is the first evidence (`429: {"type":"GoUsageLimitError",
-  "message":"Go usage limit exceeded"}`). For an *implicit* routine wave (the same condition as
-  the quota preflight) the startup gate therefore does not fail the dispatch on such a cause:
-  it re-runs the **same tasks** once on the next tier of Go -> OpenRouter DeepSeek -> Terra ->
-  Claude Haiku 5.5 / Sonnet 5.5 (the tier by the rule above, pinned on a router-eligible Claude
-  account), with no parent re-dispatch. The OpenRouter tier's own 402 "Insufficient credits" /
-  "requires more credits" or "No endpoints found" refusal is a quota cause too, and the router
-  never meters it, so that tier launches without a router read. It happens inside the startup window, before `Started`, for foreground and
-  background runs alike (each attempt has its own window, so a wave that falls through every
-  tier can hold the call for about 130 s in the worst case before it returns or fails with every
-  cause named). *A quota cause* is the provider's own words for a spent plan: Go's
-  `GoUsageLimitError` / "Go usage limit exceeded", Codex `subscription_quota_exceeded` /
-  "usage limit has been reached" / `usage_limit_reached` / Pi's "You have hit your ChatGPT usage
-  limit", a "quota exhausted/exceeded/reached" phrase, or a router refusal that says the
-  accounts are cooling down. **Every** failed worker must have one: an auth, route or spawn
-  failure, a router that is merely unavailable, a bare 429 (a rate limit, not a spent plan), an
-  unproven lease release and any mix with a plain cause still fails the dispatch synchronously.
-  It also needs: no worker in the run produced output or finished (re-running would repeat
-  work), the whole run settled, and no abort. A cancelled sibling is marked settled before its
-  cleanup finishes, so it may still be releasing its lease when the next tier starts; it never
-  received a prompt, and an unreleased lease expires on the router's timer. Order is strict and
-  each tier is tried at most once (at most two fall-throughs, never a loop): the tier the
-  failed run reached and everything ahead of it is out whatever the router later says, and each
-  attempt reads the router afresh. The refused first run stays recorded `failed` with its
-  causes named, is marked delivered (no completion message, none after a reload) and is never
-  resumed. The second run's receipt names the fall-through and why: `selection.chainRoutes`
-  lists the tiers in order, `selection.fallbackReason` starts `automatic fall-through after a
-  usage-limit refusal before any output;` and carries each refused tier's cause, and the
-  dispatch text opens with `Fall-through: run <id> · <route> was refused on a provider usage
-  limit before any worker produced output (…)`. If the next tier cannot be selected (for
-  example every Claude account is ineligible) or also fails to launch, the call fails
-  synchronously naming **both** causes. Explicit routes, reviewer and image waves, the Claude
-  tier itself and the `claude-code-api` route never fall through.
-- Automatic image workers (requireImages with no model, or the Terra profile) use
-  GPT-6.1 Terra, which reads images, then MiMo V2.6 Flash. The text-only Go route
-  never joins the image chain; an explicit MiMo profile keeps its own image route.
-- Legacy native-Pi MiMo profiles retain their explicit identities and per-profile
-  chains. Astra and Luna explicit identities are unchanged.
+  auth, route, spawn, a first request that errors), background or not. The dispatch holds up
+  to `startupWindowMs` (default 25000 ms, maximum 30000, `0` disables) for each launched
+  worker to produce output or fail; the failed run is marked delivered and its siblings are
+  cancelled.
+- **A usage-limit refusal before any output falls through to the next tier** for an implicit
+  routine wave: a provider's spent-plan wording (`subscription_quota_exceeded`,
+  `GoUsageLimitError`, "usage limit has been reached", Pi's "You have hit your ChatGPT usage
+  limit", a 402 / insufficient credits / no endpoints found refusal, a "quota exhausted" phrase,
+  or a cooling-down router refusal). Every failed worker must carry one; a bare 429, auth,
+  route or spawn failure still fails synchronously. The same tasks re-run once on the next
+  configured tier; a tier the failed run reached and everything ahead of it is never retried.
 
-### Go account isolation
+A run frozen as an automatic chain step may hop to the next eligible step at
+runtime, only when the attempt failed **before** any content or tool event with
+a transient or plan-exhausted class, and never for auth, permission, region,
+context or 400-class failures. The hop never revisits a route, re-enters the
+live registry provider (so metering and approval apply), keeps the answering
+provider/model on every event, and is recorded as `from->to` in
+`TaskRecord.routeFallbacks`. Explicit, profile-default and resumed runs never hop.
 
-Parent/native integration must run `~/.ultraterm/bin/ut-provider-go-materialize`
-before dispatch: that separate secure helper projects existing primary Go and
-UTP-stored secondary credentials into private account dirs. Steak and the router
-never read credentials. Router command is `~/.ultraterm/bin/ut-provider-accounts`
-(or `ULTRATERM_ACCOUNT_ROUTER`); `select --provider opencode-go --reserve` returns
-account + lease. Primary/B labels are **Go 1 / Go 2**, together mode, balanced by
-active leases with rotating ties; unknown quota remains unknown.
+The expert reviewer (`expertReview`) keeps its own default effort (medium unless
+configured); explicit `thinking: "high"` or `"xhigh"` needs a concrete
+`thinkingReason`. Reviewer role alone does not raise effort. An expert review
+that fails is reported, never silently downgraded.
 
-Each canonical Go child binds its lease, creates the SDK session with isolated
-`agentDir` and explicit runtime auth/model paths under
-`~/.ultraterm/provider-accounts/opencode-go/{primary,b}/agent`, then releases in
-finally. Cancelled late initialization retains the lease until session disposal.
-No parent environment mutation, active-session migration, primary credential
-replacement, quota purchase, or paid Zen overage is performed. Keep Go **Use
-balance** disabled. Endpoint must be exactly `https://opencode.ai/zen/go/v1`;
-the native guard adds User-Agent and stable session headers. Real HTTP 429 and
-`subscription_quota_exceeded` report account cooldowns, never invented percentages. A spent
-plan is reported to the router as `limit --kind usage`, so the account is held out and the
-next dispatch's preflight skips it: Go's `GoUsageLimitError` / "Go usage limit exceeded" (it
-arrives as a 429, but a 429 whose body names the plan is not a transient rate limit) and
-Codex's "usage limit has been reached" / `usage_limit_reached` as well as
-`subscription_quota_exceeded`. Pi rewrites every Codex 429 into "You have hit your ChatGPT
-usage limit" and adds "Try again in ~N min." only when the server sent a reset time, so that
-sentence is `usage` only with a reset time and `rate` without one. A bare 429 stays
-`--kind rate`.
-Go runtime failures stay on their isolated account (no ambient-credential GPT hop).
-An authenticated explicit canonical Go model, including parent-verified
-`longcat-2.5-preview-free`, uses the same account binding; it does not replace
-DeepSeek as a routine default. No Step model/profile is added here.
+Set `requireImages: true` for visual critics and render inspection: models
+without advertised image input are rejected.
 
-### Automatic review exception
+### Implicit review
 
-Implicit all-reviewer waves prefer official Claude Code **Opus 5.5 xhigh**.
-Only a router status proving every Claude account ineligible, or an official
-Claude child with a recognized quota/auth failure **before model output**, may
-use exact **GPT-6.1 Terra on Codex OAuth**. Unknown router state, unavailable Terra,
-transport/protocol/model mismatch, partial output, cancellation, and explicit
-Claude selection do not authorize fallback. Mixed implicit waves are rejected;
-image review never downgrades to the automatic text-review fallback. Automatic fallback requires every
-reviewer to be read-only, with no `mayEdit`, `allowBash` or owned paths.
-Privileged reviewers retain Claude's path admission and shell restrictions.
-Legacy automatic-fallback checkpoints with unfinished privileged reviewers
-cannot resume; explicitly selected Pi runs are unchanged.
+When `implicitReview.route` is set, implicit all-reviewer waves run it on the
+official Claude Code CLI at xhigh. Only a router status proving every Claude
+account ineligible, or a Claude child with a recognized quota/auth failure
+**before model output**, may use `implicitReview.fallback` on Pi, and only for
+read-only reviewers (no `mayEdit`, `allowBash` or owned paths). Mixed implicit
+worker/reviewer waves are rejected. A task records `reviewFallback: {from,to,reason}`
+and `routeFallbacks`; a successful fallback review emits
+`<label> fallback review: USAP <run-id> receipt=<checkpoint.json> report=<task-id>`.
+Receipts mark these runs `automatic-review` / `automatic-review-fallback`, never
+`override`, and a resume does not re-arm the fallback.
 
-A task records `reviewFallback: {from,to,reason}` and `routeFallbacks`; successful
-Terra review emits `GPT-6.1 Terra fallback review: USAP <run-id> receipt=<checkpoint.json>
-report=<task-id>`. A failed Terra attempt is not approval. The original requested
-Claude run identity remains in runtime-fallback receipts; the task's actual
-answering route is Terra. A leaf resumed on Terra keeps its `reviewFallback`; a Claude
-review resumed on Claude does not carry a mid-run Terra fallback. Parents gate on successful task/checkpoint evidence,
-not a prose claim of Opus approval. No commit/push/deploy permission is granted.
+### Account isolation
 
-GLM 5.3, GLM 5.3 Flash and the Z.ai plan were retired on 2026-10-03. A `zai/`,
-`z-ai/` or `glm-` model or profile selector is refused with a message naming the
-replacement; no chain or Go retry reaches GLM.
-  No expert model is ever selected automatically on the native
-  chain; expert review is the Opus Pass CLI route (explicit, or the implicit
-  all-reviewer-wave default) described below.
+Parent/native integration runs `~/.ultraterm/bin/ut-provider-go-materialize`
+before dispatch: that separate secure helper projects existing subscription
+credentials into private account dirs. Steak Pi and the router never read
+credentials. The router command is `~/.ultraterm/bin/ut-provider-accounts` (or
+`ULTRATERM_ACCOUNT_ROUTER`); `select --provider <key> --reserve` returns account
++ lease. Each account-leased child binds its lease, creates the SDK session with
+an isolated `agentDir` under `~/.ultraterm/provider-accounts/<key>/<id>/agent`,
+and releases it in `finally`. Spent plans are reported to the router as
+`limit --kind usage`; a bare 429 stays `--kind rate`.
 
-The main app's own launch model is unchanged (MiMo V2.6 Pro). Explicitly chosen profiles remain exact; selecting OpenCode Go does not select this cross-provider chain.
-
-## Scarce expert reviewer (Astra)
-
-`openai-codex/gpt-6-astra` is the scarce expert for hard planning/debugging and
-review/validation — never routine implementation or orchestration. USAP 1.3
-removed the automatic Astra-first reviewer default. Implicit all-reviewer waves
-prefer the official Opus Pass; only the automatic review exception above may
-use Terra. Explicit native reviewer choices remain exact.
-Astra itself is reachable only through an exact explicit selector on the paid Codex OAuth coding
-plan; eligibility is the exact subscription identity (OAuth, Codex Responses
-API, official `chatgpt.com/backend-api`), so a batch id, API-key endpoint, or
-other metered substitute never serves as the expert. An explicitly selected
-Astra gets **no runtime hop**: a failed expert review fails visibly and is
-reported — it is never silently downgraded to a weaker model, and no output may
-claim expert approval that did not happen. Astra keeps its medium
-reasoning default; reviewer role alone does not raise effort. Astra is never a
-routine worker default: parent-added `steak-pi/gpt-6-1-sol` and
-`steak-pi/gpt-6-luna` profiles are explicit-selection routes only, whose own
-`workerDefault` keeps routine workers on the default Go → OpenRouter DeepSeek → Terra chain.
-
-The first step that is authenticated, present in the operator's available
-catalog, capability-matching, has a native streaming adapter, and is spendable
-serves the run. MiMo must use the exact Singapore Token Plan host, with `/v1` or `/anthropic`; Terra must use Codex OAuth on `chatgpt.com/backend-api`. Lookalike hosts and general paid API endpoints do not qualify. No INCO, OpenRouter or metered/PAYG route is part of this default chain; GPT-6.1 Terra on Codex OAuth is its only GPT step.
-
-A legacy MiMo run frozen as an automatic chain may hop to the next eligible chain route at
-runtime — this is real routing, not a selection shortcut. The hop happens only
-when the attempt fails **before** any content or tool event (a `start` event is
-metadata only), the failure is the transient class Go already retries (429,
-5xx, rate limit, overloaded, temporary) or a proven exhausted subscription plan
-(`subscription_quota_exceeded`), and the caller has not aborted. Go child runtimes do not install this cross-provider hop. Auth, permission,
-region, context and 400-class failures never hop, whatever transient wording
-they carry. The hop stops permanently at the first content/tool event, never
-revisits a route (the chain order is monotonic and the failing attempt's own
-provider/model identity is recorded), and re-enters the live registry provider
-so the metering gate and approval apply to the fallback too. Every forwarded
-event keeps the answering provider/model, and each hop is recorded as
-`from->to` in `TaskRecord.routeFallbacks`, shown in agent status and bounded session
-telemetry. A `model`/`profile` selection, a `profile-default` run, and a resumed
-run never install this hop.
-
-Go needs the user's own key. Its former same-plan retry on Go GLM 5.3 Flash was
-retired with GLM; a Go failure is reported as itself. A
-`/model` change cannot inherit a stale launch profile's defaults. Parents without an explicit profile default use the Terra → Go automatic worker chain; legacy native reviewer chains remain MiMo Pro → Terra.
-
-Selection resolves against Pi's configured authentication and available model
-catalog, so the catalog must list the route before selection can include it.
-Missing models, conflicting selectors, unavailable authentication,
-unavailable catalog entries, missing native text/tool adapters, and unapproved
-paid steps fail before launch. Set
-`requireImages: true` for visual critics and render inspection: models without
-advertised image input are rejected. Tool-adapter availability is a preflight
-check, not a guarantee that every provider/model accepts every tool schema;
-actual worker tool results remain visible.
-
-Dispatch receipts, hub results, and bounded session telemetry carry the resolved
-provider/model, selected profile when supplied, parent profile when matched,
-`override`/`chain`/`profile-default`/`legacy-default`/`automatic-review`/`automatic-review-fallback`
-provenance, the ordered `chainRoutes` of an automatic chain, capabilities and effort.
-`automatic-review` marks an implicit review wave on its automatic Claude route, and
-`automatic-review-fallback` one moved to Terra because no Claude account was eligible;
-neither is ever recorded as `override` (the value an operator-requested route
-produces), and a resume keeps them without re-arming the automatic fallback.
-Task results report native tool successes and errors. If every attempted tool
-fails, a prose completion cannot mark the task successful.
-
-Astra workers default to **medium** reasoning, even when the parent is running
-at high or xhigh. Explicit `thinking: "high"` or `"xhigh"` is supported with a
-concrete task benefit in `thinkingReason`. Reviewer role alone does not raise
-effort. Other models preserve their inherited reasoning level unless explicitly
-overridden. This is a latency-conscious default, not a claim of universally
-equivalent benchmark performance.
+## Provider guard
 
 `extensions/model-route-policy.ts` composes native provider wrappers through
 Pi's supported registry API. The wrapper checks the resolved model immediately
-before stream/deferred execution, after auth endpoint resolution. A throw at
-this boundary becomes a failed request. It does **not** use a throwing
-`before_provider_request` hook: Pi intentionally catches those hook errors and
-continues. Session start, model changes, pre-turn, and compaction refresh wrapper
-registration without stacking unchanged wrappers. If a configuration reload
-introduces a different API, the current composed provider is guarded again.
-USAP also checks the route before child creation and installs the same wrappers
-in each isolated child runtime, reapplying after session creation and before
-every controlled turn to cover refreshed API definitions without wrapper stacking.
+before stream/deferred execution, after auth endpoint resolution: retired
+identities, pinned families (`subscriptionRouteChecks` `modelPattern`) and the
+metered gate. A throw at this boundary becomes a failed request; it does not use
+a throwing `before_provider_request` hook (Pi catches those). Session start,
+model changes, pre-turn and compaction refresh registration without stacking
+wrappers. USAP installs the same wrappers in each isolated child runtime.
 
-The base catalog retains its real API coverage: Pi uses that catalog to choose
-between provider execution and a global API fallback. Removing forbidden models
-there would let configuration-only providers bypass the guard. Forbidden routes
-are instead removed by the availability filter, with dispatch assertions as the
-authoritative boundary. An all-model listing may still show unavailable routes.
+The base catalog keeps its real API coverage; forbidden and hidden routes are
+removed only by the availability filter, with dispatch assertions as the
+authoritative boundary.
 
 ## Picker availability, hot reload and loaded-agent limits
 
-Native `/model` and the UltraTerm composer list share exactly one source: the native
-availability snapshot (`ModelRegistry.getAvailable()` ===
-`ModelRuntime.getAvailableSnapshot()`), produced by each provider's `filterModels`.
-`guardModelRuntime` applies the shared rule there, and the machine-UI catalog publishes
-that same snapshot instead of maintaining a second list. The provider catalog
-(`Provider.getModels()`) is never filtered, so dispatch coverage, cost accounting and Pi's
-global-API bypass decision stay intact; the published `currentModel` is separate from the
-choices, so a running route keeps running and is never re-added as a selectable choice.
-
-The picker scope is curated by the *selected harness*: the one UltraTerm launched this
-session (`ULTRATERM_HARNESS_ID` / `ULTRATERM_HARNESS`, `ULTRATERM_HARNESS_DIR`, and the
-app-bundled `ULTRATERM_HARNESS_RESOURCES` fallback; live operator manifests live under
-`~/.config/ultraterm/harnesses/{harness}.json`). `src/harness-profiles.ts` parses only
-exact `--model provider/id` profiles with an explicit valid `--thinking` level, and both
-pickers keep exactly those routes of the native snapshot that are authenticated and
-policy-valid. The sidebar profile list, native `/model` and the composer therefore show the
-same set: adding, renaming or removing a profile needs no code change and no route is
-hard-coded. Profile labels and thinking levels are metadata only — tools, system prompts,
-extensions, launchers and credentials in a manifest are never executed or transferred.
-
-Unknown metadata fails open. When the selected harness has no readable manifest anywhere
-(broken or packaged install, malformed or unreadable file) the scope is unknown and the
-previous native availability is kept rather than hiding every model; a manifest that exists
-is authority, including one that declares no native route (empty picker, matching the
-sidebar). A manifest route the native runtime cannot offer — a removed OpenRouter DeepSeek
-Flash route or a policy-refused GPT route — never becomes a choice.
-
-Dispatch stays unfiltered. Curation lives only in the picker snapshot; `Provider.getModels()`
-/ `ModelRuntime.getModels()` keep every route, and ordered-chain membership plus USAP worker
-preflight check that published dispatch catalog (`registry.getAll()`) instead of the curated
-choices, so a fallback step such as `openai-codex/gpt-6.1-sol` remains eligible even when
-the operator did not list it as a separate picker profile. A standalone Steak Pi run without
-the UltraTerm launcher metadata, and every route a manifest does not configure, keeps its
-normal authentication and dispatch behavior.
-
-The OpenRouter DeepSeek V4 Flash / V4.1 Flash line is removed entirely from both pickers —
-canonical `deepseek/deepseek-v4-flash` and `deepseek/deepseek-v4.1-flash`, the released
-`-0731` and `:batch` forms, the `~deepseek/…-latest` aliases and the unversioned
-`DeepSeek Flash Latest` — because `opencode-go/deepseek-v4.1-flash` (Go Flash) and
-`inco/deepseek-v4.1-flash:fast` (INCO Fast) already cover that capability. The rule is
-provider-scoped (`provider === "openrouter"`) and slug-exact, so `deepseek-v4-pro` /
-`-0813` / `:batch`, the `-vision-exp` capability variants, unrelated OpenRouter models
-(`deepseek-chat`, `deepseek-r1`, `deepseek-v3.2`, `~z-ai/glm-flash-latest`, …) and every
-other provider keep every route they have. No provider is hidden wholesale and no substring
-match can reach another provider's route.
+Native `/model` and the UltraTerm composer list share exactly one source: the
+native availability snapshot (`ModelRegistry.getAvailable()` ===
+`ModelRuntime.getAvailableSnapshot()`), produced by each provider's
+`filterModels`. The picker scope is curated by the *selected harness*
+(`ULTRATERM_HARNESS_ID` / `ULTRATERM_HARNESS`, `ULTRATERM_HARNESS_DIR`, the
+app-bundled `ULTRATERM_HARNESS_RESOURCES` fallback, live manifests under
+`~/.config/ultraterm/harnesses/{harness}.json`): only exact
+`--model provider/id` profiles with an explicit `--thinking` level are routes.
+Unknown metadata fails open; a manifest that exists is authority. Operator
+`hiddenModelPatterns` and pinned/retired routes never become choices.
+Dispatch stays unfiltered: chain membership and worker preflight check the
+published dispatch catalog.
 
 Hot reload: `createConfigRefresher` polls `models.json`, `auth.json`,
-`models-store.json` and the selected harness manifest (mtime/size) and re-applies the native
-registry with `allowNetwork:false` once per observed revision. Adding, renaming or removing a
-configured provider/model or harness profile, and adding or removing a credential,
-therefore reach both pickers in an already-running session without a restart, with no
-inference, no model switch and no network work. Malformed, slow or aborted config keeps the
-last good publication and backs off; a partial/error native snapshot is never published
-over it.
-
-Limits of already-loaded agents: this is loaded extension code. A Pi process or session
-that started before this rule was installed keeps the previous availability — the guard is
-applied when providers are composed and when the registry is refreshed, never
-retroactively to code already running — so the removal is visible only after that session
-restarts. Hot reload propagates *configuration*, never *code*. Native launch/CLI model
-scope, the parent's stale `enabledModels` cleanup and sub-agent session scope are
-parent-side concerns and are not changed here.
-
-## Boundaries
-
-UltraTerm's managed Pi launcher also loads this policy extension (without the
-Steak Pi TUI). Managed launchers refuse to start if their required extension is
-missing. Existing user-owned executables are not overwritten.
-
-This is a guardrail inside the loaded runtime, not an OS/network
-sandbox. Disabling the policy extension, executing a separate unguarded CLI,
-or privileged code replacing providers can bypass it. UltraTerm separately
-validates explicit profile launch arguments; that validation alone cannot
-inspect every arbitrary external CLI's private configuration. Do not describe
-launch-only validation as universal request enforcement.
-
-## Verification
-
-`test/model-route-policy.test.ts` proves family matching, provider and endpoint
-denials, OAuth checks at execution time, zero delegate calls on denial,
-registration idempotence/API changes, the ordered chain and catalog/approval
-gating, and the pre-output hop against the SDK's own pi-ai event streams: a
-before-output transient failure or proven plan exhaustion serves from the next
-eligible route with the answering provider/model preserved, while content and
-tool events, aborts, auth/permission/region/context failures, unapproved or
-off-plan routes, and generic metered endpoints never hop or spend.
-`test/subagent-pi-worker.test.ts` proves the hop is installed only for
-`source: "chain"` runs (an explicit chain-step route gets none) and that each
-hop is recorded as `from->to` provenance. `test/opencode-go-routing.test.ts`
-proves a Go failure is never retried on another model.
-`test/subagent-model-selection.test.ts` and `test/model-selection-override.test.ts`
-prove chain/override provenance, reviewer defaults (the same routine MiMo→Terra
-chain as workers, never an automatic expert step), and that an explicit
-selector is never upgraded into chain provenance.
-`test/provider-quota.test.ts`, `test/subagent-model-selection.test.ts` and the quota block of
-`test/ultraterm-subagents-extension.test.ts` prove the quota rules: an exhausted implicit
-Go -> OpenRouter -> Terra, all three out -> Haiku (plain leaves) or Sonnet (mayEdit+allowBash, xhigh), busy or
-unknown stays on its route, an exhausted explicit route is refused with no reroute, everything
-out refuses naming each cause, a worker that fails before its first output rejects the dispatch
-with its cause, and a usage-limit refusal falls through each tier once.
-`test/model-route-native.test.ts` uses isolated homes and a loopback server to
-prove zero requests for forbidden extension, models.json, model-level API changes,
-and friendly-alias routes, plus allowed dispatch with an intact image URL.
-Each fixture asserts the SDK's actual selected API, not merely its JSON input.
-`test/model-visibility.test.ts` drives the real Pi 0.87 `ModelRuntime`/`ModelRegistry`
-without network, with `HOME`/`PI_CODING_AGENT_DIR` isolated and ambient provider credentials
-cleared so the operator's live auth and manifests cannot decide an assertion: it proves the
-OpenRouter DeepSeek Flash routes are gone from the native availability snapshot while the
-provider catalog keeps them, that Go/INCO and other providers are untouched, that the
-curated harness scope is the only picker source, that unknown metadata keeps the full native
-catalog, that a manifest with no native route is an empty picker, that `catalogModels`
-publishes exactly `getAvailableSnapshot()` after a config add, label/id rename, provider
-removal and credential removal, and that the unfiltered dispatch catalog still serves the
-chain fallback. `test/model-profile-catalog.test.ts` covers profile additions, removals and
-renames for the sidebar list and the shared scope plus the native/composer/sidebar equality.
-`test/retired-sol-selection.test.ts`, the native worker-runner tests, and the
-extension checkpoint-resume tests cover named retirement errors at ingestion,
-defaults, resolved aliases, all provider request entries, child creation, and
-restart/resume, plus 6.1 Sol routing and non-Sol preservation.
-Allowed live probes remain a separate release check. Production
-failures must never trigger OpenRouter GPT fallback.
+`models-store.json` and the selected harness manifest and re-applies the native
+registry with `allowNetwork:false` once per observed revision. Hot reload
+propagates *configuration*, never *code*: a session started before an upgrade
+keeps its previous rules until it restarts.
 
 ## Temporary approved free workers
 
 The optional operator-owned `~/.config/ultraterm/temporary-worker-route.json`
 uses `schemaVersion: 1`, exact `provider`, `model`, `harness`, `profile`, UTC
 `startsAt` / `expiresAt` (positive duration, at most 72 hours),
-`fallbackHarness: "steak-pi"`, `fallbackProfile: "gpt-6-1-sol"`,
-`zeroPriceOnly: true`, and nonempty `source` / `evidence`. Unknown fields,
-unknown routes, malformed timestamps, symlinks and unsafe ownership/write modes
-are named configuration errors, not permission to select another paid route.
-The canonical configuration profile is `preferred-free`; the initial
-`minimax-m3-1-flash-free` profile spelling remains accepted for compatibility.
-Initial live authorization remains exact OpenRouter
-`minimax/minimax-m3.1-flash:free`. Future coordinator-approved exact OpenRouter
-`:free` targets need only an authenticated DATA/CLI/MCP activation, not code,
-rebuild or worker restart. An arbitrary suffix is not authorization: the private
-activation data must carry real source/evidence, and fresh official catalog plus
-endpoint metadata must prove zero pricing and text/tool/reasoning capabilities.
-GPT-on-OpenRouter, retired GLM/Sol routes and other existing forbidden identities
-remain denied. Arbitrary providers and URLs are never supported. No live
-configuration is created by the package.
+`fallbackHarness: "steak-pi"`, `fallbackProfile` (one of the operator's
+configured `workerProfiles`, without the `steak-pi/` prefix),
+`zeroPriceOnly: true`, and nonempty `source` / `evidence`. `profile` is
+`preferred-free` or a configured worker profile whose model is exactly that free
+route. Unknown fields, malformed timestamps, symlinks and unsafe ownership/write
+modes are named configuration errors. Only the free-tier adapter's provider and
+`:free` ids are supported; fresh official catalog and endpoint metadata must
+prove zero pricing and text/tool/reasoning capabilities before any request.
 
-While active, ordinary implicit text workers select the stable SDK virtual
-model/profile `steak-pi/preferred-free`. Explicit harness/model/profile selectors,
-review gates and image requirements are unchanged. The virtual router re-reads
-the small local configuration before **every model call**, including tool
-continuations, retry and compaction. Reads are bounded, cached by file metadata,
-private `0600`, single-link and no-follow; duplicate JSON keys are rejected and
-UTC timestamps normalize to milliseconds. There is no timer or daemon. Only
-uncached/stale metadata needs bounded public official OpenRouter catalog and
-endpoint fetches; valid proofs are cached in-process for five minutes.
-It returns the exact approved physical free model. When inactive or when
-catalog/auth/known-zero eligibility is lost, it raises
-`TEMPORARY_FREE_ROUTE_RETURN_TO_NORMAL` at the model-call boundary, never routes
-ambient Codex credentials from the virtual provider. The supported backend must
-checkpoint and switch a quiet settled worker to its normal profile, preserving
-Codex OAuth/account lease, balance and ownership gates. The native package alone
-does not perform that backend job switch. Transient 429/5xx failures retain the free preference
-and native bounded retry/backoff; they never authorize a route change. It never
-replays partial output itself.
+While active, ordinary implicit text workers select the virtual
+`steak-pi/preferred-free`, re-read before every model call. When inactive or
+ineligible it raises `TEMPORARY_FREE_ROUTE_RETURN_TO_NORMAL` at the model-call
+boundary and never borrows ambient subscription credentials. The request guard
+enforces the exact free model, `provider.allow_fallbacks: false` and zero
+`provider.max_price` fields, and refuses `models`, `route`, plugins, transforms
+and web-search options.
 
-The selected virtual identity is intent; Pi assistant-message receipts identify
-the actual physical answering model and usage/cost. An already-streaming request
-can finish. Explicit `steak-pi/minimax-m3-1-flash-free` remains the exact physical
-route and refuses after expiry/revocation rather than silently switching.
-Outside the active window, new implicit runs retain their pre-existing defaults.
+## Boundaries
 
-The request-boundary guard requires the exact OpenRouter HTTPS endpoint,
-OpenAI-completions API and known zero catalog prices. After caller payload hooks,
-it enforces the exact free model, `provider.allow_fallbacks: false` and
-zero `provider.max_price` for prompt, completion, request, image, audio, video,
-input/output audio, cache read/write, internal reasoning and web search; OpenRouter
-documents these as hard price filters, including unavailable-price refusal.
-`models`, `route`, paid plugins, transforms and web-search options are refused.
-Reasoning is mandatory (`high`); only omitted/`auto` tool choice is supported.
-Deferred execution is not supported. The built-in OpenRouter transport and auth
-are retained, and lazy complete-provider catalog augmentation appends approved
-physical metadata without replacing built-in chat/image/classifier models.
-The initial physical MiniMax alias remains exact and is never remapped;
-its startup display metadata alone does not authorize a request.
+This is a guardrail inside the loaded runtime, not an OS/network sandbox.
+Disabling the policy extension, executing a separate unguarded CLI, or
+privileged code replacing providers can bypass it.
 
-The official catalog snapshot reports 1,000,000 context, 524,288 maximum output,
-zero prompt/completion prices and `expiration_date: null`. It supplies **no
-official expiry timestamp**. The operator must choose and evidence the effective
-expiry separately; 72 hours is a maximum permission duration, not an official
-billing guarantee. Final server-side zero-price constraints remain authoritative.
+## Verification
+
+`test/neutral-defaults.test.ts` proves the empty configuration: no chain,
+profile, expert, paid route, retirement, catalog extra, hidden model, Claude
+tier or Claude default, a clear config-key error for implicit dispatch, and
+explicit selectors still served. `test/neutrality.test.ts` scans the shipped
+files for concrete model ids and personal names. The behavioral suites
+(`test/model-route-policy.test.ts`, `test/subagent-model-selection.test.ts`,
+`test/explicit-paid-route.test.ts`, `test/ultraterm-subagents-extension.test.ts`,
+…) run against the synthetic operator fixture `test/fixtures/routing.json` and
+`test/fixtures/paid-routes.json`, wired by `vitest.config.ts`; they never read
+the machine's real configuration.

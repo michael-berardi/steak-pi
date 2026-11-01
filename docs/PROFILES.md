@@ -7,12 +7,12 @@ harness uses the official headless CLI instead; see the [capability matrix](./UL
 
 ## Explicit cross-model dispatch
 
-An Astra manager can still explicitly select the GPT-6.1 Sol profile:
+Any manager can explicitly select another configured profile:
 
 ```json
 {
   "goal": "Review the parser change",
-  "profile": "steak-pi/gpt-6-1-sol",
+  "profile": "steak-pi/reviewer-a",
   "tasks": [{
     "label": "parser-review",
     "role": "reviewer",
@@ -22,54 +22,58 @@ An Astra manager can still explicitly select the GPT-6.1 Sol profile:
 ```
 
 The reviewer role does not replace that explicit selection. To choose a
-model directly, supply `"model": "openai-codex/gpt-6-astra"` **instead of**
+model directly, supply `"model": "provider-x/model-name"` **instead of**
 `profile`. Any supported, authenticated native provider/model may be selected;
-GPT models always require the paid Codex OAuth route. Bare model names,
+a model family the operator pinned to one subscription route
+(`subscriptionRouteChecks` `modelPattern`) runs only there. Bare model names,
 conflicting selectors and unavailable routes fail before launch.
 
 ## Per-parent defaults
 
-Routine workers and scouts default to **DeepSeek V4.1 Flash on OpenCode Go** (profile `steak-pi/opencode-go`, route `opencode-go/deepseek-v4.1-flash`, thinking `high`; the prepaid plan), then **DeepSeek V4.1 Flash on OpenRouter** once Go is used up (profile `steak-pi/deepseek-openrouter`, route `openrouter/deepseek/deepseek-v4.1-flash-1017:exacto`, thinking `high`; approved in `~/.pi/agent/paid-routes.json`), then **GPT-6.1 Terra on Codex OAuth** (`openai-codex/gpt-6.1-terra`, profile `steak-pi/gpt-6-1-terra`), then Claude Haiku/Sonnet on usage limits or proven unavailability (image runs have no fallback). Paid routes are allowed under the operator's exact reviewed-route allowlist; the old "subscription first, no paid fallback" rule is revoked. An OpenRouter 402 / insufficient credits, persistent 429, 5xx or "no endpoints found" refusal moves the wave to the next tier. GLM 5.3, GLM 5.3 Flash and the Z.ai plan were retired on 2026-10-03; GLM or `zai/` selectors are refused. The main app's launch model is unchanged (MiMo V2.6 Pro). Explicitly native-Pi reviewer runs (`harness: "pi"` or an explicit native model/profile) resolve the automatic MiMo V2.6 Pro → GPT-6.1 Terra chain: no expert model is ever selected automatically in the native review chain, and the shipped "expert review chain" label is a legacy native-Pi routing flag, not expert sign-off.
+Steak Pi ships no worker profile and no default chain. Routine workers and
+scouts follow the operator's configuration (see
+[`MODEL-ROUTING.md`](./MODEL-ROUTING.md)): `workerDefault` / `reviewerDefault`
+in `~/.config/ultraterm/routing.json`, then the matching parent profile's
+defaults, then the configured `textWorkerChain` for automatic profiles. With
+nothing configured an implicit dispatch fails with the key to set; explicit
+`model`/`profile`/`harness` selections always work. Profiles come from
+`workerProfiles` in routing.json and from harness manifests; the only built-in
+profile is the neutral virtual `steak-pi/preferred-free`.
 
-All-reviewer waves with no explicit harness/model/profile use the **Opus Pass**:
-`claude-code/claude-opus-5-5`, official Claude Code CLI, `xhigh` effort and
-existing subscription authentication. Only the [bounded automatic review exception](./MODEL-ROUTING.md#automatic-review-exception) may use GPT-6.1 Terra when Claude is proven unavailable; explicit Claude routes remain exact. Any
-other Claude Code wave (`harness: "claude-code"` with worker or scout tasks, or
-`model: "claude-code/claude-sonnet-5-5"`) runs **Sonnet 5.5** at `xhigh`: the
-default Claude worker, nearly Opus-level at far less quota. Select
-`claude-code/claude-opus-5-5` explicitly only for frontier work. Claude
-workers get `mayEdit` + `ownedPaths` (enforced by CLI `Edit(...)` allow rules
-under `dontAsk`). `allowBash` is unsandboxed, but read-only Claude reviewers
-never receive Bash, even when requested; parents stage git evidence for
-Read/Grep/Glob. `requireImages: true` admits native Read-image of files staged
-under cwd, not inline attachments. Hub send/redirect steers the existing Claude
-process through stream-json stdin; replies use the run-local hub inbox. Native
-Pi-session resume remains unsupported; Claude workers can resume their own
-persisted CLI sessions.
+When `implicitReview.route` is configured, all-reviewer waves with no explicit
+harness/model/profile run it on the official Claude Code CLI at `xhigh` with
+existing subscription authentication; only the
+[bounded automatic review exception](./MODEL-ROUTING.md#implicit-review) may use
+`implicitReview.fallback` when Claude is proven unavailable. Any other Claude
+Code wave (`harness: "claude-code"`) runs the model named in `model` or the
+operator's `claudeCodeDefaults`. Claude workers get `mayEdit` + `ownedPaths`
+(enforced by CLI `Edit(...)` allow rules under `dontAsk`). `allowBash` is
+unsandboxed, but read-only Claude reviewers never receive Bash, even when
+requested; parents stage git evidence for Read/Grep/Glob. `requireImages: true`
+admits native Read-image of files staged under cwd, not inline attachments. Hub
+send/redirect steers the existing Claude process through stream-json stdin;
+replies use the run-local hub inbox. Native Pi-session resume remains
+unsupported; Claude workers can resume their own persisted CLI sessions.
 A failed task, including quota exhaustion, is not expert approval.
-The explicit `claude-code-api/claude-sonnet-5-5` and `claude-code-api/claude-opus-5-5`
-routes are separate: the same headless worker on approved API credits, never a
-default or fallback, and never offered as an interactive profile (promotional API
-credits do not cover interactive Claude Code). See [CLAUDE-API-ROUTE.md](./CLAUDE-API-ROUTE.md).
+The explicit `claude-code-api/<model>` routes are separate: the same headless
+worker on approved API credits, never a default or fallback, and never offered
+as an interactive profile. See [CLAUDE-API-ROUTE.md](./CLAUDE-API-ROUTE.md).
 
-Writable DeepSeek/Terra/Go/Haiku implementation requests verification through the parent:
-Opus 5.5 for OpenRouter DeepSeek, Terra or Haiku, Sonnet 5.5 for Go. Explicit Sol work and read-only
-leaves receive no automatic end-gate; report-only work does not require one. Explicit task or
+Writable work on a route listed in `verificationGates` is told to request one
+bounded verification on the gate's reviewer route through the parent; other
+routes and read-only leaves receive no automatic end-gate. Explicit task or
 contract output formats override default report headings. USAP never grants
-permission to release. Explicit native Pi
-model/profile selections remain exact, including image-capable routes selected
-with `requireImages: true`. Pi's subscription fallback applies only to eligible
-failures before content or tool activity, never authentication/permission/region
-errors. The separate automatic CLI review exception is quota/auth-before-output only.
+permission to release. Explicit native Pi model/profile selections remain exact,
+including image-capable routes selected with `requireImages: true`. The
+automatic chain hop applies only to eligible failures before content or tool
+activity, never authentication/permission/region errors.
 
-Validated role selectors in `~/.config/ultraterm/routing.json` override parent-profile defaults (explicit model/profile still wins). Automatic image review cannot use the automatic text-review fallback.
-
-Native profiles are read from the existing JSON harness manifests under
-`~/.config/ultraterm/harnesses/`. A profile with one explicit
-`--model provider/model` argument is a native route; CLI-only profiles are not.
-Only model, thinking and worker-default metadata are consumed. Executables,
-other arguments and credentials are never executed or copied by this resolver.
-The built-in routes also work when that directory is absent.
+Native profiles are read from `workerProfiles` and from the existing JSON
+harness manifests under `~/.config/ultraterm/harnesses/`. A manifest profile
+with one explicit `--model provider/model` argument is a native route; CLI-only
+profiles are not. Only model, thinking and worker-default metadata are
+consumed. Executables, other arguments and credentials are never executed or
+copied by this resolver.
 
 The manifest of the harness UltraTerm launched this session is also the picker
 scope: native `/model` and the UltraTerm composer list show exactly its exact
@@ -79,33 +83,32 @@ change. When no manifest is readable the pickers keep the previous native
 availability instead of hiding every model, and dispatch and fallback eligibility
 are never narrowed by the manifest — see [`MODEL-ROUTING.md`](./MODEL-ROUTING.md).
 
-An owner may add these fields to a profile entry to configure Terra for both
-routine and explicitly selected native Pi reviewer work from that parent
-(`harness: "pi"`). These native defaults do not replace the new automatic
-all-reviewer Opus Pass:
+An owner may add these fields to a profile entry to configure routine and
+explicitly selected native Pi reviewer work from that parent (`harness: "pi"`):
 
 ```json
 {
-  "id": "gpt-6-astra",
-  "name": "GPT-6 Astra",
-  "description": "Codex manager with Terra workers",
-  "args": ["--model", "openai-codex/gpt-6-astra", "--thinking", "medium"],
-  "workerDefault": {"profile": "steak-pi/gpt-6-1-terra"},
-  "reviewerDefault": {"profile": "steak-pi/gpt-6-1-terra"}
+  "id": "manager-a",
+  "name": "Manager A",
+  "description": "Manager with configured workers",
+  "args": ["--model", "provider-x/manager-model", "--thinking", "medium"],
+  "workerDefault": {"profile": "steak-pi/worker-a"},
+  "reviewerDefault": {"profile": "steak-pi/reviewer-a"}
 }
 ```
 
 Each default contains exactly one model or profile. Defaults resolve once to
 the target profile's model, not recursively to its worker defaults. A reviewer
-default that names the Astra profile resolves the automatic subscription chain
-rather than freezing the scarce Astra expert model; only an explicit selector
-runs it. Explicit dispatch selectors always win. A parent must still match its
-launch profile's model; a later `/model` change cannot retain an unrelated
-stale default.
+default that names an `autoReviewChain` profile resolves the automatic chain
+rather than freezing that profile's head model; only an explicit selector runs
+it. Explicit dispatch selectors always win. A parent must still match its launch
+profile's model; a later `/model` change cannot retain an unrelated stale
+default.
 
-A selected profile supplies its thinking preference. Astra defaults to medium;
-request high/xhigh only with a concrete `thinkingReason`. Existing native
-capability and billing safeguards apply regardless of profile metadata.
+A selected profile supplies its thinking preference; the configured expert
+reviewer (`expertReview.thinking`) defaults to medium. Request high/xhigh only
+with a concrete `thinkingReason`. Existing native capability and billing
+safeguards apply regardless of profile metadata.
 
 ## Worker lifecycle
 
@@ -158,27 +161,17 @@ runtime tree or replace sessions to make a new selector appear.
 
 ### Approved temporary free preference
 
-`steak-pi/minimax-m3-1-flash-free` selects exact
-`openrouter/minimax/minimax-m3.1-flash:free` with mandatory high reasoning.
-It requires a currently valid operator temporary-route configuration and fails
-closed on expiry, unavailable pricing, or request-policy mismatch, with no paid
-MiniMax variant or OpenRouter backup provider.
-
-`steak-pi/preferred-free` is a stable native Pi **virtual** profile: each model
-call observes the current bounded coordinator-approved OpenRouter `:free`
-preference, with lazily fetched/cached official zero-price text/tool/reasoning
-metadata. Future approved free models need data activation only; the initial live
-authorization remains MiniMax. Expiry/revocation or ineligible metadata raises
+`steak-pi/preferred-free` is a stable native Pi **virtual** profile: while the
+operator's temporary-route configuration is active, each model call observes the
+current bounded approved `:free` preference of the free-tier adapter, with
+lazily fetched/cached official zero-price text/tool/reasoning metadata. A
+configured worker profile whose model is exactly that free route may be named
+instead. Expiry/revocation or ineligible metadata raises
 `TEMPORARY_FREE_ROUTE_RETURN_TO_NORMAL`; the backend must checkpoint/switch a
-quiet settled job through its normal Codex OAuth/account ownership and lease
-path, never dispatch unleased Sol from this virtual namespace.
-This is also the selected profile for ordinary
-implicit text workers while the temporary configuration is active; reviewers,
-image requirements and explicit selections keep their existing semantics.
-Physical assistant-message receipts, not the selected virtual profile or config
-status, prove which model actually answered. See [temporary free routing](./MODEL-ROUTING.md#temporary-approved-free-workers).
-
-The Terra profile uses `--model openai-codex/gpt-6.1-terra --thinking high`;
-its workerDefault and reviewerDefault are `steak-pi/gpt-6-1-terra`.
-GPT-6.1 Sol remains explicitly selectable; GPT-6.0 Sol stays retired.
-Security-audit work stays Go/Haiku, never GPT.
+quiet settled job through its normal account ownership and lease path, never
+dispatch an unleased subscription model from this virtual namespace. This is
+also the selected profile for ordinary implicit text workers while the temporary
+configuration is active; reviewers, image requirements and explicit selections
+keep their existing semantics. Physical assistant-message receipts, not the
+selected virtual profile or config status, prove which model actually answered.
+See [temporary free routing](./MODEL-ROUTING.md#temporary-approved-free-workers).

@@ -3,8 +3,7 @@ import { assertActiveModelIdentity } from "../src/retired-model-selection.ts";
 import { createRegistryGuard } from "../src/model-route-policy.ts";
 import { activeTemporaryWorkerRoute, preferredFreeMetadata, selectPreferredFreePhysical, temporaryFreeStartupProvider } from "../src/temporary-free-route.ts";
 import { createExplicitPaidApproval, createSelectedRouteApproval, isAllowlistedPaidRoute, PAID_ROUTE_FLAG } from "../src/explicit-paid-route.ts";
-
-import { terraStartupProvider } from "../src/codex-models.ts";
+import { catalogStartupProviders } from "../src/catalog-extras.ts";
 
 type Model = NonNullable<ExtensionContext["model"]>;
 
@@ -13,7 +12,8 @@ export default function modelRoutePolicy(pi: ExtensionAPI): void {
   // Native provider registration happens before Pi resolves --model at startup.
   // Complete-provider augmentation preserves its built-in catalog and auth.
   pi.registerProvider(temporaryFreeStartupProvider());
-  pi.registerProvider(terraStartupProvider());
+  // Operator catalog extras (`catalogExtras` in routing.json); none are shipped.
+  for (const provider of catalogStartupProviders()) pi.registerProvider(provider);
   if (activeTemporaryWorkerRoute()) {
     pi.registerVirtualModel({ ...preferredFreeMetadata, route: (_request, ctx) => selectPreferredFreePhysical(ctx.modelRegistry) });
   }
@@ -26,7 +26,7 @@ export default function modelRoutePolicy(pi: ExtensionAPI): void {
   let selected: Model | undefined;
   let launch: ((model: Model) => boolean) | undefined;
   const selectedRoute = createSelectedRouteApproval(() => selected);
-  // Mike 2026-10-31: paid routes are allowed. Any exact reviewed route the user allowlisted may serve a request
+  // Any exact reviewed route the operator allowlisted may serve a request
   // (including a chain hop), not only the one selected at launch; removing the allowlist entry still revokes it.
   const approval = (model: Model) => launch?.(model) === true || selectedRoute(model) || isAllowlistedPaidRoute(model);
   let install = createRegistryGuard(approval);

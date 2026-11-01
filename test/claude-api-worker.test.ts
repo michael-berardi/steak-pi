@@ -268,7 +268,7 @@ describe("admission at launch (fail closed, no fallback)", () => {
     const apiResult = await createClaudeWorkerRunner(options(f, spawn, { api: { configPath: missing, now: f.options.now } }))(ctx(run(), task()));
     expect(apiResult.state).toBe("failed");
     expect(apiResult.error).toMatch(/ClaudeApiAdmissionError\[approval-missing\]/);
-    expect(apiResult.error).toContain("no subscription, Sol or other fallback was selected");
+    expect(apiResult.error).toContain("no subscription or other fallback was selected");
     expect(apiResult.reviewFallbackReason).toBeUndefined();
     expect(calls).toHaveLength(0);
     // Subscription route: same runner, same injected spawn, never consults the API record.
@@ -288,7 +288,7 @@ describe("admission at launch (fail closed, no fallback)", () => {
     const refused = await runner(ctx(run(), task({ role: "worker" })));
     expect(refused.state).toBe("failed");
     expect(refused.error).toMatch(/ClaudeApiAdmissionError\[role-not-approved\]/);
-    expect(refused.error).toMatch(/no subscription, Sol or other fallback was selected/);
+    expect(refused.error).toMatch(/no subscription or other fallback was selected/);
     expect(calls).toHaveLength(0);
     const verified = await runner(ctx(run(), task({ role: "reviewer" })));
     expect(verified.state).toBe("done");

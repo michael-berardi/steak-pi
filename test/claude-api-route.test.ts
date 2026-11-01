@@ -77,7 +77,7 @@ describe("approval record contract", () => {
     expect(error.message).toContain(missing);
     expect(error.message).toContain(CLAUDE_API_CONFIG_ENV);
     expect(error.message).toContain("never writes");
-    expect(error.message).toContain("no subscription, Sol or other fallback was selected");
+    expect(error.message).toContain("no subscription or other fallback was selected");
     expect(existsSync(missing)).toBe(false);
   });
 
@@ -156,7 +156,7 @@ describe("approval record contract", () => {
       const error = failure(() => admitClaudeApiRoute({ route: SONNET, taskCount: 1, roles }, f.options));
       expect(error.code).toBe("role-not-approved");
       expect(error.message).toMatch(/not a blanket paid-route grant/);
-      expect(error.message).toMatch(/no subscription, Sol or other fallback was selected/);
+      expect(error.message).toMatch(/no subscription or other fallback was selected/);
     }
     // No roles supplied by a caller means nothing to check, never an implicit grant to widen later.
     expect(admitClaudeApiRoute({ route: SONNET, taskCount: 1 }, f.options).route).toBe(SONNET);

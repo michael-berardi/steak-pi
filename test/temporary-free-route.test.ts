@@ -5,16 +5,11 @@ import { join, dirname } from "node:path";
 import { createRequire, findPackageJSON } from "node:module";
 import { pathToFileURL } from "node:url";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import {
-  activeTemporaryWorkerRoute, assertTemporaryFreeRequest, ensureTemporaryFreeMetadata, FREE_BASE_URL, FREE_MODEL, FREE_PROFILE,
-  protectTemporaryFreePayload, readTemporaryWorkerRoute, temporaryFreeOptions, temporaryFreeStartupProvider,
-  TemporaryFreeRouteConfigError, TemporaryFreeRouteRequestError, TemporaryFreeRouteUnavailableError,
-  TemporaryFreeRouteReturnToNormalError, TemporaryFreeRouteMetadataUnavailableError, RETURN_TO_NORMAL,
-  validateTemporaryWorkerRoute, withTemporaryFreeCatalog, PREFERRED_FREE_PROFILE, selectPreferredFreePhysical,
-} from "../src/temporary-free-route.ts";
-import { BUILTIN_WORKER_PROFILES, resolveWorkerSelection } from "../src/subagents/model-selection.ts";
+import { activeTemporaryWorkerRoute, assertTemporaryFreeRequest, ensureTemporaryFreeMetadata, FREE_BASE_URL, protectTemporaryFreePayload, readTemporaryWorkerRoute, temporaryFreeOptions, temporaryFreeStartupProvider, TemporaryFreeRouteConfigError, TemporaryFreeRouteRequestError, TemporaryFreeRouteUnavailableError, TemporaryFreeRouteReturnToNormalError, TemporaryFreeRouteMetadataUnavailableError, RETURN_TO_NORMAL, validateTemporaryWorkerRoute, withTemporaryFreeCatalog, PREFERRED_FREE_PROFILE, selectPreferredFreePhysical } from "../src/temporary-free-route.ts";
+import { resolveWorkerSelection } from "../src/subagents/model-selection.ts";
 import { guardModelRuntime, guardProvider } from "../src/model-route-policy.ts";
 import modelRoutePolicy from "../extensions/model-route-policy.ts";
+import { FREE_MODEL, FREE_PROFILE, BUILTIN_WORKER_PROFILES } from "./helpers/routing-fixture.ts";
 const dirs: string[] = [];
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const now = Date.parse("2026-10-20T14:00:00Z");
@@ -127,7 +122,7 @@ describe("synthetic: bounded generic approved free route", () => {
     vi.setSystemTime(Date.parse(config().expiresAt)); await expect(options.onPayload!({ model: FREE_MODEL }, free)).rejects.toThrow(TemporaryFreeRouteUnavailableError);
   });
   it.each([{ model: "minimax/minimax-m3.1-flash" }, { models: ["paid"] }, { route: "fallback" }, { plugins: [] }, { transforms: [] }, { tool_choice: "required" }, { tool_choice: "none" }, { web_search_options: {} }])("rejects alternate/paid payload %j", change => {
-    expect(() => protectTemporaryFreePayload({ model: FREE_MODEL, ...change })).toThrow(TemporaryFreeRouteRequestError);
+    expect(() => protectTemporaryFreePayload({ model: FREE_MODEL, ...change }, FREE_MODEL)).toThrow(TemporaryFreeRouteRequestError);
   });
   it.each(["paid", "missing-price", "unknown-price", "tools", "reasoning", "identity", "endpoints", "catalog-duplicate"])("refuses unsafe or unknown official metadata: %s", async kind => {
     fixture(); const id = `example/reject-${kind}:free`;

@@ -7,8 +7,8 @@ import { MAX_CONCURRENCY } from "./types.ts";
  * Provider-aware capacity limits for USAP worker launches.
  *
  * Two tiers apply to every launch:
- * - Session tier: per-provider ceiling inside one pi session
- *   (Codex lanes 6 by doctrine; every other provider 8).
+ * - Session tier: per-provider ceiling inside one pi session (every provider
+ *   MAX_CONCURRENCY unless the operator's usap-caps.json lowers it).
  * - Machine tier: per-provider ceiling shared by every session on this
  *   computer, plus one global ceiling across all providers. These protect
  *   the provider's rate limits and the operator's machine when several
@@ -20,18 +20,12 @@ export interface CapacityConfig {
   machine: { providers: Record<string, number>; global: number };
 }
 
-/** Per-session provider ceilings; providers not listed get MAX_CONCURRENCY. */
-const DEFAULT_SESSION_PROVIDERS: Record<string, number> = {
-  "openai-codex": 6,
-};
+/** Per-session provider ceilings; providers not listed get MAX_CONCURRENCY. Steak Pi
+ * ships no provider-specific ceiling: the operator's usap-caps.json sets them. */
+const DEFAULT_SESSION_PROVIDERS: Record<string, number> = {};
 
-/**
- * Machine-wide defaults: codex 12 covers two Codex-heavy sessions; global bounds
- * all providers.
- */
-const DEFAULT_MACHINE_PROVIDERS: Record<string, number> = {
-  "openai-codex": 12,
-};
+/** Machine-wide per-provider ceilings (none by default); the global ceiling bounds all providers. */
+const DEFAULT_MACHINE_PROVIDERS: Record<string, number> = {};
 
 const DEFAULTS: CapacityConfig = {
   session: { providers: DEFAULT_SESSION_PROVIDERS, global: MAX_CONCURRENCY + 6 },

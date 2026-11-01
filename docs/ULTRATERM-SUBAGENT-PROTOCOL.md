@@ -147,15 +147,15 @@ Ownership: exclusive files or mutable boundaries
 
 USAP uses one coordinator, hub, capacity limiter, checkpoint store and telemetry
 surface for both Pi workers and the official headless Claude Code CLI. An absent
-`harness` means Pi except for an all-reviewer wave with no explicit route: that
-wave defaults to the **Opus Pass**, Claude Code Opus 5.5 at `xhigh` effort. The [automatic text-review exception](./MODEL-ROUTING.md#automatic-review-exception) alone permits actual GPT-6.1 Terra fallback evidence when Claude is proven unavailable; it is not Opus approval.
+`harness` means Pi except for an all-reviewer wave with no explicit route when
+the operator configured `implicitReview.route`: that wave runs the configured
+Claude Code route at `xhigh` effort. The [automatic text-review exception](./MODEL-ROUTING.md#implicit-review) alone permits `implicitReview.fallback` evidence when Claude is proven unavailable; it is not expert approval.
 Explicit Pi/model/profile selections still win.
 
-`harness: "claude-code"` runs **Sonnet 5.5** (`claude-code/claude-sonnet-5-5`)
-for worker and scout waves and **Opus 5.5** (`claude-code/claude-opus-5-5`) for
-all-reviewer waves. An explicit `model` of either route wins. Sonnet 5.5 is the
-default Claude worker because it is nearly Opus-level at far less quota; select
-the Opus route for expert planning, review, or frontier work. Each route runs
+`harness: "claude-code"` runs the operator's `claudeCodeDefaults.worker` for
+worker and scout waves and `claudeCodeDefaults.reviewer` for all-reviewer waves;
+an explicit `model` naming one of the adapter's pinned `claude-code/<model>`
+routes wins, and with neither the dispatch fails naming the key. Each route runs
 `claude --print` with `--model <model> --effort xhigh`, and the served model is
 checked against the route. Authentication preflight must report an
 existing first-party Claude subscription login. API-key/provider override
@@ -171,7 +171,7 @@ Steak Pi 0.9.18 adds `claudeAccount: "primary"`
 
 ```json
 {
-  "model": "claude-code/claude-sonnet-5-5",
+  "model": "claude-code/<model>",
   "claudeAccount": "primary",
   "tasks": [{ "label": "Inspect", "task": "Read the staged diff", "role": "scout" }]
 }
@@ -210,12 +210,12 @@ helpers receive this package through UltraTerm's next managed runtime release,
 not a hand-install.
 
 **Explicit Claude API route.** A separate, distinct route family,
-`claude-code-api/claude-sonnet-5-5` or `claude-code-api/claude-opus-5-5`, runs
+`claude-code-api/<model>`, runs
 the same headless CLI worker on an API key (behind an approved `apiKeyHelper`,
 `--bare`) instead of the subscription login. It is reachable only by naming the
 exact model, only while a task- and role-scoped operator approval record admits it, with
 hard per-session budget ceilings, a sanitized CLI-attested receipt and no
-fallback to the subscription, Sol or any other route; the subscription route's
+fallback to the subscription or any other route; the subscription route's
 checks are unchanged. Monthly promotional API credits cover headless `claude -p`
 and the Agent SDK, not interactive Claude Code. See
 [CLAUDE-API-ROUTE.md](./CLAUDE-API-ROUTE.md) for the contract, the official
@@ -255,7 +255,7 @@ retry rather than sleeping an idle worker.
 | Relay / hub send, redirect and inbox | Supported | Stream-json stdin; run-local replies |
 | Worker history continuation | Native Pi session | Own persisted Claude session only; no cross-harness resume |
 | Image review admission | Capability-checked | Exact pinned routes only; staged files via native Read |
-| Model selection | Native registry | Exact Sonnet 5.5 or Opus 5.5/xhigh |
+| Model selection | Native registry | Exact pinned adapter route at xhigh |
 
 **Claude running-worker steering.** Use `ultraterm_hub` with `action: "send"`
 (or `"redirect"` to append updated instructions), the live run ID, a task ID or
@@ -270,8 +270,8 @@ and aggregate turn budget still apply. Steering never grants new permissions.
 Text-only coordination does not add a shell or tool to read-only reviewers.
 
 **Claude staged image review (P-0579).** `requireImages: true` with
-`harness: "claude-code"` admits only the exact `claude-code/claude-sonnet-5-5` or
-`claude-code/claude-opus-5-5` route. Both routes advertise `images: true` as a
+`harness: "claude-code"` admits only an exact explicit pinned adapter route
+(`CLAUDE_CODE_ROUTES`). Those routes advertise `images: true` as a
 capability even for text-only tasks; the flag requires that capability rather
 than attaching an image. If `model` is omitted, normal harness defaults resolve
 to one of these exact routes before admission. Any other route string fails
@@ -329,8 +329,8 @@ never both. Selection applies to every task in that run; per-task selectors are
 not supported. Explicit selection is never overridden by a reviewer role or a
 profile default. Omitted selectors on a Pi wave use the matching parent profile's
 configured worker/reviewer default, retaining legacy role defaults when none is
-configured; automatic native-Pi reviewer defaults ride the same MiMo→Terra
-subscription chain as routine workers, with no automatic expert step. An
+configured; automatic native-Pi reviewer defaults ride the operator's configured
+chain (`reviewerChainHead`, else `textWorkerChain`), with no automatic expert step. An
 all-reviewer wave without an explicit route uses the CLI default
 above instead.
 Profiles select route metadata, not a separate CLI or inherited permissions.
@@ -368,7 +368,7 @@ The parent may choose either execution mode:
   The parent continues useful local work, then uses `ultraterm_hub` rather than
   polling or launching duplicate work. `Started` is never reported for a worker
   already known dead: the dispatch holds up to a bounded startup window (default
-  25 s, longer than the router's two bounded calls before a Go or GPT request) for each
+  25 s, longer than the router's two bounded calls before an account-leased request) for each
   launched worker to produce its first model output, and a worker that fails
   before it (provider-account router refusal, auth, route, spawn, a first request
   that errors) makes the call throw with that named cause, cancels its siblings and
@@ -377,33 +377,31 @@ The parent may choose either execution mode:
   applies to foreground dispatches as well.
 - **Quota-aware routing:** an implicit routine wave asks the account router first.
   A provider whose every configured account is cooling down, signed out or at a
-  100% window is skipped (Go -> OpenRouter DeepSeek -> Terra; the router meters
-  Go, Codex and Claude only, so the OpenRouter tier launches without a router
-  read); when all of them are out the wave runs on the
-  claude-code subscription at the cheapest capable tier (Haiku 5.5, or Sonnet 5.5
-  for mayEdit+allowBash leaves and xhigh effort), pinned on the
-  least-used Claude account the router shows eligible, and needs an Opus 5.5
+  100% window is skipped (the configured `providerQuotaFallback` tiers in order; an
+  unmetered tier launches without a router read); when all of them are out the wave
+  runs on the configured `claudeFallbackTier` (ordinary, or substantial for
+  mayEdit+allowBash leaves, high/xhigh effort and reviewers), pinned on the
+  least-used Claude account the router shows eligible, and needs an expert
   review. Busy or unknown providers are not exhausted.
   Explicit routes are never rerouted; an exhausted explicit route and a wave with
   no launchable route are refused synchronously, naming every cause. See
   `docs/MODEL-ROUTING.md`.
-- **Usage-limit fall-through:** the router cannot see a spent Go plan (no usage API),
+- **Usage-limit fall-through:** the router cannot see every spent plan (some have no usage API),
   so an implicit routine wave can still launch on a provider whose plan is spent. When
   every worker that failed before its first model output died on a provider quota or
-  usage limit (Go `GoUsageLimitError`, Codex `usage limit has been reached` /
+  usage limit (`GoUsageLimitError`, `usage limit has been reached` /
   `subscription_quota_exceeded`, a router refusal that says cooling down), no worker
   produced output and the run settled, the same dispatch call re-runs the same tasks once
-  on the next tier (Go -> OpenRouter DeepSeek -> Terra -> Claude Haiku 5.5 /
-  Sonnet 5.5) with no parent re-dispatch, inside the startup window and before
-  `Started`. An OpenRouter 402 "Insufficient credits" / "No endpoints found"
+  on the next configured tier with no parent re-dispatch, inside the startup window
+  and before `Started`. A gateway's 402 "Insufficient credits" / "No endpoints found"
   refusal is such a cause. Each tier is tried at most
   once; the refused first run stays `failed` with its causes and is marked delivered; the
   second run's `chainRoutes`, `fallbackReason` and dispatch text name the fall-through and
   why. If the next tier also cannot launch, the call fails synchronously naming both
   causes. An auth, route or spawn failure, a bare 429 and every explicit route fail
-  synchronously and never fall through. Go's usage limit is recorded with the router as
+  synchronously and never fall through. A spent plan is recorded with the router as
   plan exhaustion (`limit --kind usage`), so the next dispatch's preflight skips it. Each
-  tier gets its own startup window, so a wave that falls through Go -> OpenRouter -> Terra -> Claude can hold
+  tier gets its own startup window, so a wave that falls through every configured tier can hold
   the dispatch call for up to three 25 s windows plus the sibling settles and router reads in
   between (about 130 s worst case) before it returns `Started` or fails with every cause
   named. A worker whose first request fails with a 429 also reports the cooldown and releases
@@ -618,26 +616,23 @@ turn.
 
 ## 8. Model guidance
 
-Routine bounded scouting and implementation use the configured parent profile
-defaults: built-in routine workers and scouts resolve canonical Go DeepSeek V4.1 Flash
-→ OpenRouter DeepSeek V4.1 Flash (the exact `:exacto` route, approved in
-`~/.pi/agent/paid-routes.json`) → GPT-6.1 Terra on Codex OAuth → Claude Haiku/Sonnet on usage
-limits or proven unavailability (text; images MiMo only), and explicitly native-Pi reviewer chains resolve MiMo V2.6 Pro →
-GPT-6.1 Terra — the legacy "expert review chain" name is a native-Pi routing label, not
-expert sign-off. All-reviewer waves with no explicit route use the official Claude Code
-Opus 5.5/xhigh pass. Existing explicitly selected Pi profiles keep their native
-route semantics. No failed Opus review silently falls back to Astra or another
-model.
-`gpt-6-1-sol` (GPT-6.0 Sol is retired and refused) and `gpt-6-luna` are
-explicit-selection profiles only, never automatic workers. Explicit model/profile selection wins. See [PROFILES.md](./PROFILES.md)
-for reviewer defaults and route-specific fallback. Record the resolved
-provider/model on the run so results are auditable.
+Steak Pi ships no model guidance of its own. Routine bounded scouting and
+implementation use the operator's configured role defaults, parent profile
+defaults and `textWorkerChain` / `multimodalWorkerChain`; explicitly native-Pi
+reviewer chains lead with `reviewerChainHead` when configured — the legacy
+"expert review chain" name is a native-Pi routing label, not expert sign-off.
+All-reviewer waves with no explicit route use `implicitReview.route` when
+configured. Existing explicitly selected Pi profiles keep their native route
+semantics. No failed expert review silently falls back to another model.
+Explicit model/profile selection wins. See [PROFILES.md](./PROFILES.md) and
+[MODEL-ROUTING.md](./MODEL-ROUTING.md) for the configuration keys. Record the
+resolved provider/model on the run so results are auditable.
 
 **Implementation review.** USAP never grants commit, push, or deploy permission.
-Writable DeepSeek/Terra/Go/Haiku implementation requests verification through the parent:
-OpenRouter DeepSeek, Terra and Haiku need Opus 5.5; Go needs Sonnet 5.5. Read-only, report-only and
-explicit Sol leaves receive no automatic end-gate. Security-audit work stays
-Go/Haiku, never any GPT. Never claim approval from a failed or unavailable review.
+Writable work on a route listed in `verificationGates` requests one bounded
+verification on the gate's reviewer route through the parent. Read-only,
+report-only and ungated leaves receive no automatic end-gate. Never claim
+approval from a failed or unavailable review.
 An explicit task or shared-contract output format takes precedence over default
 report headings, including JSON-only output. Empty or placeholder-only output is
 a failed leaf, not a completed result.

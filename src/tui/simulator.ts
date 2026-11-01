@@ -65,11 +65,11 @@ function stateAfter(actions: Parameters<typeof reduceCompanionState>[1][]): Comp
 }
 
 const baseFooter: Omit<FooterSnapshot, "state"> = {
-  cwd: "/Users/demo/dev/steak-pi",
-  home: "/Users/demo",
+  cwd: "/home/alex/dev/steak-pi",
+  home: "/home/alex",
   branch: "main",
-  model: { id: "zai/glm-5.3-flash" },
-  provider: "zai",
+  model: { id: "provider-a/model-name" },
+  provider: "provider-a",
   thinking: "high",
   usage: {
     input: 2_140,

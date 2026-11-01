@@ -6,9 +6,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { findPackageJSON } from "node:module";
 import { pathToFileURL } from "node:url";
-import { createAllowlistApproval, createExplicitPaidApproval, createSelectedRouteApproval, isAllowlistedPaidRoute, OPENROUTER_BASE_URL, OPENROUTER_DEEPSEEK_ID, PAID_INCO_BASE_URL, PAID_ROUTES, PAID_ROUTE_FLAG, readApprovedPaidRoutes } from "../src/explicit-paid-route.ts";
+import { createAllowlistApproval, createExplicitPaidApproval, createSelectedRouteApproval, isAllowlistedPaidRoute, PAID_ROUTE_FLAG, readApprovedPaidRoutes } from "../src/explicit-paid-route.ts";
 import { guardProvider, createRegistryGuard } from "../src/model-route-policy.ts";
 import { beginGoAttempt, observeGoQuota, hasConfirmedGoExhaustion, SUBSCRIPTION_FIRST_ERROR } from "../src/subscription-first-routing.ts";
+import { OPENROUTER_BASE_URL, OPENROUTER_DEEPSEEK_ID, PAID_INCO_BASE_URL, PAID_ROUTES } from "./helpers/routing-fixture.ts";
 
 const sdk = findPackageJSON(import.meta.resolve("@earendil-works/pi-coding-agent"))!;
 const ai = dirname(findPackageJSON("@earendil-works/pi-ai", pathToFileURL(sdk))!);
@@ -81,7 +82,7 @@ describe("explicit paid route permission", () => {
   });
   it("paid approval never overrides GPT endpoint policy", () => {
     const guarded = guardProvider(provider(), () => false, async () => "go", undefined, undefined, () => true);
-    expect(() => guarded.streamSimple({ ...model, id: "gpt-6-astra" }, emptyContext())).toThrow(/GPT-family/);
+    expect(() => guarded.streamSimple({ ...model, id: "gpt-6-astra" }, emptyContext())).toThrow(/pinned to its configured subscription route/);
   });
   it("requires structured quota evidence and revokes stale/concurrent grants", () => {
     const now = Date.now(); const key = "unit-test-only";
