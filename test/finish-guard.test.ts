@@ -191,3 +191,13 @@ describe("quoted wording", () => {
     expect(openWorkPhrases("The tests are still failing.")).toEqual(["still failing"]);
   });
 });
+
+describe("unfinished-work noun phrase", () => {
+  it("counts it only as a list header or when the reply says it has some", () => {
+    expect(openWorkPhrases("Quoted words no longer count as reporting unfinished work.")).toEqual([]);
+    expect(openWorkPhrases("Nothing is left as open work from this session.")).toEqual([]);
+    expect(openWorkPhrases("Remaining items: the deploy.")).toEqual(["Remaining items:"]);
+    expect(openWorkPhrases("There are still open tasks for the deploy.")).toContain("There are still open tasks");
+    expect(openWorkPhrases("We have 2 outstanding issues.")).toEqual(["We have 2 outstanding issues"]);
+  });
+});

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.18.7 (2026-11-01)
+
+- **Finish guard: "open/remaining/unfinished work" counts only when reported.** The noun phrase alone also appears
+  when describing things ("no longer counts as unfinished work"). It now counts only as a list header
+  ("Remaining items:") or when the reply says it has some ("there are still open tasks", "we have 2 outstanding
+  issues"). Other open-work wording is unchanged.
+
 ## 0.18.6 (2026-11-01)
 
 - **Finish guard ignores quoted wording.** Phrases inside quotes ("...", “...”), inline code and code blocks are words

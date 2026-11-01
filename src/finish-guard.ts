@@ -38,7 +38,10 @@ const OPEN_WORK: readonly RegExp[] = [
   /\bstill (?:not done|open|to do|left|pending|failing|unfixed|unresolved|broken)\b/i,
   /\bnot (?:done|fixed|finished|resolved|shipped|verified) yet\b/i,
   /\b(?:haven'?t|have not|didn'?t|did not) (?:fixed|fix|finished|finish|done|shipped|ship|verified|verify)\b/i,
-  /\b(?:remaining|open|outstanding|unfinished) (?:items|work|tasks|issues)\b/i,
+  // The noun phrase alone also appears when describing things ("no longer counts as unfinished work"); it reports open work
+  // only as a list header ("Remaining items:") or when the reply says it has some ("there are still open tasks").
+  /\b(?:remaining|open|outstanding|unfinished) (?:items|work|tasks|issues)\s*:/i,
+  /\b(?:still (?:have|has|got)|there (?:is|are)(?: still)?|we have|i have)\s+(?:some |a few |several |\d+ )?(?:remaining|open|outstanding|unfinished) (?:items|work|tasks|issues)\b/i,
   /\bleft to do\b/i,
   /\bnext (?:step|i'?ll|i will)\b/i,
   /\bwhat'?s left\b/i,
