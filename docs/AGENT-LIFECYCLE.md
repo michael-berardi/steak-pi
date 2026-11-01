@@ -26,7 +26,7 @@ parent integrates results.
 | Resource | Bound |
 | --- | --- |
 | Tasks per run | 8 |
-| Concurrent children | 8 per run; session defaults: Codex 6, others 8, global 14 |
+| Concurrent children | 8 per run; session/machine ceilings from `usap-caps.json` (see the protocol reference for defaults) |
 | Simultaneously active runs | 16 |
 | Run deadline | 10 minutes by default; 1 second–8 hours accepted |
 | Reviewer launch queue | 60 seconds across run/session/machine waits, capped by run deadline |

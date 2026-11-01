@@ -21,13 +21,13 @@ serious sessions need: parallel subagents with hard limits, compaction that
 costs no model calls, checks that run after every edit, and a status line that
 tells you what the agent is doing.
 
-Current release: **0.18.0**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
+Current release: **0.18.1**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
 [UltraTerm](https://paretocybernetics.com/software/).
 
 ## Install
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.18.0
+pi install git:github.com/michael-berardi/steak-pi@v0.18.1
 ```
 
 Or from the release archive, without Git:
@@ -193,7 +193,7 @@ to something that bills differently. Details: [model routing](./docs/MODEL-ROUTI
 [profiles](./docs/PROFILES.md).
 
 **Claude accounts (Steak Pi 0.10.0; UltraTerm's next managed runtime):** add `claudeAccount: "primary"`
-(Claude 1) or `"b"` (Claude 2) to an explicit Claude subscription run. Selection
+(the primary Claude account) or `"b"` (the second Claude account) to an explicit Claude subscription run. Selection
 is local to that run and produces an authenticated account receipt. Unavailable
 accounts fail without changing defaults or enabling credits. See the
 [account-selection contract](./docs/ULTRATERM-SUBAGENT-PROTOCOL.md#task-scoped-claude-subscription-account).

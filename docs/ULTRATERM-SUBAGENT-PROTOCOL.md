@@ -111,9 +111,11 @@ unsized dispatch requests N-wide, subject to provider/session/machine capacity:
 | 3–5 | Several genuinely independent paths, subsystems, audits, or evidence sources exist |
 | 6–8 | Long multi-aspect work with many disjoint leaves; fill the wave instead of executing serially in the parent |
 
-Eight is the hard per-run concurrency ceiling. Default per-session provider
-caps are Codex 6 and other providers 8, with 14 combined. Default
-machine caps are Codex 12 and other providers 12, with 24 combined.
+Eight is the hard per-run concurrency ceiling. Provider session and machine
+concurrency ceilings are not built in: set them in
+`~/.config/steak-pi/usap-caps.json`. When that file is absent the code defaults
+are 8 concurrent children per provider per session, 14 per session combined, and
+24 machine-wide; `README.md` gives the session figures.
 These configurable provider buckets are not model-specific quotas. A run may queue more
 bounded tasks than its width, but only the requested width executes at once.
 Do not invent padding work to fill slots, and do not execute a long list of
@@ -166,7 +168,7 @@ quota, not permission to buy credits or an expert approval.
 ### Task-scoped Claude subscription account
 
 Steak Pi 0.9.18 adds `claudeAccount: "primary"`
-(Claude 1) or `claudeAccount: "b"` (Claude 2). Pair it with
+(the primary Claude account) or `claudeAccount: "b"` (the second Claude account). Pair it with
 `harness: "claude-code"` or an exact `claude-code/…` model:
 
 ```json
@@ -184,7 +186,7 @@ model, credits or global default is selected. The selector applies to this run
 only. It does not sign in, move credentials, reserve a new account, or change
 native account-balancing defaults.
 
-Claude 1 uses the CLI default with `CLAUDE_CONFIG_DIR` **unset**; Claude 2 uses
+The primary Claude account uses the CLI default with `CLAUDE_CONFIG_DIR` **unset**; the second Claude account uses
 its registered explicit directory. Explicitly setting `~/.claude` is a different
 authentication namespace from leaving the variable unset. Without this selector,
 a validated inherited namespace is retained, including explicit `~/.claude`;
@@ -335,9 +337,9 @@ all-reviewer wave without an explicit route uses the CLI default
 above instead.
 Profiles select route metadata, not a separate CLI or inherited permissions.
 
-Only authenticated, available native registry routes may run Pi workers. GPT-family models
-always require paid-route `openai-codex` OAuth, the official Codex endpoint and
-non-batch execution. An explicit non-GPT choice from a GPT manager is supported.
+Only authenticated, available native registry routes may run Pi workers. A model family
+can be pinned to one subscription route with a `subscriptionRouteChecks` `modelPattern`
+entry in the operator's `routing.json`; nothing is pinned by default. An explicit non-GPT choice from a GPT manager is supported.
 Invalid or unavailable selections fail before any child starts; no silent
 fallback. Visual critics/render inspection must request `requireImages: true`.
 Native text/tool adapter availability is checked for every run.
@@ -574,8 +576,8 @@ The Steak Pi implementation profile uses these ceilings:
 | Resource | Bound |
 | --- | --- |
 | Concurrent children (per run) | 8 hard maximum; requested width defaults to min(8, task count), subject to capacity |
-| Concurrent children (per session) | Default provider caps: Codex 6, others 8; global 14 |
-| Concurrent children (machine-wide) | Default provider caps: Codex 12, others 12; global 24 across sessions |
+| Concurrent children (per session) | Configurable in `usap-caps.json`; defaults 8 per provider, 14 combined |
+| Concurrent children (machine-wide) | Configurable in `usap-caps.json`; default 24 |
 | Simultaneously active runs | 16; further dispatch is rejected until a run settles |
 | Tasks accepted in one run | 8 hard maximum; excess tasks remain a parent planning problem |
 | Run wall clock | finite; default 10 minutes, accepted range 1 second–8 hours (`timeoutMs`) |
