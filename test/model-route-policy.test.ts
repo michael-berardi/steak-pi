@@ -7,6 +7,7 @@ import { assertModelRoute, assertSubscriptionRequest, guardProvider, selectWorke
 import { workerChainFallback } from "../src/subagents/pi-worker.ts";
 import { eligibleGoFallback } from "../src/opencode-go-routing.ts";
 import { TERRA_MODEL, DEFAULT_TEXT_WORKER_CHAIN, DEFAULT_MULTIMODAL_WORKER_CHAIN, ROUTINE_GPT_MODEL, EXPERT_TEXT_REVIEW_CHAIN, EXPERT_MULTIMODAL_REVIEW_CHAIN } from "./helpers/routing-fixture.ts";
+import type { QuotaSnapshot } from "../src/subagents/provider-quota.ts";
 
 // The SDK's own pi-ai event stream: chain tests exercise real provider streams.
 const { createAssistantMessageEventStream } = await import(/* @vite-ignore */ sdkPiAiUrl);
@@ -264,9 +265,9 @@ describe("synthetic: GPT coding-plan route policy", () => {
     expect(selectWorkerModel(astra, ["scout", "worker"], chain)).toEqual(chainModels.goPrimary);
     expect(selectWorkerModel(astra, [undefined], chain)).toEqual(chainModels.goPrimary);
     expect(selectWorkerModel(astra, ["scout", "worker"], chain, { approvePaidRoute: () => true })).toEqual(chainModels.goPrimary);
-    // Once Go is used up, the operator's exact reviewed-route grant serves the same run on OpenRouter.
+    // Once Go is used up, Terra is selected next.
     expect(selectWorkerModel(astra, ["scout", "worker"], chainRegistry([chainModels.openRouter, chainModels.sol]),
-      { approvePaidRoute: () => true })).toEqual(chainModels.openRouter);
+      { approvePaidRoute: () => true })).toEqual(chainModels.sol);
     // Reviewer role prefers the scarce Astra expert; with the expert route absent
     // from this registry, the legacy fallback still retains the parent exactly.
     expect(selectWorkerModel(astra, ["worker", "reviewer"], chain)).toBe(astra);
@@ -279,7 +280,7 @@ describe("synthetic: GPT coding-plan route policy", () => {
     // subscription order. Astra is deliberately absent from the routine chains.
     expect([...EXPERT_TEXT_REVIEW_CHAIN]).toEqual([
       { provider: "openai-codex", id: "gpt-6-astra" },
-      GO_STEP, OPENROUTER_STEP, TERRA_STEP]);
+      GO_STEP, TERRA_STEP, { ...OPENROUTER_STEP, onlyWhen: { provider: "claude", everyAccount: { remainingBelow: 20, behindPaceAbove: 15 } } }]);
     expect(EXPERT_MULTIMODAL_REVIEW_CHAIN).toEqual([
       { provider: "openai-codex", id: "gpt-6-astra" }, { provider: "openai-codex", id: "gpt-6.1-terra" },
       { provider: "xiaomi", id: "mimo-v2.6-flash" }]);
@@ -323,39 +324,51 @@ describe("synthetic: GPT coding-plan route policy", () => {
     // never a sibling or alias.
     expect(DEFAULT_TEXT_WORKER_CHAIN[0]).toEqual(GO_STEP);
     expect(DEFAULT_TEXT_WORKER_CHAIN.map((step) => `${step.provider}/${step.id}`))
-      .toEqual(["opencode-go/deepseek-v4.1-flash", "openrouter/deepseek/deepseek-v4.1-flash-1017:exacto", "openai-codex/gpt-6.1-terra"]);
+      .toEqual(["opencode-go/deepseek-v4.1-flash", "openai-codex/gpt-6.1-terra", "openrouter/deepseek/deepseek-v4.1-flash-1017:exacto"]);
   });
 
-  it("resolves the ordered text chain: Go DeepSeek, then OpenRouter DeepSeek, then Codex OAuth Terra", () => {
-    // The default worker order since 2026-10-31: Go first, then OpenRouter DeepSeek once Go is used up, Terra last.
-    expect([...DEFAULT_TEXT_WORKER_CHAIN]).toEqual([GO_STEP, OPENROUTER_STEP, TERRA_STEP]);
+  it("resolves the ordered text chain: Go DeepSeek, then Codex OAuth Terra, then OpenRouter DeepSeek as a semi-fallback", () => {
+    // The default worker order since 2026-11-01: Go first, then Terra, and OpenRouter DeepSeek only when Claude is short.
+    expect([...DEFAULT_TEXT_WORKER_CHAIN]).toEqual([GO_STEP, TERRA_STEP, { ...OPENROUTER_STEP, onlyWhen: { provider: "claude", everyAccount: { remainingBelow: 20, behindPaceAbove: 15 } } }]);
     expect(DEFAULT_MULTIMODAL_WORKER_CHAIN).toEqual([{ provider: "openai-codex", id: "gpt-6.1-terra" }, { provider: "xiaomi", id: "mimo-v2.6-flash" }]);
     // Go and Terra are subscription routes: selected with NO paid allowlist grant.
     expect(selectChainedWorkerModel(chainRegistry(), DEFAULT_TEXT_WORKER_CHAIN)).toBe(chainModels.goPrimary);
     expect(selectChainedWorkerModel(chainRegistry(), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => false }))
       .toBe(chainModels.goPrimary);
-    // The reviewed OpenRouter Exacto route serves its second tier only under the operator's exact allowlist
-    // grant, once Go is used up; without the grant the chain skips it and reaches Terra.
-    expect(selectChainedWorkerModel(chainRegistry([chainModels.openRouter, chainModels.sol]), DEFAULT_TEXT_WORKER_CHAIN,
-      { approvePaidRoute: () => true })).toBe(chainModels.openRouter);
-    expect(selectChainedWorkerModel(chainRegistry([chainModels.openRouter, chainModels.sol]), DEFAULT_TEXT_WORKER_CHAIN,
-      { approvePaidRoute: () => false })).toBe(chainModels.sol);
+    
+    // Without Go, Terra is selected next.
+    expect(selectChainedWorkerModel(chainRegistry([chainModels.sol]), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => false }))
+      .toBe(chainModels.sol);
+    
+    // The reviewed OpenRouter Exacto route serves its semi-fallback tier only under the operator's exact allowlist grant and when Claude is short.
+    const lowQuota = { known: true, providers: { claude: { provider: "claude", accounts: 2, rows: [{ id: "primary", label: "Primary", usedPercent: 85, why: "" }], exhausted: false, unconfigured: false, ineligible: false, cause: "" } } } as unknown as QuotaSnapshot;
+    expect(selectChainedWorkerModel(chainRegistry([chainModels.openRouter]), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => true, quotaSnapshot: lowQuota }))
+      .toBe(chainModels.openRouter);
+    
+    // Without the grant the chain skips it and reaches nothing (since Terra is absent).
+    expect(() => selectChainedWorkerModel(chainRegistry([chainModels.openRouter]), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => false, quotaSnapshot: lowQuota }))
+      .toThrow(/no fallback was selected/);
+      
     // Its sibling id without :exacto is a different billing target and never satisfies the OpenRouter step.
     const sibling = { ...chainModels.openRouter, id: "deepseek/deepseek-v4.1-flash" } as Model;
-    expect(selectChainedWorkerModel(chainRegistry([sibling, chainModels.sol]), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => true }))
-      .toBe(chainModels.sol);
+    expect(() => selectChainedWorkerModel(chainRegistry([sibling]), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => true, quotaSnapshot: lowQuota }))
+      .toThrow(/no fallback was selected/);
+      
     // A different baseUrl on the same id is a different billing target too.
     const offEndpoint = { ...chainModels.openRouter, baseUrl: "https://openrouter.ai/api/v2" } as Model;
-    expect(selectChainedWorkerModel(chainRegistry([offEndpoint, chainModels.sol]), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => true }))
-      .toBe(chainModels.sol);
-    // OpenRouter and Go unavailable: Codex OAuth Terra serves the text run, never retired Z.ai.
-    expect(selectChainedWorkerModel(chainRegistry([chainModels.sol, chainModels.zaiGlm]), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => false }))
-      .toBe(chainModels.sol);
-    expect(() => selectChainedWorkerModel(chainRegistry([chainModels.zaiGlm]), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => true }))
+    expect(() => selectChainedWorkerModel(chainRegistry([offEndpoint]), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => true, quotaSnapshot: lowQuota }))
       .toThrow(/no fallback was selected/);
+      
+    // OpenRouter and Go unavailable: Codex OAuth Terra serves the text run, never retired Z.ai.
+    expect(selectChainedWorkerModel(chainRegistry([chainModels.sol, chainModels.zaiGlm]), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => false, quotaSnapshot: lowQuota }))
+      .toBe(chainModels.sol);
+      
+    expect(() => selectChainedWorkerModel(chainRegistry([chainModels.zaiGlm]), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => true, quotaSnapshot: lowQuota }))
+      .toThrow(/no fallback was selected/);
+      
     // A lone Go route still resolves its own chain step, whatever the grant.
     expect(selectChainedWorkerModel(chainRegistry([chainModels.goPrimary]),
-      DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => true })).toBe(chainModels.goPrimary);
+      DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => true, quotaSnapshot: lowQuota })).toBe(chainModels.goPrimary);
   });
   it("refuses API-key or off-plan Terra fallbacks even with a paid grant", () => {
     const noOAuth = { ...chainRegistry([chainModels.sol]), isUsingOAuth: () => false } as unknown as Registry;
@@ -743,7 +756,7 @@ describe("synthetic: per-profile Token Plan chain heads (0.8.1)", () => {
   const pro = { provider: "xiaomi", id: "mimo-v2.6-pro" };
   const sol = { provider: "openai-codex", id: "gpt-6.1-terra" };
   it("leads routine workers with Go DeepSeek, then OpenRouter DeepSeek, then Terra, and keeps a Pro head for Pro profiles", () => {
-    expect(DEFAULT_TEXT_WORKER_CHAIN).toEqual([GO_STEP, OPENROUTER_STEP, TERRA_STEP]);
+    expect(DEFAULT_TEXT_WORKER_CHAIN).toEqual([GO_STEP, TERRA_STEP, { ...OPENROUTER_STEP, onlyWhen: { provider: "claude", everyAccount: { remainingBelow: 20, behindPaceAbove: 15 } } }]);
     expect(DEFAULT_MULTIMODAL_WORKER_CHAIN).toEqual([sol, flash]);
     expect(workerChainFor(pro, true)).toEqual([pro]);
     expect(workerChainFor(undefined, false)).toBe(DEFAULT_TEXT_WORKER_CHAIN);

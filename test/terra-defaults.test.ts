@@ -5,7 +5,7 @@ import { assertSubscriptionRequest } from "../src/model-route-policy.ts";
 import { resolveWorkerSelection } from "../src/subagents/model-selection.ts";
 import { RetiredModelSelectionError } from "../src/retired-model-selection.ts";
 import { recordReviewFallback } from "../src/subagents/reviewer-fallback.ts";
-import { quotaProviderOf } from "../src/subagents/provider-quota.ts";
+import { quotaProviderOf, type QuotaSnapshot } from "../src/subagents/provider-quota.ts";
 import { validateTemporaryWorkerRoute } from "../src/temporary-free-route.ts";
 import { TERRA_MODEL, terraStartupProvider, withTerraCatalog, registerTerraRuntime, DEFAULT_TEXT_WORKER_CHAIN, BUILTIN_WORKER_PROFILES, SOL_MODEL_ROUTE, SOL_PROFILE } from "./helpers/routing-fixture.ts";
 
@@ -14,6 +14,10 @@ const go = { ...sol, provider: "opencode-go", id: "deepseek-v4.1-flash", name: "
 // The second default worker tier since 2026-10-31: DeepSeek V4.1 Flash on OpenRouter's Exacto sort,
 // reached once the prepaid Go plan is used up.
 const openRouter = { ...go, provider: "openrouter", id: "deepseek/deepseek-v4.1-flash-1017:exacto", baseUrl: "https://openrouter.ai/api/v1" } as typeof sol;
+// Claude short: satisfies the OpenRouter semi-fallback onlyWhen gate.
+const claudeShort = { known: true, providers: { claude: { provider: "claude", accounts: 2,
+  rows: [{ id: "primary", label: "Primary", usedPercent: 85, why: "" }],
+  exhausted: false, unconfigured: false, ineligible: false, cause: "" } } } as unknown as QuotaSnapshot;
 const models = [sol, TERRA_MODEL, go];
 const registry = {
   find: (provider: string, id: string) => models.find(model => model.provider === provider && model.id === id),
@@ -40,7 +44,7 @@ describe("synthetic: Terra defaults and compatibility", () => {
     const selected = select({}, role);
     expect(selected.model).toBe(go);
     expect(selected.selection).toMatchObject({ provider: "opencode-go", modelId: "deepseek-v4.1-flash", source: "chain",
-      chainRoutes: ["opencode-go/deepseek-v4.1-flash", "openrouter/deepseek/deepseek-v4.1-flash-1017:exacto", "openai-codex/gpt-6.1-terra"] });
+      chainRoutes: ["opencode-go/deepseek-v4.1-flash", "openai-codex/gpt-6.1-terra", "openrouter/deepseek/deepseek-v4.1-flash-1017:exacto"] });
     expect(DEFAULT_TEXT_WORKER_CHAIN[0]).toEqual({ provider: "opencode-go", id: "deepseek-v4.1-flash" });
   });
   it("selects OpenRouter DeepSeek once Go is used up and its reviewed Exacto route is allowlisted", () => {
@@ -50,7 +54,12 @@ describe("synthetic: Terra defaults and compatibility", () => {
       { approvePaidRoute: () => true }, {}).model).toBe(go);
     // Go used up (absent from the authenticated catalog): the allowlisted OpenRouter tier serves the run.
     const selected = resolveWorkerSelection(sol, "high", request,
-      openRouterOnlyRegistry(), BUILTIN_WORKER_PROFILES, "", { approvePaidRoute: () => true }, {});
+      openRouterOnlyRegistry(), BUILTIN_WORKER_PROFILES, "", {
+        approvePaidRoute: () => true,
+        forceDefaultChain: true,
+        skipRoute: (step) => step.provider === "openai-codex",
+        quotaSnapshot: claudeShort
+      }, {});
     expect(selected.model).toBe(openRouter);
     expect(selected.selection).toMatchObject({ provider: "openrouter", modelId: "deepseek/deepseek-v4.1-flash-1017:exacto", source: "chain" });
   });

@@ -7,6 +7,7 @@ import { curatedPickerModels, sharedPickerModels } from "./model-visibility.ts";
 import { eligibleGoFallback, withOpenCodeGoRouting } from "./opencode-go-routing.ts";
 import { assertActiveModelIdentity, isRetiredModelSelector } from "./retired-model-selection.ts";
 import { missingConfigKey, routingConfig, routingConfigOrEmpty, RoutingConfigError, type ExpertReviewConfig, type SubscriptionRouteCheck } from "./routing-config.ts";
+import type { QuotaSnapshot } from "./subagents/provider-quota.ts";
 import { authHeadersMatch, gatedMeteredStream, isSubscriptionOrLocalRoute, matchesSubscriptionCheck, subscriptionRouteChecks, SUBSCRIPTION_FIRST_ERROR } from "./subscription-first-routing.ts";
 
 type Registry = ExtensionContext["modelRegistry"];
@@ -333,7 +334,18 @@ export function selectWorkerThinking(
   return requested ?? (isExpert ? expert.thinking ?? "medium" : inherited ?? "off");
 }
 
-export interface WorkerRouteStep { provider: string; id: string }
+export interface OnlyWhenCondition {
+  /** The router provider whose accounts are examined. */
+  provider: string;
+  /** The step is eligible only while EVERY configured account of `provider` is short. */
+  everyAccount: {
+    /** "Short" when an account has under this percent of its window left (usedPercent > 100 - remainingBelow). */
+    remainingBelow: number;
+    /** "Short" when an account's usedPercent is more than this many points ahead of the elapsed share of its seven_day window. */
+    behindPaceAbove: number;
+  };
+}
+export interface WorkerRouteStep { provider: string; id: string; onlyWhen?: OnlyWhenCondition }
 
 /** The operator's automatic text worker chain (`textWorkerChain`); empty when none is configured. */
 export const textWorkerChain = (): readonly WorkerRouteStep[] => routingConfig().textWorkerChain ?? [];
@@ -389,7 +401,9 @@ export class NoChainRouteError extends Error {
     super(noChainRouteError(multimodal));
     this.name = "NoChainRouteError";
     this.multimodal = multimodal;
-    this.tried = tried.map((step) => ({ provider: step.provider, id: step.id }));
+    // Preserve the configured step (including a generic `onlyWhen` condition) so a caller's
+    // dispatch note can name why a skipped step was not eligible, not just its route.
+    this.tried = tried.map((step) => ({ ...step }));
   }
 }
 
@@ -433,6 +447,8 @@ export type ChainOptions = {
    * the legacy parent route. Only an implicit dispatch that must leave an exhausted
    * provider sets it; an explicit selector never does. */
   forceDefaultChain?: boolean;
+  /** Quota snapshot used to evaluate `onlyWhen` conditions on route steps. */
+  quotaSnapshot?: QuotaSnapshot;
 };
 
 /** The user allowlist is the only spending grant for automatic chain routing: a
@@ -568,12 +584,57 @@ export function withPreOutputChainFallback(
   return output;
 }
 
+/** True when the account's usedPercent is more than `behindPaceAbove` points ahead of the elapsed
+ * share of its seven_day window. Reads the window's own resetAt (or the account's top-level resetAt);
+ * a stale or missing window is NOT "behind pace". */
+function isBehindPace(row: { usedPercent?: number; resetAt?: number; windows?: ReadonlyArray<{ name?: string; usedPercent?: number; resetAt?: number }> }, behindPaceAbove: number, nowSeconds: number = Date.now() / 1000): boolean {
+  const sevenDay = row.windows?.find((w) => w.name === "seven_day");
+  const resetAt = sevenDay?.resetAt ?? row.resetAt;
+  const usedPercent = sevenDay?.usedPercent ?? row.usedPercent;
+  if (resetAt === undefined || usedPercent === undefined) return false;
+  if (resetAt <= nowSeconds) return false; // stale window: NOT short
+  const weekSeconds = 7 * 24 * 60 * 60;
+  const elapsedSeconds = weekSeconds - (resetAt - nowSeconds);
+  const elapsedPercent = (elapsedSeconds / weekSeconds) * 100;
+  return usedPercent - elapsedPercent > behindPaceAbove;
+}
+
+/** The named reason a step's `onlyWhen` condition is not met, or undefined when the step is
+ * eligible. Semantics per the operator's 11:20 requirement: the step is eligible only while
+ * EVERY configured account of the named router provider is out, has under `remainingBelow`
+ * percent left, or is more than `behindPaceAbove` points behind its weekly pace. Unknown or
+ * stale usage is NOT short. The reason text is what the dispatch note names when the step is
+ * skipped. */
+export function onlyWhenSkipReason(condition: OnlyWhenCondition, options: ChainOptions): string | undefined {
+  const snapshot = options.quotaSnapshot;
+  const subject = `${condition.provider} accounts`;
+  if (!snapshot || !snapshot.known) return `${subject}: router usage is unknown (unknown usage is not short)`;
+  const provider = snapshot.providers[condition.provider];
+  if (!provider || provider.unconfigured) return `${subject}: not configured in the router`;
+  if (provider.rows.length === 0) return `${subject}: no usage rows in the router`;
+  const short = provider.rows.every((row) => {
+    // An account the router marked ineligible (signed out) cannot serve, so it is "out" too.
+    if (row.eligible === false) return true;
+    if (row.exhausted === true) return true;
+    if (row.usedPercent !== undefined && row.usedPercent > 100 - condition.everyAccount.remainingBelow) return true;
+    if (isBehindPace(row, condition.everyAccount.behindPaceAbove)) return true;
+    return false;
+  });
+  if (short) return undefined;
+  return `${subject}: not every account is short (each needs to be out, under ${condition.everyAccount.remainingBelow}% left, or more than ${condition.everyAccount.behindPaceAbove} points behind its weekly pace)`;
+}
+
+function evaluateOnlyWhen(condition: OnlyWhenCondition, options: ChainOptions): boolean {
+  return onlyWhenSkipReason(condition, options) === undefined;
+}
+
 /** One authenticated chain route or a fail-closed error. Reviewed paid
  * steps need the operator's exact allowlist grant (re-read per selection); an
  * unreviewed metered endpoint never enters an automatic chain. */
 export function selectChainedWorkerModel(registry: Registry, chain: readonly WorkerRouteStep[], options: ChainOptions = {}): Model {
   const approve = options.approvePaidRoute ?? AUTOMATIC_CHAIN_APPROVAL;
   for (const step of chain) {
+    if (step.onlyWhen && !evaluateOnlyWhen(step.onlyWhen, options)) continue;
     if (options.skipRoute?.(step)) continue;
     const model = eligibleChainRoute(registry, step, options.requireImages === true, approve);
     if (model) return model;
