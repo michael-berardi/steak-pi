@@ -10,10 +10,21 @@
 #   steak-pi remove    Remove the Pi-side package.
 #   steak-pi run ...   Launch pi with Steak Pi's Node runtime defaults.
 #   steak-pi usap-api  Run explicit Claude API USAP waves (admit|dispatch|resume).
+#   steak-pi finish-guard-hook  Claude Code Stop hook: block a stop while requested work is open.
 #
 # Homebrew wrapper context sets STEAK_PI_LIBEXEC / STEAK_PI_OPT / STEAK_PI_FORMULA.
 # Git and npm installs derive everything from this script's location.
 set -u
+
+# Claude Code Stop hook (Hook JSON on stdin; a block verdict on stdout, nothing otherwise). Handled before
+# any other setup so every stop stays fast, and it always exits 0: a missing node or a failing hook must
+# never trap a session.
+if [ "${1:-}" = "finish-guard-hook" ]; then
+  if [ -n "${STEAK_PI_LIBEXEC:-}" ]; then hook_root=$STEAK_PI_LIBEXEC
+  else hook_root=$(CDPATH= cd -P -- "$(dirname -- "$0")/.." 2>/dev/null && pwd -P); fi
+  command -v node >/dev/null 2>&1 && [ -n "$hook_root" ] && node --no-warnings "$hook_root/src/finish-guard-hook.ts" 2>/dev/null
+  exit 0
+fi
 
 REPO="github.com/michael-berardi/steak-pi"
 PI_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
@@ -258,7 +269,7 @@ case "${1:-help}" in
   usap-api) shift; cmd_usap_api "$@";;
   env) run_env; say "NODE_COMPILE_CACHE=$NODE_COMPILE_CACHE"; say "MALLOC_ARENA_MAX=$MALLOC_ARENA_MAX"; say "NODE_OPTIONS=$NODE_OPTIONS";;
   help|--help|-h|*)
-    say "usage: steak-pi <install|update|status|version|remove|run|usap-api|env>"
+    say "usage: steak-pi <install|update|status|version|remove|run|usap-api|finish-guard-hook|env>"
     say "  install   add Steak Pi to the pi coding agent (or re-point at this copy)"
     say "  update    install the latest release (--check only reports whether one is available)"
     say "  status    show installed versions and management mode"
@@ -266,6 +277,7 @@ case "${1:-help}" in
     say "  remove    remove the pi-side package"
     say "  run       launch pi with Steak Pi's Node runtime defaults (args pass through)"
     say "  usap-api  run explicit Claude API USAP waves: admit | dispatch <wave.json> | resume <run-id>"
+    say "  finish-guard-hook  Claude Code Stop hook: block a stop while requested work is open (reads hook JSON on stdin)"
     say "  env       print the runtime defaults 'run' would apply"
     [ -n "${1:-}" ] && [ "$1" != "help" ] && die "unknown command '$1'"
     ;;
