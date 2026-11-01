@@ -78,6 +78,7 @@ command). The check runs at most every 6 hours, in the background; `STEAK_PI_NO_
 | **Local compaction** | Summaries built in 10–300 ms with no model call; the full raw session stays searchable |
 | **Verify after edit** | Runs your project check after edits and hands failures straight back to the agent |
 | **Phased todo** | A plan pinned in the terminal, saved per session |
+| **Finish guard** | A turn cannot end while todo items are open or the final reply lists unfinished work; capped, never after an abort, error or stop request, on by default |
 | **Companion UI** | One status line for state, model, context pressure, cache use and cost, in your Pi theme |
 | **Skill catalog lite** | Keeps large skill catalogs inside a byte budget without dropping any skill |
 | **Memory conventions** | Durable project decisions in `AGENTS.md`; recall across sessions only when you ask |
@@ -249,6 +250,49 @@ failures in a row.
 For language-server diagnostics, pair it with
 [`pi-lsp`](https://www.npmjs.com/package/@narumitw/pi-lsp).
 
+## Finish guard
+
+Agents sometimes end a turn with the work half done: items parked as
+`blocked` for reasons they could have worked on, or a closing "still not done"
+list. At Pi's final boundary the guard checks two things and, if either is
+true, gives the agent one more model request with the open list instead of
+settling:
+
+- the todo plan has open items (a `blocked` item counts as open unless its
+  reason is a real external blocker such as 2FA, a missing credential,
+  payment or spend approval, or legal sign-off);
+- the final reply reports unfinished work instead of doing it ("still not
+  done", "next step", "haven't fixed yet", ...).
+
+It pushes at most 3 times per message you send, and never after an abort or
+an error, when you asked it to stop or hold, when you only wanted an answer,
+or when nothing is open. It keeps a few values from events instead of
+rescanning the session, and reads no file when a turn ends.
+
+```json
+// ~/.pi/agent/steak-pi.json (or steak-pi.json under PI_CODING_AGENT_DIR)
+{ "finishGuard": { "enabled": true, "maxPushes": 3, "message": "..." } }
+```
+
+`"finishGuard": false` turns it off, as does `STEAK_PI_FINISH_GUARD=0`.
+`message` replaces the opening instruction (the open list is always added) and
+`maxPushes` is 0-20. Settings are read at startup and whenever a session starts
+or reloads. Steak Pi's own subagent workers are exempt: Pi workers load no
+extensions and Claude workers run with no user settings or hooks.
+
+The same check ships as a Claude Code Stop hook. It reads only the tail of the
+transcript (the last 512 KB, going further back only until your last message),
+so with a recent last message a very large transcript costs about the same as
+a small one: roughly 80 ms in total. Add it to `~/.claude/settings.json`:
+
+```json
+{ "hooks": { "Stop": [ { "hooks": [ { "type": "command", "command": "steak-pi finish-guard-hook" } ] } ] } }
+```
+
+Use the absolute path to `steak-pi` if it is not on the hook's `PATH`. The hook
+always exits 0, prints nothing unless it blocks, and honors the same settings.
+In Claude Code the plan is the last `TodoWrite` list.
+
 ## Performance
 
 Measured October 24, 2026 on Pi 1.0.4 (Apple silicon, macOS) with the
@@ -276,6 +320,8 @@ parallel-worker comparison. Earlier measurements are in
 | --- | --- | --- |
 | `.steak-pi/config.json` → `verify.*` | off | Verify after edit (above) |
 | `~/.pi/agent/ultracompress.json` | built-in | Compaction thresholds and recall budgets |
+| `~/.pi/agent/steak-pi.json` → `finishGuard` | on, 3 pushes | Finish guard (above) |
+| `STEAK_PI_FINISH_GUARD=0` | on | Turn the finish guard off |
 | `STEAK_PI_DEFER_TOOLS=off` | on | Expose every tool from the first request |
 | `STEAK_PI_WORKER_SDK=unbundled` | host bundle | Workers load their own Pi SDK copy |
 | `STEAK_PI_SKILL_CATALOG_LITE=off` | on | Keep Pi's stock skill catalog |

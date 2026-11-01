@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.18.3 (2026-11-01)
+
+- **Finish guard.** A turn can no longer end while the todo plan has open items or the final reply reports
+  unfinished work instead of doing it. At Pi's `agent_before_settle` boundary (only for a completed outcome) the
+  guard appends a `finish-guard` message listing what is open and asks for one more model request. A `blocked`
+  item counts as open unless its reason is a real external blocker (2FA, credential, payment or spend approval,
+  legal sign-off). At most 3 pushes per operator message; never after an abort or error, when the operator asked
+  to stop or hold or only for an answer, or when nothing is open. On by default.
+- **Lightweight.** State is O(1) from events (last operator input, last assistant text, latest `todo` result,
+  push count): nothing rescans the session branch or reads a file when a turn ends, and the patterns compile
+  once. A session that becomes active (resume, fork, tree move) is seeded with one backward pass from the
+  branch tip.
+- **Configurable.** `finishGuard` in `~/.pi/agent/steak-pi.json` (`enabled`, `maxPushes` 0-20, `message`);
+  `STEAK_PI_FINISH_GUARD=0` turns it off. The wording is provider- and person-neutral.
+- **Claude Code Stop hook.** `steak-pi finish-guard-hook` reads the hook JSON on stdin and prints
+  `{"decision":"block","reason":...}` or nothing, with the same rules. It reads only the tail of the transcript
+  (the last 512 KB, extending backwards only until the last operator message). Median wall time on a 175 MB
+  synthetic transcript, process start to exit: 79 ms when that message is about 1 MB from the end, 123 ms when
+  it is 25 MB back, 0.32 s at worst when it is the first line (the whole file is read). It never throws and
+  always exits 0.
+- New files: `extensions/finish-guard.ts`, `src/finish-guard.ts`, `src/finish-guard-hook.ts`.
+
 ## 0.18.2 (2026-11-01)
 
 - **Config-driven provider accounts.** The Go and Codex provider-account labels are no longer hard-coded
