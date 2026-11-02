@@ -22,6 +22,7 @@ import {
 } from "../extensions/ultraterm-subagents.ts";
 import type { RelayBroker } from "../src/subagents/relay.ts";
 import { emptyUsage, type UsageTotals, type WorkerRunner, type TaskRecord } from "../src/subagents/types.ts";
+import { TEAM_REGISTRY, stageClaudeHome } from "./helpers/claude-registry-fixture.ts";
 import { BUILTIN_WORKER_PROFILES } from "./helpers/routing-fixture.ts";
 
 const dirs: string[] = [];
@@ -90,13 +91,25 @@ async function flush(): Promise<void> {
   for (let index = 0; index < 10; index += 1) await Promise.resolve();
 }
 
-function syntheticClaudeSelection(account: "primary" | "b") {
-  const configDir = join(homedir(), account === "primary" ? ".claude" : ".claude-b");
+type SyntheticClaudeAccount = "primary" | "b" | "team-2";
+const SYNTHETIC_CLAUDE_LABEL = { primary: "Claude 1", b: "Claude 2", "team-2": "Claude (Team)" } as const;
+const SYNTHETIC_CLAUDE_FOLDER = { primary: ".claude", b: ".claude-b", "team-2": ".claude-team-2" } as const;
+
+/** The team-2 account lives only in the registry: stage a private HOME that defines it (cleaned up after the test). */
+function stageTeamRegistry(): string {
+  const staged = stageClaudeHome(TEAM_REGISTRY, [SYNTHETIC_CLAUDE_FOLDER["team-2"]]);
+  dirs.push(staged.home);
+  vi.stubEnv("HOME", staged.home);
+  return staged.home;
+}
+
+function syntheticClaudeSelection(account: SyntheticClaudeAccount) {
+  const configDir = join(homedir(), SYNTHETIC_CLAUDE_FOLDER[account]);
   return {
     ok: true,
     provider: "claude",
     account: {
-      id: account, label: account === "primary" ? "Claude 1" : "Claude 2", eligible: true, configDir,
+      id: account, label: SYNTHETIC_CLAUDE_LABEL[account], eligible: true, configDir,
       launchEnv: account === "primary" ? { unset: ["CLAUDE_CONFIG_DIR"] } : { set: { CLAUDE_CONFIG_DIR: configDir } },
       // Synthetic private fields must never leak into the public run/result.
       email: "synthetic-claude@example.invalid", orgId: "synthetic-private-org", accessToken: "synthetic-private-token",
@@ -104,11 +117,11 @@ function syntheticClaudeSelection(account: "primary" | "b") {
   };
 }
 
-function syntheticClaudeReceipt(account: "primary" | "b"): NonNullable<TaskRecord["subscriptionReceipt"]> {
+function syntheticClaudeReceipt(account: SyntheticClaudeAccount): NonNullable<TaskRecord["subscriptionReceipt"]> {
   return {
     kind: "claude-subscription", account, configMode: account === "primary" ? "default" : "explicit",
-    ...(account === "b" ? { configDir: join(homedir(), ".claude-b") } : {}),
-    identityHash: (account === "primary" ? "a" : "b").repeat(64), subscriptionType: "max",
+    ...(account === "primary" ? {} : { configDir: join(homedir(), SYNTHETIC_CLAUDE_FOLDER[account]) }),
+    identityHash: ({ primary: "a", b: "b", "team-2": "c" } as const)[account].repeat(64), subscriptionType: "max",
     attested: { preflight: true, init: true },
   };
 }
@@ -121,12 +134,18 @@ afterEach(() => {
 
 describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
   describe("synthetic: synthetic task-scoped Claude account dispatch", () => {
-    it("exposes only the primary and b account IDs as an optional schema enum", () => {
-      expect(ultratermSubagentsSchema.properties.claudeAccount).toMatchObject({ type: "string", enum: ["primary", "b"] });
+    it("exposes any registry account ID as an optional pattern-validated string", () => {
+      const schema = ultratermSubagentsSchema.properties.claudeAccount as unknown as { type: string; pattern: string; maxLength: number; description: string; enum?: unknown };
+      expect(schema).toMatchObject({ type: "string", maxLength: 24 });
+      expect(schema.enum).toBeUndefined();
+      expect(schema.description).toContain("Claude subscription account id from claude-accounts.json, e.g. primary, b, team-2");
+      const pattern = new RegExp(schema.pattern);
+      for (const id of ["primary", "b", "team-2", "team-3", "a1"]) expect(pattern.test(id), id).toBe(true);
+      for (const id of ["", "Team-2", "team-2-", "-team-2", "team--2", "team_2", "../b", "team-2\n"]) expect(pattern.test(id), id).toBe(false);
       expect(ultratermSubagentsSchema.required ?? []).not.toContain("claudeAccount");
     });
 
-    describe.each(["primary", "b"] as const)("selected account %s", (account) => {
+    describe.each(["primary", "b", "team-2"] as const)("selected account %s", (account) => {
       it.each([
         { selector: { harness: "claude-code" }, role: "worker", model: "claude-code/claude-sonnet-5-5" },
         { selector: { harness: "claude-code" }, role: "reviewer", model: "claude-code/claude-opus-5-5" },
@@ -134,6 +153,7 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
         { selector: { model: "claude-code/claude-opus-5-5" }, role: "reviewer", model: "claude-code/claude-opus-5-5" },
         { selector: { harness: "claude-code", model: "claude-code/claude-opus-5-5" }, role: "worker", model: "claude-code/claude-opus-5-5" },
       ])("propagates through the coordinator and public receipt without automatic fallback: %j", async ({ selector, role, model }) => {
+        if (account === "team-2") stageTeamRegistry();
         const receipt = syntheticClaudeReceipt(account);
         const runner = vi.fn(async (_context: Parameters<WorkerRunner>[0]) => ({ state: "done" as const, output: "synthetic review", turns: 1, usage: emptyUsage(), subscriptionReceipt: receipt }));
         const accountCommand = vi.fn(async (args: string[]) => args[0] === "status"
@@ -149,8 +169,8 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
           }, undefined, undefined, h.ctx);
           expect(result.isError).not.toBe(true);
           expect(runner).toHaveBeenCalledTimes(1);
-          expect(runner.mock.calls[0][0].run).toMatchObject({ claudeAccount: account, harness: "claude-code", model, thinkingLevel: "xhigh" });
-          expect(result.details.run).toMatchObject({ claudeAccount: account, harness: "claude-code", model, thinkingLevel: "xhigh", tasks: [{ subscriptionReceipt: receipt }] });
+          expect(runner.mock.calls[0][0].run).toMatchObject({ claudeAccount: account, harness: "claude-code", model, thinkingLevel: "medium" });
+          expect(result.details.run).toMatchObject({ claudeAccount: account, harness: "claude-code", model, thinkingLevel: "medium", tasks: [{ subscriptionReceipt: receipt }] });
           expect(result.details.run.tasks[0].reviewFallback).toBeUndefined();
           expect(result.details.run.selection.source).not.toBe("automatic-review-fallback");
           // A status response proving no eligible accounts must not override an explicit selection.
@@ -170,6 +190,10 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
 
     it.each([
       { claudeAccount: "unknown", harness: "claude-code" },
+      { claudeAccount: "team-2", harness: "claude-code" }, // well-formed, but this HOME's registry does not define it
+      { claudeAccount: "Team-2", harness: "claude-code" },
+      { claudeAccount: "team-2-", harness: "claude-code" },
+      { claudeAccount: "x".repeat(25), harness: "claude-code" },
       { claudeAccount: "../b", harness: "claude-code" },
       { claudeAccount: "~/.claude-b", harness: "claude-code" },
       { claudeAccount: join(homedir(), ".claude-b"), harness: "claude-code" },
@@ -231,6 +255,31 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
         expect(list.details.runs).toEqual([]);
         expect(h.entries).toEqual([]);
         expect(h.messages).toEqual([]);
+      } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); save.mockRestore(); }
+    });
+
+    it.each([
+      { name: "no eligible field", override: { eligible: undefined }, reason: /not eligible \(the router did not report it eligible\)/ },
+      { name: "eligible:false with its state text", override: { eligible: false, state: "reserved", stateText: "reserved for its owner" }, reason: /not eligible \(reserved for its owner\)/ },
+    ])("refuses a lent, owner-reserved account when the router answers with $name, before any checkpoint or start", async ({ override, reason }) => {
+      stageTeamRegistry();
+      const root = mkdtempSync(join(tmpdir(), "usap-account-reserved-")); dirs.push(root);
+      const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "account-reserved" };
+      const runner = vi.fn(async () => ({ state: "done" as const, output: "unexpected", turns: 1, usage: emptyUsage() }));
+      const answer = syntheticClaudeSelection("team-2");
+      const accountCommand = vi.fn(async (_args: string[]) => ({ ...answer, account: { ...answer.account, ...override } }));
+      const h = harness(() => runner, durable, undefined, { accountCommand });
+      const save = vi.spyOn(CheckpointStore.prototype, "save");
+      try {
+        await expect(h.tools.get("ultraterm_subagents").execute("reserved", {
+          goal: "Never launch a reserved account", claudeAccount: "team-2", harness: "claude-code",
+          tasks: [{ label: "Read review", task: "Inspect", role: "reviewer" }],
+        }, undefined, undefined, h.ctx)).rejects.toThrow(reason);
+        expect(accountCommand.mock.calls).toEqual([[["select", "--provider", "claude", "--account", "team-2"]]]);
+        expect(runner).not.toHaveBeenCalled();
+        expect(save).not.toHaveBeenCalled();
+        const list = await h.tools.get("ultraterm_hub").execute("list", { action: "list" }, undefined, undefined, h.ctx);
+        expect(list.details.runs).toEqual([]);
       } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); save.mockRestore(); }
     });
 
@@ -513,7 +562,7 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
       // Only a requested route is `override`; the implicit review wave's route was chosen automatically.
       expect(result.details.run.selection.automaticReview).toBe(Object.keys(route).length === 0 ? true : undefined);
       expect(result.details.run.selection.source).toBe(Object.keys(route).length === 0 ? "automatic-review" : "override");
-      expect(runner.mock.calls.at(-1)?.[0].run.thinkingLevel).toBe("xhigh");
+      expect(runner.mock.calls.at(-1)?.[0].run.thinkingLevel).toBe("medium");
       const relay = await h.tools.get("ultraterm_hub").execute("send", { action: "send", runId: result.details.run.runId, to: "#run", body: "not delivered" }, undefined, undefined, h.ctx);
       expect(relay.details.relay.ok).toBe(true);
       const inbox = await h.tools.get("ultraterm_hub").execute("inbox", { action: "inbox", runId: result.details.run.runId }, undefined, undefined, h.ctx);
@@ -543,7 +592,10 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
     const runner = vi.fn(async (_context: Parameters<WorkerRunner>[0]) => ({ state: "done" as const, output: "unexpected", turns: 1, usage: emptyUsage() }));
     const h = harness(() => runner);
     const base = { goal: "review", harness: "claude-code", tasks: [{ label: "Review", task: "read" }] };
-    await expect(h.tools.get("ultraterm_subagents").execute("bad", { ...base, thinking: "medium" }, undefined, undefined, h.ctx)).rejects.toThrow(/xhigh/);
+    for (const thinking of ["low", "max"]) {
+      await expect(h.tools.get("ultraterm_subagents").execute("bad", { ...base, thinking }, undefined, undefined, h.ctx)).rejects.toThrow(/ClaudeCodeEffortError|Claude Code effort must be medium, high, xhigh/);
+    }
+    await expect(h.tools.get("ultraterm_subagents").execute("bad", { ...base, thinking: "high" }, undefined, undefined, h.ctx)).rejects.toThrow(/high effort needs a concrete task benefit in thinkingReason/);
     await expect(h.tools.get("ultraterm_subagents").execute("bad", { ...base, model: "anthropic/claude-opus-5-5" }, undefined, undefined, h.ctx)).rejects.toThrow(/runs only claude-code\/claude-sonnet-5-5 or claude-code\/claude-opus-5-5/);
     expect(runner).not.toHaveBeenCalled();
     const writer = await h.tools.get("ultraterm_subagents").execute("ok", { ...base, tasks: [{ label: "write", task: "write", role: "worker", mayEdit: true, allowBash: true, ownedPaths: [h.ctx.cwd] }] }, undefined, undefined, h.ctx);
@@ -554,10 +606,10 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
     expect(leaf.allowBash).toBe(true);
     expect(leaf.ownedPaths).toHaveLength(1);
     expect(runner.mock.calls[0][0].run.harness).toBe("claude-code");
-    // Routine Claude work defaults to Sonnet 5.5 xhigh, which preserves Opus quota.
+    // Routine Claude work defaults to Sonnet 5.5 at medium effort, which preserves Opus quota.
     expect(writer.details.run.model).toBe("claude-code/claude-sonnet-5-5");
     expect(writer.details.run.selection.modelId).toBe("claude-sonnet-5-5");
-    expect(runner.mock.calls[0][0].run.thinkingLevel).toBe("xhigh");
+    expect(runner.mock.calls[0][0].run.thinkingLevel).toBe("medium");
     await h.handlers.get("session_shutdown")!({}, h.ctx);
   });
 
@@ -579,8 +631,39 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
       expect(result.details.run.harness).toBe("claude-code");
       expect(result.details.run.model).toBe(expected);
       expect(runner.mock.calls.at(-1)?.[0].run.model).toBe(expected);
-      expect(runner.mock.calls.at(-1)?.[0].run.thinkingLevel).toBe("xhigh");
+      expect(runner.mock.calls.at(-1)?.[0].run.thinkingLevel).toBe("medium");
     }
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+
+  it("runs claude-code at the dispatch's own effort: medium when none is given, high or xhigh with a reason", async () => {
+    const runner = vi.fn(async (_context: Parameters<WorkerRunner>[0]) => ({ state: "done" as const, output: "ok", turns: 1, usage: emptyUsage() }));
+    const h = harness(() => runner);
+    const reason = "Cross-module reasoning is required here";
+    const work = [{ label: "Work", task: "Inspect", role: "worker" }];
+    const review = [{ label: "Review", task: "Review", role: "reviewer" }];
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ harness: "claude-code", tasks: work }, "medium"],
+      [{ harness: "claude-code", thinking: "medium", tasks: work }, "medium"],
+      [{ harness: "claude-code", thinking: "high", thinkingReason: reason, tasks: work }, "high"],
+      [{ model: "claude-code/claude-sonnet-5-5", thinking: "xhigh", thinkingReason: reason, tasks: work }, "xhigh"],
+      [{ model: "claude-code/claude-opus-5-5", thinking: "high", thinkingReason: reason, tasks: review }, "high"],
+      // The automatic review route takes the requested effort instead of refusing a non-xhigh one.
+      [{ thinking: "xhigh", thinkingReason: reason, tasks: review }, "xhigh"],
+      [{ thinking: "medium", tasks: review }, "medium"],
+    ];
+    for (const [route, expected] of cases) {
+      const result = await h.tools.get("ultraterm_subagents").execute("effort", { goal: "effort", ...route }, undefined, undefined, h.ctx);
+      expect(result.details.run.harness).toBe("claude-code");
+      expect(runner.mock.calls.at(-1)?.[0].run.thinkingLevel).toBe(expected);
+      expect(result.details.run.thinkingLevel).toBe(expected);
+    }
+    const launched = runner.mock.calls.length;
+    for (const thinking of ["low", "max"]) {
+      await expect(h.tools.get("ultraterm_subagents").execute("effort", { goal: "effort", harness: "claude-code", thinking, tasks: work }, undefined, undefined, h.ctx))
+        .rejects.toThrow(/ClaudeCodeEffortError|Claude Code effort must be medium, high, xhigh/);
+    }
+    expect(runner).toHaveBeenCalledTimes(launched);
     await h.handlers.get("session_shutdown")!({}, h.ctx);
   });
   it("refuses every foreign-session hub action and dispatch before exposing a run", async () => {
@@ -1790,6 +1873,29 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
       await k.handlers.get("session_shutdown")!({}, k.ctx);
     });
 
+    it.each(["medium", "high", "xhigh"])("resumes a Claude Code partial at the %s effort it was recorded with", async (effort) => {
+      const claude = partialCheckpoint(`claude-resume-effort-${effort}`, { model: "claude-code/claude-opus-5-5", thinkingLevel: effort, claude: true });
+      const seen: string[] = [];
+      const h = harness(() => async ({ run: context }) => {
+        seen.push(context.thinkingLevel);
+        return { state: "done", output: "finished", turns: 2, usage: emptyUsage() };
+      }, claude.durable);
+      h.ctx.modelRegistry.find = () => { throw new Error("must not query Pi models"); };
+      await h.handlers.get("session_start")!({}, h.ctx);
+      const resumed = await resume(h, claude.run.id);
+      expect(resumed.details.run).toMatchObject({ harness: "claude-code", model: "claude-code/claude-opus-5-5", resumedFrom: claude.run.id, thinkingLevel: effort });
+      await vi.waitFor(() => expect(seen).toEqual([effort]));
+      await h.handlers.get("session_shutdown")!({}, h.ctx);
+    });
+
+    it.each(["low", "max"])("refuses to resume a Claude Code partial recorded at the unsupported %s effort", async (effort) => {
+      const claude = partialCheckpoint(`claude-resume-bad-effort-${effort}`, { model: "claude-code/claude-opus-5-5", thinkingLevel: effort, claude: true });
+      const h = harness(() => async () => { throw new Error("must not launch"); }, claude.durable);
+      await h.handlers.get("session_start")!({}, h.ctx);
+      await expect(resume(h, claude.run.id)).rejects.toThrow(new RegExp(`Resume refused: Claude Code runs only at medium, high, xhigh, not ${effort}`));
+      await h.handlers.get("session_shutdown")!({}, h.ctx);
+    });
+
     it("keeps automatic review provenance on a resumed Terra fallback review instead of recording an override", async () => {
       const reviewFallback = { from: "claude-code/claude-opus-5-5", to: "openai-codex/gpt-6.1-terra", reason: "no-eligible-claude" } as const;
       const selection = { provider: "openai-codex", modelId: "gpt-6.1-terra", source: "automatic-review-fallback", automaticReview: true, harness: "pi", images: false, tools: true };
@@ -1981,7 +2087,7 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
     const accountCommand = vi.fn(async (args: string[]) => {
       if (args[0] === "select" && args[2] === "claude") {
         selected.push(args[4]);
-        return syntheticClaudeSelection(args[4] as "primary" | "b");
+        return syntheticClaudeSelection(args[4] as SyntheticClaudeAccount);
       }
       if (args[0] !== "status") throw new Error(`unexpected router command ${args[0]}`);
       if (answer instanceof Error) throw answer;
@@ -2066,17 +2172,18 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
     });
 
     it.each([
-      ["a plain read/scout leaf", { tasks: plain }, "claude-code/claude-haiku-5-5", /^Haiku 5\.5: ordinary leaves/],
-      ["a worker leaf that edits without a shell", { tasks: [{ label: "doc", task: "Edit the doc", role: "worker", mayEdit: true, ownedPaths: ["docs/x.md"] }] }, "claude-code/claude-haiku-5-5", /ordinary leaves/],
-      ["a mayEdit + allowBash leaf", { tasks: [{ label: "build", task: "Implement and test", role: "worker", mayEdit: true, ownedPaths: ["src/x.ts"], allowBash: true }] }, "claude-code/claude-sonnet-5-5", /^Sonnet 5\.5: substantial code work/],
-      ["a requested xhigh effort", { tasks: plain, thinking: "xhigh", thinkingReason: "Cross-module reasoning is required here" }, "claude-code/claude-sonnet-5-5", /thinking xhigh was requested/],
-    ])("falls to the claude-code subscription route for %s when Go and Terra are both exhausted", async (_name, wave, expected, tierText) => {
+      ["a plain read/scout leaf", { tasks: plain }, "claude-code/claude-haiku-5-5", /^Haiku 5\.5: ordinary leaves/, "medium"],
+      ["a worker leaf that edits without a shell", { tasks: [{ label: "doc", task: "Edit the doc", role: "worker", mayEdit: true, ownedPaths: ["docs/x.md"] }] }, "claude-code/claude-haiku-5-5", /ordinary leaves/, "medium"],
+      ["a mayEdit + allowBash leaf", { tasks: [{ label: "build", task: "Implement and test", role: "worker", mayEdit: true, ownedPaths: ["src/x.ts"], allowBash: true }] }, "claude-code/claude-sonnet-5-5", /^Sonnet 5\.5: substantial code work/, "medium"],
+      ["a requested xhigh effort", { tasks: plain, thinking: "xhigh", thinkingReason: "Cross-module reasoning is required here" }, "claude-code/claude-sonnet-5-5", /thinking xhigh was requested/, "xhigh"],
+      ["a requested high effort", { tasks: plain, thinking: "high", thinkingReason: "Cross-module reasoning is required here" }, "claude-code/claude-sonnet-5-5", /thinking high was requested/, "high"],
+    ])("falls to the claude-code subscription route for %s when Go and Terra are both exhausted, at the dispatch's effort", async (_name, wave, expected, tierText, effort) => {
       const runner = done();
       const { h, selected } = quotaHarness(status({ codex: solOut, go: goOut, claude: claudeUp }), runner);
       try {
         const result = await dispatch(h, wave);
         const run = result.details.run;
-        expect(run).toMatchObject({ model: expected, harness: "claude-code", thinkingLevel: "xhigh", claudeAccount: "primary" });
+        expect(run).toMatchObject({ model: expected, harness: "claude-code", thinkingLevel: effort, claudeAccount: "primary" });
         expect(runner.mock.calls[0][0].run.claudeAccount).toBe("primary"); // pinned on an account the snapshot shows eligible
         expect(selected).toEqual(["primary"]);
         expect(run.model.startsWith("claude-code/")).toBe(true); // never the paid claude-code-api route
@@ -2088,7 +2195,8 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
         expect(result.content[0].text).toContain(`work needs verification: review it with an expert reviewer wave (all-reviewer waves default to model ${OPUS_ROUTE})`);
         expect(result.content[0].text).toContain(`${expected.endsWith("haiku-5-5") ? "Haiku" : "Sonnet"} 5.5 work needs verification`);
         expect(renderRunResult(run)).toContain("tier: requires expert verification");
-        expect(runner.mock.calls[0][0].run).toMatchObject({ model: expected, harness: "claude-code", thinkingLevel: "xhigh" });
+        expect(runner.mock.calls[0][0].run).toMatchObject({ model: expected, harness: "claude-code", thinkingLevel: effort });
+        expect(result.content[0].text).toContain(`at ${effort} effort (subscription)`);
         expect(run.tasks[0].apiReceipt).toBeUndefined();
       } finally { await shutdown(h); }
     });
@@ -2180,6 +2288,32 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
       } finally { await shutdown(h); }
     });
 
+    it("pins the registry-defined third account (team-2) when the router shows it eligible with the lightest window", async () => {
+      stageTeamRegistry();
+      const runner = done();
+      const claude = [{ ...usable("primary", "Claude 1"), usedPercent: 60 }, { ...usable("b", "Claude 2"), usedPercent: 50 }, { ...usable("team-2", "Claude (Team)"), usedPercent: 10 }];
+      const { h, selected } = quotaHarness(status({ codex: solOut, go: goOut, claude }), runner);
+      try {
+        const result = await dispatch(h, { tasks: plain });
+        expect(runner.mock.calls[0][0].run).toMatchObject({ harness: "claude-code", claudeAccount: "team-2" });
+        expect(selected).toEqual(["team-2"]);
+        expect(result.content[0].text).toContain("Claude account: Claude (Team)");
+      } finally { await shutdown(h); }
+    });
+
+    it("never pins an owner-reserved team-2 row the router reports ineligible", async () => {
+      stageTeamRegistry();
+      const runner = done();
+      const reserved = { ...busy("team-2", "Claude (Team)"), state: "reserved", stateText: "reserved for its owner", usedPercent: 1 };
+      const claude = [{ ...usable("primary", "Claude 1"), usedPercent: 60 }, reserved];
+      const { h, selected } = quotaHarness(status({ codex: solOut, go: goOut, claude }), runner);
+      try {
+        await dispatch(h, { tasks: plain });
+        expect(runner.mock.calls[0][0].run.claudeAccount).toBe("primary");
+        expect(selected).toEqual(["primary"]);
+      } finally { await shutdown(h); }
+    });
+
     it("refuses with the cause when the router lists Claude accounts but none is reported eligible", async () => {
       const runner = done();
       const unreported = [{ configured: true, id: "primary", label: "Claude 1", windows: [] }, cooling("b", "Claude 2")];
@@ -2207,13 +2341,14 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
       } finally { await shutdown(h); }
     });
 
-    it("refuses, naming the effort, when the Claude tier is needed but a non-xhigh effort was requested", async () => {
+    it("runs the Claude tier at the requested high effort on the substantial tier instead of refusing it", async () => {
       const runner = done();
       const { h } = quotaHarness(status({ codex: solOut, go: goOut, claude: claudeUp }), runner);
       try {
-        await expect(dispatch(h, { tasks: plain, thinking: "high", thinkingReason: "Careful reasoning is needed for this leaf" }))
-          .rejects.toThrow(/Claude subscription tier: the Claude subscription tier runs only at xhigh effort and thinking high is not silently overridden/);
-        expect(runner).not.toHaveBeenCalled();
+        const result = await dispatch(h, { tasks: plain, thinking: "high", thinkingReason: "Careful reasoning is needed for this leaf" });
+        expect(runner).toHaveBeenCalledTimes(1);
+        expect(runner.mock.calls[0][0].run).toMatchObject({ harness: "claude-code", model: "claude-code/claude-sonnet-5-5", thinkingLevel: "high" });
+        expect(result.details.run.selection.fallbackReason).toMatch(/thinking high was requested/);
       } finally { await shutdown(h); }
     });
 
@@ -2731,7 +2866,7 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
           const result = await dispatch(h, { background, tasks: wave });
           // Exactly two launches from ONE tool call: Go (refused), then the Claude tier on the same tasks.
           expect(runner.mock.calls.map(([context]) => context.run.model)).toEqual([GO_ROUTE, tier]);
-          expect(runner.mock.calls[1][0].run).toMatchObject({ harness: "claude-code", thinkingLevel: "xhigh", claudeAccount: "primary" });
+          expect(runner.mock.calls[1][0].run).toMatchObject({ harness: "claude-code", thinkingLevel: "medium", claudeAccount: "primary" });
           expect(runner.mock.calls[1][0].run.tasks.map((task) => [task.label, task.task])).toEqual(runner.mock.calls[0][0].run.tasks.map((task) => [task.label, task.task]));
           expect(selected).toEqual(["primary"]); // pinned to a router-eligible account
           expect(statusCalls(accountCommand)).toBe(2); // the second tier decided on a fresh router read

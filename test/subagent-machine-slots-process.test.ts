@@ -1,5 +1,5 @@
 import { fork } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, expect } from "vitest";
@@ -46,6 +46,14 @@ process.disconnect();
   let peak = 0;
   let ready = 0;
   let stopping = false;
+  // Admission is a FIFO token ring of pollers (50-250ms backoff) while a hold
+  // here lasts a few ms, so unaided workers almost never overlap and "peak > 1"
+  // would only measure scheduling luck. Withhold every entry ack until the
+  // machine cap is actually saturated (3 concurrent holders), then soak long
+  // enough for every waiter to poll again: a fourth admission in that window is
+  // a cap violation. Only after that do the workers run free.
+  const gate = { phase: "filling" as "filling" | "soaking" | "open", withheld: [] as ReturnType<typeof fork>[], timer: undefined as ReturnType<typeof setTimeout> | undefined };
+  const soakMs = 600;
   const jobs: Promise<void>[] = [];
   const diagnostics = () => workers.map(w =>
     `pid=${w.child.pid} started=${new Date(w.startedAt).toISOString()} elapsed=${Date.now() - w.startedAt}ms phase=${w.phase} iteration=${w.iteration} completed=${w.completed} code=${w.child.exitCode} signal=${w.child.signalCode} stderr=${JSON.stringify(w.stderr)}`
@@ -82,6 +90,29 @@ process.disconnect();
             peak = Math.max(peak, active.size);
             if (active.size > 3) violations.push("global cap exceeded");
             if ([...active.values()].filter(p => p === message.provider).length > 2) violations.push("provider cap exceeded");
+            if (gate.phase !== "open") {
+              gate.withheld.push(child);
+              if (gate.phase === "filling" && active.size === 3) {
+                gate.phase = "soaking";
+                // Nothing has exited yet, so these leases are stable: every
+                // seeded dead global lease must now belong to a live holder, and
+                // every holder must own a distinct lease file in its provider bucket.
+                const stampPid = (bucket: string, index: number) => {
+                  try { return (JSON.parse(readFileSync(join(root, bucket, `${index}.lock`), "utf8")) as { pid?: number }).pid; } catch { return undefined; }
+                };
+                const heldWorkers = [...active.entries()].map(([k, provider]) => ({ pid: workers[k]!.child.pid, provider }));
+                const globalPids = [0, 1, 2].map(n => stampPid("global", n)).sort();
+                if (JSON.stringify(globalPids) !== JSON.stringify(heldWorkers.map(w => w.pid).sort())) violations.push(`global leases ${JSON.stringify(globalPids)} are not the live holders`);
+                for (const { pid, provider } of heldWorkers) {
+                  if (![0, 1].some(n => stampPid(provider, n) === pid)) violations.push(`holder ${pid} has no ${provider} lease`);
+                }
+                gate.timer = setTimeout(() => {
+                  gate.phase = "open";
+                  for (const target of gate.withheld.splice(0)) send(target);
+                }, soakMs);
+              }
+              return;
+            }
           } else if (message.phase === "exit") {
             if (!active.delete(i)) violations.push("exit without entry");
             completed++;
@@ -105,11 +136,13 @@ process.disconnect();
     expect(violations).toEqual([]);
     expect(completed).toBe(120);
     expect(active.size).toBe(0);
-    expect(peak).toBeGreaterThan(1);
-    expect(peak).toBeLessThanOrEqual(3);
+    // The gate guarantees the cap was reached; violations prove it never exceeded it.
+    expect(gate.phase).toBe("open");
+    expect(peak).toBe(3);
   } finally {
     stopping = true;
     clearTimeout(deadline);
+    clearTimeout(gate.timer);
     // These exact child handles are owned by this fixture; never search/kill
     // other processes. Await close (not merely job rejection) before removing
     // their isolated slot directory, and escalate only these children.

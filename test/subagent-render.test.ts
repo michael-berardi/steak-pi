@@ -60,6 +60,73 @@ describe("subagent render", () => {
     expect(hub.render(40).join("\n")).toContain("list");
   });
 
+  // Pi's render context: isError / argsComplete / executionStarted arrive only here, never on the result envelope.
+  const piContext = (flags: { isError?: boolean; argsComplete?: boolean; executionStarted?: boolean } = {}) =>
+    ({ state: {}, isError: false, argsComplete: true, executionStarted: false, ...flags });
+
+  it("says a call with no usable tasks dispatched nothing instead of showing 0 assignments", () => {
+    for (const args of [undefined, {}, { tasks: [] }, { goal: "ship it" }, { goal: "ship it", tasks: [] }, { goal: "ship it", tasks: "oops" }]) {
+      for (const context of [undefined, piContext()]) {
+        const text = renderSubagentCall(args, themeProbe, context).render(200).join("\n");
+        expect(text).toContain("{error}Subagents · invalid arguments; nothing was dispatched");
+        expect(text).not.toContain("0 assignments");
+      }
+    }
+  });
+
+  it("shows a muted 'preparing…' while the arguments are still streaming, not an error", () => {
+    for (const args of [undefined, {}, { goal: "ship it" }, { goal: "ship it", tasks: [] }]) {
+      const text = renderSubagentCall(args, themeProbe, piContext({ argsComplete: false })).render(200).join("\n");
+      expect(text).toContain("{muted}Subagents · preparing…");
+      expect(text).not.toContain("nothing was dispatched");
+      expect(text).not.toContain("0 assignments");
+    }
+    // Execution implies complete arguments, so a late flag cannot keep the card in 'preparing'.
+    expect(renderSubagentCall({}, themeProbe, piContext({ argsComplete: false, executionStarted: true })).render(200).join("\n")).toContain("invalid arguments");
+    // Streaming arguments that already hold tasks render as the normal dispatch card.
+    expect(renderSubagentCall({ tasks: [{ label: "worker" }] }, themeProbe, piContext({ argsComplete: false })).render(200).join("\n")).toContain("1 assignment");
+  });
+
+  it("draws nothing for a refused call: its result card speaks, with or without a goal", () => {
+    for (const args of [undefined, {}, { tasks: [] }, { goal: "ship it" }, { goal: "ship it", tasks: [] }]) {
+      expect(renderSubagentCall(args, themeProbe, piContext({ isError: true })).render(200)).toEqual([]);
+    }
+    // Hub forms and well-formed dispatches keep their card even when the result failed.
+    expect(renderSubagentCall({ action: "status", runId: "run-1" }, themeProbe, piContext({ isError: true })).render(200).join("\n")).toContain("status");
+  });
+
+  it("hides the call card once its result renders (shared renderer state)", () => {
+    const context = piContext();
+    const args = { goal: "ship it", tasks: [{ label: "worker" }] };
+    expect(renderSubagentCall(args, themeProbe, context).render(80).join("\n")).toContain("1 assignment");
+    renderSubagentResult({ details: { run: runView } }, { expanded: false }, themeProbe, context);
+    expect(renderSubagentCall(args, themeProbe, context).render(80)).toEqual([]);
+  });
+
+  it("leads a refused call's result with 'call refused', the error text and an error border", () => {
+    const refused = { content: [{ type: "text", text: "Dispatch validation failed: tasks required\nInput: {}" }], details: undefined };
+    const rows = renderSubagentResult(refused, { expanded: false, isPartial: false }, themeProbe, piContext({ isError: true })).render(80);
+    expect(rows[0]).toMatch(/^\{error\}╭/);
+    expect(rows.at(-1)).toMatch(/^\{error\}╰/);
+    expect(rows[1]).toContain("{error}Subagents · call refused");
+    expect(rows[2]).toContain("{error}Dispatch validation failed: tasks required");
+    expect(rows[3]).toContain("{error}Input: {}");
+    expect(rows.join("\n")).not.toContain("Live progress");
+    // The same result without the flag is an ordinary text result with a neutral border.
+    const plain = renderSubagentResult(refused, { expanded: false }, themeProbe, piContext()).render(80);
+    expect(plain[0]).toMatch(/^\{dim\}╭/);
+    expect(plain.join("\n")).not.toContain("call refused");
+    // An error flag on the envelope (not how Pi delivers it) is honoured too.
+    expect(renderSubagentResult({ ...refused, isError: true }, undefined, themeProbe).render(80).join("\n")).toContain("call refused");
+    // Without a theme the rows stay plain text.
+    expect(renderSubagentResult(refused, undefined, undefined, piContext({ isError: true })).render(80).join("\n")).toContain("Subagents · call refused");
+  });
+
+  it("renders a refused call even with no error text", () => {
+    const rows = renderSubagentResult({}, undefined, themeProbe, piContext({ isError: true })).render(40);
+    expect(rows.join("\n")).toContain("{error}Subagents · call refused");
+  });
+
   it("renders collapsed runs with group counts and one row per worker", () => {
     const result = renderSubagentResult({ details: { run: runView } }, { expanded: false, isPartial: false });
     const rows = result.render(60);
@@ -94,9 +161,12 @@ describe("subagent render", () => {
     const malformed = renderSubagentResult({ details: "nope" }, undefined, undefined);
     expect(malformed.render(30).length).toBeGreaterThan(0);
     const fallback = renderSubagentResult(
-      { isError: true, details: { run: { tasks: "bad" } }, content: [{ type: "text", text: "boom\ndetails" }] },
+      { details: { run: { tasks: "bad" } }, content: [{ type: "text", text: "boom\ndetails" }] },
       { expanded: false, isPartial: false },
+      undefined,
+      { state: {}, isError: true },
     ).render(40).join("\n");
+    expect(fallback).toContain("call refused");
     expect(fallback).toContain("boom");
     const empty = renderSubagentResult({}, undefined, undefined).render(0);
     for (const row of empty) expect(row).toBe("");

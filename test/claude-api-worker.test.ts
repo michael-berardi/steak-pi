@@ -26,7 +26,7 @@ afterEach(() => { while (fixtures.length) fixtures.pop()!.cleanup(); });
 function run(model = SONNET, overrides: Partial<RunRecord> = {}): RunRecord {
   return {
     version: USAP_VERSION, id: "run-api-test", goal: "Inspect the leaf", constraints: ["No writes"], cwd: "/repo", model, harness: "claude-code",
-    thinkingLevel: "xhigh", concurrency: 1, timeoutMs: 60_000, maxTurns: 8, background: false, state: "running", createdAt: 0,
+    thinkingLevel: "medium", concurrency: 1, timeoutMs: 60_000, maxTurns: 8, background: false, state: "running", createdAt: 0,
     tasks: [task()], usage: emptyUsage(), ...overrides,
   };
 }
@@ -93,7 +93,7 @@ describe("API argv and environment", () => {
 
   it("subscription argv keeps the permission baseline plus realtime stream-json input", () => {
     expect(claudeWorkerArgs(8, { role: "scout" }, undefined, "claude-sonnet-5-5", undefined)).toEqual([
-      "--print", "--output-format", "stream-json", "--input-format", "stream-json", "--replay-user-messages", "--verbose", "--model", "claude-sonnet-5-5", "--effort", "xhigh", "--no-session-persistence",
+      "--print", "--output-format", "stream-json", "--input-format", "stream-json", "--replay-user-messages", "--verbose", "--model", "claude-sonnet-5-5", "--effort", "medium", "--no-session-persistence",
       "--permission-mode", "dontAsk", "--safe-mode", "--restricted", "--setting-sources", "", "--max-turns", "8", "--strict-mcp-config", "--tools", "Read,Grep,Glob",
     ]);
     expect(claudeWorkerArgs(8, { role: "scout" }, undefined, "claude-opus-5-5", undefined)).not.toContain("--bare");
@@ -250,13 +250,24 @@ describe("API runner", () => {
     for (const canary of [CANARY_KEY, CANARY_WORKSPACE, "apiKeyHelper", "--settings", "ANTHROPIC"]) expect(api).not.toContain(canary);
   });
 
-  it("requires xhigh and an exact route", async () => {
+  it("requires an exact route and an effort of medium, high or xhigh", async () => {
     const f = fresh();
     const { spawn, calls } = fakeSpawn(() => {});
     const runner = createClaudeWorkerRunner(options(f, spawn));
-    expect((await runner(ctx(run(SONNET, { thinkingLevel: "high" }), task()))).error).toMatch(/configured Claude Code route at xhigh effort/);
-    expect((await runner(ctx(run("claude-code-api/claude-sonnet-5-5-other"), task()))).error).toMatch(/configured Claude Code route at xhigh effort/);
+    for (const level of ["low", "max"]) {
+      expect((await runner(ctx(run(SONNET, { thinkingLevel: level }), task()))).error).toMatch(/^ClaudeCodeEffortError: Claude Code effort must be medium, high, xhigh/);
+    }
+    expect((await runner(ctx(run("claude-code-api/claude-sonnet-5-5-other"), task()))).error).toMatch(/requires the configured Claude Code route/);
     expect(calls).toHaveLength(0);
+  });
+
+  it("passes the API run's effort to the CLI: medium by default, high or xhigh as recorded", () => {
+    const effort = (args: string[]) => args[args.indexOf("--effort") + 1];
+    const api = { settingsPath: "/s.json", maxBudgetUsd: 1 };
+    expect(effort(claudeApiWorkerArgs(8, {}, undefined, "claude-sonnet-5-5", undefined, api))).toBe("medium");
+    expect(effort(claudeApiWorkerArgs(8, {}, undefined, "claude-sonnet-5-5", undefined, api, "high"))).toBe("high");
+    expect(effort(claudeApiWorkerArgs(8, {}, undefined, "claude-sonnet-5-5", { id: SESSION, resume: true }, api, "xhigh"))).toBe("xhigh");
+    expect(() => claudeApiWorkerArgs(8, {}, undefined, "claude-sonnet-5-5", undefined, api, "max" as never)).toThrow(/medium, high, xhigh/);
   });
 });
 

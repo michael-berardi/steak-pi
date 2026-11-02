@@ -57,7 +57,7 @@ describe("ultraterm_subagents explicit Claude API route", () => {
     const seen = runner.mock.calls[0][0];
     expect(seen.run.harness).toBe("claude-code");
     expect(seen.run.model).toBe(SONNET);
-    expect(seen.run.thinkingLevel).toBe("xhigh");
+    expect(seen.run.thinkingLevel).toBe("medium");
     expect(seen.run.selection).toMatchObject({ provider: "claude-code-api", modelId: "claude-sonnet-5-5", source: "override", harness: "claude-code", images: false });
     expect(seen.task.apiLeafCapUsd).toBe(1);
     expect(result.details.run.model).toBe(SONNET);
@@ -104,12 +104,29 @@ describe("ultraterm_subagents explicit Claude API route", () => {
     expect(runner).not.toHaveBeenCalled();
   });
 
-  it("refuses image review, a non-xhigh effort and foreign selectors on the API route", async () => {
+  it("runs the API route at the dispatch's high or xhigh effort when it gives a reason, and refuses an unexplained one", async () => {
+    const runner = vi.fn(done);
+    const h = harness(runner);
+    const exec = (extra: Record<string, unknown>) => h.tools.get("ultraterm_subagents").execute("api", wave({ model: SONNET, ...extra }), undefined, undefined, h.ctx);
+    const reason = "Cross-module reasoning is required here";
+    await exec({ thinking: "high", thinkingReason: reason });
+    expect(runner.mock.calls.at(-1)?.[0].run.thinkingLevel).toBe("high");
+    await exec({ thinking: "xhigh", thinkingReason: reason });
+    expect(runner.mock.calls.at(-1)?.[0].run.thinkingLevel).toBe("xhigh");
+    await exec({ thinking: "medium" });
+    expect(runner.mock.calls.at(-1)?.[0].run.thinkingLevel).toBe("medium");
+    const launched = runner.mock.calls.length;
+    await expect(exec({ thinking: "high" })).rejects.toThrow(/ClaudeCodeEffortError|needs a concrete task benefit/);
+    expect(runner).toHaveBeenCalledTimes(launched);
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+
+  it("refuses image review, an unsupported effort and foreign selectors on the API route", async () => {
     const runner = vi.fn(done);
     const h = harness(runner);
     const exec = (extra: Record<string, unknown>) => h.tools.get("ultraterm_subagents").execute("api", wave({ model: SONNET, ...extra }), undefined, undefined, h.ctx);
     await expect(exec({ requireImages: true })).rejects.toThrow(/unsupported-feature/);
-    await expect(exec({ thinking: "medium" })).rejects.toThrow(/xhigh/);
+    for (const thinking of ["low", "max"]) await expect(exec({ thinking })).rejects.toThrow(/ClaudeCodeEffort|medium, high, xhigh/);
     await expect(h.tools.get("ultraterm_subagents").execute("api", wave({ model: `${SONNET}-other` }), undefined, undefined, h.ctx)).rejects.toThrow();
     await expect(h.tools.get("ultraterm_subagents").execute("api", wave({ harness: "claude-code", model: SONNET, profile: "steak-pi/gpt-6-1-sol" }), undefined, undefined, h.ctx)).rejects.toThrow();
     expect(runner).not.toHaveBeenCalled();

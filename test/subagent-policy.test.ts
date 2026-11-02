@@ -343,3 +343,23 @@ describe("per-task turn budget", () => {
     )).toThrow(SubagentPolicyError);
   });
 });
+
+describe("normalizeDispatch claudeAccount", () => {
+  const route = "claude-code/claude-sonnet-5-5";
+  const input = (claudeAccount: unknown) => dispatch([{ label: "leaf", task: "Do the work" }], { harness: "claude-code", claudeAccount: claudeAccount as string });
+
+  it.each(["primary", "b", "team-2", "team-3", "x".repeat(24)])("accepts the account id %j on a Claude subscription route", (account) => {
+    const { cwd } = fixture();
+    expect(normalizeDispatch(input(account), cwd, route, "t").claudeAccount).toBe(account);
+  });
+
+  it.each(["Team-2", "team-2-", "-team-2", "team--2", "team_2", "", "../b", "team-2\n", "x".repeat(25), 3, null])("rejects the invalid account id %j", (account) => {
+    const { cwd } = fixture();
+    expect(() => normalizeDispatch(input(account), cwd, route, "t")).toThrow(/claudeAccount must be a Claude account id/);
+  });
+
+  it("still refuses an account on a non-Claude route", () => {
+    const { cwd } = fixture();
+    expect(() => normalizeDispatch(dispatch([{ label: "leaf", task: "Do the work" }], { claudeAccount: "team-2" }), cwd, "m", "t")).toThrow(/requires an exact Claude subscription route/);
+  });
+});

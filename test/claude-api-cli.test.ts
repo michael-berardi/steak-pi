@@ -65,6 +65,18 @@ describe("wave spec", () => {
       expect(() => parseWaveSpec(JSON.stringify({ goal: "g", cwd: "/x", route, tasks: [] }))).toThrow(/route must be one of/);
     }
   });
+
+  it("takes an optional effort of medium, high or xhigh (the latter two with a reason) and refuses anything else by name", () => {
+    const reason = "Cross-module reasoning is required here";
+    expect(parseWaveSpec(JSON.stringify({ goal: "g", cwd: "/x", tasks: [], thinking: "medium" })).thinking).toBe("medium");
+    expect(parseWaveSpec(JSON.stringify({ goal: "g", cwd: "/x", tasks: [], thinking: "high", thinkingReason: reason })).thinking).toBe("high");
+    expect(parseWaveSpec(JSON.stringify({ goal: "g", cwd: "/x", tasks: [], thinking: "xhigh", thinkingReason: reason })).thinking).toBe("xhigh");
+    for (const thinking of ["low", "max", "off"]) {
+      expect(() => parseWaveSpec(JSON.stringify({ goal: "g", cwd: "/x", tasks: [], thinking, thinkingReason: reason }))).toThrow(/Claude Code effort must be medium, high, xhigh/);
+    }
+    expect(() => parseWaveSpec(JSON.stringify({ goal: "g", cwd: "/x", tasks: [], thinking: "high" }))).toThrow(/high effort needs a concrete task benefit in thinkingReason/);
+    expect(() => parseWaveSpec(JSON.stringify({ goal: "g", cwd: "/x", tasks: [], thinkingReason: 3 }))).toThrow(/thinkingReason must be a string/);
+  });
 });
 
 describe("runClaudeApiWave (native coordinator)", () => {
@@ -114,6 +126,24 @@ describe("runClaudeApiWave (native coordinator)", () => {
     const file = join(t.root, namespace, `${outcome.run.id}.json`);
     expect(existsSync(file)).toBe(true);
     expect(statSync(file).mode & 0o077).toBe(0);
+  });
+
+  it("runs at medium effort by default and at the wave's high or xhigh effort when it gives a reason", async () => {
+    const reason = "Cross-module reasoning is required here";
+    const effortOf = (args: string[]) => args[args.indexOf("--effort") + 1];
+    const cases: Array<[Record<string, unknown>, string]> = [[{}, "medium"], [{ thinking: "medium" }, "medium"],
+      [{ thinking: "high", thinkingReason: reason }, "high"], [{ thinking: "xhigh", thinkingReason: reason }, "xhigh"]];
+    for (const [extra, expected] of cases) {
+      const t = setup((child) => { child.out(initFrame()); child.out(reply("ok")); child.out(result("ok")); child.exit(); });
+      const outcome = await runClaudeApiWave({ ...t.spec, ...extra } as typeof t.spec, t.deps);
+      expect(outcome.exitCode).toBe(0);
+      expect(outcome.run.thinkingLevel).toBe(expected);
+      expect(effortOf(t.calls[0].args)).toBe(expected);
+    }
+    const t = setup(() => {});
+    for (const thinking of ["low", "max"]) await expect(runClaudeApiWave({ ...t.spec, thinking: thinking as never, thinkingReason: reason }, t.deps)).rejects.toThrow(/Claude Code effort must be medium, high, xhigh/);
+    await expect(runClaudeApiWave({ ...t.spec, thinking: "high" }, t.deps)).rejects.toThrow(/needs a concrete task benefit/);
+    expect(t.calls).toHaveLength(0);
   });
 
   it("a failed leaf exits 1 and names no fallback", async () => {
@@ -183,6 +213,22 @@ describe("runClaudeApiWave (native coordinator)", () => {
     expect(resumed.run.tasks[0].priorSpendUsd).toBe(first.run.tasks[0].usage.cost.total);
     await expect(resumeClaudeApiRun(first.run.id, t.deps)).rejects.toThrow(/Already resumed as/);
     await expect(resumeClaudeApiRun(resumed.run.id, t.deps)).rejects.toThrow(/No unfinished tasks/);
+  });
+
+  it.each(["medium", "high", "xhigh"] as const)("an aborted API run resumes at the %s effort it was recorded with", async (effort) => {
+    const controller = new AbortController();
+    const t = setup((child, index) => {
+      if (index === 0) { child.out(initFrame()); child.out(frame({ type: "assistant", message: { id: "cut-1", model: "claude-sonnet-5-5", content: [{ type: "text", text: "partial" }], usage: { input_tokens: 4, output_tokens: 2 } } })); setTimeout(() => controller.abort(), 20); }
+      else { child.out(initFrame()); child.out(reply("finished after resume")); child.out(result("finished after resume", 0.04)); child.exit(); }
+    });
+    const first = await runClaudeApiWave({ ...t.spec, thinking: effort, thinkingReason: "Cross-module reasoning is required here" }, { ...t.deps, signal: controller.signal });
+    expect(first.run.thinkingLevel).toBe(effort);
+    const resumed = await resumeClaudeApiRun(first.run.id, t.deps);
+    expect(resumed.exitCode).toBe(0);
+    expect(resumed.run.thinkingLevel).toBe(effort);
+    const call = t.calls[1];
+    expect(call.args).toContain("--resume");
+    expect(call.args[call.args.indexOf("--effort") + 1]).toBe(effort);
   });
 
   it("resume re-admits: a revoked approval or spent budget stops the one resume before it is consumed", async () => {

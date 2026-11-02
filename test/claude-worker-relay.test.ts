@@ -188,10 +188,10 @@ describe("Claude running stream-json relay (synthetic; no inference)", () => {
     const s = setup((c, parent) => {
       parent.send({ to: "child", body: "next" });
       c.emit({ type: "system", padding: "x".repeat(5 * 1024 * 1024) }); c.result();
-      c.ack(1); c.emit({ type: "system", padding: "x".repeat(4 * 1024 * 1024) });
+      c.ack(1); c.emit({ type: "system", padding: "x".repeat(9 * 1024 * 1024) });
     });
     const result = await s.result;
-    expect(result.state).toBe("failed"); expect(result.error).toMatch(/8 MiB bound/);
+    expect(result.state).toBe("failed"); expect(result.error).toMatch(/8 MiB frame bound/);
   });
 
   it("does not double-count cumulative assistant usage updates between results", async () => {

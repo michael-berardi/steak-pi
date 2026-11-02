@@ -98,13 +98,30 @@ function runRows(raw: unknown, expanded: boolean, observedAt: number): Row[] {
   return rows;
 }
 
-type RenderContext = { state: { usapHasResult?: boolean } };
+/** The slice of Pi's ToolRenderContext these renderers read. Pi hands the error flag to renderers only here:
+ * the result envelope it passes is `{ content, details }`, without `isError`. */
+type RenderContext = {
+  state: { usapHasResult?: boolean };
+  /** The tool result is an error (the call was refused or threw). */
+  isError?: boolean;
+  /** The model has finished streaming the call's arguments. */
+  argsComplete?: boolean;
+  /** The tool has started executing, which implies complete arguments. */
+  executionStarted?: boolean;
+};
 export function renderSubagentCall(args: unknown, theme?: Theme, context?: RenderContext): Component {
   return component(() => {
     if (context?.state.usapHasResult) return [];
     const params = record(args);
     if (params.action) return [{ text: `Subagents · ${sanitize(params.action)}${params.runId ? ` · ${sanitize(params.runId)}` : ""}`, tone: "accent" }];
     const tasks = array(params.tasks);
+    if (tasks.length === 0) {
+      // Nothing was dispatched, so never draw an empty-looking "0 assignments" dispatch card. A refused call is
+      // spoken for by its result card; arguments still streaming are not wrong yet.
+      if (context?.isError) return [];
+      if (context?.argsComplete === false && context.executionStarted !== true) return [{ text: "Subagents · preparing…", tone: "muted" }];
+      return [{ text: "Subagents · invalid arguments; nothing was dispatched", tone: "error" }];
+    }
     return [{ text: `Subagents · ${counted(tasks.length, "assignment")}${params.background ? " · background" : ""}`, tone: "accent" },
       ...(params.goal ? [{ text: sanitize(params.goal), tone: "muted" as const }] : []),
       ...tasks.map((task) => ({ text: `○ ${sanitize(record(task).label) || "Unnamed task"}`, tone: "muted" as const }))];
@@ -156,9 +173,18 @@ export function renderSubagentResult(result: unknown, options?: { expanded?: boo
   }
   return component(() => {
     const envelope = record(result), details = record(envelope.details), run = record(details.run);
+    const failed = envelope.isError === true || context?.isError === true;
     let rows: Row[] = [];
     if (Array.isArray(run.tasks) && (run.runId || run.id)) rows = runRows(run, Boolean(options?.expanded), observedAt);
-    else if (Array.isArray(details.runs)) {
+    else if (failed) {
+      // A refused or thrown call: lead with the verdict (an error first row also tints the border), then the text.
+      rows.push({ text: "Subagents · call refused", tone: "error" });
+      for (const entry of array(envelope.content, 8)) {
+        const text = record(entry).text;
+        if (typeof text === "string") for (const line of text.split(/\r?\n/).slice(0, options?.expanded ? 40 : 8)) rows.push({ text: line, tone: "error" });
+      }
+      if (options?.expanded) rows.push({ text: "Ctrl+O · collapse details", tone: "accent" });
+    } else if (Array.isArray(details.runs)) {
       const runs = array(details.runs, 66);
       rows.push({ text: `Subagents · ${counted(runs.length, "run")}`, tone: "accent" });
       for (const entry of runs.slice(0, options?.expanded ? 50 : 8)) {
@@ -170,12 +196,12 @@ export function renderSubagentResult(result: unknown, options?: { expanded?: boo
     } else {
       for (const entry of array(envelope.content, 8)) {
         const text = record(entry).text;
-        if (typeof text === "string") for (const line of text.split(/\r?\n/).slice(0, options?.expanded ? 40 : 8)) rows.push({ text: line, tone: envelope.isError ? "error" : undefined });
+        if (typeof text === "string") for (const line of text.split(/\r?\n/).slice(0, options?.expanded ? 40 : 8)) rows.push({ text: line });
       }
       if (options?.expanded) rows.push({ text: "Ctrl+O · collapse details", tone: "accent" });
     }
     if (!rows.length) rows.push({ text: "Subagents · no details", tone: "muted" });
-    if (options?.isPartial) rows.push({ text: "Live progress", tone: "muted" });
+    if (options?.isPartial && !failed) rows.push({ text: "Live progress", tone: "muted" });
     return rows;
   }, theme);
 }

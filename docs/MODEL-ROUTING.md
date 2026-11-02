@@ -228,8 +228,8 @@ resolves the configured chain:
   `selection.fallbackReason`. A parent on another account-leased tier may reach a `codex`-tier
   step through an isolated, router-reserved account store.
 - **Claude tier.** When no chain step can launch, an implicit routine text wave (no reviewer,
-  no `requireImages`, effort unset or `xhigh`) runs on `claudeFallbackTier` through the
-  official Claude Code subscription CLI with no parent re-dispatch: `ordinary` for plain leaves,
+  no `requireImages`) runs on `claudeFallbackTier` through the
+  official Claude Code subscription CLI (medium effort, or the requested high/xhigh) with no parent re-dispatch: `ordinary` for plain leaves,
   `substantial` for a leaf that may both edit and run a shell, a requested high/xhigh effort, or
   a reviewer. The choice reads only declared capabilities, never task text. The worker is pinned
   on a router-eligible Claude account (least-used window, then fewest leases). The run records
@@ -272,7 +272,7 @@ without advertised image input are rejected.
 ### Implicit review
 
 When `implicitReview.route` is set, implicit all-reviewer waves run it on the
-official Claude Code CLI at xhigh. Only a router status proving every Claude
+official Claude Code CLI at medium effort unless the dispatch asks for high/xhigh with a reason. Only a router status proving every Claude
 account ineligible, or a Claude child with a recognized quota/auth failure
 **before model output**, may use `implicitReview.fallback` on Pi, and only for
 read-only reviewers (no `mayEdit`, `allowBash` or owned paths). Mixed implicit

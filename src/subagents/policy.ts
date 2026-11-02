@@ -1,4 +1,5 @@
 import { assertActiveModelSelector } from "../retired-model-selection.ts";
+import { isClaudeAccountId } from "./claude-account.ts";
 import { claudeOwnedPathRules } from "./claude-owned-paths.ts";
 import { claudeCodeModelOf } from "./model-selection.ts";
 import { lstatSync, realpathSync, statSync } from "node:fs";
@@ -249,7 +250,7 @@ export function normalizeDispatch(
   const background = booleanOrDefault(input.background, false, "background");
   const harness = normalizeHarness(input.harness, "harness");
   if (input.claudeAccount !== undefined) {
-    if (input.claudeAccount !== "primary" && input.claudeAccount !== "b") fail("claudeAccount must be primary or b");
+    if (!isClaudeAccountId(input.claudeAccount)) fail("claudeAccount must be a Claude account id from claude-accounts.json, such as primary, b or team-2");
     if (harness !== "claude-code" || claudeCodeModelOf(model) === undefined) fail("claudeAccount requires an exact Claude subscription route; no API or Pi account was selected");
   }
   const runId = `run-${safeDisplayId(idFactory())}`;

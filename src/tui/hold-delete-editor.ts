@@ -20,6 +20,9 @@ export function holdDeleteEnabled(path?: string): boolean {
   }
 }
 
+/** How long Backspace must be held before the whole input clears (1.5 s since 0.18.8; was 2 s). */
+export const HOLD_DELETE_CLEAR_MS = 1500;
+
 export class HoldDeleteEditor extends PasteSafeEditor {
   wantsKeyRelease = true;
   private holdStarted: number | undefined;
@@ -56,7 +59,7 @@ export class HoldDeleteEditor extends PasteSafeEditor {
     }
     this.lastBackspace = now;
     if (this.cleared) return;
-    if (now - this.holdStarted > 2000) {
+    if (now - this.holdStarted > HOLD_DELETE_CLEAR_MS) {
       this.cleared = true;
       this.setText("");
       return;

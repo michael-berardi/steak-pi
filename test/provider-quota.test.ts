@@ -142,10 +142,18 @@ describe("picking the Claude account an automatic fallback worker is pinned on",
     expect(unreported.cause).toBe("the router shows no eligible Claude account (Claude 1: the router did not report it eligible)");
   });
 
-  it("only ever picks an account the dispatch can pin (primary or b)", async () => {
-    const pick = pickClaudeAccount(await read(status({ claude: [eligible("third", "Claude 3")] })));
-    expect(pick.account).toBeUndefined();
-    expect(pick.cause).toContain("no eligible Claude account");
+  it("picks any eligible registry-defined account id, such as a third one", async () => {
+    expect(pickClaudeAccount(await read(status({ claude: [eligible("team-2", "Claude (Team)")] }))).account).toEqual({ id: "team-2", label: "Claude (Team)" });
+    const spread = pickClaudeAccount(await read(status({ claude: [eligible("primary", "Claude 1", { usedPercent: 60 }), eligible("b", "Claude 2", { usedPercent: 50 }), eligible("team-2", "Claude (Team)", { usedPercent: 10 })] })));
+    expect(spread.account).toEqual({ id: "team-2", label: "Claude (Team)" });
+  });
+
+  it("never pins a router row whose id is not a valid account id", async () => {
+    for (const id of ["Third", "../b", "team-2-", "team--2", "x".repeat(25), "bad id"]) {
+      const pick = pickClaudeAccount(await read(status({ claude: [eligible(id, "Claude 3")] })));
+      expect(pick.account, id).toBeUndefined();
+      expect(pick.cause, id).toContain("no eligible Claude account");
+    }
   });
 
   it("proves nothing from an unreadable router or one that lists no Claude account: no account, no cause", async () => {

@@ -65,6 +65,34 @@ describe("durable USAP checkpoints", () => {
     expect(reopened.warnings.join(" ")).toContain(`Unreadable checkpoint: ${run.id}.json`);
   });
 
+  const extraAccountRun = () => {
+    const made = setup();
+    made.run.model = "claude-code/claude-sonnet-5-5"; made.run.harness = "claude-code"; made.run.claudeAccount = "team-2";
+    made.run.tasks[0].subscriptionReceipt = { ...subscriptionReceipt(), account: "team-2", configMode: "explicit", configDir: "/synthetic/home/.claude-team-2" };
+    return made;
+  };
+
+  it("synthetic: keeps a registry-defined account (team-2) across a reopen", () => {
+    const { root, store, run } = extraAccountRun();
+    store.save(run, true); store.close();
+    const reopened = new CheckpointStore(join(root, "parent.jsonl"), join(root, "checkpoints")); stores.push(reopened);
+    expect(reopened.warnings).toEqual([]);
+    expect(reopened.get(run.id)!.run.claudeAccount).toBe("team-2");
+    expect(reopened.get(run.id)!.run.tasks[0].subscriptionReceipt?.account).toBe("team-2");
+  });
+
+  it.each(["Team-2", "team-2-", "../b", "team_2", "x".repeat(25)])("synthetic: quarantines the invalid Claude account id %j", (invalid) => {
+    const { root, store, run } = extraAccountRun();
+    store.save(run, true);
+    const path = join(store.directory, `${run.id}.json`);
+    const checkpoint = JSON.parse(readFileSync(path, "utf8"));
+    checkpoint.run.claudeAccount = invalid; checkpoint.run.tasks[0].subscriptionReceipt.account = invalid;
+    writeFileSync(path, JSON.stringify(checkpoint), { mode: 0o600 }); store.close();
+    const reopened = new CheckpointStore(join(root, "parent.jsonl"), join(root, "checkpoints")); stores.push(reopened);
+    expect(reopened.get(run.id)).toBeUndefined();
+    expect(reopened.warnings.join(" ")).toContain(`Unreadable checkpoint: ${run.id}.json`);
+  });
+
   const queue = () => ({ tier: "machine" as const, provider: "anthropic", reason: "provider_capacity", since: 1_000, deadlineAt: 5_000,
     capacity: { provider: "anthropic", providerBucket: { cap: 1, held: 1, owners: [{ index: 0, pid: 123, born: 500, runId: "run-peer", taskId: "task-peer", sessionId: "session-peer", kind: "lease" as const, status: "live" as const }] },
       globalBucket: { cap: 2, held: 1, owners: [{ index: 1, kind: "claim" as const, status: "unknown" as const }] } } });
@@ -353,6 +381,22 @@ describe("durable USAP checkpoints", () => {
     expect(JSON.stringify(diagnostic)).not.toMatch(/PRIVATE|Oct 7|America/);
     restored.harness = "pi";
     expect(diagnoseRun(restored).tasks[0]).not.toHaveProperty("recovery");
+  });
+
+  it.each(["medium", "high", "xhigh"])("keeps a Claude Code run's recorded %s effort through a reload and refuses a resume at any other effort", (effort) => {
+    const { root, store, run } = setup();
+    run.model = "claude-code/claude-sonnet-5-5"; run.harness = "claude-code"; run.thinkingLevel = effort;
+    store.save(run, true); store.close();
+    const reopened = new CheckpointStore(join(root, "parent.jsonl"), join(root, "checkpoints")); stores.push(reopened);
+    expect(reopened.get(run.id)!.run.thinkingLevel).toBe(effort);
+    const successor = (thinkingLevel: string) => ({ ...structuredClone(reopened.get(run.id)!.run), id: "run-successor", resumedFrom: run.id, thinkingLevel });
+    for (const other of ["medium", "high", "xhigh"].filter((level) => level !== effort)) {
+      expect(() => reopened.prepareResume(run.id, successor(other))).toThrow(/original route/);
+    }
+    expect(reopened.get(run.id)!.resumedAs).toBeUndefined();
+    expect(reopened.get(run.id)!.pendingResume).toBeUndefined();
+    reopened.prepareResume(run.id, successor(effort));
+    expect(reopened.get("run-successor")!.run.thinkingLevel).toBe(effort);
   });
 
   it("enforces the bounded-resume contract at the reservation: once, same budget, same route", () => {

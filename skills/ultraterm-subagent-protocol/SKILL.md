@@ -109,7 +109,7 @@ failures, a bare 429 and every explicit route fail synchronously and never fall 
 
 ## Harness and model selection
 
-Claude work runs through the official Claude Code CLI at xhigh on one of the
+Claude work runs through the official Claude Code CLI, at medium effort by default (high/xhigh only when you pass `thinking` with a `thinkingReason`), on one of the
 adapter's pinned `claude-code/<model>` routes. `harness: "claude-code"` without a
 `model` runs the operator's `claudeCodeDefaults` (`worker`, or `reviewer` for
 all-reviewer waves); all-reviewer waves with no explicit route run the operator's
@@ -118,8 +118,9 @@ needs a specific tier. Existing first-party Claude subscription login is require
 quota exhaustion is a failed task due to quota, never model approval or permission
 for credits or silent fallback.
 For a task-scoped subscription account, pair the Claude harness or exact
-subscription model with `claudeAccount: "primary"` (the primary Claude account) or `"b"`
-(the second Claude account). Available in Steak Pi 0.9.18; UltraTerm receives it through its next
+subscription model with `claudeAccount: "primary"` (the primary Claude account), `"b"`
+(the second Claude account) or any other account id defined in `~/.config/ultraterm/claude-accounts.json`
+(for example `"team-2"`). Available in Steak Pi 0.9.18; UltraTerm receives it through its next
 managed runtime release. Never hand-install managed helpers. The account router must admit that exact account at
 dispatch and each launch. Unknown/unavailable accounts, Pi, profile and API
 routes fail closed, with no fallback, credits or global-default change.
