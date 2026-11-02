@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.18.9 (2026-11-02)
+
+- **Dependency:** the development tree pins `minimatch` 11.0.3 (was 10.2.6 through Pi), clearing the moderate
+  globparts denial-of-service advisory. Nothing shipped at runtime changes.
+
 ## 0.18.8 (2026-11-01)
 
 - **Long Claude Code workers are no longer killed at 8 MiB.** The 8 MiB bound now applies to one stream-json frame

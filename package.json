@@ -1,6 +1,6 @@
 {
   "name": "steak-pi",
-  "version": "0.18.8",
+  "version": "0.18.9",
   "bin": {
     "steak-pi": "bin/steak-pi"
   },
@@ -82,7 +82,8 @@
   },
   "overrides": {
     "@earendil-works/pi-coding-agent": {
-      "undici": "8.12.3"
+      "undici": "8.12.3",
+      "minimatch": "11.0.3"
     }
   },
   "devDependencies": {
