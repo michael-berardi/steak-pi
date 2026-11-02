@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.18.11 (2026-11-02)
+
+- **One Claude login check at a time.** Every model and provider probe at startup ran its own `claude auth status`,
+  about 50 at once on each Pi start (a multi-GB memory spike). Concurrent checks for one login now share a single
+  process, and a logged-in answer is reused for 30 seconds. A logged-out or uncertain answer is never reused, so a fresh
+  sign-in is seen at once; the shared check stops only when every caller waiting on it has aborted.
+
 ## 0.18.10 (2026-11-02)
 
 - **A plan with its week left is never "short" because of its five-hour window.** A chain step gated on every

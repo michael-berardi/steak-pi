@@ -9,6 +9,7 @@ import {
   discoverClaudeModels,
   getClaudeStatus,
   LOGIN_HINT,
+  resetClaudeStatusCache,
   rewriteInitialRequest,
   runClaudeRequest,
 } from "../../extensions/claude-code/claude-cli.ts";
@@ -394,7 +395,44 @@ async function fakeAuth(script: string) {
   return { root, executable };
 }
 
+test("concurrent auth checks share one claude auth status process, and a logged-in answer is reused briefly", async () => {
+  resetClaudeStatusCache();
+  const { root, executable } = await fakeAuth(`import {appendFileSync} from "node:fs";
+appendFileSync(process.env.COUNT, "x");
+await new Promise((r) => setTimeout(r, 200));
+console.log(JSON.stringify({loggedIn: true, authMethod: "claude.ai", subscriptionType: "max"}));`);
+  try {
+    const env = { PI_CLAUDE_CODE_COMMAND: executable, COUNT: join(root, "count"), PATH: process.env.PATH, HOME: process.env.HOME };
+    const all = await Promise.all(Array.from({ length: 50 }, () => getClaudeStatus(env)));
+    assert.ok(all.every((status) => status.loggedIn && status.subscription));
+    assert.equal((await readFile(join(root, "count"), "utf8")).length, 1, "50 concurrent checks spawn one process");
+    await getClaudeStatus(env);
+    assert.equal((await readFile(join(root, "count"), "utf8")).length, 1, "a fresh logged-in answer is reused");
+    // A caller that aborts gets its abort; the others still get the answer.
+    resetClaudeStatusCache();
+    const abort = new AbortController();
+    const aborted = getClaudeStatus(env, abort.signal);
+    const kept = getClaudeStatus(env);
+    abort.abort(new Error("caller left"));
+    await assert.rejects(aborted, /caller left/);
+    assert.equal((await kept).loggedIn, true);
+  } finally { resetClaudeStatusCache(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("a logged-out answer is never cached, so a fresh sign-in is seen at once", async () => {
+  resetClaudeStatusCache();
+  const { root, executable } = await fakeAuth(`import {existsSync} from "node:fs";
+console.log(JSON.stringify(existsSync(process.env.IN) ? {loggedIn: true, subscriptionType: "max"} : {loggedIn: false}));`);
+  try {
+    const env = { PI_CLAUDE_CODE_COMMAND: executable, IN: join(root, "in"), PATH: process.env.PATH, HOME: process.env.HOME };
+    assert.equal((await getClaudeStatus(env)).loggedIn, false);
+    await writeFile(join(root, "in"), "1");
+    assert.equal((await getClaudeStatus(env)).loggedIn, true);
+  } finally { resetClaudeStatusCache(); await rm(root, { recursive: true, force: true }); }
+});
+
 test("a first auth status with no answer is retried, not reported as logged out", async () => {
+  resetClaudeStatusCache();
   const { root, executable } = await fakeAuth(`import {existsSync, writeFileSync} from "node:fs";
 const mark = process.env.MARK;
 if (!existsSync(mark)) { writeFileSync(mark, "1"); process.exit(1); }
@@ -407,6 +445,7 @@ console.log(JSON.stringify({loggedIn: true, authMethod: "claude.ai", subscriptio
 });
 
 test("an auth status that never answers is named as such, never as a logout", async () => {
+  resetClaudeStatusCache();
   const { root, executable } = await fakeAuth(`console.error("keychain busy"); process.exit(1);`);
   try {
     const status = await getClaudeStatus({ PI_CLAUDE_CODE_COMMAND: executable, PATH: process.env.PATH, HOME: process.env.HOME });
