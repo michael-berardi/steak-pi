@@ -587,8 +587,23 @@ export function withPreOutputChainFallback(
 /** True when the account's usedPercent is more than `behindPaceAbove` points ahead of the elapsed
  * share of its seven_day window. Reads the window's own resetAt (or the account's top-level resetAt);
  * a stale or missing window is NOT "behind pace". */
-function isBehindPace(row: { usedPercent?: number; resetAt?: number; windows?: ReadonlyArray<{ name?: string; usedPercent?: number; resetAt?: number }> }, behindPaceAbove: number, nowSeconds: number = Date.now() / 1000): boolean {
-  const sevenDay = row.windows?.find((w) => w.name === "seven_day");
+/** The router names the weekly window `seven_day` (its own usage probe) or `7d` (the statusline's shared snapshot). */
+const WEEKLY_WINDOW_NAMES = new Set(["seven_day", "7d"]);
+type WindowRow = { usedPercent?: number; resetAt?: number; windows?: ReadonlyArray<{ name?: string; usedPercent?: number; resetAt?: number }> };
+function weeklyWindow(row: WindowRow) {
+  return row.windows?.find((w) => typeof w.name === "string" && WEEKLY_WINDOW_NAMES.has(w.name));
+}
+/** An account's weekly used share. The top-level usedPercent is the router's most-limiting window, which can be the
+ * five-hour one: a lent plan at 83% of its five hours but 34% of its week is not short (2026-11-02: that misread sent work to
+ * a paid route while the plan had most of its week left). */
+function weeklyUsedPercent(row: WindowRow): number | undefined {
+  const weekly = weeklyWindow(row);
+  if (weekly) return weekly.usedPercent;
+  return row.windows && row.windows.length > 0 ? undefined : row.usedPercent;
+}
+
+function isBehindPace(row: WindowRow, behindPaceAbove: number, nowSeconds: number = Date.now() / 1000): boolean {
+  const sevenDay = weeklyWindow(row);
   const resetAt = sevenDay?.resetAt ?? row.resetAt;
   const usedPercent = sevenDay?.usedPercent ?? row.usedPercent;
   if (resetAt === undefined || usedPercent === undefined) return false;
@@ -616,7 +631,8 @@ export function onlyWhenSkipReason(condition: OnlyWhenCondition, options: ChainO
     // An account the router marked ineligible (signed out) cannot serve, so it is "out" too.
     if (row.eligible === false) return true;
     if (row.exhausted === true) return true;
-    if (row.usedPercent !== undefined && row.usedPercent > 100 - condition.everyAccount.remainingBelow) return true;
+    const weeklyUsed = weeklyUsedPercent(row);
+    if (weeklyUsed !== undefined && weeklyUsed > 100 - condition.everyAccount.remainingBelow) return true;
     if (isBehindPace(row, condition.everyAccount.behindPaceAbove)) return true;
     return false;
   });

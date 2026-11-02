@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.18.10 (2026-11-02)
+
+- **A plan with its week left is never "short" because of its five-hour window.** A chain step gated on every
+  account being short (`onlyWhen.everyAccount`) read the router's top-level `usedPercent`, which is the most-limiting
+  window and can be the five-hour one. A plan at 83% of its five hours but 34% of its week counted as short, so work
+  went to a paid route while that plan could serve. The check now reads the weekly window, named `seven_day` or `7d`.
+
 ## 0.18.9 (2026-11-02)
 
 - **Dependency:** the development tree pins `minimatch` 11.0.3 (was 10.2.6 through Pi), clearing the moderate

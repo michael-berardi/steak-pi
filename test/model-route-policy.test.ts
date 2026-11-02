@@ -348,6 +348,21 @@ describe("synthetic: GPT coding-plan route policy", () => {
     // Without the grant the chain skips it and reaches nothing (since Terra is absent).
     expect(() => selectChainedWorkerModel(chainRegistry([chainModels.openRouter]), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => false, quotaSnapshot: lowQuota }))
       .toThrow(/no fallback was selected/);
+
+    // 2026-11-02: the router's top-level usedPercent is the most-limiting window, which can be the five-hour one. A plan at 83%
+    // of its five hours but 34% of its week (the statusline names the windows "5h"/"7d") still has its week: not short, so the
+    // paid step stays skipped while that plan can serve.
+    const week = Date.now() / 1000 + 3 * 86400;
+    const fiveHourOnly = { known: true, providers: { claude: { provider: "claude", accounts: 3, rows: [
+      { id: "primary", label: "Claude 1", usedPercent: 98, windows: [{ name: "seven_day", usedPercent: 98, resetAt: week }], why: "" },
+      { id: "lent", label: "Claude (Team)", usedPercent: 83, windows: [{ name: "5h", usedPercent: 83, resetAt: Date.now() / 1000 + 3600 }, { name: "7d", usedPercent: 34, resetAt: week }], why: "" },
+    ], exhausted: false, unconfigured: false, ineligible: false, cause: "" } } } as unknown as QuotaSnapshot;
+    expect(() => selectChainedWorkerModel(chainRegistry([chainModels.openRouter]), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => true, quotaSnapshot: fiveHourOnly }))
+      .toThrow(/no fallback was selected/);
+    // The same plan with its week nearly used is short, and the paid step may serve.
+    const weekUsed = JSON.parse(JSON.stringify(fiveHourOnly).replace('"usedPercent":34', '"usedPercent":95'));
+    expect(selectChainedWorkerModel(chainRegistry([chainModels.openRouter]), DEFAULT_TEXT_WORKER_CHAIN, { approvePaidRoute: () => true, quotaSnapshot: weekUsed }))
+      .toBe(chainModels.openRouter);
       
     // Its sibling id without :exacto is a different billing target and never satisfies the OpenRouter step.
     const sibling = { ...chainModels.openRouter, id: "deepseek/deepseek-v4.1-flash" } as Model;
