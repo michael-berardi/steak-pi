@@ -45,7 +45,6 @@ const ADAPTER_CATALOGS = [
 // The Claude subscription adapter's two account display labels. The operator's account router
 // supplies the ids; these labels are the adapter's own identity, checked to still exist.
 const TECHNICAL_IDENTITY_LINES: { path: string; pattern: RegExp }[] = [
-  { path: "src/subagents/claude-account.ts", pattern: /label: "Claude 1"/ },
   { path: "src/subagents/claude-account.ts", pattern: /label: "Claude 2"/ },
 ];
 const allowedTechnicalLine = (path: string, text: string) =>
@@ -76,6 +75,10 @@ const allowedDistributionLine = (path: string, line: string) => {
   return !PERSONAL.test(rest);
 };
 const PERSONAL = /\b(?:Mike|Berardi|Kate|Felix|Lucero|PlataPlace|Mouseia|UltraLDSBot)\b|libertydesign|Liberty Design|\/Users\/[A-Za-z]/i;
+
+// Operator-specific account spellings that once leaked into examples and fixtures. Use a neutral id such as
+// "team-2" / "Claude (Team)" wherever an example registry account is needed.
+const OPERATOR_ACCOUNT = /claude-kl|"kl"|Claude \(KL\)/i;
 
 type Hit = { path: string; line: number; text: string };
 const hits = (paths: readonly string[], pattern: RegExp): Hit[] => paths.flatMap((path) =>
@@ -135,6 +138,16 @@ describe("shipped files are provider-neutral", () => {
       .filter((hit) => !allowedDistributionLine(hit.path, hit.text))
       .map(describeHit);
     expect(personal).toEqual([]);
+  });
+
+  it("use no operator-specific Claude account id, label or folder in examples, docs or fixtures", () => {
+    for (const sample of ["claude-kl", ".claude-kl/", '"kl"', "Claude (KL)", "CLAUDE (kl)"]) expect(OPERATOR_ACCOUNT.test(sample), sample).toBe(true);
+    for (const sample of ["team-2", "Claude (Team)", ".claude-team-2", "kl-2x"]) expect(OPERATOR_ACCOUNT.test(sample), sample).toBe(false);
+    // Shipped files, the whole CHANGELOG and every test fixture except this file (which names the patterns).
+    const self = fileURLToPath(import.meta.url);
+    const everywhere = [...shipped, join(root, "CHANGELOG.md"), ...files(join(root, "test")).filter((path) => path !== self)].filter(existsSync);
+    expect(everywhere.some((path) => relative(root, path).startsWith("test/"))).toBe(true);
+    expect(hits(everywhere, OPERATOR_ACCOUNT).map(describeHit)).toEqual([]);
   });
 
   it("keeps each allowlisted distribution file real and still naming the owner", () => {

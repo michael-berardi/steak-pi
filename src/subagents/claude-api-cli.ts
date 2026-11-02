@@ -17,6 +17,7 @@ import { CheckpointStore } from "./checkpoints.ts";
 import { RelayBroker, type RelayPeer } from "./relay.ts";
 import { normalizeDispatch } from "./policy.ts";
 import { createClaudeWorkerRunner, type ClaudeSpawn } from "./claude-worker.ts";
+import { CLAUDE_CODE_EFFORTS, isClaudeCodeEffort, resolveClaudeCodeEffort, type ClaudeCodeEffort } from "./claude-code-models.ts";
 import {
   admitClaudeApiRoute, claudeApiConcurrency, claudeApiModelOf, CLAUDE_API_ROUTES, CLAUDE_API_SONNET_ROUTE, formatClaudeApiReceipt,
   resolveClaudeApiSelection, stampClaudeApiRun, type ClaudeApiAdmission, type ClaudeApiConfigOptions,
@@ -38,9 +39,12 @@ export interface ClaudeApiWaveSpec {
   concurrency?: number;
   timeoutMs?: number;
   maxTurns?: number;
+  /** Effort of the wave: medium unless it asks for high/xhigh with a thinkingReason. */
+  thinking?: ClaudeCodeEffort;
+  thinkingReason?: string;
 }
 
-const SPEC_KEYS = ["goal", "route", "cwd", "constraints", "contract", "tasks", "concurrency", "timeoutMs", "maxTurns"];
+const SPEC_KEYS = ["goal", "route", "cwd", "constraints", "contract", "tasks", "concurrency", "timeoutMs", "maxTurns", "thinking", "thinkingReason"];
 const TASK_KEYS = ["label", "task", "role", "mayEdit", "ownedPaths", "allowBash"];
 
 /** Strict wave spec: unknown keys are errors, so a typo can never widen permissions silently. */
@@ -54,6 +58,8 @@ export function parseWaveSpec(text: string): ClaudeApiWaveSpec {
   if (typeof spec.goal !== "string" || typeof spec.cwd !== "string" || !spec.cwd.startsWith("/")) throw new Error("wave spec needs a goal string and an absolute cwd");
   const route = spec.route === undefined ? CLAUDE_API_SONNET_ROUTE : spec.route;
   if (typeof route !== "string" || !CLAUDE_API_ROUTES.includes(route)) throw new Error(`wave spec route must be one of ${CLAUDE_API_ROUTES.join(", ")}`);
+  if (spec.thinkingReason !== undefined && typeof spec.thinkingReason !== "string") throw new Error("wave spec thinkingReason must be a string");
+  resolveClaudeCodeEffort(spec.thinking, spec.thinkingReason as string | undefined);
   if (!Array.isArray(spec.tasks)) throw new Error("wave spec needs a tasks array");
   for (const [index, task] of spec.tasks.entries()) {
     if (task === null || typeof task !== "object" || Array.isArray(task)) throw new Error(`tasks[${index}] must be an object`);
@@ -175,12 +181,14 @@ export async function runClaudeApiWave(spec: ClaudeApiWaveSpec, deps: ClaudeApiW
   const admission = admitClaudeApiRoute({ route: spec.route, taskCount: spec.tasks.length, roles: spec.tasks.map((task) => task.role ?? "worker") }, deps.api);
   const model = claudeApiModelOf(spec.route)!;
   const now = deps.now?.() ?? Date.now();
+  const effort = resolveClaudeCodeEffort(spec.thinking, spec.thinkingReason);
   const run = normalizeDispatch({
-    goal: spec.goal, harness: "claude-code", model: spec.route, thinking: "xhigh", background: false, tasks: spec.tasks,
+    goal: spec.goal, harness: "claude-code", model: spec.route, thinking: effort, background: false, tasks: spec.tasks,
+    ...(spec.thinkingReason === undefined ? {} : { thinkingReason: spec.thinkingReason }),
     concurrency: claudeApiConcurrency(spec.concurrency, spec.tasks.length),
     ...(spec.constraints ? { constraints: spec.constraints } : {}), ...(spec.contract ? { contract: spec.contract } : {}),
     ...(spec.timeoutMs === undefined ? {} : { timeoutMs: spec.timeoutMs }), ...(spec.maxTurns === undefined ? {} : { maxTurns: spec.maxTurns }),
-  }, spec.cwd, spec.route, "xhigh", now, deps.idFactory);
+  }, spec.cwd, spec.route, effort, now, deps.idFactory);
   stampClaudeApiRun(run, admission);
   run.selection = resolveClaudeApiSelection(model);
   const store = open(deps);
@@ -223,11 +231,13 @@ export async function resumeClaudeApiRun(runId: string, deps: ClaudeApiWaveDeps 
       admission = admitClaudeApiRoute({ route: snapshot.model, taskCount: snapshot.tasks.length, roles: [task.role],
         priorSpendUsd: task.usage.cost.total + (task.priorSpendUsd ?? 0), ...(task.apiLeafCapUsd === undefined ? {} : { leafCapLimitUsd: task.apiLeafCapUsd }) }, deps.api);
     }
+    // The resume keeps the effort the run was recorded with.
+    if (!isClaudeCodeEffort(snapshot.thinkingLevel)) throw new Error(`Resume refused: the checkpoint effort ${JSON.stringify(snapshot.thinkingLevel)} is not ${CLAUDE_CODE_EFFORTS.join(", ")}`);
     const run = normalizeDispatch({
       goal: snapshot.goal, constraints: snapshot.constraints, contract: snapshot.contract, harness: "claude-code", model: snapshot.model,
-      thinking: "xhigh", concurrency: claudeApiConcurrency(snapshot.concurrency, unfinished.length), timeoutMs: snapshot.timeoutMs, maxTurns: snapshot.maxTurns, background: true,
+      thinking: snapshot.thinkingLevel, concurrency: claudeApiConcurrency(snapshot.concurrency, unfinished.length), timeoutMs: snapshot.timeoutMs, maxTurns: snapshot.maxTurns, background: true,
       tasks: unfinished.map((task) => ({ label: task.label, task: task.task, role: task.role, mayEdit: task.mayEdit, ...(task.mayEdit ? { ownedPaths: task.ownedPaths } : {}), allowBash: task.allowBash })),
-    }, snapshot.cwd, snapshot.model, "xhigh", deps.now?.() ?? Date.now(), deps.idFactory);
+    }, snapshot.cwd, snapshot.model, snapshot.thinkingLevel, deps.now?.() ?? Date.now(), deps.idFactory);
     run.selection = resolveClaudeApiSelection(claudeApiModelOf(snapshot.model)!);
     run.resumedFrom = runId;
     run.ownerSessionId = CLAUDE_API_CLI_OWNER;

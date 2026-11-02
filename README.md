@@ -130,6 +130,10 @@ Running Claude Code workers accept `ultraterm_hub send` and `redirect` without
 cancelling or restarting. Replies appear in the run's hub inbox. Redirects do not
 change permissions, file ownership or budgets.
 
+Claude Code workers (`harness: "claude-code"`) run at medium effort by default; high or
+xhigh only when the dispatch asks with `thinking` and a `thinkingReason`. A resume keeps
+the effort the run was recorded with.
+
 `ultraterm_subagents` runs bounded Pi workers inside the parent process. The
 parent plans, integrates and signs off; each worker gets one exact task and
 cannot delegate further.
@@ -194,7 +198,8 @@ to something that bills differently. Details: [model routing](./docs/MODEL-ROUTI
 [profiles](./docs/PROFILES.md).
 
 **Claude accounts (Steak Pi 0.10.0; UltraTerm's next managed runtime):** add `claudeAccount: "primary"`
-(the primary Claude account) or `"b"` (the second Claude account) to an explicit Claude subscription run. Selection
+(the primary Claude account), `"b"` (the second) or any other id defined in
+`~/.config/ultraterm/claude-accounts.json` to an explicit Claude subscription run. Selection
 is local to that run and produces an authenticated account receipt. Unavailable
 accounts fail without changing defaults or enabling credits. See the
 [account-selection contract](./docs/ULTRATERM-SUBAGENT-PROTOCOL.md#task-scoped-claude-subscription-account).
@@ -359,4 +364,4 @@ people find it.
 
 ### Hold Backspace to clear the input
 
-Holding Backspace for more than two seconds clears the entire input editor, without interrupting a running turn. To disable this default-on behavior, set `"holdDeleteClearsInput": false` in `~/.pi/agent/steak-pi.json` (or `steak-pi.json` under `PI_CODING_AGENT_DIR`); restart the session after changing it.
+Holding Backspace for more than 1.5 seconds clears the entire input editor, without interrupting a running turn. To disable this default-on behavior, set `"holdDeleteClearsInput": false` in `~/.pi/agent/steak-pi.json` (or `steak-pi.json` under `PI_CODING_AGENT_DIR`); restart the session after changing it.

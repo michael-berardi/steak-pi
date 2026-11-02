@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fchmodSync, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { isClaudeAccountId } from "./claude-account.ts";
 import { claudeCodeModelOf } from "./model-selection.ts";
 import { removeClaudeWorkerSession } from "./claude-session.ts";
 import { MAX_ACTIVE_RUNS, MAX_RETAINED_TERMINAL_RUNS, MAX_TASKS, OUTPUT_LIMIT, TURN_BUDGET_ERROR, type RunRecord } from "./types.ts";
@@ -40,7 +41,7 @@ function validQueue(value: unknown): boolean {
 function validSubscriptionReceipt(value: unknown): boolean {
   if (value === undefined) return true;
   if (!object(value) || !knownKeys(value, ["kind", "account", "configMode", "configDir", "identityHash", "subscriptionType", "attested"]) || value.kind !== "claude-subscription") return false;
-  if (value.account !== undefined && value.account !== "primary" && value.account !== "b") return false;
+  if (value.account !== undefined && !isClaudeAccountId(value.account)) return false;
   if (typeof value.identityHash !== "string" || !/^[a-f0-9]{64}$/.test(value.identityHash) || !["pro", "max", "team", "enterprise"].includes(value.subscriptionType as string)) return false;
   if (value.configMode === "default" ? value.configDir !== undefined : value.configMode !== "explicit" || typeof value.configDir !== "string" || value.configDir.length > 1024 || !isAbsolute(value.configDir) || /[\u0000-\u001f\u007f-\u009f]/.test(value.configDir)) return false;
   return object(value.attested) && knownKeys(value.attested, ["preflight", "init"]) && value.attested.preflight === true && typeof value.attested.init === "boolean";
@@ -265,7 +266,7 @@ export class CheckpointStore {
           const run = checkpoint.run;
           if (checkpoint.version !== 1 || !run || !ID.test(run.id) || `${run.id}.json` !== file || !Array.isArray(run.tasks) || run.tasks.length < 1 || run.tasks.length > MAX_TASKS || typeof run.cwd !== "string" || typeof run.model !== "string") throw new Error("Invalid checkpoint shape");
           if (run.tasks.some((task) => !object(task) || !validQueue(task.launchQueue) || !validQueue(task.lastLaunchQueue))) throw new Error("Invalid checkpoint queue metadata");
-          if (run.claudeAccount !== undefined && (run.harness !== "claude-code" || claudeCodeModelOf(run.model) === undefined || !["primary", "b"].includes(run.claudeAccount))) throw new Error("Invalid checkpoint Claude account");
+          if (run.claudeAccount !== undefined && (run.harness !== "claude-code" || claudeCodeModelOf(run.model) === undefined || !isClaudeAccountId(run.claudeAccount))) throw new Error("Invalid checkpoint Claude account");
           if (run.tasks.some((task) => !validSubscriptionReceipt(task.subscriptionReceipt) || (task.subscriptionReceipt !== undefined && (run.harness !== "claude-code" || claudeCodeModelOf(run.model) === undefined || task.subscriptionReceipt.account !== run.claudeAccount)))) throw new Error("Invalid checkpoint Claude subscription receipt");
           if (this.ownerSessionId && ((run.ownerSessionId && run.ownerSessionId !== this.ownerSessionId)
             || (!run.ownerSessionId && !this.allowLegacy)

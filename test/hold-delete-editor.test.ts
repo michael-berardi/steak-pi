@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { Editor, type EditorOptions, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
-import { HoldDeleteEditor, holdDeleteEnabled } from "../src/tui/hold-delete-editor.ts";
+import { HOLD_DELETE_CLEAR_MS, HoldDeleteEditor, holdDeleteEnabled } from "../src/tui/hold-delete-editor.ts";
 
 const settings = vi.hoisted(() => ({ text: "{}" }));
 vi.mock("node:fs", () => ({ readFileSync: () => settings.text }));
@@ -28,15 +28,19 @@ beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(0); settings.text = "{}"
 afterEach(() => vi.useRealTimers());
 
 describe("hold Backspace", () => {
-  it("clears all lines after >2 seconds without submit or interrupt", () => {
+  it("clears all lines after >1.5 seconds without submit or interrupt", () => {
     const e = editor(); const submit = vi.fn(); const interrupt = vi.fn();
     e.onSubmit = submit; e.onEscape = interrupt; e.setText("first line\n" + "x".repeat(80));
-    repeat(e, 21); expect(e.getText()).not.toBe("");
+    repeat(e, 16); expect(e.getText()).not.toBe("");
     e.handleInput("\x7f"); expect(e.getText()).toBe("");
     repeat(e, 3); expect(submit).not.toHaveBeenCalled(); expect(interrupt).not.toHaveBeenCalled();
   });
-  it("preserves normal deletion under two seconds", () => {
+  it("preserves normal deletion under 1.5 seconds", () => {
     const e = editor(); e.setText("abcdef"); repeat(e, 3); expect(e.getText()).toBe("abc");
+  });
+  it("waits the full 1.5 seconds", () => {
+    expect(HOLD_DELETE_CLEAR_MS).toBe(1500);
+    const e = editor(); e.setText("first\n" + "x".repeat(80)); repeat(e, 15); expect(e.getText()).toBe("first\n" + "x".repeat(65));
   });
   it("does not clear on separated taps", () => {
     const e = editor(); e.setText("first\n" + "x".repeat(80)); repeat(e, 25, 200); expect(e.getText()).toBe("first\n" + "x".repeat(55));

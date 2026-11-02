@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { Coordinator, workerJournal } from "../src/subagents/coordinator.ts";
 import { Scheduler } from "../src/subagents/scheduler.ts";
 import { NoopSlots } from "../src/subagents/machine-slots.ts";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   assertClaudeSubscriptionStatus,
   buildClaudeWorkerContinuationPrompt,
@@ -19,7 +19,9 @@ import {
   parseClaudeStreamLine,
   type ClaudeSpawnHandle,
 } from "../src/subagents/claude-worker.ts";
+import { ClaudeCodeEffortError } from "../src/subagents/claude-code-models.ts";
 import { diagnoseRun } from "../src/subagents/checkpoints.ts";
+import { TEAM_REGISTRY, stageClaudeHome } from "./helpers/claude-registry-fixture.ts";
 import { emptyUsage, USAP_VERSION, type RunRecord, type TaskRecord, type WorkerProgress, type WorkerRunner } from "../src/subagents/types.ts";
 
 const OUTPUT_LIMIT = 20_000;
@@ -27,7 +29,7 @@ const OUTPUT_LIMIT = 20_000;
 function run(overrides: Partial<RunRecord> = {}): RunRecord {
   return {
     version: USAP_VERSION, id: "run-claude-test", goal: "Inspect the leaf", constraints: ["No writes"],
-    cwd: "/repo", model: CLAUDE_CODE_ROUTE, harness: "claude-code", thinkingLevel: "xhigh",
+    cwd: "/repo", model: CLAUDE_CODE_ROUTE, harness: "claude-code", thinkingLevel: "medium",
     concurrency: 1, timeoutMs: 60_000, maxTurns: 8, background: false, state: "running",
     createdAt: 0, tasks: [], usage: emptyUsage(), ...overrides,
   };
@@ -114,6 +116,18 @@ describe("claude-code worker CLI surface", () => {
     expect(buildClaudeWorkerPrompt(selected, task())).toContain("inline attachments and image relay are unsupported");
   });
 
+  it("synthetic: a long run streaming more than one frame's worth of complete frames is not killed by the frame bound", async () => {
+    const { spawn, calls } = fakeSpawn((child) => {
+      // 12 MiB of complete (newline-terminated) system frames: well past the old 8 MiB whole-run cap, each frame small.
+      const frame = JSON.stringify({ type: "system", subtype: "status", padding: "x".repeat(64 * 1024) }) + "\n";
+      for (let i = 0; i < 192; i++) child.stdout(frame);
+      child.stdout(successResult("long run done", {})); child.exit(0);
+    });
+    const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run(), task: task(), signal: new AbortController().signal, onProgress() {} });
+    expect(result.error ?? "").not.toMatch(/MiB/);
+    expect(calls[0].child.signals).not.toContain("SIGKILL");
+  });
+
   it.each(["stdout", "stderr"])("synthetic: %s diagnostic bound terminates the owned child", async (stream) => {
     const { spawn, calls } = fakeSpawn((child) => {
       if (stream === "stdout") child.stdout("x".repeat(8 * 1024 * 1024 + 1));
@@ -121,7 +135,7 @@ describe("claude-code worker CLI surface", () => {
     });
     const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run(), task: task(), signal: new AbortController().signal, onProgress() {} });
     expect(result.state).toBe("failed");
-    expect(result.error).toMatch(stream === "stdout" ? /8 MiB bound/ : /bounded diagnostic limit/);
+    expect(result.error).toMatch(stream === "stdout" ? /8 MiB frame bound/ : /bounded diagnostic limit/);
     expect(calls[0].child.signals).toContain("SIGKILL");
     expect(result.output).toBe("");
   });
@@ -201,7 +215,7 @@ describe("claude-code worker CLI surface", () => {
   it("pins the exact operator-confirmed headless flags with the manifest model spelling", () => {
     expect(claudeWorkerArgs()).toEqual([
       "--print", "--output-format", "stream-json", "--input-format", "stream-json", "--replay-user-messages", "--verbose",
-      "--model", "claude-opus-5-5", "--effort", "xhigh",
+      "--model", "claude-opus-5-5", "--effort", "medium",
       "--no-session-persistence", "--permission-mode", "dontAsk",
       "--safe-mode", "--restricted", "--setting-sources", "", "--strict-mcp-config", "--tools", CLAUDE_CODE_ALLOWED_TOOLS,
     ]);
@@ -211,6 +225,44 @@ describe("claude-code worker CLI surface", () => {
     }
     expect(CLAUDE_CODE_MODEL).toBe("claude-opus-5-5");
     expect(CLAUDE_CODE_ROUTE).toBe("claude-code/claude-opus-5-5");
+  });
+
+  it("defaults the CLI effort to medium and passes an explicit high or xhigh through", () => {
+    const effort = (args: string[]) => args[args.indexOf("--effort") + 1];
+    expect(effort(claudeWorkerArgs())).toBe("medium");
+    expect(effort(claudeWorkerArgs(8, {}, undefined, "claude-sonnet-5-5", undefined, "medium"))).toBe("medium");
+    expect(effort(claudeWorkerArgs(8, {}, undefined, "claude-sonnet-5-5", undefined, "high"))).toBe("high");
+    expect(effort(claudeWorkerArgs(8, {}, undefined, "claude-opus-5-5", undefined, "xhigh"))).toBe("xhigh");
+    for (const bad of ["low", "max", "minimal", "off", ""]) {
+      expect(() => claudeWorkerArgs(8, {}, undefined, "claude-sonnet-5-5", undefined, bad as never)).toThrow(ClaudeCodeEffortError);
+    }
+  });
+
+  it("launches at the run's recorded effort and refuses anything outside medium, high and xhigh by name", async () => {
+    for (const level of ["medium", "high", "xhigh"]) {
+      const { spawn, calls } = fakeSpawn((child) => child.exit(0));
+      await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run({ thinkingLevel: level }), task: task(), signal: new AbortController().signal, onProgress: () => {} });
+      expect(calls).toHaveLength(1);
+      expect(calls[0].args.slice(calls[0].args.indexOf("--effort"), calls[0].args.indexOf("--effort") + 2)).toEqual(["--effort", level]);
+    }
+    for (const level of ["low", "max", "minimal", "off", ""]) {
+      const { spawn, calls } = fakeSpawn((child) => child.exit(0));
+      const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run({ thinkingLevel: level }), task: task(), signal: new AbortController().signal, onProgress: () => {} });
+      expect(result.state).toBe("failed");
+      expect(result.error).toMatch(/^ClaudeCodeEffortError: Claude Code effort must be medium, high, xhigh/);
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it("resumes the cut-off session at the effort the run was recorded with", async () => {
+    const id = "0b5e1c2a-1111-4222-8333-944455556666";
+    for (const level of ["medium", "high", "xhigh"]) {
+      const { spawn, calls } = fakeSpawn((child) => child.exit(0));
+      await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run({ thinkingLevel: level, resumedFrom: "run-original" }), task: { ...task(), claudeSessionId: id }, signal: new AbortController().signal, onProgress: () => {} });
+      const joined = calls[0].args.join(" ");
+      expect(joined).toContain(`--resume ${id}`);
+      expect(joined).toContain(`--effort ${level} `);
+    }
   });
 
   it("resumes a cut-off worker's own Claude session with a continuation prompt, never the leaf prompt", async () => {
@@ -306,7 +358,7 @@ describe("claude-code synthetic CLI failures (offline stream envelopes)", () => 
     expect(result.error!.length).toBeLessThan(400);
     expect(result.output).toBe(""); expect(result.turns).toBe(0);
     expect(result.usage).toEqual(emptyUsage()); expect(calls).toHaveLength(1);
-    expect(calls[0].args.join(" ")).toContain("--model claude-sonnet-5-5 --effort xhigh");
+    expect(calls[0].args.join(" ")).toContain("--model claude-sonnet-5-5 --effort medium");
   });
 
   it("keeps transient rate limits distinct from subscription quota exhaustion", async () => {
@@ -619,7 +671,7 @@ describe("claude-code worker stream handling", () => {
     });
     const ok = await createClaudeWorkerRunner(runnerOptions(served.spawn))({ run: sonnet, task: task(), signal: new AbortController().signal, onProgress() {} });
     expect(ok.state).toBe("done");
-    expect(served.calls[0].args.join(" ")).toContain("--model claude-sonnet-5-5 --effort xhigh");
+    expect(served.calls[0].args.join(" ")).toContain("--model claude-sonnet-5-5 --effort medium");
     const swapped = fakeSpawn((child) => {
       child.stdout(line({ ...JSON.parse(successResult("opus report", {})), modelUsage: { "claude-opus-5-5": {} } }));
       child.exit(0);
@@ -1023,6 +1075,64 @@ describe("claude-code task-scoped subscription accounts (synthetic)", () => {
       expect(calls).toHaveLength(0);
     });
 
+  describe("registry-defined account team-2", () => {
+    const cleanups: Array<() => void> = [];
+    afterEach(() => { vi.unstubAllEnvs(); for (const cleanup of cleanups.splice(0)) cleanup(); });
+    function stageTeam(registry: unknown = TEAM_REGISTRY) {
+      const staged = stageClaudeHome(registry, [".claude-team-2"]);
+      cleanups.push(staged.remove);
+      vi.stubEnv("HOME", staged.home);
+      const teamDir = join(staged.home, ".claude-team-2");
+      const answer = { ok: true, provider: "claude", account: {
+        id: "team-2", label: "Claude (Team)", eligible: true, configDir: teamDir, launchEnv: { set: { CLAUDE_CONFIG_DIR: teamDir } },
+      } };
+      return { home: staged.home, teamDir, answer };
+    }
+
+    it("runs in its own folder under its own id, with the same scrubbed preflight/spawn environment", async () => {
+      const { home, teamDir, answer } = stageTeam();
+      const base = Object.freeze({ PATH: "/synthetic/bin", HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude-b"), ULTRATERM_PROVIDER_ACCOUNT: "b", ANTHROPIC_API_KEY: "synthetic-secret" });
+      const { spawn, calls } = fakeSpawn(completed);
+      const accountCommand = vi.fn(async () => answer);
+      const subscriptionAuthStatus = vi.fn(async (_env: NodeJS.ProcessEnv) => status);
+      const result = await invoke(createClaudeWorkerRunner({ spawn, env: base, accountCommand, subscriptionAuthStatus }), run({ claudeAccount: "team-2" }));
+      expect(result.state).toBe("done");
+      expect(accountCommand.mock.calls).toEqual([[ ["select", "--provider", "claude", "--account", "team-2"] ]]);
+      expect(calls).toHaveLength(1);
+      expect(subscriptionAuthStatus.mock.calls[0][0]).toBe(calls[0].env);
+      expect(calls[0].env).toEqual({ PATH: base.PATH, HOME: home, ULTRATERM_PROVIDER_ACCOUNT: "team-2", CLAUDE_CONFIG_DIR: teamDir });
+      expect(result.subscriptionReceipt).toEqual({
+        kind: "claude-subscription", account: "team-2", configMode: "explicit", configDir: teamDir, identityHash,
+        subscriptionType: "max", attested: { preflight: true, init: true },
+      });
+    });
+
+    it("refuses an account the registry does not define before any router, auth or spawn", async () => {
+      stageTeam();
+      const { spawn, calls } = fakeSpawn(completed);
+      const accountCommand = vi.fn(async () => selectedAccount("b"));
+      const subscriptionAuthStatus = vi.fn(async () => status);
+      const result = await invoke(createClaudeWorkerRunner({ spawn, env: {}, accountCommand, subscriptionAuthStatus }), run({ claudeAccount: "kx" }));
+      expect(result.state).toBe("failed");
+      expect(result.error).toMatch(/Unknown Claude account ID "kx"/);
+      expect(accountCommand).not.toHaveBeenCalled();
+      expect(subscriptionAuthStatus).not.toHaveBeenCalled();
+      expect(calls).toHaveLength(0);
+    });
+
+    it("refuses a router answer that picked another account's folder", async () => {
+      const { home, answer } = stageTeam();
+      const accountCommand = vi.fn(async () => ({ ...answer, account: { ...answer.account, configDir: join(home, ".claude-b"), launchEnv: { set: { CLAUDE_CONFIG_DIR: join(home, ".claude-b") } } } }));
+      const { spawn, calls } = fakeSpawn(completed);
+      const subscriptionAuthStatus = vi.fn(async () => status);
+      const result = await invoke(createClaudeWorkerRunner({ spawn, env: {}, accountCommand, subscriptionAuthStatus }), run({ claudeAccount: "team-2" }));
+      expect(result.state).toBe("failed");
+      expect(result.error).toMatch(/Unsafe Claude provider account selection/);
+      expect(subscriptionAuthStatus).not.toHaveBeenCalled();
+      expect(calls).toHaveLength(0);
+    });
+  });
+
   it("refuses legacy subscription resume without authenticated identity before any probe or spawn", async () => {
     const { spawn, calls } = fakeSpawn(completed);
     const subscriptionAuthStatus = vi.fn(async () => status);
@@ -1155,7 +1265,7 @@ describe("claude-code first-turn signal and the Haiku fallback tier (offline str
     const { spawn, calls } = fakeSpawn((child) => { child.stdout(genuine(haiku)); child.stdout(final(haiku)); child.exit(0); });
     const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run({ model: `claude-code/${haiku}` }), task: task(), signal: new AbortController().signal, onProgress() {} });
     expect(result.state).toBe("done");
-    expect(calls[0].args.join(" ")).toContain(`--model ${haiku} --effort xhigh`);
+    expect(calls[0].args.join(" ")).toContain(`--model ${haiku} --effort medium`);
     expect(calls[0].args.join(" ")).not.toContain("--bare");
     const other = fakeSpawn((child) => { child.stdout(genuine("claude-sonnet-5-5")); child.stdout(final("claude-sonnet-5-5")); child.exit(0); });
     const wrong = await createClaudeWorkerRunner(runnerOptions(other.spawn))({ run: run({ model: `claude-code/${haiku}` }), task: task(), signal: new AbortController().signal, onProgress() {} });

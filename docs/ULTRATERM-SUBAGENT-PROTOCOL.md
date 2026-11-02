@@ -151,15 +151,21 @@ USAP uses one coordinator, hub, capacity limiter, checkpoint store and telemetry
 surface for both Pi workers and the official headless Claude Code CLI. An absent
 `harness` means Pi except for an all-reviewer wave with no explicit route when
 the operator configured `implicitReview.route`: that wave runs the configured
-Claude Code route at `xhigh` effort. The [automatic text-review exception](./MODEL-ROUTING.md#implicit-review) alone permits `implicitReview.fallback` evidence when Claude is proven unavailable; it is not expert approval.
+Claude Code route at medium effort (high/xhigh only when the dispatch asks with a reason). The [automatic text-review exception](./MODEL-ROUTING.md#implicit-review) alone permits `implicitReview.fallback` evidence when Claude is proven unavailable; it is not expert approval.
 Explicit Pi/model/profile selections still win.
 
 `harness: "claude-code"` runs the operator's `claudeCodeDefaults.worker` for
 worker and scout waves and `claudeCodeDefaults.reviewer` for all-reviewer waves;
 an explicit `model` naming one of the adapter's pinned `claude-code/<model>`
 routes wins, and with neither the dispatch fails naming the key. Each route runs
-`claude --print` with `--model <model> --effort xhigh`, and the served model is
-checked against the route. Authentication preflight must report an
+`claude --print` with `--model <model> --effort <level>`, and the served model is
+checked against the route. The level is the dispatch's `thinking` (`medium`, `high` or
+`xhigh`; high/xhigh need a `thinkingReason`) and `medium` when none is given; it is
+recorded as the run's `thinkingLevel` and a resume keeps it. Any other level (for
+example `low` or `max`) is not in the tool schema's `thinking` enum, so it is rejected there; should one reach the
+code anyway, a `ClaudeCodeEffortError` refuses it before a run starts (dispatch and the API wave CLI) or fails the task
+before inference (the worker, a resume included), and a resume whose checkpoint records another level is refused with
+`Resume refused`. Authentication preflight must report an
 existing first-party Claude subscription login. API-key/provider override
 environment variables are not inherited, and there is no fallback to another
 model, route, or billing arrangement. Quota exhaustion is a failed task due to
@@ -168,7 +174,9 @@ quota, not permission to buy credits or an expert approval.
 ### Task-scoped Claude subscription account
 
 Steak Pi 0.9.18 adds `claudeAccount: "primary"`
-(the primary Claude account) or `claudeAccount: "b"` (the second Claude account). Pair it with
+(the primary Claude account) or `claudeAccount: "b"` (the second Claude account); any other id defined in
+`~/.config/ultraterm/claude-accounts.json` (lowercase letters, digits and single hyphens, at most 24 characters,
+for example `"team-2"`) is accepted the same way. Pair it with
 `harness: "claude-code"` or an exact `claude-code/…` model:
 
 ```json
@@ -180,14 +188,26 @@ Steak Pi 0.9.18 adds `claudeAccount: "primary"`
 ```
 
 The existing credential-free account router must admit the exact selected
-account at dispatch and again at each launch. Unknown IDs, unavailable accounts,
+account at dispatch and again at each launch. The account's folder and label come from that registry
+(`primary` resolves to `~/.claude` with `CLAUDE_CONFIG_DIR` unset unless its entry names another folder, `b` to
+`~/.claude-b` when the registry is absent or omits it; a label is the registry's, else `Claude N` by position).
+The registry and every folder must pass the router's checks: every component below `$HOME` is a real directory
+(no symlink) owned by you and closed to group and other writes. An explicit account folder must in addition be
+`0700`; the default `~/.claude` only has to refuse group and other writes. A registry account other than `primary`
+and `b` must be reported `eligible: true` by the router: an answer with no `eligible` field, or `eligible: false`, is refused
+with a `ClaudeAccountEligibilityError` carrying the router's reason, so a lent, owner-reserved account never launches
+on an unknown verdict (`primary` and `b` keep accepting an answer that omits the field). A registry entry whose folder
+another account already claims (an earlier entry, or `primary`'s folder or `~/.claude`) is refused with a
+`ClaudeAccountFolderConflictError`, and the first claimant keeps the folder. When a registry lists `~/.claude-b` for
+another id and omits `b`, that entry keeps the folder and `b` is refused. Unknown IDs, an unusable registry, unavailable accounts,
 Pi routes, profile selectors and API routes are refused; no alternate account,
 model, credits or global default is selected. The selector applies to this run
 only. It does not sign in, move credentials, reserve a new account, or change
 native account-balancing defaults.
 
-The primary Claude account uses the CLI default with `CLAUDE_CONFIG_DIR` **unset**; the second Claude account uses
-its registered explicit directory. Explicitly setting `~/.claude` is a different
+The primary Claude account uses the CLI default with `CLAUDE_CONFIG_DIR` **unset** (only `primary` ever does; it
+sets the variable only if its registry entry names another folder); every other account uses its registered explicit
+directory. Explicitly setting `~/.claude` is a different
 authentication namespace from leaving the variable unset. Without this selector,
 a validated inherited namespace is retained, including explicit `~/.claude`;
 an empty variable means unset. API credentials and provider overrides are still
@@ -257,7 +277,7 @@ retry rather than sleeping an idle worker.
 | Relay / hub send, redirect and inbox | Supported | Stream-json stdin; run-local replies |
 | Worker history continuation | Native Pi session | Own persisted Claude session only; no cross-harness resume |
 | Image review admission | Capability-checked | Exact pinned routes only; staged files via native Read |
-| Model selection | Native registry | Exact pinned adapter route at xhigh |
+| Model selection | Native registry | Exact pinned adapter route; medium effort by default, high/xhigh when the dispatch asks with a reason |
 
 **Claude running-worker steering.** Use `ultraterm_hub` with `action: "send"`
 (or `"redirect"` to append updated instructions), the live run ID, a task ID or

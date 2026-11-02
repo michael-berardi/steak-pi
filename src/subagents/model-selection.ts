@@ -139,10 +139,11 @@ export function loadWorkerProfiles(directory = join(homedir(), ".config", "ultra
   return [...profiles.values()];
 }
 
-export { CLAUDE_CODE_OPUS_MODEL, CLAUDE_CODE_SONNET_MODEL, CLAUDE_CODE_HAIKU_MODEL, CLAUDE_CODE_MODEL, CLAUDE_CODE_EFFORT,
+export { CLAUDE_CODE_OPUS_MODEL, CLAUDE_CODE_SONNET_MODEL, CLAUDE_CODE_HAIKU_MODEL, CLAUDE_CODE_MODEL, CLAUDE_CODE_EFFORTS, CLAUDE_CODE_DEFAULT_EFFORT,
   CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_SONNET_ROUTE, CLAUDE_CODE_HAIKU_ROUTE, CLAUDE_CODE_ROUTE, CLAUDE_CODE_ROUTES,
   claudeCodeModelOf, claudeCodeModelName, claudeFallbackTier, defaultClaudeCodeRoute, resolveClaudeCodeSelection,
-  assertClaudeCodeImageAdmission, type ClaudeCodeModel, type ClaudeCodeFallbackRoute, type ClaudeFallbackTier } from "./claude-code-models.ts";
+  ClaudeCodeEffortError, isClaudeCodeEffort, resolveClaudeCodeEffort,
+  assertClaudeCodeImageAdmission, type ClaudeCodeEffort, type ClaudeCodeModel, type ClaudeCodeFallbackRoute, type ClaudeFallbackTier } from "./claude-code-models.ts";
 
 function route(model: Model): string { return `${model.provider}/${model.id}`; }
 function findModel(key: string, registry: Registry): Model {

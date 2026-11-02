@@ -1,3 +1,4 @@
+import type { ClaudeAccountId } from "./claude-account.ts";
 import type { MachineCapacitySnapshot } from "./machine-slots.ts";
 
 /** Reviewer launch waits are bounded independently of the execution budget. */
@@ -122,7 +123,7 @@ export interface ClaudeApiReceipt {
  * identityHash is a SHA-256 fingerprint, never an email or credential. */
 export interface ClaudeSubscriptionReceipt {
   kind: "claude-subscription";
-  account?: "primary" | "b";
+  account?: ClaudeAccountId;
   configMode: "default" | "explicit";
   configDir?: string;
   identityHash: string;
@@ -165,7 +166,7 @@ export interface DispatchInput {
   /** Explicit execution harness; omitted and "pi" are identical. */
   harness?: HarnessId;
   /** Task-scoped subscription account; never applies to Pi or API routes. */
-  claudeAccount?: "primary" | "b";
+  claudeAccount?: ClaudeAccountId;
   requireImages?: boolean;
   constraints?: string[];
   contract?: string;
@@ -280,7 +281,7 @@ export interface RunRecord {
   /** Set only for non-Pi harnesses; absence is the Pi default. */
   harness?: HarnessId;
   selection?: ModelSelection;
-  claudeAccount?: "primary" | "b";
+  claudeAccount?: ClaudeAccountId;
   thinkingLevel: string;
   concurrency: number;
   timeoutMs: number;

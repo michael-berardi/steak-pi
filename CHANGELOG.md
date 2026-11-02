@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.18.8 (2026-11-01)
+
+- **Long Claude Code workers are no longer killed at 8 MiB.** The 8 MiB bound now applies to one stream-json frame
+  still being buffered; a whole run's stream may reach 256 MiB, since every frame is parsed and dropped as it arrives.
+- **Hold Backspace clears the input after 1.5 seconds** (was 2 seconds).
+- **Any registry-defined Claude account.** `claudeAccount` (the tool schema, the checkpoint format, subscription
+  receipts and the router-selected fallback pin) accepts any account id in
+  `~/.config/ultraterm/claude-accounts.json`, not only `primary` and `b`. The id is a lowercase slug of at most 24
+  characters; its folder and label come from the registry. Every folder component below `$HOME` must be a real
+  directory (no symlink) owned by the user and closed to group and other writes; an explicit account folder must
+  also be `0700`, while the default `~/.claude` only has to refuse group and other writes. `primary` still resolves
+  to `~/.claude` with `CLAUDE_CONFIG_DIR` unset (explicit only if its registry entry names another folder) and `b` to
+  `~/.claude-b`. An undefined id or an unusable registry fails closed with a named error. Without a registry,
+  `primary` and `b` keep their folders, now with the same folder-safety checks (a symlinked or group-writable
+  `~/.claude`, or a `~/.claude-b` that is not `0700`, is refused with a named error).
+- **A registry account must be reported eligible.** For any account other than `primary` and `b`, a router `select`
+  answer with no `eligible` field, or with `eligible: false`, is refused with a `ClaudeAccountEligibilityError` that
+  carries the router's `stateText` or reason, at dispatch, on resume and at each launch. A lent, owner-reserved
+  account never launches on an unknown or absent eligibility.
+- **One config folder, one account.** A registry entry whose folder another account already claims (an earlier
+  entry, or `primary`'s folder or the default `~/.claude`) is refused with a `ClaudeAccountFolderConflictError`; the
+  first claimant keeps the folder. When the registry gives `~/.claude-b` to another id and omits `b`, that entry keeps
+  it and `b` is refused. Default (unset `CLAUDE_CONFIG_DIR`) mode
+  applies to `primary` alone.
+- **USAP call card for a malformed call.** A tool call whose arguments hold no tasks no longer renders
+  "Subagents · 0 assignments". While Pi is still streaming the arguments the card says "preparing…"; once they are
+  complete it says "invalid arguments; nothing was dispatched". When the call was refused the call card is empty and
+  the result card leads with "Subagents · call refused", the error text and an error-colored border. Pi hands the
+  failure to renderers only as `context.isError`, which the renderers now read.
+- **Claude Code workers run at medium effort by default.** The USAP `claude-code` and `claude-code-api` harness no
+  longer forces `xhigh`. A run's effort is the dispatch's `thinking` when given (`medium`, `high` or `xhigh`; `high`
+  and `xhigh` need a `thinkingReason`, as on the native route) and `medium` when none is given. That level is passed
+  as `--effort <level>` to the Claude CLI and recorded as the run's `thinkingLevel`; a resume keeps the recorded
+  effort. Any other level (such as `low` or `max`) is rejected by the tool schema's `thinking` enum, and if one
+  reaches the code anyway a `ClaudeCodeEffortError` refuses it before a run starts (dispatch, and the API wave CLI
+  whose wave spec gains optional `thinking` and `thinkingReason`) or fails the task before inference (the worker, a
+  resume included); a resume whose checkpoint records another level is refused with `Resume refused`. This replaces
+  the xhigh-only refusal. The `claudeFallbackTier` still picks `substantial` when high/xhigh is requested, and the quota
+  fallback tier and automatic review now run at the dispatch's effort instead of refusing a non-xhigh request.
+
 ## 0.18.7 (2026-11-01)
 
 - **Finish guard: "open/remaining/unfinished work" counts only when reported.** The noun phrase alone also appears

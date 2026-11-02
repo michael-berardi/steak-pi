@@ -1,3 +1,4 @@
+import { isClaudeAccountId, type ClaudeAccountId } from "./claude-account.ts";
 import { providerAccountCommand, type AccountCommand } from "./provider-accounts.ts";
 import { routingConfigOrEmpty, type QuotaTierConfig } from "../routing-config.ts";
 
@@ -252,8 +253,6 @@ export function claudeQuotaBlock(snapshot: QuotaSnapshot): string | undefined {
   return quota && !quota.unconfigured && (quota.exhausted || quota.ineligible) ? quota.cause : undefined;
 }
 
-export type ClaudeAccountId = "primary" | "b";
-
 export interface ClaudeAccountPick {
   /** The eligible account to pin the worker on; absent when the router shows none to pick from. */
   account?: { id: ClaudeAccountId; label: string };
@@ -275,7 +274,7 @@ export function pickClaudeAccount(snapshot: QuotaSnapshot): ClaudeAccountPick {
   const quota = snapshot.providers.claude;
   if (!quota || quota.unconfigured) return {};
   const pinnable = quota.rows.filter((row): row is QuotaAccount & { id: ClaudeAccountId } =>
-    row.eligible === true && (row.id === "primary" || row.id === "b"));
+    row.eligible === true && isClaudeAccountId(row.id));
   if (pinnable.length === 0) {
     return { cause: `the router shows no eligible Claude account (${quota.rows.map((row) => `${row.label}: ${row.why}`).join("; ")})` };
   }

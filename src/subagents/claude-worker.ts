@@ -11,7 +11,7 @@
  * installed CLI:
  *   --print --output-format stream-json --input-format stream-json
  *   --replay-user-messages --verbose --model <a pinned claude-code adapter model>
- *   --effort xhigh --no-session-persistence --permission-mode dontAsk
+ *   --effort <medium|high|xhigh> --no-session-persistence --permission-mode dontAsk
  *   --safe-mode --restricted --setting-sources "" --strict-mcp-config
  *   --max-turns <run budget> --tools <allowlist> [--allowedTools <rules>]
  * The installed CLI help documents settings/read confinement; live USAP smoke
@@ -45,13 +45,13 @@ import { claudeOwnedPathRules } from "./claude-owned-paths.ts";
 import { claudeReviewReadDirs } from "./claude-review-read.ts";
 export { claudeOwnedPathRules } from "./claude-owned-paths.ts";
 import { randomUUID, createHash } from "node:crypto";
-import { applyClaudeAccountEnv, resolveClaudeAccount } from "./claude-account.ts";
+import { applyClaudeAccountEnv, resolveClaudeAccount, type ClaudeAccountId } from "./claude-account.ts";
 import type { AccountCommand } from "./provider-accounts.ts";
 import { CLAUDE_SESSION_ID, removeClaudeWorkerSession } from "./claude-session.ts";
 import type { ChildProcess } from "node:child_process";
 import { OUTPUT_LIMIT, addUsage, emptyUsage, harnessOf, sanitizeUsage, type RunRecord, type TaskRecord,
   type ClaudeSubscriptionReceipt, type ClaudeApiReceipt, type UsageTotals, type WorkerProgress, type WorkerResult, type WorkerRunner } from "./types.ts";
-import { CLAUDE_CODE_EFFORT, CLAUDE_CODE_MODEL, CLAUDE_CODE_ROUTE, claudeCodeModelName, claudeCodeModelOf, type ClaudeCodeModel } from "./model-selection.ts";
+import { CLAUDE_CODE_DEFAULT_EFFORT, CLAUDE_CODE_EFFORTS, CLAUDE_CODE_MODEL, CLAUDE_CODE_ROUTE, ClaudeCodeEffortError, claudeCodeModelName, claudeCodeModelOf, isClaudeCodeEffort, type ClaudeCodeEffort, type ClaudeCodeModel } from "./model-selection.ts";
 import { truncatePiWorkerOutput, workerFinalReportInstructions, workerImplementationGate } from "./pi-worker.ts";
 import { workerJournal } from "./coordinator.ts";
 import { turnBudgetPromptLine } from "./turn-budget.ts";
@@ -84,8 +84,12 @@ export interface ClaudeWorkerPermissions {
   home?: string;
 }
 
-/** Hard cap on accumulated raw stream bytes before the child is killed. */
-export const CLAUDE_CODE_STREAM_BYTES_LIMIT = 8 * 1024 * 1024;
+/** Hard cap on one stream-json frame (one line) still being buffered: memory stays bounded however long a run is. */
+export const CLAUDE_CODE_FRAME_BYTES_LIMIT = 8 * 1024 * 1024;
+/** Runaway guard on the whole run's raw stream. Every frame is parsed and dropped as it arrives (only the bounded report
+ * is kept), so a long healthy session may stream far more than one frame's worth: a 25-minute repo worker passed the old
+ * 8 MiB whole-run cap and was killed mid-work (2026-11-01). */
+export const CLAUDE_CODE_STREAM_BYTES_LIMIT = 256 * 1024 * 1024;
 export const CLAUDE_CODE_ABORT_GRACE_MS = 2_000;
 export const CLAUDE_CODE_DEFAULT_EXECUTABLE = "claude";
 
@@ -124,7 +128,7 @@ export function assertClaudeSubscriptionStatus(value: unknown): void {
   }
 }
 
-export function claudeSubscriptionReceipt(status: unknown, env: NodeJS.ProcessEnv, account?: "primary" | "b"): ClaudeSubscriptionReceipt {
+export function claudeSubscriptionReceipt(status: unknown, env: NodeJS.ProcessEnv, account?: ClaudeAccountId): ClaudeSubscriptionReceipt {
   assertClaudeSubscriptionStatus(status);
   const value = status as Record<string, unknown>;
   if (typeof value.email !== "string" || !value.email.trim()) throw new Error("Claude subscription status did not attest a login identity; no inference started");
@@ -150,11 +154,16 @@ export async function verifyClaudeSubscription(executable: string, env: NodeJS.P
   return status;
 }
 
+function effortRefusal(effort: unknown): string {
+  return `Claude Code effort must be ${CLAUDE_CODE_EFFORTS.join(", ")}, not ${JSON.stringify(String(effort).slice(0, 32))}; no inference started`;
+}
+
 /** Exact CLI arguments. The USAP leaf prompt is written to stdin, never passed
  * as a positional argument, so task text can never be parsed as CLI flags.
  * Permissions default to read-only; write/shell tools and their allow rules
  * appear only when the task grants them. */
-export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPermissions = {}, resolve?: (value: string) => string | undefined, model: ClaudeCodeModel = CLAUDE_CODE_MODEL, session?: ClaudeWorkerSession): string[] {
+export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPermissions = {}, resolve?: (value: string) => string | undefined, model: ClaudeCodeModel = CLAUDE_CODE_MODEL, session?: ClaudeWorkerSession, effort: ClaudeCodeEffort = CLAUDE_CODE_DEFAULT_EFFORT): string[] {
+  if (!isClaudeCodeEffort(effort)) throw new ClaudeCodeEffortError(effortRefusal(effort));
   if (session !== undefined && !CLAUDE_SESSION_ID.test(session.id)) throw new Error("claude-code session id must be a lowercase UUID");
   const ownedPaths = permissions.ownedPaths ?? [];
   if (permissions.mayEdit && ownedPaths.length === 0) throw new Error("claude-code mayEdit leaves require at least one owned path");
@@ -177,7 +186,7 @@ export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPer
     "--replay-user-messages",
     "--verbose",
     "--model", model,
-    "--effort", CLAUDE_CODE_EFFORT,
+    "--effort", effort,
     // A persisted session lets a worker cut off by a transient fault resume
     // with its history (`--resume`); the transcript is deleted once it is done.
     ...(session === undefined ? ["--no-session-persistence"] : session.resume ? ["--resume", session.id] : ["--session-id", session.id]),
@@ -210,14 +219,14 @@ const CLAUDE_API_FORBIDDEN_ARG = /^--(?:api-key|auth-token|oauth|betas|add-dir|m
  * handling cannot drift) behind `--bare`, plus the approved settings file and the
  * session budget ceiling. */
 export function claudeApiWorkerArgs(maxTurns: number | undefined, permissions: ClaudeWorkerPermissions, resolve: ((value: string) => string | undefined) | undefined,
-  model: ClaudeCodeModel, session: ClaudeWorkerSession | undefined, api: ClaudeApiLaunch): string[] {
+  model: ClaudeCodeModel, session: ClaudeWorkerSession | undefined, api: ClaudeApiLaunch, effort: ClaudeCodeEffort = CLAUDE_CODE_DEFAULT_EFFORT): string[] {
   if (typeof api.settingsPath !== "string" || !api.settingsPath.startsWith("/") || /[\u0000-\u001f\u007f]/.test(api.settingsPath) || api.settingsPath.startsWith("{")) {
     throw new Error("claude-code API settings must be an absolute file path, never inline settings");
   }
   if (!Number.isFinite(api.maxBudgetUsd) || api.maxBudgetUsd <= 0 || api.maxBudgetUsd > 25) throw new Error("claude-code API session budget must be a positive USD amount of at most 25");
   const args = [
     "--bare",
-    ...claudeWorkerArgs(maxTurns, permissions, resolve, model, session),
+    ...claudeWorkerArgs(maxTurns, permissions, resolve, model, session, effort),
     "--settings", api.settingsPath,
     "--max-budget-usd", String(Math.round(api.maxBudgetUsd * 100) / 100),
   ];
@@ -666,8 +675,13 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     // (`claude-code-api/<model>`). Neither ever resolves to the other.
     const apiModel = claudeApiModelOf(run.model);
     const pinnedModel = claudeCodeModelOf(run.model) ?? apiModel;
-    if (pinnedModel === undefined || run.thinkingLevel !== CLAUDE_CODE_EFFORT) {
-      return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "Claude Code requires the configured Claude Code route at xhigh effort" };
+    if (pinnedModel === undefined) {
+      return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "Claude Code requires the configured Claude Code route" };
+    }
+    // The run's recorded effort is the CLI effort, on a resume as much as on a fresh launch.
+    const effort = run.thinkingLevel;
+    if (!isClaudeCodeEffort(effort)) {
+      return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: `ClaudeCodeEffortError: ${effortRefusal(effort)}` };
     }
     if (run.claudeAccount !== undefined && apiModel !== undefined) return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "claudeAccount cannot select API billing; no inference started" };
     const resuming = typeof task.claudeSessionId === "string" && CLAUDE_SESSION_ID.test(task.claudeSessionId);
@@ -685,8 +699,8 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     try {
       const turns = Math.max(1, Math.min(run.maxTurns, 2048));
       args = admission
-        ? claudeApiWorkerArgs(turns, task, undefined, pinnedModel, { id: sessionId, resume: resuming }, { settingsPath: admission.settingsPath, maxBudgetUsd: admission.leafBudgetUsd })
-        : claudeWorkerArgs(turns, task, undefined, pinnedModel, { id: sessionId, resume: resuming });
+        ? claudeApiWorkerArgs(turns, task, undefined, pinnedModel, { id: sessionId, resume: resuming }, { settingsPath: admission.settingsPath, maxBudgetUsd: admission.leafBudgetUsd }, effort)
+        : claudeWorkerArgs(turns, task, undefined, pinnedModel, { id: sessionId, resume: resuming }, effort);
     }
     catch (error) { return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
     if (signal.aborted) return { state: isTimeoutSignal(signal) ? "timed_out" : "aborted", output: "", turns: 0, usage: emptyUsage(), error: "Cancelled before CLI launch" };
@@ -807,7 +821,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
       if (syntheticFailed || state.failure !== undefined || state.turnLimitReached) return;
       rawBytes += Buffer.byteLength(chunk, "utf8");
       if (rawBytes > CLAUDE_CODE_STREAM_BYTES_LIMIT) {
-        state.failure = "claude-code stream exceeded the 8 MiB bound; child terminated";
+        state.failure = `claude-code stream exceeded the ${CLAUDE_CODE_STREAM_BYTES_LIMIT / 1024 / 1024} MiB run bound; child terminated`;
         killOnce(false);
         return;
       }
@@ -815,8 +829,19 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
       // rescan it on each small chunk of a bounded but long frame.
       const searchFrom = stdoutBuffer.length;
       stdoutBuffer += chunk;
+      const pending = stdoutBuffer.lastIndexOf("\n") < 0 ? stdoutBuffer.length : stdoutBuffer.length - stdoutBuffer.lastIndexOf("\n") - 1;
+      if (pending > CLAUDE_CODE_FRAME_BYTES_LIMIT) {
+        state.failure = `claude-code stream frame exceeded the ${CLAUDE_CODE_FRAME_BYTES_LIMIT / 1024 / 1024} MiB frame bound; child terminated`;
+        killOnce(false);
+        return;
+      }
       let newline = stdoutBuffer.indexOf("\n", searchFrom);
       while (newline >= 0) {
+        if (newline > CLAUDE_CODE_FRAME_BYTES_LIMIT) {
+          state.failure = `claude-code stream frame exceeded the ${CLAUDE_CODE_FRAME_BYTES_LIMIT / 1024 / 1024} MiB frame bound; child terminated`;
+          killOnce(false);
+          return;
+        }
         const line = stdoutBuffer.slice(0, newline).trim();
         stdoutBuffer = stdoutBuffer.slice(newline + 1);
         newline = stdoutBuffer.indexOf("\n");
