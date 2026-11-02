@@ -7,7 +7,7 @@ user-owned files:
 
 | File | Override | Carries |
 | --- | --- | --- |
-| `~/.config/ultraterm/routing.json` | `STEAK_PI_ROUTING_CONFIG` | role defaults, chains, profiles, expert reviewer, quota tiers, subscription endpoints, Claude tiers, labels |
+| `~/.config/ultraterm/routing.json` | `STEAK_PI_ROUTING_CONFIG` | role defaults, chains, profiles (with launch hooks), task classes, expert reviewer, quota tiers, subscription endpoints, Claude tiers, labels |
 | `~/.pi/agent/paid-routes.json` | `STEAK_PI_PAID_ROUTES` | the reviewed paid-route catalog and the operator's allowlist |
 
 A missing file is an empty configuration: the tool starts, every explicit
@@ -65,8 +65,23 @@ JavaScript sources, case-insensitive unless noted. Unknown keys are ignored
   // autoReviewChain: reviewer defaults do the same.
   "workerProfiles": [
     { "id": "steak-pi/worker-a", "model": "provider-a/model-name", "thinking": "high", "autoChain": true,
-      "workerDefault": { "profile": "steak-pi/worker-a" }, "reviewerDefault": { "profile": "steak-pi/reviewer-a" } }
+      "workerDefault": { "profile": "steak-pi/worker-a" }, "reviewerDefault": { "profile": "steak-pi/reviewer-a" } },
+    // A route that needs something running first (an on-demand local model server) is a profile with an
+    // ensure hook: argv arrays, no shell. See "Task classes and launch hooks".
+    { "id": "steak-pi/local-a", "model": "local-provider/small-model", "thinking": "low",
+      "ensure": { "command": ["/opt/tools/model-server", "up"], "release": ["/opt/tools/model-server", "down"], "timeoutMs": 90000 } }
   ],
+
+  // Task classes: the operator's own names (lowercase slugs) for kinds of task, each with the chain that serves
+  // it before the default chain. A step is a worker profile id or an exact provider/model route. A task opts in
+  // with `taskClass` in its ultraterm_subagents call. Steak Pi ships no class.
+  "taskClasses": {
+    "class-a": { "chain": ["steak-pi/local-a", "provider-a/model-name"], "requiresTestGate": true, "note": "routed on measured test-gated results" },
+    // Evidence-driven ranking and self-healing are on whenever a class has priors or recorded evidence.
+    // See "Evidence-driven ranking" below for every key.
+    "class-b": { "chain": ["provider-b/model-name", "provider-c/model-name"], "timeWeight": 0.0005, "minPassRate": 0.6,
+                 "priors": { "provider-b/model-name": { "pass": 9, "n": 10, "costUsd": 0.002, "seconds": 20 } } }
+  },
 
   // Retired selectors and identities, refused with RetiredModelSelectionError and
   // the message ({route} is replaced). selectorsOnly: refuse only where the route is
@@ -139,6 +154,9 @@ What each key replaces, and what happens without it:
 | `tokenPlanChainHeads`, `reviewerChainHead` | every automatic profile and reviewer wave resolves the default chain |
 | `expertReview` | no expert preference; reviewers resolve like any role default |
 | `workerProfiles` | only the neutral virtual `steak-pi/preferred-free` and harness-manifest profiles exist |
+| `workerProfiles[].ensure` | no launch hook runs; a route that needs a server must already be up |
+| `taskClasses` | a task's `taskClass` is ignored with a note in the dispatch summary; routing is unchanged |
+| `taskClasses.<class>.priors`, recorded evidence | the class chain order serves; no exploration, no demotion, nothing is learned from a class with no evidence |
 | `retiredModelPatterns`, `retiredProfiles` | nothing is retired |
 | `catalogExtras` | provider catalogs are exactly what Pi ships |
 | `providerQuotaFallback` | no quota preflight or fall-through walk; routes launch as selected |
@@ -294,6 +312,170 @@ an isolated `agentDir` under `~/.ultraterm/provider-accounts/<key>/<id>/agent`,
 and releases it in `finally`. Spent plans are reported to the router as
 `limit --kind usage`; a bare 429 stays `--kind rate`.
 
+## Task classes and launch hooks
+
+### Task classes
+
+`taskClasses` lets the operator send a kind of task to the route that measured best for it. Each key is a
+lowercase slug the operator chose (letters, digits and single hyphens, at most 48 characters); Steak Pi ships
+none. A class has an ordered `chain`, an optional `requiresTestGate` and an optional `note`:
+
+- A **chain step** is either a worker profile id (`harness/profile`, from `workerProfiles` or a harness manifest) or
+  an exact `provider/model` route. A step that is exactly a profile id is that profile's model, with its
+  `thinking` and its `ensure` hook; any other step is an exact route. A route that needs a server behind it
+  must therefore be named through a profile, which is where the hook lives.
+- A step is judged exactly like a `textWorkerChain` step: authenticated, present in the dispatch catalog, a native
+  streaming adapter, spendable (subscription/local, or reviewed **and** allowed in paid-routes.json), not vetoed
+  by the quota preflight, and its `routeConditions` `onlyWhen` met. A retired route never serves.
+- `requiresTestGate: true` records that the class is routed on the evidence that a test gate checks its results.
+  The dispatch note and receipt say so, and an editing worker on the route is told to put the outcome of its
+  focused check in its report. USAP does not run the gate itself: the parent does, before accepting the work.
+- `note` is the operator's own text, echoed in the dispatch note.
+
+A task opts in with the optional `taskClass` field of `ultraterm_subagents`. For an **implicit text worker wave**
+whose class is configured, the dispatch walks the class chain first and then falls back to the normal route,
+exactly as it would have resolved without a class. The rules around that:
+
+- **One run, one route.** Tasks of one wave cannot name two configured classes (refused before anything starts:
+  dispatch each class as its own wave). Tasks that name no class, or one the operator did not configure, ride the
+  wave's route, and the dispatch note names them.
+- **An unknown class is never an error.** A well-formed class the operator did not configure is ignored with a
+  note. So is a class on a wave it does not steer: an explicit `model`, `profile`, `harness` or `claudeAccount`
+  (explicit routes stay exact), a reviewer wave, or an image wave. A malformed slug is an input error.
+- **Receipts.** `run.selection.taskClass` is `{ name, outcome, reason, step?, requiresTestGate?, note? }`.
+  `outcome` is `served` (a class step launched; `step` is the entry and `reason` names the earlier steps and
+  why each was not chosen), `fallback` (the class is configured but no step could launch, so the normal route or
+  the Claude tier ran) or `ignored`. The same object is in the dispatch summary, the checkpoint and the
+  `Task class …` line of the route note; each task's declared class is in `summary.tasks[].taskClass`.
+- Class steps resolve in the parent session's registry, so a step on an account-leased tier the session does not
+  hold is not reachable. A class run's runtime pre-output hop follows the class's own ranked chain (best
+  remaining step first) and only routes the operator's class names; it never leaves the class for the default chain.
+- **Which step serves is decided by evidence**, not by chain order, once a class has priors or recorded outcomes:
+  see the next section. With neither, the configured order stands.
+
+### Evidence-driven ranking, self-healing and the evidence store
+
+The chain order is only the starting point. Every task of a classed wave leaves a record of how its route did, and the
+next dispatch of that class ranks the steps that can launch (the checks above come first and are never relaxed) by
+**expected cost per correct result**:
+
+    score(route) = (E[cost] + timeWeight x E[seconds]) / p(pass)        lower is better
+
+- `p(pass)` is a Beta posterior over the route's recorded passes and fails, seeded by the operator's `priors`:
+  `Beta(1 + priorPass + passes, 1 + (priorN - priorPass) + fails)`. `E[cost]` and `E[seconds]` are the mean of the
+  route's recorded attempts (dollars from the run's usage cost, wall seconds), mixed with the prior's `costUsd` and
+  `seconds` weighted by its `n`. A route with no cost yet is judged at the class's average, so only `p(pass)`
+  separates it.
+- The winner is a **Thompson draw** from each posterior, so a route with thin evidence still gets picked when it
+  might be the best. On top of that, an `explore` share of dispatches (default 0.1) deliberately picks a route other
+  than the expected best, so a weaker route's estimate keeps tracking model and provider changes. The route that
+  would have won is the failover behind it.
+- With **no priors and no evidence** the configured chain order serves. Nothing in Steak Pi names a winner.
+
+Per-class keys (all optional; Steak Pi ships no class, route or number of its own beyond these defaults):
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `timeWeight` | `0` | dollars one second of waiting is worth; `0` ranks on cost alone |
+| `minPassRate` | `0` (no floor) | a route whose rolling pass rate falls under it is held out |
+| `explore` | `0.1` | share of dispatches that pick a weaker route on purpose (0 to 0.5) |
+| `demoteAfter` | `3` | consecutive failures that demote a route for this class |
+| `window` | `10` | decided outcomes the rolling pass rate looks at (the floor needs `min(window, 5)` of them) |
+| `cooldownMinutes` | `30` | how long a demoted route stays out before one re-probe |
+| `retryMaxTokens` | double the model's own | output budget for the one same-route retry of an empty reply |
+| `priors` | none | `{ "<chain entry>": { "pass", "n", "costUsd", "seconds" } }`: `pass` of `n` earlier trials, mean cost and seconds of a trial |
+
+A worked example. Two routes serve `class-a`, and the operator's own benchmark gave starting values:
+
+    "class-a": {
+      "chain": ["route-a", "route-b"],          // profile ids or exact provider/model routes
+      "timeWeight": 0.0005,                     // half a cent buys ten seconds
+      "minPassRate": 0.6,
+      "priors": {
+        "route-a": { "pass": 13, "n": 14, "costUsd": 0.0004, "seconds": 12 },
+        "route-b": { "pass": 13, "n": 14, "costUsd": 0.0004, "seconds": 3 }
+      }
+    }
+
+At first the two cost the same and `route-b` is faster, so `route-b` is expected to win by its time term. If its
+recorded outcomes then show it failing more often, `p(pass)` falls and the ranking moves to `route-a` by itself; if
+`route-a` starts failing, it moves back. About one dispatch in ten is an exploration that picks the other route. The
+dispatch note shows the numbers behind each pick, for example
+`Route evidence: winner route-b (exploit; explored no; timeWeight 0.0005, floor 0.6, explore 0.1); route-a p(pass) 0.88, E[cost] $0.00040, E[s] 12, n=0+14 prior | route-b p(pass) 0.88, E[cost] $0.00040, E[s] 3, n=0+14 prior`.
+
+**What is recorded.** One `task` record per task of a classed wave when it settles: the class, the route (the
+chain entry that finished it), `outcome` (`pass`, `fail`, `unknown`), its `source`, wall seconds, dollars, tokens and,
+for a failure, a `failureKind`: `empty-output`, `reasoning-exhausted`, `tool-error`, `http-4xx`, `http-5xx`, `quota` or
+`other`. A route a task left on the way (a failover) gets its own `fail` record with the cause. Only a task that
+itself declared the class counts. The outcome's source, strongest first:
+
+1. a **verification verdict** recorded later (`ultraterm_hub` `record-outcome`, below);
+2. a **test gate** result the worker reported: an editing worker on a `requiresTestGate` class is asked to end its
+   report with `TEST-GATE: pass` or `TEST-GATE: fail`;
+3. the **worker's final state** (`done` is a `pass`, `failed` or `timed_out` a `fail`, `aborted` is `unknown`). On a
+   `requiresTestGate` class a finished task with no gate result is `unknown`, so it cannot inflate the pass rate.
+
+The store is an append-only JSONL, `~/.pi/agent/usap/route-evidence.jsonl` (override `STEAK_PI_ROUTE_EVIDENCE`),
+mode 600. Nothing is rewritten: a later verdict is a new `verdict` line that the reader applies to the run's records
+(the latest wins), and a `probe` line marks a re-probe. At about 5 MB it rotates to `route-evidence.jsonl.1`
+(replacing the older generation), so the store never exceeds about 10 MB. Damaged lines are skipped, and a store that
+cannot be written never fails a dispatch.
+
+**Self-healing.**
+
+- **Demotion.** A route is held out of a class after `demoteAfter` consecutive failures, when its rolling pass rate over
+  the last `window` decided outcomes falls under `minPassRate`, or at once when it is refused on spent credits
+  (`quota`, a 402). The dispatch note and receipt name the cause (`3 consecutive failures (empty-output)`).
+- **Re-probe and promotion.** After `cooldownMinutes` the route gets exactly one exploratory pick (a marker line stops
+  the next dispatch from probing again), with the healthy routes behind it as the failover. A pass promotes it and
+  restarts its rolling window; a failure holds it out for another cooldown. If every route is held out, the normal route
+  serves and the receipt says why.
+- **Retry, then move on.** A reply that comes back empty or out of output tokens (`stopReason length`: reasoning
+  consumed the budget) is retried **once** on the same route with a higher output budget (`retryMaxTokens`, else
+  double the model's own, never above 131072), then the task runs on the next ranked route. A reply that fails with
+  spent credits (402, "insufficient credits") or a 5xx moves to the next ranked route at once, with the cause recorded
+  as the left route's failure. A route whose profile has an `ensure` hook is not offered as a per-task alternate. A
+  failure before any output uses the runtime pre-output hop along the same ranked chain.
+
+**Reading and teaching it.** `ultraterm_hub` with `action: "routes"` (read-only; `taskClass` filters) prints, per class,
+each route's health, `p(pass)`, pass/fail/unknown counts (and how many were verified), expected cost and seconds, cost per
+correct result, and its failure kinds. `action: "record-outcome"` with `runId`, `outcome` (`pass` or `fail`), an optional
+`taskId` and `source` (`verification`, `test-gate`, `operator`; default `operator`) attaches a verdict to what a run
+left, so a reviewer's finding or a test result moves the estimates. It records nothing for a run that left no classed
+evidence.
+
+### Profile launch hooks (`ensure`)
+
+A `workerProfiles[]` entry may carry `ensure: { command: [argv...], release?: [argv...], timeoutMs? }`. Around
+every worker launched on that profile USAP:
+
+1. runs `command`: an argv array (an absolute program path, or a bare name resolved through `PATH`; never a
+   shell string and never a relative path), with the environment passed through, the home directory as its
+   working directory, and a bounded timeout (`timeoutMs`, default 120000, from 1000 to 600000);
+2. **refuses the launch** when it exits non-zero, times out or cannot start. The worker never starts and its
+   error is `USAP profile ensure refused (<profile>): <stderr, bounded>`. For an implicit wave the route is held
+   out and the same tasks run on the next step of the walk (the next class step, then the normal route) inside
+   the same tool call; an explicit profile fails the call with that cause;
+3. otherwise runs the worker, and in a `finally` runs `release` however the worker ended: done, failed, aborted
+   or thrown. `release` is cleanup: the abort that ended the worker does not cancel it, it is bounded by the
+   shorter of `timeoutMs` and 30 seconds, and its failure is recorded on the task (`profileEnsure`), never turned
+   into a failed worker. A command that was killed by its timeout or an abort may already hold a lease, so
+   `release` runs after it too; one that failed on its own did not run its work, so nothing is released.
+
+Ensure and release run once per worker, one at a time per profile within a session (a wave starts up to eight
+workers at once and a start-if-absent command must not race itself); other processes are the command's own
+business, so make it idempotent and, for a lease count, make `release` its exact inverse. The hook wraps the
+shared worker runner, so Pi and claude-code workers get it alike, and it also runs on a bounded resume of a run
+that used it. The hook is resolved from the operator's routing.json by the profile id the run recorded and only
+while that profile still serves the run's frozen route; a manifest, a task, a tool argument or a checkpoint never
+supplies a command, and a run that recorded no profile reads nothing. The receipt `task.profileEnsure` names the
+profile and the outcome (`ensured`, `refused`, `released`, `release-failed`), never the command line.
+
+A hook slower than the dispatch's startup window (at most 30 seconds) is still waited for, but a refusal that
+arrives after the window is an ordinary failed worker with its named cause rather than a synchronous
+fall-through. A runtime hop to another chain route never runs a hook for that route: name a route that needs one
+through a class step or a profile.
+
 ## Provider guard
 
 `extensions/model-route-policy.ts` composes native provider wrappers through
@@ -363,8 +545,12 @@ privileged code replacing providers can bypass it.
 `test/neutral-defaults.test.ts` proves the empty configuration: no chain,
 profile, expert, paid route, retirement, catalog extra, hidden model, Claude
 tier or Claude default, a clear config-key error for implicit dispatch, and
-explicit selectors still served. `test/neutrality.test.ts` scans the shipped
-files for concrete model ids and personal names. The behavioral suites
+explicit selectors still served, and that no task class or launch hook exists by
+default. `test/neutrality.test.ts` scans the shipped files for concrete model
+ids, personal names, concrete class names and any literal class table or hook;
+`test/task-classes.test.ts` and `test/profile-ensure.test.ts` cover the class
+schema, class-first routing and fallback, unknown classes, and the hook's
+success, refusal, fall-through and release paths. The behavioral suites
 (`test/model-route-policy.test.ts`, `test/subagent-model-selection.test.ts`,
 `test/explicit-paid-route.test.ts`, `test/ultraterm-subagents-extension.test.ts`,
 …) run against the synthetic operator fixture `test/fixtures/routing.json` and

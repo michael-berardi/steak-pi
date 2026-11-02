@@ -34,6 +34,8 @@ import { assertOwnedPath } from "./policy.ts";
 import { finalWorkerReport, workerJournal } from "./coordinator.ts";
 import { assertActiveModelSelector } from "../retired-model-selection.ts";
 import { assertWorkerDependencies, resolveWorkerDependency } from "./dependency-preflight.ts";
+import { loadWorkerProfiles } from "./model-selection.ts";
+import { recordedClassChain } from "./task-class.ts";
 import {
   assertModelRoute,
   assertSubscriptionRequest,
@@ -237,7 +239,13 @@ type PiThinkingLevel = NonNullable<CreateAgentSessionOptions["thinkingLevel"]>;
 export interface PiWorkerRuntime {
   model: PiModel;
   thinkingLevel: PiThinkingLevel;
+  /** The ranked class routes behind the winner, resolved at dispatch; a reply that stays empty after its one retry
+   * runs on the next of these (see `WorkerRunContext.reply`). Absent on a run no task class steered. */
+  alternates?: ReadonlyArray<{ entry: string; model: PiModel; thinkingLevel: PiThinkingLevel }>;
 }
+
+/** The ceiling a same-route retry may raise a model's output budget to when the operator named none. */
+export const REPLY_RETRY_MAX_OUTPUT_TOKENS = 131_072;
 
 export interface PiWorkerSession {
   readonly isStreaming: boolean;
@@ -309,6 +317,13 @@ export function workerImplementationGate(run: RunRecord, task: TaskRecord): stri
   return [`End-gate: if you produced implementation, before it is committed, pushed, or deployed request one bounded verification on ${gate.reviewer} through the parent (USAP, explicit route).${fallback} Never substitute another model silently or claim, imply, or fabricate approval.`];
 }
 
+/** A run whose task class the operator marked `requiresTestGate` was routed there because a test gate checks the
+ * result: an editing worker must put the outcome of its own focused check in the report. */
+export function workerTestGate(run: RunRecord, task: TaskRecord): string[] {
+  if (!task.mayEdit || run.selection?.taskClass?.requiresTestGate !== true || run.selection.taskClass.outcome === "ignored") return [];
+  return ["Test gate: this leaf was routed as test-checkable work. Run the focused test or check that proves your change, report its exact outcome under Focused checks, and say so plainly if no check could run instead of claiming it passed. End the report with one line, `TEST-GATE: pass` or `TEST-GATE: fail` for that check (`TEST-GATE: none` when no check could run); the router learns from that line."];
+}
+
 /** Explicit parent output contracts take precedence over the default prose report. */
 export function workerFinalReportInstructions(): string[] {
   return [
@@ -344,6 +359,7 @@ export function buildPiWorkerSystemPrompt(run: RunRecord, task: TaskRecord): str
     "After you write your final answer you are done. If a later relay message wakes you anyway, act on it only if it changes your findings, and then write your complete report again.",
     "You have no commit, push, or deploy permission; this prompt grants none.",
     ...workerImplementationGate(run, task),
+    ...workerTestGate(run, task),
     `You have at most ${workerTurnBudget(run)} assistant turns. Stop promptly with a concise report.`,
     "",
     "## Shared run contract",
@@ -851,6 +867,8 @@ export function classifyPiWorkerState(input: {
     return { state: "failed", error: `Child ended in ${input.finalAssistant.stopReason} state` };
   }
   if (!input.finalAssistant.text.trim() || input.finalAssistant.text.trim() === "(no output)") {
+    // A reply cut off at the output limit with nothing written is reasoning that ran out of budget, not an idle model.
+    if (input.finalAssistant.stopReason === "length") return { state: "failed", error: "Child ran out of output tokens before a final answer (stopReason length)" };
     return { state: "failed", error: "Child produced no final output" };
   }
   if (input.finalAssistant.toolCalls) return { state: "failed", error: "Child ended with tool calls instead of a final answer" };
@@ -888,13 +906,15 @@ function relaySteeringText(envelope: Parameters<NonNullable<Parameters<RelayBrok
  * its chain gets no hop at all — including a reviewer frozen on the scarce expert
  * (the operator's `expertReview`) by the default reviewer chain: a failed expert
  * review is reported honestly, never silently downgraded to a weaker model. */
-export function workerChainFallback(selection: Pick<ModelSelection, "source" | "images" | "chainRoutes"> | undefined,
+export function workerChainFallback(selection: Pick<ModelSelection, "source" | "images" | "chainRoutes" | "taskClass"> | undefined,
   model: PiModel, onFallback?: ChainFallbackInput["onFallback"]): ChainFallbackInput | undefined {
   if (selection?.source !== "chain") return undefined;
   const images = selection.images === true;
-  // The run's own recorded chain (a reviewer chain keeps its configured head), when
-  // it is exactly one this policy produces; otherwise the default chain.
-  const chain = recordedWorkerChain(selection.chainRoutes, images);
+  // A run a task class steered hops along that class's ranked chain (the best remaining route first), and only
+  // along routes the operator's class names. Any other run: its own recorded chain (a reviewer chain keeps its
+  // configured head), when it is exactly one this policy produces; otherwise the default chain.
+  const chain = (selection.taskClass ? recordedClassChain(selection, loadWorkerProfiles()) : undefined)
+    ?? recordedWorkerChain(selection.chainRoutes, images);
   if (!chain.some((step) => step.provider === model.provider && step.id === model.id)) return undefined;
   return {
     chain,
@@ -912,9 +932,11 @@ export function workerChainFallback(selection: Pick<ModelSelection, "source" | "
  * SDK runtime. */
 export function createChainFallbackReporter(task: TaskRecord,
   onProgress: (progress: WorkerProgress) => void): NonNullable<ChainFallbackInput["onFallback"]> {
-  return (from: WorkerRouteStep, to: PiModel) => {
+  return (from: WorkerRouteStep, to: PiModel, cause?: string) => {
     const hop = `${from.provider}/${from.id}->${to.provider}/${to.id}`;
     task.routeFallbacks = [...(task.routeFallbacks ?? []), hop];
+    // The cause is the evidence the router learns from: why this route was left (a 402, a 5xx, a quota wall).
+    task.routeHopDetails = [...(task.routeHopDetails ?? []), { from: `${from.provider}/${from.id}`, to: `${to.provider}/${to.id}`, cause: (cause ?? "").slice(0, 300), costUsd: 0, seconds: 0 }];
     task.lastStep = `model-fallback:${hop}`;
     onProgress({ state: "running", currentTool: `model-fallback:${to.provider}/${to.id}` });
   };
@@ -937,7 +959,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
   if (!Number.isSafeInteger(leaseRenewIntervalMs) || leaseRenewIntervalMs <= 0 || leaseRenewIntervalMs > GO_ACCOUNT_LEASE_TTL_SECONDS * 1000) {
     throw new RangeError("leaseRenewIntervalMs must be a positive safe integer no longer than the Go account lease TTL");
   }
-  return async ({ run, task, signal, onProgress, sessionDir }): Promise<WorkerResult> => {
+  return async ({ run, task, signal, onProgress, sessionDir, reply }): Promise<WorkerResult> => {
     let account: GoAccountLease | CodexAccountLease | undefined;
     let accountProvider: "opencode-go" | "codex" | undefined;
     let keeper: GoAccountLeaseKeeper | undefined;
@@ -1030,12 +1052,20 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       assertActiveModelSelector(run.selection?.profile);
       assertWorkerDependencies(import.meta.url, (specifier) =>
         resolveWorkerDependency(specifier, (name) => import.meta.resolve(name)));
-      const [managers, runtime] = await initialize(Promise.all([
+      const [managers, frozen] = await initialize(Promise.all([
         loadPiStateManagers(),
         options.resolveRuntime(run.id),
       ]));
       signal.throwIfAborted();
-      if (!runtime?.model || !runtime.thinkingLevel) throw new Error(`No child runtime resolved for ${run.id}`);
+      if (!frozen?.model || !frozen.thinkingLevel) throw new Error(`No child runtime resolved for ${run.id}`);
+      // A re-run of an empty or output-exhausted reply: the next ranked route when the coordinator asks for one,
+      // and a raised output budget on the route it runs (the model's own ceiling still caps what a provider allows).
+      const alternate = reply?.alternate === undefined ? undefined : frozen.alternates?.[reply.alternate];
+      if (reply?.alternate !== undefined && !alternate) throw new Error(`No alternate class route ${reply.alternate} was frozen for ${run.id}`);
+      const chosen = alternate ?? frozen;
+      const runtime: PiWorkerRuntime = reply?.boost === true && Number.isFinite(chosen.model.maxTokens)
+        ? { ...frozen, model: { ...chosen.model, maxTokens: reply.maxTokens ?? Math.min(2 * chosen.model.maxTokens, REPLY_RETRY_MAX_OUTPUT_TOKENS) }, thinkingLevel: chosen.thinkingLevel }
+        : { ...frozen, model: chosen.model, thinkingLevel: chosen.thinkingLevel };
       assertModelRoute(runtime.model);
       // Account leasing is operator configuration: a providerQuotaFallback tier marked
       // accountRouter leases from the provider account router for its routes. The canonical

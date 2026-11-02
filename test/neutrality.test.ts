@@ -76,6 +76,12 @@ const allowedDistributionLine = (path: string, line: string) => {
 };
 const PERSONAL = /\b(?:Mike|Berardi|Kate|Felix|Lucero|PlataPlace|Mouseia|UltraLDSBot)\b|libertydesign|Liberty Design|\/Users\/[A-Za-z]/i;
 
+// Task classes are the operator's: the names the first local-model measurements used, and any literal class table
+// in shipped source, would make a default of what routing.json owns. Docs use the placeholders class-a, class-b.
+const CONCRETE_TASK_CLASS = /\b(?:leaf-edit|refactor-small|test-writing|scout-summary)\b/i;
+const CLASS_TABLE_LITERAL = /\btaskClasses\s*[:=]\s*\{\s*["'`]?[a-z0-9]/;
+const ENSURE_LITERAL = /\bensure\s*:\s*\{\s*command\s*:/;
+
 // Operator-specific account spellings that once leaked into examples and fixtures. Use a neutral id such as
 // "team-2" / "Claude (Team)" wherever an example registry account is needed.
 const OPERATOR_ACCOUNT = /claude-kl|"kl"|Claude \(KL\)/i;
@@ -138,6 +144,49 @@ describe("shipped files are provider-neutral", () => {
       .filter((hit) => !allowedDistributionLine(hit.path, hit.text))
       .map(describeHit);
     expect(personal).toEqual([]);
+  });
+
+  it("ship no task class, class chain or ensure hook of their own", () => {
+    for (const sample of ["leaf-edit", "Refactor-Small", "test-writing", "scout-summary"]) expect(CONCRETE_TASK_CLASS.test(sample), sample).toBe(true);
+    for (const sample of ["taskClasses: { x: { chain: [] } }", "taskClasses = {'x': {}}", "taskClasses: {\"leaf\": 1}"]) expect(CLASS_TABLE_LITERAL.test(sample), sample).toBe(true);
+    for (const sample of ["class-a", "taskClasses?: Readonly<Record<string, TaskClassConfig>>", "config.taskClasses = parseTaskClasses(raw.taskClasses)"]) expect(CLASS_TABLE_LITERAL.test(sample), sample).toBe(false);
+    expect(ENSURE_LITERAL.test("ensure: { command: [\"/x\"] }")).toBe(true);
+    // No shipped file names a concrete class, and no shipped code (docs show placeholder examples) holds a class table or hook.
+    expect(hits(shipped, CONCRETE_TASK_CLASS).map(describeHit)).toEqual([]);
+    const code = shipped.filter((path) => /\.(?:ts|mts|js|mjs|cjs|sh|py)$/.test(path) || relative(root, path).startsWith("bin/"));
+    expect(hits(code, CLASS_TABLE_LITERAL).map(describeHit)).toEqual([]);
+    expect(hits(code, ENSURE_LITERAL).map(describeHit)).toEqual([]);
+    // The scan is meaningful: the feature is shipped and documented under placeholder names.
+    const docs = readFileSync(join(root, "docs/MODEL-ROUTING.md"), "utf8");
+    expect(docs).toMatch(/taskClasses/);
+    expect(docs).toMatch(/class-a/);
+    expect(readFileSync(join(root, "src/routing-config.ts"), "utf8")).toMatch(/parseTaskClasses/);
+  });
+
+  it("ship no evidence-routing winner, route, model or prior of their own", () => {
+    // Routing is learned from the operator's evidence store and priors: no shipped file may name a route that
+    // would win, a vendor or model the benchmark favoured, or a literal priors table.
+    const VENDOR_OR_MODEL = /\b(?:mercury[-\s.]?\d?|deepseek|flash-\d|v4\.\d)\b|\binception\//i;
+    const PRIORS_LITERAL = /\bpriors\s*[:=]\s*\{\s*["'`][^"'`]*[\/][^"'`]*["'`]\s*:\s*\{\s*pass\s*:/;
+    const HARDCODED_WINNER = /\b(?:preferred|favou?red|best|default)Route\s*=\s*["'`][a-z0-9-]+\/[a-z0-9.-]+["'`]/i;
+    for (const sample of ["mercury-3", "Inception/mercury-3", "deepseek-v4.1-flash", "inception/"]) expect(VENDOR_OR_MODEL.test(sample), sample).toBe(true);
+    for (const sample of ["priors?: Readonly<Record<string, RoutePrior>>", "route-a", "class-a"]) expect(VENDOR_OR_MODEL.test(sample), sample).toBe(false);
+    expect(PRIORS_LITERAL.test('priors: { "p/m": { pass: 9, n: 10 } }')).toBe(true);
+    expect(PRIORS_LITERAL.test("priors: Readonly<Record<string, RoutePrior>>")).toBe(false);
+    expect(HARDCODED_WINNER.test('const preferredRoute = "p/m"')).toBe(true);
+    expect(hits(shipped, VENDOR_OR_MODEL).map(describeHit)).toEqual([]);
+    const code = shipped.filter((path) => /\.(?:ts|mts|js|mjs|cjs|sh|py)$/.test(path) || relative(root, path).startsWith("bin/"));
+    expect(hits(code, PRIORS_LITERAL).map(describeHit)).toEqual([]);
+    expect(hits(code, HARDCODED_WINNER).map(describeHit)).toEqual([]);
+    // The scan is meaningful: the learned router is shipped, reads its priors from routing.json, and is documented
+    // under placeholder names.
+    const ranking = readFileSync(join(root, "src/subagents/route-ranking.ts"), "utf8");
+    expect(ranking).toMatch(/Thompson/);
+    expect(ranking).toMatch(/settings\.priors\[/);
+    expect(ranking).not.toMatch(/\bconst\s+\w*(?:winner|best)\w*\s*=\s*["'`]/i);
+    const docs = readFileSync(join(root, "docs/MODEL-ROUTING.md"), "utf8");
+    expect(docs).toMatch(/route-a/);
+    expect(docs).toMatch(/minPassRate/);
   });
 
   it("use no operator-specific Claude account id, label or folder in examples, docs or fixtures", () => {

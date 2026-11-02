@@ -19,7 +19,7 @@ The canonical tool surface is:
 | Caller | Tool | Purpose |
 | --- | --- | --- |
 | Parent | `ultraterm_subagents` | Validate and dispatch a run of bounded child tasks |
-| Parent | `ultraterm_hub` | List, inspect, diagnose, explicitly resume, wait for, cancel, or message runs |
+| Parent | `ultraterm_hub` | List, inspect, diagnose, explicitly resume, wait for, cancel, or message runs; `routes` prints task-class route estimates, `record-outcome` records a verification verdict |
 | Child | `ultraterm_relay` | Receive and send run-local peer messages, requests, and replies |
 
 Tool schemas, process launch mechanics, storage structures, UI rendering, and
@@ -143,6 +143,7 @@ Change: concrete operations or evidence to collect
 Acceptance: observable output and required report shape
 Permissions: may edit, may use shell, and any other narrowed capability
 Ownership: exclusive files or mutable boundaries
+Class (optional): an operator-named task class (`taskClass`), see "Task classes"
 ```
 
 ### Harness selection (1.3)
@@ -431,8 +432,61 @@ The parent may choose either execution mode:
   land after the window, and the failure then arrives as an ordinary completion naming the
   cause.
 
+- **Ensure fall-through:** when a route is a worker profile with an `ensure` launch hook
+  (`workerProfiles[].ensure` in the operator's routing.json) and the hook refuses every
+  launch of an implicit wave before any worker produced output (non-zero exit, timeout or
+  no such program), the route is held out and the same dispatch call re-runs the same tasks
+  on the next step of the walk, on the same one-tier-at-a-time rules and the same cap as the
+  usage-limit fall-through. The refused run stays `failed` with the command's stderr as its
+  named cause (`USAP profile ensure refused (<profile>): …`); an explicit profile fails
+  the call with that cause and is never rerouted.
+
 Background means asynchronous within the current host lifetime; it does not
 imply durable or detached execution. See the persistence boundary.
+
+### Task classes
+
+A task may carry an optional `taskClass`: a lowercase slug (letters, digits and single
+hyphens, at most 48 characters) the **operator** defined under `taskClasses` in routing.json.
+Steak Pi ships no class, chain or profile. The class lets an implicit text worker wave run
+the route that measured best for that kind of task:
+
+- The class's `chain` (worker profile ids or exact `provider/model` routes) is walked first
+  with the same launch, quota, paid-route and `onlyWhen` checks as the default chain; the
+  normal route follows when no step can launch.
+- A run uses one frozen route, so a wave steers on one class. Two configured classes in one
+  wave are refused before anything starts; tasks with no class (or an unconfigured one) ride
+  the route, and the dispatch note names them.
+- An unconfigured class is ignored with a note, never an error. A class never overrides an
+  explicit `model`, `profile`, `harness` or `claudeAccount`, and does not steer reviewer or
+  image waves; each of those is recorded as `ignored` with its reason.
+- `run.selection.taskClass` (`name`, `outcome` of `served` / `fallback` / `ignored`, `reason`,
+  `step`, `requiresTestGate`, `note`) is the receipt, repeated in the dispatch summary and the
+  `Task class …` line of the route note; `summary.tasks[].taskClass` echoes each task's
+  declaration. A class with `requiresTestGate` tells editing workers to report the outcome of
+  their focused check, and tells the parent to run its test gate before accepting the work.
+
+- **Evidence-driven ranking.** Once a class has operator priors or recorded outcomes, the steps that can launch
+  are ranked by expected cost per correct result (a Beta posterior over recorded passes and fails, Thompson
+  draws, an `explore` share) instead of by chain order, and `run.selection.taskClass.decision` carries the winner,
+  each route's `p(pass)`, expected cost and seconds, evidence counts, whether it explored and which routes are held out and
+  why. Every settled task of a classed wave appends one record to the evidence store
+  (`~/.pi/agent/usap/route-evidence.jsonl`); a route that keeps failing is demoted with a named cause, re-probed once
+  after a cooldown and promoted by a pass; an empty or output-exhausted reply is retried once with a higher output
+  budget and then moves to the next ranked route; a 402 or 5xx moves on at once. Hub `routes` (read-only) prints the
+  per-class estimates; hub `record-outcome` (`runId`, `outcome`, optional `taskId`, `source`) attaches a verification
+  verdict to a run's evidence. Details: `docs/MODEL-ROUTING.md`.
+
+### Profile launch hooks
+
+A worker profile may declare `ensure: { command, release?, timeoutMs? }` (argv arrays, no
+shell). Around each worker on that profile USAP runs `command` before launch, refuses the
+launch with its stderr as the named cause when it fails, and in a `finally` runs `release`
+whether the worker finishes, fails, is aborted or throws. The hook applies to Pi and
+claude-code workers alike, is resolved only from the operator's routing.json by the profile
+id the run recorded (never from a manifest, task or checkpoint), and leaves the sanitized
+receipt `task.profileEnsure` (`ensured`, `refused`, `released`, `release-failed`). Details:
+`docs/MODEL-ROUTING.md`.
 
 ## 5. Lifecycle and hub
 

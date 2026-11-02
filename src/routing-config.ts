@@ -20,7 +20,7 @@
  */
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 export const ROUTING_CONFIG_ENV = "STEAK_PI_ROUTING_CONFIG";
 export const PAID_ROUTES_ENV = "STEAK_PI_PAID_ROUTES";
@@ -34,6 +34,16 @@ export const paidRoutesConfigPath = (): string =>
   process.env[PAID_ROUTES_ENV] || join(homedir(), ".pi", "agent", "paid-routes.json");
 
 export class RoutingConfigError extends Error { override name = "RoutingConfigError"; }
+
+/** A task class is a lowercase slug the operator chooses; Steak Pi ships none. */
+export const TASK_CLASS_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const TASK_CLASS_MAX_LENGTH = 48;
+export const MAX_TASK_CLASSES = 64;
+export const MAX_TASK_CLASS_CHAIN = 16;
+/** Bounds for a profile's `ensure.timeoutMs`. */
+export const ENSURE_DEFAULT_TIMEOUT_MS = 120_000;
+export const ENSURE_MIN_TIMEOUT_MS = 1_000;
+export const ENSURE_MAX_TIMEOUT_MS = 600_000;
 
 /** Clear "nothing configured" message naming the exact key an operator sets. */
 export const missingConfigKey = (what: string, key: string): string =>
@@ -66,6 +76,13 @@ export interface ExpertReviewConfig {
   /** Exact base URL (origin + path, trailing slash ignored) the expert must use, when set. */
   baseUrl?: string;
 }
+/** A command run before a worker on the profile launches and, when `release` is set, after it ends.
+ * Both are argv arrays (no shell); `timeoutMs` bounds each run. See `profile-ensure.ts`. */
+export interface ProfileEnsureConfig {
+  command: readonly string[];
+  release?: readonly string[];
+  timeoutMs?: number;
+}
 export interface ConfiguredWorkerProfile {
   id: string;
   model: string;
@@ -74,6 +91,32 @@ export interface ConfiguredWorkerProfile {
   reviewerDefault?: RouteSelector;
   autoChain?: boolean;
   autoReviewChain?: boolean;
+  /** Operator-owned launch hook; read only from routing.json, never from a manifest, task or checkpoint. */
+  ensure?: ProfileEnsureConfig;
+}
+/** One operator-named class of task and the chain that serves it before the default chain. */
+export interface TaskClassConfig {
+  /** Ordered steps: a worker profile id (`harness/profile`) or an exact `provider/model` route. */
+  chain: readonly string[];
+  /** The class is routed on the evidence that a test gate checks its results: the dispatch says so. */
+  requiresTestGate: boolean;
+  note?: string;
+  /** Dollars one second of waiting is worth when ranking this class's routes (default 0: cost alone). */
+  timeWeight?: number;
+  /** Rolling pass rate under which a route is held out of this class (default 0: no floor). */
+  minPassRate?: number;
+  /** Share of dispatches that deliberately pick a weaker route to keep its estimate current (default 0.1). */
+  explore?: number;
+  /** Consecutive failures that demote a route for this class (default 3). */
+  demoteAfter?: number;
+  /** Decided outcomes the rolling pass rate looks at (default 10). */
+  window?: number;
+  /** Minutes a demoted route stays out before one re-probe (default 30). */
+  cooldownMinutes?: number;
+  /** Output budget for the one same-route retry of an empty or output-exhausted reply (default: double the model's own). */
+  retryMaxTokens?: number;
+  /** Starting estimates per chain entry: `pass` of `n` earlier trials, and the mean cost and seconds of a trial. */
+  priors?: Readonly<Record<string, { pass: number; n: number; costUsd?: number; seconds?: number }>>;
 }
 export interface RetiredModelPattern {
   pattern: RegExp;
@@ -134,6 +177,10 @@ export interface RoutingConfig {
   reviewerChainHead?: RouteStep;
   expertReview?: ExpertReviewConfig;
   workerProfiles?: readonly ConfiguredWorkerProfile[];
+  /** Operator-named task classes (`taskClasses`); absent means no class steers any route. */
+  taskClasses?: Readonly<Record<string, TaskClassConfig>>;
+  /** `routeConditions` by route key, kept so a class chain step gets the same `onlyWhen` as a default chain step. */
+  routeConditions?: Readonly<Record<string, OnlyWhenCondition>>;
   retiredModelPatterns?: readonly RetiredModelPattern[];
   retiredProfiles?: readonly string[];
   catalogExtras?: readonly CatalogExtra[];
@@ -219,6 +266,107 @@ const selectorOf = (value: unknown, key: string): RouteSelector => {
   return value as RouteSelector;
 };
 
+/** An argv array for a command USAP runs without a shell: the first element is an absolute path or a bare
+ * command name (never a path relative to the working directory, which a repository could plant). */
+function argvOf(value: unknown, key: string): string[] {
+  if (!Array.isArray(value)) return fail(key, "expected an argv array of strings; a shell string is refused because USAP never runs a shell");
+  if (value.length < 1 || value.length > 64) return fail(key, "expected 1 to 64 argv strings");
+  const list = value.map((item, index) => {
+    if (typeof item !== "string" || item.length === 0 || item.length > 4096 || item.includes("\0")) {
+      return fail(`${key}[${index}]`, "expected a nonempty string of at most 4096 characters without NUL");
+    }
+    return item;
+  });
+  const program = list[0];
+  if (program.includes("/") ? !isAbsolute(program) : /\s/.test(program)) {
+    return fail(`${key}[0]`, "must be an absolute path or a bare command name without spaces (put arguments in later elements; relative paths are refused)");
+  }
+  return list;
+}
+function parseEnsure(value: unknown, key: string): ProfileEnsureConfig {
+  if (!object(value)) return fail(key, "expected { command: [argv...], release: [argv...], timeoutMs }");
+  for (const name of Object.keys(value)) {
+    if (!["command", "release", "timeoutMs"].includes(name)) return fail(`${key}.${name}`, "unknown key (allowed: command, release, timeoutMs)");
+  }
+  let timeoutMs: number | undefined;
+  if (value.timeoutMs !== undefined) {
+    const raw = value.timeoutMs;
+    if (typeof raw !== "number" || !Number.isInteger(raw) || raw < ENSURE_MIN_TIMEOUT_MS || raw > ENSURE_MAX_TIMEOUT_MS) {
+      return fail(`${key}.timeoutMs`, `expected an integer from ${ENSURE_MIN_TIMEOUT_MS} to ${ENSURE_MAX_TIMEOUT_MS} milliseconds`);
+    }
+    timeoutMs = raw;
+  }
+  return {
+    command: argvOf(value.command, `${key}.command`),
+    ...(value.release !== undefined ? { release: argvOf(value.release, `${key}.release`) } : {}),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+  };
+}
+const TASK_CLASS_KEYS = ["chain", "requiresTestGate", "note", "timeWeight", "minPassRate", "explore", "demoteAfter", "window", "cooldownMinutes", "retryMaxTokens", "priors"];
+function boundedNumber(value: unknown, key: string, min: number, max: number, integer = false): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max || (integer && !Number.isInteger(value))) {
+    return fail(key, `expected ${integer ? "an integer" : "a number"} from ${min} to ${max}`);
+  }
+  return value;
+}
+function parsePriors(value: unknown, key: string, chain: readonly string[]): NonNullable<TaskClassConfig["priors"]> {
+  if (!object(value)) return fail(key, "expected { \"<chain entry>\": { pass, n, costUsd, seconds } }");
+  const priors: Record<string, { pass: number; n: number; costUsd?: number; seconds?: number }> = {};
+  for (const [entry, raw] of Object.entries(value)) {
+    const at = `${key}.${entry}`;
+    if (!chain.includes(entry)) return fail(at, "names no step of this class's chain (use the chain entry exactly as written)");
+    if (!object(raw)) return fail(at, "expected { pass, n, costUsd, seconds }");
+    for (const field of Object.keys(raw)) if (!["pass", "n", "costUsd", "seconds"].includes(field)) return fail(`${at}.${field}`, "unknown key (allowed: pass, n, costUsd, seconds)");
+    const n = boundedNumber(raw.n, `${at}.n`, 0, 100_000, true);
+    const pass = boundedNumber(raw.pass, `${at}.pass`, 0, n, true);
+    priors[entry] = {
+      pass, n,
+      ...(raw.costUsd !== undefined ? { costUsd: boundedNumber(raw.costUsd, `${at}.costUsd`, 0, 1_000_000) } : {}),
+      ...(raw.seconds !== undefined ? { seconds: boundedNumber(raw.seconds, `${at}.seconds`, 0, 1_000_000) } : {}),
+    };
+  }
+  return priors;
+}
+function parseTaskClasses(value: unknown): Record<string, TaskClassConfig> {
+  if (!object(value)) return fail("taskClasses", 'expected { "<class>": { chain: ["harness/profile or provider/model", ...], requiresTestGate, note } }');
+  const entries = Object.entries(value);
+  if (entries.length > MAX_TASK_CLASSES) return fail("taskClasses", `expected at most ${MAX_TASK_CLASSES} classes`);
+  const classes: Record<string, TaskClassConfig> = {};
+  for (const [name, entry] of entries) {
+    const key = `taskClasses.${name}`;
+    if (!TASK_CLASS_PATTERN.test(name) || name.length > TASK_CLASS_MAX_LENGTH) {
+      return fail("taskClasses", `class name ${JSON.stringify(name.slice(0, 60))} must be a lowercase slug of at most ${TASK_CLASS_MAX_LENGTH} characters (letters, digits and single hyphens)`);
+    }
+    if (!object(entry)) return fail(key, "expected { chain, requiresTestGate, note }");
+    for (const field of Object.keys(entry)) {
+      if (!TASK_CLASS_KEYS.includes(field)) return fail(`${key}.${field}`, `unknown key (allowed: ${TASK_CLASS_KEYS.join(", ")})`);
+    }
+    const chain = array(entry.chain, `${key}.chain`).map((step, index) => {
+      const route = text(step, `${key}.chain[${index}]`);
+      const slash = route.indexOf("/");
+      if (slash < 1 || slash === route.length - 1) return fail(`${key}.chain[${index}]`, `${JSON.stringify(route)} must be a worker profile id (harness/profile) or an exact provider/model route`);
+      return route;
+    });
+    if (chain.length < 1 || chain.length > MAX_TASK_CLASS_CHAIN) return fail(`${key}.chain`, `expected 1 to ${MAX_TASK_CLASS_CHAIN} steps`);
+    const duplicate = chain.find((step, index) => chain.indexOf(step) !== index);
+    if (duplicate !== undefined) return fail(`${key}.chain`, `${JSON.stringify(duplicate)} appears more than once`);
+    classes[name] = {
+      chain,
+      requiresTestGate: bool(entry.requiresTestGate, `${key}.requiresTestGate`, false),
+      ...(entry.note !== undefined ? { note: text(entry.note, `${key}.note`, 400) } : {}),
+      ...(entry.timeWeight !== undefined ? { timeWeight: boundedNumber(entry.timeWeight, `${key}.timeWeight`, 0, 1_000) } : {}),
+      ...(entry.minPassRate !== undefined ? { minPassRate: boundedNumber(entry.minPassRate, `${key}.minPassRate`, 0, 1) } : {}),
+      ...(entry.explore !== undefined ? { explore: boundedNumber(entry.explore, `${key}.explore`, 0, 0.5) } : {}),
+      ...(entry.demoteAfter !== undefined ? { demoteAfter: boundedNumber(entry.demoteAfter, `${key}.demoteAfter`, 1, 100, true) } : {}),
+      ...(entry.window !== undefined ? { window: boundedNumber(entry.window, `${key}.window`, 2, 500, true) } : {}),
+      ...(entry.cooldownMinutes !== undefined ? { cooldownMinutes: boundedNumber(entry.cooldownMinutes, `${key}.cooldownMinutes`, 1, 10_080) } : {}),
+      ...(entry.retryMaxTokens !== undefined ? { retryMaxTokens: boundedNumber(entry.retryMaxTokens, `${key}.retryMaxTokens`, 256, 1_048_576, true) } : {}),
+      ...(entry.priors !== undefined ? { priors: parsePriors(entry.priors, `${key}.priors`, chain) } : {}),
+    };
+  }
+  return classes;
+}
+
 /** Validate one parsed routing.json object. Unknown keys are ignored (other tools share the file). */
 export function parseRoutingConfig(raw: unknown): RoutingConfig {
   if (!object(raw)) return fail("(file)", "expected a JSON object");
@@ -243,6 +391,7 @@ export function parseRoutingConfig(raw: unknown): RoutingConfig {
     });
     config.textWorkerChain = apply(config.textWorkerChain);
     config.multimodalWorkerChain = apply(config.multimodalWorkerChain);
+    config.routeConditions = Object.fromEntries(conditions);
   }
   if (raw.defaultChainProfile !== undefined) config.defaultChainProfile = text(raw.defaultChainProfile, "defaultChainProfile");
   if (raw.tokenPlanChainHeads !== undefined) {
@@ -279,7 +428,7 @@ export function parseRoutingConfig(raw: unknown): RoutingConfig {
   if (raw.workerProfiles !== undefined) {
     config.workerProfiles = array(raw.workerProfiles, "workerProfiles").map((entry, index) => {
       const key = `workerProfiles[${index}]`;
-      if (!object(entry)) return fail(key, "expected { id, model, thinking, autoChain, workerDefault, reviewerDefault }");
+      if (!object(entry)) return fail(key, "expected { id, model, thinking, autoChain, workerDefault, reviewerDefault, ensure }");
       const model = text(entry.model, `${key}.model`);
       if (!model.includes("/")) fail(`${key}.model`, "must use the exact provider/model form");
       const level = thinking(entry.thinking, `${key}.thinking`);
@@ -290,9 +439,11 @@ export function parseRoutingConfig(raw: unknown): RoutingConfig {
         ...(entry.reviewerDefault !== undefined ? { reviewerDefault: selectorOf(entry.reviewerDefault, `${key}.reviewerDefault`) } : {}),
         ...(bool(entry.autoChain, `${key}.autoChain`, false) ? { autoChain: true } : {}),
         ...(bool(entry.autoReviewChain, `${key}.autoReviewChain`, false) ? { autoReviewChain: true } : {}),
+        ...(entry.ensure !== undefined ? { ensure: parseEnsure(entry.ensure, `${key}.ensure`) } : {}),
       };
     });
   }
+  if (raw.taskClasses !== undefined) config.taskClasses = parseTaskClasses(raw.taskClasses);
   if (raw.retiredModelPatterns !== undefined) {
     config.retiredModelPatterns = array(raw.retiredModelPatterns, "retiredModelPatterns").map((entry, index) => {
       const key = `retiredModelPatterns[${index}]`;

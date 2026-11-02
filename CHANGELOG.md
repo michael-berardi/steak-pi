@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.19.0 (2026-11-02)
+
+- **Task classes: route a kind of task to the route that measured best for it.** `routing.json` gains an optional
+  `taskClasses` object, `{ "<class>": { "chain": [...], "requiresTestGate"?, "note"? } }`. A class is a lowercase
+  slug the operator chooses; Steak Pi ships none. A chain step is a worker profile id or an exact `provider/model`
+  route. The `ultraterm_subagents` task schema gains an optional `taskClass`. For an implicit text worker wave whose
+  class is configured, the dispatch walks the class chain first, with the same launch, quota, paid-route and
+  `onlyWhen` checks as `textWorkerChain` (`routeConditions` apply to class steps too), and then falls back to the
+  normal route. An unconfigured class is ignored with a note in the dispatch summary, never an error; explicit
+  `model`, `profile`, `harness` and `claudeAccount` selections stay exact, and reviewer and image waves are not
+  steered. One run uses one route: two configured classes in one wave are refused, and tasks without the class ride
+  the wave's route (the note names them). The receipt `run.selection.taskClass` and the dispatch note name the class,
+  the serving step and why each earlier step was not chosen. `requiresTestGate` is recorded and surfaced (dispatch
+  note, receipt, and a line in an editing worker's prompt asking for its focused check's outcome); the parent still
+  runs the gate.
+- **Profile launch hook: `workerProfiles[].ensure`.** A profile may declare
+  `ensure: { command: [argv...], release?: [argv...], timeoutMs? }`, for a route that needs something running first
+  (an on-demand local model server). Before each worker on the profile launches USAP runs `command` (no shell, the
+  environment passed through, bounded by `timeoutMs`, default 120 s, at most 600 s). A non-zero exit, a timeout or a
+  program that cannot start refuses the launch with its stderr as the named cause; an implicit wave then falls
+  through to the next step of the walk inside the same call, and an explicit profile fails with that cause. In a
+  `finally` after the worker ends, however it ends, `release` runs (bounded by 30 s, never cancelled by the abort,
+  its failure recorded as `task.profileEnsure`, not as a failed worker). Pi and claude-code workers get the hook
+  alike; it is resolved only from the operator's routing.json by the profile id the run recorded, never from a
+  manifest, task or checkpoint, and it also applies on a bounded resume. Launches of one profile are serialized
+  within a session so a start-if-absent command never races itself.
+- **Evidence-driven, self-improving, self-healing class routing.** Inside a class chain the steps that pass every
+  launch check are now ranked on recorded evidence by expected cost per correct result,
+  `(E[cost] + timeWeight x E[seconds]) / p(pass)`, with `p(pass)` a Beta posterior over the route's passes and fails
+  seeded by the operator's `taskClasses.<class>.priors` (`{ pass, n, costUsd, seconds }` per chain entry). The pick is
+  a Thompson draw, plus a configurable `explore` share (default 0.1) that deliberately picks a weaker route so its
+  estimate keeps current; `timeWeight` (seconds to dollars) and a `minPassRate` floor are per class. With neither
+  priors nor evidence the configured chain order serves, and no route, model or number is built in. New per-class keys
+  `timeWeight`, `minPassRate`, `explore`, `demoteAfter`, `window`, `cooldownMinutes`, `retryMaxTokens`, `priors`, all
+  validated with the key named.
+- **Route evidence store.** `~/.pi/agent/usap/route-evidence.jsonl` (override `STEAK_PI_ROUTE_EVIDENCE`), append-only,
+  rotated at about 5 MB to one `.1` generation. One record per settled task of a classed wave: class, route, outcome
+  (`pass`/`fail`/`unknown`), its source (verification verdict, reported `TEST-GATE: pass|fail` line, the operator, or the
+  worker's final state), wall seconds, dollars from the run's usage cost, tokens, and a failure kind (`empty-output`,
+  `reasoning-exhausted`, `tool-error`, `http-4xx`, `http-5xx`, `quota`, `other`). A later verdict is a new line applied
+  to the same run and task. The `ultraterm_hub` action `record-outcome` writes one; a store that cannot be written
+  never fails a dispatch.
+- **Self-healing.** A route is demoted for a class after `demoteAfter` consecutive failures, when its rolling pass rate
+  falls under the floor, or at once on spent credits; it is skipped with the cause named, re-probed once after
+  `cooldownMinutes` and promoted by a pass. A reply that is empty or out of output tokens (`stopReason length` is now
+  reported as such) is retried once on the same route with a higher output budget, then runs on the next ranked route;
+  a 402, insufficient credits or 5xx moves to the next ranked route at once with the cause recorded. A class run's
+  runtime hop now follows the class's ranked chain (only routes the class names) instead of the default chain.
+- **Debuggable.** The receipt `run.selection.taskClass.decision` and the dispatch note carry the winner, each route's
+  `p(pass)`, expected cost and seconds, evidence counts, whether the pick explored, and the routes held out with their
+  causes. `ultraterm_hub` `action: "routes"` (read-only) prints the per-class estimates from the store.
+- Config validation names the key: class names, chain steps (a profile id or `provider/model`, no duplicates, at most
+  16), unknown keys in a class or hook (a misspelled `requiresTestGate` is an error, not a silently dropped gate), and
+  an argv that is a shell string, empty, or starts with a relative path.
+- Tests: schema validation, class-first then fallback, unknown class, ensure success and refusal with fall-through,
+  release on success, failure, throw and abort, and neutrality (no built-in class, chain, hook, route, model or prior).
+  Evidence routing: the ranking flips when the evidence flips, exploration at the configured share with a seeded random
+  source, the floor, demotion after K failures, re-probe then promotion, the empty-reply retry, 402 failover, store
+  rotation, receipts that carry the estimates, and the hub routes view.
 ## 0.18.11 (2026-11-02)
 
 - **One Claude login check at a time.** Every model and provider probe at startup ran its own `claude auth status`,

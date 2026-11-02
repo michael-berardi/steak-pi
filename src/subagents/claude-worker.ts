@@ -52,7 +52,7 @@ import type { ChildProcess } from "node:child_process";
 import { OUTPUT_LIMIT, addUsage, emptyUsage, harnessOf, sanitizeUsage, type RunRecord, type TaskRecord,
   type ClaudeSubscriptionReceipt, type ClaudeApiReceipt, type UsageTotals, type WorkerProgress, type WorkerResult, type WorkerRunner } from "./types.ts";
 import { CLAUDE_CODE_DEFAULT_EFFORT, CLAUDE_CODE_EFFORTS, CLAUDE_CODE_MODEL, CLAUDE_CODE_ROUTE, ClaudeCodeEffortError, claudeCodeModelName, claudeCodeModelOf, isClaudeCodeEffort, type ClaudeCodeEffort, type ClaudeCodeModel } from "./model-selection.ts";
-import { truncatePiWorkerOutput, workerFinalReportInstructions, workerImplementationGate } from "./pi-worker.ts";
+import { truncatePiWorkerOutput, workerFinalReportInstructions, workerImplementationGate, workerTestGate } from "./pi-worker.ts";
 import { workerJournal } from "./coordinator.ts";
 import { turnBudgetPromptLine } from "./turn-budget.ts";
 import { PROCESS_LISTING_GUIDANCE } from "./process-listing-guidance.ts";
@@ -344,6 +344,7 @@ export function buildClaudeWorkerPrompt(run: RunRecord, task: TaskRecord, relay 
     "Do not run project-wide builds, linters, or test suites. Run only the focused checks needed for this leaf.",
     "You have no commit, push, or deploy permission; this prompt grants none.",
     ...workerImplementationGate(run, task),
+    ...workerTestGate(run, task),
     "Stop promptly with a concise report; long-horizon work must be split by the parent, not extended here.",
     turnBudgetPromptLine(Math.max(1, Math.min(run.maxTurns, 2048))),
     "",

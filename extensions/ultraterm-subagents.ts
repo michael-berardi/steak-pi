@@ -3,7 +3,7 @@ import { registryForSolSelection, type CreateIsolatedModelRuntime } from "../src
 import { GO_ACCOUNT_ROUTER_TIMEOUT_MS, type AccountCommand } from "../src/subagents/provider-accounts.ts";
 import { claudeQuotaBlock, CODEX_QUOTA, isMeteredQuota, isQuotaLaunchFailure, pickClaudeAccount, quotaChain, quotaProviderOf, readProviderQuota, routeQuotaBlock, type ClaudeAccountPick, type QuotaProvider, type QuotaSnapshot } from "../src/subagents/provider-quota.ts";
 import { canFallbackReview, implicitReviewFallbackRoute, implicitReviewRoute, isReadOnlyReviewWave, recordReviewFallback } from "../src/subagents/reviewer-fallback.ts";
-import { parseRoute, routeLabel } from "../src/routing-config.ts";
+import { parseRoute, routeLabel, routingConfigOrEmpty, TASK_CLASS_MAX_LENGTH } from "../src/routing-config.ts";
 import { statSync } from "node:fs";
 import { PersistenceHealth } from "../src/subagents/persistence-health.ts";
 import { deferredToolsEnabled, setToolActive } from "../src/deferred-tools.ts";
@@ -14,9 +14,13 @@ import { SubagentCoordinator, CoordinatorWaitTimeoutError } from "../src/subagen
 import { normalizeDispatch, SubagentPolicyError } from "../src/subagents/policy.ts";
 import { assertKnownClaudeAccount, resolveClaudeAccount } from "../src/subagents/claude-account.ts";
 import { assertActiveModelSelector } from "../src/retired-model-selection.ts";
-import { resolveWorkerSelection, resolveClaudeCodeSelection, assertClaudeCodeImageAdmission, claudeCodeModelOf, claudeCodeModelName, claudeFallbackTier, defaultClaudeCodeRoute, isClaudeCodeEffort, resolveClaudeCodeEffort, CLAUDE_CODE_EFFORTS, CLAUDE_CODE_ROUTES, type ClaudeFallbackTier, type WorkerProfile } from "../src/subagents/model-selection.ts";
+import { loadWorkerProfiles, resolveWorkerSelection, resolveClaudeCodeSelection, assertClaudeCodeImageAdmission, claudeCodeModelOf, claudeCodeModelName, claudeFallbackTier, defaultClaudeCodeRoute, isClaudeCodeEffort, resolveClaudeCodeEffort, CLAUDE_CODE_EFFORTS, CLAUDE_CODE_ROUTES, type ClaudeFallbackTier, type WorkerProfile } from "../src/subagents/model-selection.ts";
 import { admitClaudeApiRoute, anyClaudeRouteModelOf, claudeApiConcurrency, claudeApiModelOf, CLAUDE_API_ROUTES, formatClaudeApiReceipt, isClaudeApiRoute, resolveClaudeApiSelection, stampClaudeApiRun } from "../src/subagents/claude-api-route.ts";
-import { AUTOMATIC_CHAIN_APPROVAL, NoChainRouteError, isDefaultTextChainExhausted, onlyWhenSkipReason, textWorkerChain, type ChainOptions, type WorkerRouteStep } from "../src/model-route-policy.ts";
+import { AUTOMATIC_CHAIN_APPROVAL, NoChainRouteError, isDefaultTextChainExhausted, onlyWhenSkipReason, textWorkerChain, type ChainOptions, type TaskClassStep, type TaskClassWalk, type WorkerRouteStep } from "../src/model-route-policy.ts";
+import { analyzeWaveClasses, configuredTaskClass, ignoredTaskClass, resolveTaskClassWalk, type WaveTaskClass } from "../src/subagents/task-class.ts";
+import { RouteEvidenceStore, routeEvidencePath, recordSettledTask } from "../src/subagents/route-evidence.ts";
+import { classReport, describeDecision, formatClassReport, settingsOf, type Rng } from "../src/subagents/route-ranking.ts";
+import { isEnsureRefusal, withProfileEnsure, type EnsureExec } from "../src/subagents/profile-ensure.ts";
 import { isSubscriptionOrLocalRoute } from "../src/subscription-first-routing.ts";
 import {
   RelayBroker,
@@ -43,6 +47,7 @@ import {
   type HarnessId,
   type PartialReason,
   type RunRecord,
+  type TaskClassSelection,
   type TaskOutcome,
   type TaskRecord,
   type UsageTotals,
@@ -98,7 +103,9 @@ function stringEnum<T extends readonly string[]>(values: T): TSchema {
 
 const RoleSchema = stringEnum(["scout", "worker", "reviewer"] as const);
 const RelayKindSchema = stringEnum(["message", "request", "reply", "status"] as const);
-const HubActionSchema = stringEnum(["list", "status", "wait", "cancel", "send", "redirect", "inbox", "resume", "diagnose"] as const);
+const HubActionSchema = stringEnum(["list", "status", "wait", "cancel", "send", "redirect", "inbox", "resume", "diagnose", "routes", "record-outcome"] as const);
+const OutcomeSchema = stringEnum(["pass", "fail"] as const);
+const OutcomeSourceSchema = stringEnum(["verification", "test-gate", "operator"] as const);
 const WaitModeSchema = stringEnum(["next", "all"] as const);
 
 const TaskSchema = Type.Object({
@@ -111,6 +118,7 @@ const TaskSchema = Type.Object({
     { maxItems: 64, description: "Exclusive writable paths. Required when mayEdit=true; omit for read-only tasks and put read scope in task text." },
   )),
   allowBash: Type.Optional(Type.Boolean({ description: "Enable unsandboxed shell access in the operator trust domain; defaults to false. Claude read-only reviewers never receive Bash; stage git evidence for Read/Grep/Glob." })),
+  taskClass: Type.Optional(Type.String({ pattern: "^[a-z0-9]+(-[a-z0-9]+)*$", minLength: 1, maxLength: TASK_CLASS_MAX_LENGTH, description: "Operator-named task class (a lowercase slug from taskClasses in routing.json). An implicit text worker wave whose class is configured walks that class's chain first, then the normal route; the receipt and dispatch note say which. A class the operator did not configure is ignored with a note, never an error. One run uses one route: tasks of one wave may not name two configured classes, and tasks without the class ride the same route." })),
 }, { additionalProperties: false });
 
 /** Public dispatcher schema, exported so contract tests do not have to load Pi. */
@@ -138,9 +146,12 @@ export const ultratermHubSchema = Type.Object({
   runId: Type.Optional(Type.String({
     minLength: 1,
     maxLength: 128,
-    description: "Required for every action except list. Resume explicitly continues only unfinished checkpointed tasks.",
+    description: "Required for every action except list and routes. Resume explicitly continues only unfinished checkpointed tasks.",
   })),
-  taskId: Type.Optional(Type.String({ minLength: 1, maxLength: 160, description: "Optional task target for cancel" })),
+  taskId: Type.Optional(Type.String({ minLength: 1, maxLength: 160, description: "Optional task target for cancel and record-outcome" })),
+  taskClass: Type.Optional(Type.String({ pattern: "^[a-z0-9]+(-[a-z0-9]+)*$", minLength: 1, maxLength: TASK_CLASS_MAX_LENGTH, description: "routes: show only this task class" })),
+  outcome: Type.Optional(Type.Unsafe<"pass" | "fail">({ ...OutcomeSchema, description: "Required for record-outcome: whether the work of that run (and task) was correct once verified" })),
+  source: Type.Optional(Type.Unsafe<"verification" | "test-gate" | "operator">({ ...OutcomeSourceSchema, description: "record-outcome: where the verdict came from (default operator)" })),
   mode: Type.Optional(WaitModeSchema),
   timeoutMs: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_HUB_WAIT_MS })),
   to: Type.Optional(Type.String({ minLength: 1, maxLength: 160, description: "Required peer task ID or #run for send/redirect" })),
@@ -156,9 +167,12 @@ export const hubSchema = ultratermHubSchema;
 
 export type UltratermSubagentsParams = DispatchInput;
 export interface UltratermHubParams {
-  action: "list" | "status" | "wait" | "cancel" | "send" | "redirect" | "inbox" | "resume" | "diagnose";
+  action: "list" | "status" | "wait" | "cancel" | "send" | "redirect" | "inbox" | "resume" | "diagnose" | "routes" | "record-outcome";
   runId?: string;
   taskId?: string;
+  taskClass?: string;
+  outcome?: "pass" | "fail";
+  source?: "verification" | "test-gate" | "operator";
   mode?: "next" | "all";
   timeoutMs?: number;
   to?: string;
@@ -194,6 +208,8 @@ export interface SettledTaskView {
   launchQueue?: NonNullable<TaskRecord["launchQueue"]> & { elapsedMs: number; remainingMs: number };
   lastLaunchQueue?: NonNullable<TaskRecord["lastLaunchQueue"]> & { elapsedMs: number; remainingMs: number };
   subscriptionReceipt?: TaskRecord["subscriptionReceipt"];
+  /** The profile `ensure` hook outcome for this worker, when its profile has one. */
+  profileEnsure?: TaskRecord["profileEnsure"];
   detail?: string;
 }
 
@@ -244,8 +260,11 @@ export interface DispatchDetails {
     profile: string | null;
     thinking: string;
     background: boolean;
+    /** How a declared task class steered (or did not steer) the route. */
+    taskClass?: TaskClassSelection;
     tasks: Array<{
       label: string;
+      taskClass?: string;
       role: TaskRecord["role"];
       mayEdit: boolean;
       allowBash: boolean;
@@ -289,6 +308,12 @@ export interface UltratermSubagentsDependencies {
    * the real official CLI once per task. Never used for harness "pi" runs. */
   claudeSpawn?: ClaudeSpawn;
   accountCommand?: AccountCommand;
+  /** Test seam for the profile `ensure` / `release` commands; production spawns them with no shell. */
+  ensureExec?: EnsureExec;
+  /** The route evidence store the task-class router reads and writes (default: the USAP state directory). */
+  routeEvidence?: RouteEvidenceStore;
+  /** Uniform [0, 1) source for Thompson sampling and exploration (default Math.random). Tests inject a seeded one. */
+  rng?: Rng;
   /** Bounded startup window (default {@link DEFAULT_STARTUP_WINDOW_MS}); 0 disables the wait. */
   startupWindowMs?: number;
   createModelRuntime?: CreateIsolatedModelRuntime;
@@ -319,8 +344,18 @@ async function resolvePiSelection(
   }
 }
 
+const defaultEvidenceStores = new Map<string, RouteEvidenceStore>();
+/** The evidence store for these dependencies: an injected one, else one per state-file path (so its read cache survives). */
+function evidenceStoreOf(dependencies: Pick<UltratermSubagentsDependencies, "routeEvidence">): RouteEvidenceStore {
+  if (dependencies.routeEvidence) return dependencies.routeEvidence;
+  const path = routeEvidencePath();
+  let store = defaultEvidenceStores.get(path);
+  if (!store) { store = new RouteEvidenceStore(path); defaultEvidenceStores.set(path, store); }
+  return store;
+}
+
 async function resolveNativeSelection(ctx: ExtensionContext, input: Parameters<typeof resolveWorkerSelection>[2], dependencies: UltratermSubagentsDependencies,
-  quota: Pick<ChainOptions, "skipRoute" | "forceDefaultChain" | "quotaSnapshot"> = {}) {
+  quota: Pick<ChainOptions, "skipRoute" | "forceDefaultChain" | "quotaSnapshot" | "taskClass"> = {}) {
   const registry = await registryForSolSelection(ctx.model!, input, ctx.modelRegistry,
     dependencies.accountCommand, dependencies.createModelRuntime, dependencies.profiles);
   const resolve = (from: ExtensionContext["modelRegistry"]) => resolvePiSelection(() => resolveWorkerSelection(ctx.model!, ctx.thinkingLevel, input,
@@ -391,7 +426,13 @@ interface QuotaFallThrough {
   providers: readonly QuotaProvider[];
   /** Bounded, named cause of each worker that failed. */
   cause: string;
+  /** `ensure`: the route's profile `ensure` hook refused the launch. The route itself, not a quota tier, is held out. */
+  kind?: "ensure";
 }
+
+/** Routes whose profile `ensure` hook refused a launch in this walk: never retried, whatever else is true. */
+const heldRoutes = (fallThroughs: readonly QuotaFallThrough[]): ReadonlyMap<string, QuotaFallThrough> =>
+  new Map(fallThroughs.flatMap((item) => item.kind === "ensure" ? [[item.route, item] as const] : []));
 
 /** Providers a fall-through must not revisit: the furthest tier a failed run reached and everything before it. */
 function spentProviders(fallThroughs: readonly QuotaFallThrough[]): ReadonlySet<QuotaProvider> {
@@ -426,7 +467,24 @@ function quotaFallThroughProviders(seen: RunRecord | undefined, failures: readon
 
 /** What the dispatch tells a parent about the tiers that were refused before it, in the words of a receipt. */
 const fallThroughSummary = (fallThroughs: readonly QuotaFallThrough[]): string =>
-  fallThroughs.map((item) => `run ${item.runId} · ${item.route} was refused on a provider usage limit before any worker produced output (${item.cause})`).join("; ");
+  fallThroughs.map((item) => item.kind === "ensure"
+    ? `run ${item.runId} · ${item.route} was refused by its profile ensure hook before any worker started (${item.cause})`
+    : `run ${item.runId} · ${item.route} was refused on a provider usage limit before any worker produced output (${item.cause})`).join("; ");
+/** The dispatch-note line for a declared task class (absent when no task declared one). */
+function taskClassNote(receipt: TaskClassSelection | undefined, wave: WaveTaskClass): string {
+  if (!receipt) return "";
+  const gate = receipt.requiresTestGate ? " This class is routed on the evidence that a test gate checks its results: run that gate before accepting the work." : "";
+  const note = receipt.note ? ` Operator note: ${receipt.note}` : "";
+  const riders = receipt.outcome === "ignored" || wave.riders.length === 0 ? ""
+    : ` Tasks without this class (${wave.riders.slice(0, 8).map((label) => JSON.stringify(label.slice(0, 40))).join(", ")}) ride the same route, because one run uses one route.`;
+  const unknown = wave.unknown.length > 0 && receipt.outcome !== "ignored" ? ` Ignored, not configured: ${wave.unknown.join(", ")}.` : "";
+  const evidence = receipt.decision ? ` Route evidence: ${describeDecision(receipt.decision)}.` : "";
+  return `Task class ${receipt.name}: ${receipt.outcome === "served" ? "served" : receipt.outcome === "fallback" ? "not served" : "ignored"}; ${receipt.reason}.${evidence}${gate}${note}${riders}${unknown}\n`;
+}
+/** The words of a receipt for why the wave moved on: a usage limit, an ensure refusal, or both. */
+const fallThroughCause = (fallThroughs: readonly QuotaFallThrough[]): string =>
+  fallThroughs.every((item) => item.kind === "ensure") ? "a profile ensure refusal before any worker started"
+    : fallThroughs.some((item) => item.kind === "ensure") ? "a usage-limit or ensure refusal before any output" : "a usage-limit refusal before any output";
 
 interface ImplicitWorkerRoute {
   /** The Pi selection the wave launches on; absent when it moves to the Claude tier. */
@@ -440,6 +498,8 @@ interface ImplicitWorkerRoute {
    * eligible. Absent when the router could not be read or lists no Claude account, so nothing
    * could be pinned (the launch then uses the parent's own Claude login). */
   claudeAccount?: NonNullable<ClaudeAccountPick["account"]>;
+  /** How the wave's declared task class steered the route (absent when none steered it). */
+  taskClass?: TaskClassSelection;
 }
 
 /**
@@ -469,9 +529,18 @@ async function resolveImplicitWorkerRoute(
   dependencies: UltratermSubagentsDependencies,
   readQuota: () => Promise<QuotaSnapshot>,
   fallThroughs: readonly QuotaFallThrough[] = [],
+  walk?: TaskClassWalk,
 ): Promise<ImplicitWorkerRoute> {
   const spent = spentProviders(fallThroughs);
+  const held = heldRoutes(fallThroughs);
+  const heldBlock = (step: WorkerRouteStep): string | undefined => {
+    const refused = held.get(routeOfStep(step));
+    return refused ? `run ${refused.runId} was refused by its profile ensure hook before any worker started (${refused.cause})` : undefined;
+  };
   const tierBlock = (snapshot: QuotaSnapshot, step: WorkerRouteStep): string | undefined => {
+    // A route whose profile ensure hook refused a launch in this walk is out whatever the router says.
+    const refused = heldBlock(step);
+    if (refused !== undefined) return refused;
     // A config-driven onlyWhen condition is checked first: when it is false the step is skipped
     // with its named reason, whatever the quota meter says about the step's own provider.
     const onlyWhen = step.onlyWhen ? onlyWhenSkipReason(step.onlyWhen, { quotaSnapshot: snapshot }) : undefined;
@@ -488,6 +557,7 @@ async function resolveImplicitWorkerRoute(
   // of it in chain order. The veto needs no router meter, so it also holds an unmetered tier that a snapshot
   // cannot gate: without it the tier would be re-launched and refused again on every attempt.
   const spentSkip = (step: WorkerRouteStep) => {
+    if (held.has(routeOfStep(step))) return true;
     const provider = quotaProviderOf(step);
     return provider !== undefined && spent.has(provider);
   };
@@ -498,19 +568,52 @@ async function resolveImplicitWorkerRoute(
   // A parent on another account-leased tier needs a cross-store Codex-tier lookup. Read quota before
   // opening it, so a proven-exhausted plan is never offered an isolated runtime.
   const parentTier = quotaProviderOf(ctx.model!);
-  let quota: QuotaSnapshot | undefined = parentTier !== undefined && parentTier !== CODEX_QUOTA && isMeteredQuota(parentTier) ? await readQuota() : undefined;
-  try { first = await resolveNativeSelection(ctx, requested, dependencies, { skipRoute: step => skipStep(step, quota), quotaSnapshot: quota }); } catch (error) { failure = error; }
+  // A class step that is router-gated or carries an `onlyWhen` is judged on the same snapshot as the default chain.
+  const classNeedsQuota = walk?.steps.some((entry) => entry.step.onlyWhen !== undefined || isMeteredQuota(quotaProviderOf(entry.step) ?? "")) === true;
+  let quota: QuotaSnapshot | undefined = (parentTier !== undefined && parentTier !== CODEX_QUOTA && isMeteredQuota(parentTier)) || classNeedsQuota ? await readQuota() : undefined;
+  /** Why a class step did not serve the wave, in the words of a receipt. */
+  const classStepCause = (entry: TaskClassStep): string =>
+    entry.blocked ?? (quota ? tierBlock(quota, entry.step) : heldBlock(entry.step))
+      ?? "not launchable in this session (not authenticated, not in the dispatch catalog, or a reviewed paid route that is not approved in ~/.pi/agent/paid-routes.json)";
+  const classStepName = (entry: TaskClassStep): string => entry.profile ? entry.entry : routeStepLabel(entry.step);
+  /** The receipt for the wave's class: which step served it, or why none did. */
+  const withClass = (route: ImplicitWorkerRoute): ImplicitWorkerRoute => {
+    if (!walk) return route;
+    const picked = route.resolved?.selection.taskClass;
+    const decision = picked?.decision;
+    const servedAt = picked?.outcome === "served" ? walk.steps.findIndex((entry) => entry.entry === picked.step) : -1;
+    // With a ranking, a step that launched but ranked lower was not skipped; only steps that could not serve are named.
+    const ranked = new Set(decision?.order.map((item) => item.entry));
+    const heldOut = new Map((decision?.estimates ?? []).filter((item) => item.status !== "ranked").map((item) => [item.entry, item.cause ?? item.status] as const));
+    const notUsed = servedAt < 0 ? walk.steps : decision ? walk.steps.filter((entry) => !ranked.has(entry.entry)) : walk.steps.slice(0, servedAt);
+    const skipped = notUsed.map((entry) => `${classStepName(entry)}: ${heldOut.get(entry.entry) ?? classStepCause(entry)}`);
+    const gate = walk.requiresTestGate ? { requiresTestGate: true as const } : {};
+    const note = walk.note ? { note: walk.note } : {};
+    const ranking = decision ? { decision } : {};
+    const taskClass: TaskClassSelection = servedAt >= 0
+      ? { name: walk.name, outcome: "served", step: picked!.step, ...gate, ...note, ...ranking,
+          reason: boundedReason(decision && decision.mode !== "chain-order"
+            ? `step ${servedAt + 1} of ${walk.steps.length} (${picked!.step}) launched as the ${decision.mode} pick, ranked on evidence${skipped.length > 0 ? `; not used: ${skipped.join(" | ")}` : ""}`
+            : `step ${servedAt + 1} of ${walk.steps.length} (${picked!.step}) launched${skipped.length > 0 ? `; earlier steps: ${skipped.join(" | ")}` : ""}`, FALLBACK_REASON_LIMIT) }
+      : { name: walk.name, outcome: "fallback", ...gate, ...note, ...ranking,
+          reason: boundedReason(`no step of the class chain could launch (${skipped.join(" | ")}); the ${route.tier ? "Claude subscription tier" : "normal route"} ran`, FALLBACK_REASON_LIMIT) };
+    return { ...route, taskClass };
+  };
+  try { first = await resolveNativeSelection(ctx, requested, dependencies, { skipRoute: step => skipStep(step, quota), quotaSnapshot: quota, ...(walk ? { taskClass: walk } : {}) }); } catch (error) { failure = error; }
   if (!first && !isDefaultTextChainExhausted(failure)) throw failure;
   if (first) {
     const step = stepOfSelection(first.selection);
     const gated = quotaProviderOf(step);
+    // A route a profile `ensure` refusal already held out is left even when it is not router-gated (a profile
+    // default can land on it again), by the same forced re-resolution an exhausted route gets.
+    const refused = heldBlock(step);
     // An unmetered tier has no router meter to consult, so its launch is never gated by a router read
     // (its own 402/no-endpoint refusal is the only evidence it spent).
-    if (gated === undefined || !isMeteredQuota(gated)) return { resolved: first, tried: [], causes: [] };
-    quota ??= await readQuota();
-    const cause = tierBlock(quota, step);
+    if (refused === undefined && (gated === undefined || !isMeteredQuota(gated))) return withClass({ resolved: first, tried: [], causes: [] });
+    if (gated !== undefined && isMeteredQuota(gated)) quota ??= await readQuota();
+    const cause = refused ?? tierBlock(quota!, step);
     if (cause === undefined) {
-      const earlier = first.selection.chainRoutes?.slice(0, first.selection.chainRoutes.indexOf(routeOfStep(step))) ?? [];
+      const earlier = first.selection.taskClass?.outcome === "served" ? [] : first.selection.chainRoutes?.slice(0, first.selection.chainRoutes.indexOf(routeOfStep(step))) ?? [];
       const causes = earlier.flatMap(route => {
         const slash = route.indexOf("/");
         const prior = { provider: route.slice(0, slash), id: route.slice(slash + 1) };
@@ -519,12 +622,12 @@ async function resolveImplicitWorkerRoute(
         const block = tierBlock(quota!, configured);
         return block === undefined ? [] : [`${routeStepLabel(configured)}: ${block}`];
       });
-      return { resolved: first, tried: [], causes };
+      return withClass({ resolved: first, tried: [], causes });
     }
     // The resolved route is out of quota: leave it, continue down the default chain.
     try {
       const next = await resolveNativeSelection(ctx, requested, dependencies, { forceDefaultChain: true, skipRoute: step => skipStep(step, quota), quotaSnapshot: quota });
-      return { resolved: next, tried: [], causes: [`${routeStepLabel(step)}: ${cause}`] };
+      return withClass({ resolved: next, tried: [], causes: [`${routeStepLabel(step)}: ${cause}`] });
     } catch (error) {
       if (!isDefaultTextChainExhausted(error)) throw error;
       failure = error;
@@ -554,7 +657,7 @@ async function resolveImplicitWorkerRoute(
   if (!tier) {
     throw new Error(`USAP implicit routing found no route that can launch this wave (${causes.join(" | ")}). No Claude subscription tier is configured (claudeFallbackTier in ~/.config/ultraterm/routing.json), so no fallback was selected; wait for a window to return or name a route explicitly.`);
   }
-  return { tier, tried: exhausted.tried, causes, ...(pick.account ? { claudeAccount: pick.account } : {}) };
+  return withClass({ tier, tried: exhausted.tried, causes, ...(pick.account ? { claudeAccount: pick.account } : {}) });
 }
 
 const taskLabel = (task: TaskRecord): string => task.label.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 40);
@@ -815,6 +918,7 @@ function taskView(task: TaskRecord): SettledTaskView {
     toolSuccesses: task.toolSuccesses ?? 0,
     truncated: task.truncated,
     ...(task.subscriptionReceipt ? { subscriptionReceipt: structuredClone(task.subscriptionReceipt) } : {}),
+    ...(task.profileEnsure ? { profileEnsure: { ...task.profileEnsure } } : {}),
   };
 }
 
@@ -885,7 +989,7 @@ export function renderRunResult(run: RunRecord, limit = MAX_TOOL_CONTENT): strin
   if (!Number.isSafeInteger(limit) || limit < 0) throw new RangeError("render limit must be a non-negative integer");
   const independence = run.selection?.independence === "requires-opus"
     ? ` · ${tierNameOf(run.model)} tier: requires expert verification${run.selection.fallbackReason ? ` · ${run.selection.fallbackReason}` : ""}` : "";
-  let text = `${renderRunProgress(run)}\nmodel ${run.model} · thinking ${run.thinkingLevel}${run.selection ? ` · ${run.selection.source}${run.selection.profile ? ` · ${run.selection.profile}` : ""}` : ""}${independence}`.slice(0, limit);
+  let text = `${renderRunProgress(run)}\nmodel ${run.model} · thinking ${run.thinkingLevel}${run.selection ? ` · ${run.selection.source}${run.selection.profile ? ` · ${run.selection.profile}` : ""}` : ""}${run.selection?.taskClass ? ` · class ${run.selection.taskClass.name} ${run.selection.taskClass.outcome}` : ""}${independence}`.slice(0, limit);
   let wasTruncated = false;
   for (const task of run.tasks) {
     // A budget stop is named explicitly (with its role) so it cannot be mistaken for a finished leaf.
@@ -942,8 +1046,10 @@ function dispatchDetails(run: RunRecord, persistence: Persistence): DispatchDeta
       profile: run.selection?.profile ?? null,
       thinking: run.thinkingLevel,
       background: run.background,
+      ...(run.selection?.taskClass ? { taskClass: { ...run.selection.taskClass } } : {}),
       tasks: run.tasks.map((task) => ({
         label: task.label,
+        ...(task.taskClass ? { taskClass: task.taskClass } : {}),
         role: task.role,
         mayEdit: task.mayEdit,
         allowBash: task.allowBash,
@@ -1397,12 +1503,24 @@ export function createUltratermSubagentsExtension(
       const relay = dependencies.createRelay?.() ?? new RelayBroker();
       const workerRuntimes = new Map<string, PiWorkerRuntime>();
       let created!: SessionRuntime;
-      const runner = dependencies.createRunner?.(pi, relay)
-        ?? defaultWorkerRunner(relay, workerRuntimes, dependencies.claudeSpawn, dependencies.accountCommand);
+      // The profile `ensure` hook wraps whichever runner serves the run, so Pi and claude-code workers get it alike.
+      const runner = withProfileEnsure(dependencies.createRunner?.(pi, relay)
+        ?? defaultWorkerRunner(relay, workerRuntimes, dependencies.claudeSpawn, dependencies.accountCommand),
+      dependencies.ensureExec ? { exec: dependencies.ensureExec } : {});
       const coordinator = new SubagentCoordinator(runner, {
         scheduler,
         now: dependencies.now,
         sessionDir: () => store?.sessionsDirectory,
+        // Each settled task of a classed wave leaves its evidence; a reply that comes back empty is retried once with
+        // a higher output budget, then moves to the next ranked route the dispatch froze for this run.
+        onTaskSettled: (run, task) => { recordSettledTask(evidenceStoreOf(dependencies), run, task, (dependencies.now ?? Date.now)()); },
+        replyPolicy: (run, task) => {
+          const receipt = run.selection?.taskClass;
+          if (receipt?.outcome !== "served" || task.taskClass !== receipt.name) return undefined;
+          const retryMaxTokens = configuredTaskClass(receipt.name)?.retryMaxTokens;
+          const alternates = (workerRuntimes.get(run.id)?.alternates ?? []).map((item) => `${item.model.provider}/${item.model.id}`);
+          return { ...(retryMaxTokens !== undefined ? { maxTokens: retryMaxTokens } : {}), alternates };
+        },
         onChange: (run) => {
           if (!created || created.closed) return;
           saveCheckpoint(created, run, run.state !== "running", "lifecycle");
@@ -1773,13 +1891,29 @@ export function createUltratermSubagentsExtension(
       let quotaCauses: string[] = [];
       let tierAccount: ImplicitWorkerRoute["claudeAccount"];
       const quotaRouted = implicitRoute && !hasReviewer && requested.requireImages !== true;
+      // Task classes steer only an implicit text worker wave, and a wave runs one route: two configured classes
+      // in one wave are refused here, before any approval, checkpoint or worker exists.
+      const waveClasses = analyzeWaveClasses(requested.tasks, { refuseConflict: quotaRouted });
+      const classWalk = quotaRouted && waveClasses.active
+        ? resolveTaskClassWalk(waveClasses.active.name, waveClasses.active.config, dependencies.profiles ?? loadWorkerProfiles(),
+          { store: evidenceStoreOf(dependencies), ...(dependencies.rng ? { rng: dependencies.rng } : {}), ...(dependencies.now ? { now: dependencies.now } : {}) })
+        : undefined;
+      let taskClassReceipt: TaskClassSelection | undefined;
       if (quotaRouted) {
-        const route = await resolveImplicitWorkerRoute(ctx, requested, dependencies, readQuota, fallThroughs);
+        const route = await resolveImplicitWorkerRoute(ctx, requested, dependencies, readQuota, fallThroughs, classWalk);
         nativeResolved = route.resolved;
         claudeTier = route.tier;
         tierTried = route.tried;
         quotaCauses = route.causes;
         tierAccount = route.claudeAccount;
+        taskClassReceipt = route.taskClass;
+      }
+      if (taskClassReceipt === undefined) {
+        taskClassReceipt = ignoredTaskClass(waveClasses, !implicitRoute
+          ? "a task class steers only an implicit wave; this dispatch named a model, profile, harness or Claude account, which stays exact"
+          : hasReviewer ? "a task class steers only text worker waves; reviewer waves keep their own route"
+          : requested.requireImages === true ? "a task class steers only text worker waves; image waves keep their own chain"
+          : `task class ${waveClasses.declared.join(", ")} is not configured in ~/.config/ultraterm/routing.json taskClasses, so the normal route ran`);
       }
       const claudeWorkerTier = claudeTier !== undefined;
       const params: UltratermSubagentsParams = {
@@ -1805,10 +1939,10 @@ export function createUltratermSubagentsExtension(
       const reviewFallbackSkipNote = reviewFallbackBlock !== undefined
         ? `Review note: the ${routeStepLabel(fallbackStep!)} review fallback is unavailable (${reviewFallbackBlock}); a Claude quota or auth failure ends this review without falling back.\n` : "";
       const tierName = claudeTier ? claudeCodeModelName(claudeTier.model) : "";
-      const fallThroughReason = fallThroughs.length > 0 ? "automatic fall-through after a usage-limit refusal before any output; " : "";
+      const fallThroughReason = fallThroughs.length > 0 ? `automatic fall-through after ${fallThroughCause(fallThroughs)}; ` : "";
       const fallThroughNote = fallThroughs.length > 0
         ? `Fall-through: ${fallThroughSummary(fallThroughs)}. The same tasks were re-run here on the next tier, with no parent re-dispatch.\n` : "";
-      const routeNote = fallThroughNote + (claudeTier
+      const routeNote = fallThroughNote + taskClassNote(taskClassReceipt, waveClasses) + (claudeTier
         ? `Route note: none of ${tierTried.map(routeStepLabel).join(", ")} could launch (${quotaCauses.join(" | ")}), so this implicit wave runs ${claudeTier.route} at ${claudeEffort} effort (subscription) on the ${tierName} tier: ${claudeTier.reason}. `
           + `Claude account: ${tierAccount ? `${tierAccount.label} (an eligible account in the router snapshot, the least used)` : "the parent's own Claude login (the router listed no Claude account to pin)"}. `
           + `${tierName} work needs verification: review it with an expert reviewer wave${reviewRoute ? ` (all-reviewer waves default to model ${reviewRoute})` : ""}.\n`
@@ -1912,7 +2046,8 @@ export function createUltratermSubagentsExtension(
         ...(!claudeTier && quotaCauses.length > 0 ? { fallbackReason: boundedReason(`${fallThroughReason}${quotaCauses.join(" | ")}`, FALLBACK_REASON_LIMIT) } : {}),
         // No route was requested for an implicit review wave: a fallback review chosen only because no Claude
         // account was eligible is an automatic fallback, never an operator-requested override.
-        ...(opusReviewDefault ? { source: claudeUnavailable ? "automatic-review-fallback" as const : "automatic-review" as const, automaticReview: true, reviewRequiresImages: requested.requireImages === true } : {}) };
+        ...(opusReviewDefault ? { source: claudeUnavailable ? "automatic-review-fallback" as const : "automatic-review" as const, automaticReview: true, reviewRequiresImages: requested.requireImages === true } : {}),
+        ...(taskClassReceipt ? { taskClass: taskClassReceipt } : {}) };
       if (claudeUnavailable) for (const task of run.tasks) recordReviewFallback(task, "no-eligible-claude");
       if (reviewFallbackRuntime) current.workerRuntimes.set(`${run.id}:review-fallback`, Object.freeze(reviewFallbackRuntime));
       run.ownerSessionId = current.ownerSessionId;
@@ -1932,6 +2067,7 @@ export function createUltratermSubagentsExtension(
         current.workerRuntimes.set(run.id, Object.freeze({
           model: Object.freeze({ ...(piResolved!.model) }),
           thinkingLevel: piResolved!.thinkingLevel,
+          ...(piResolved!.alternates?.length ? { alternates: Object.freeze(piResolved!.alternates.map((item) => Object.freeze({ entry: item.entry, model: Object.freeze({ ...item.model }), thinkingLevel: item.thinkingLevel }))) } : {}),
         }) as PiWorkerRuntime);
       }
       // Both native Pi and stream-json Claude children share run-local relay identities.
@@ -1995,6 +2131,12 @@ export function createUltratermSubagentsExtension(
         const reached = quotaRouted && !claudeWorkerTier && stillRunning.length === 0 && !signal?.aborted && fallThroughs.length < MAX_QUOTA_FALL_THROUGHS
           ? quotaFallThroughProviders(final ?? startedRun, startupFailures) : undefined;
         if (reached) return { fallThrough: { runId: run.id, route: model, providers: reached, cause: boundedReason(failureText, 240) } satisfies QuotaFallThrough };
+        // A profile `ensure` hook that refused every launch of an implicit wave holds that route out and moves the
+        // wave to the next step, under the same rules: nothing produced output, the run settled, no abort.
+        const refusedByEnsure = quotaRouted && !claudeWorkerTier && stillRunning.length === 0 && !signal?.aborted && fallThroughs.length < MAX_QUOTA_FALL_THROUGHS
+          && !(final ?? startedRun)?.tasks.some((task) => task.outputStarted === true || task.state === "done")
+          && startupFailures.every((task) => isEnsureRefusal(task.error));
+        if (refusedByEnsure) return { fallThrough: { runId: run.id, route: model, providers: [], cause: boundedReason(failureText, 240), kind: "ensure" as const } satisfies QuotaFallThrough };
         throw new Error(`USAP dispatch failed before any worker produced model output (run ${run.id} · ${model}): ${failureText}. ${aftermath} ${fallThroughs.length > 0
           ? `This was the automatic fall-through after ${fallThroughSummary(fallThroughs)}: no further fall-through applies, so the dispatch fails with both causes.`
           : "No fallback was selected."}`);
@@ -2033,13 +2175,14 @@ export function createUltratermSubagentsExtension(
     pi.registerTool({
       name: "ultraterm_subagents",
       label: "UltraTerm Subagents",
-      description: "Dispatch 1-8 bounded tasks through Pi or the official headless Claude Code CLI. Implicit routine waves run the operator's configured worker chain (textWorkerChain / multimodalWorkerChain in ~/.config/ultraterm/routing.json), then the configured Claude subscription tier (claudeFallbackTier); implicit all-reviewer waves run the configured implicitReview route. With nothing configured an implicit wave fails with the config key to set, while explicit model/profile/harness routes always work. The router's quota is checked first: a configured tier whose every account is cooling down or at 100% is skipped. Explicit routes win and are never rerouted; an explicit route in an exhausted provider is refused with the router's cause. A worker that fails before its first model output fails this call itself, background or not, except that an implicit wave refused on a provider quota or usage limit (402 / insufficient credits / no endpoints found, a usage-limit error, a cooling-down router refusal) re-runs the same tasks once on the next configured tier inside this call, before Started. Foreground default; ownedPaths grants guarded writes on either harness; allowBash is unsandboxed shell except Claude read-only reviewers get no Bash. Claude image review uses native Read on staged files under cwd.",
+      description: "Dispatch 1-8 bounded tasks through Pi or the official headless Claude Code CLI. Implicit routine waves run the operator's configured worker chain (textWorkerChain / multimodalWorkerChain in ~/.config/ultraterm/routing.json), then the configured Claude subscription tier (claudeFallbackTier); implicit all-reviewer waves run the configured implicitReview route. With nothing configured an implicit wave fails with the config key to set, while explicit model/profile/harness routes always work. The router's quota is checked first: a configured tier whose every account is cooling down or at 100% is skipped. Explicit routes win and are never rerouted; an explicit route in an exhausted provider is refused with the router's cause. A task may declare a taskClass the operator configured in routing.json: an implicit text worker wave then walks that class's chain first (same launch, quota, paid-route and onlyWhen checks), then the normal route; one run uses one route, an unknown class is ignored with a note, and the receipt names the class and why its route was or was not chosen. A worker that fails before its first model output fails this call itself, background or not, except that an implicit wave refused on a provider quota or usage limit (402 / insufficient credits / no endpoints found, a usage-limit error, a cooling-down router refusal) re-runs the same tasks once on the next configured tier inside this call, before Started. Foreground default; ownedPaths grants guarded writes on either harness; allowBash is unsandboxed shell except Claude read-only reviewers get no Bash. Claude image review uses native Read on staged files under cwd.",
       promptSnippet: "Dispatch bounded independent child tasks with explicit permissions and path ownership",
       promptGuidelines: [
         "Fan out by default: independent leaves (disjoint files, modules, screens, angles) dispatch in ONE parallel wave — width defaults to min(8, task count); provider ceilings come from the operator's usap-caps.json.",
         "Delegation must buy completion speed; modest token premiums for real throughput are correct. Trivial or tightly coupled edits and direct answers stay in the parent.",
         "Parent owns decomposition, integration, verification; workers own leaves end to end. With exact disjoint paths and acceptance contracts in hand, dispatch in the first tool turn without pre-reading child-owned files; do not duplicate child discovery in the parent.",
         "The operator's routing.json decides the default worker chain, the expert reviewer and which routes need a bounded expert verification (verificationGates); a worker on a gated route is told which reviewer route to request through the parent. Read-only and report-only work need no automatic gate.",
+        "taskClass (per task) names an operator-configured class from routing.json taskClasses so an implicit text worker wave runs the route the operator measured best for that class; omit it when unsure. Give every task of a wave the same class (or none), dispatch different classes as separate waves, and when the dispatch note says the class requires a test gate, run that gate before accepting the work.",
         "model or profile picks an explicit authenticated route (mutually exclusive, overrides roles). A model family the operator pinned to one subscription route (subscriptionRouteChecks modelPattern) runs only there. Routine text work stays on the configured automatic chain; do not pick the configured expert reviewer for routine work. requireImages=true for visual critics or render inspection.",
         "harness claude-code (or an exact claude-code/<model> route) runs the official CLI on its pinned models at medium effort by default (high/xhigh only when thinking asks for it with a thinkingReason; any other level is refused); with no model named it runs the operator's claudeCodeDefaults. When no step of the configured chain can launch (not authenticated, not configured, not approved in ~/.pi/agent/paid-routes.json, or every account cooling down / at a 100% window per the account router; busy or unknown is NOT exhaustion), an implicit routine text wave runs on the configured claudeFallbackTier with no re-dispatch: ordinary for plain leaves, substantial when any leaf may edit AND run a shell or high/xhigh thinking is requested (the tier and why are named in the dispatch note and receipts); verify that work with an expert review. That fallback never uses the paid claude-code-api route, never passes a proven-ineligible Claude account, and if no route can launch the call is refused synchronously naming every cause. A spent plan the router cannot see, and a gateway's 402 / insufficient credits or no-endpoints-found refusal, only arrive at the request, so an implicit wave whose worker is refused on a provider usage limit before any output falls through to the next tier by itself within the same call (each tier once; the refused run stays failed; the receipt names it; both causes are named if the next tier also cannot launch); auth, route and spawn failures and a bare 429 still fail synchronously. An explicit route whose provider is exhausted is refused with the router cause, not rerouted. mayEdit+ownedPaths are CLI-enforced; allowBash is unsandboxed except read-only reviewers get no shell, even when requested. Stage git evidence for review. requireImages=true admits native Read-image of files staged under cwd, not inline attachments. Explicit routes never fall back; an implicit text review may use the configured implicitReview.fallback only on proven Claude quota/auth unavailability before output. Hub send/redirect steers running Claude workers through stream-json stdin; replies use the same run-local inbox. Native Pi resume is unavailable on this harness. An exact claude-code-api/<model> route runs this same headless CLI on approved Claude API credits: explicit only, never a default or fallback, admitted per dispatch and launch by the operator's task-scoped approval record with hard per-session budget ceilings, and a failure never falls back to the subscription or any other route. Promotional API credits cover headless runs only, never interactive Claude Code.",
         "Background only when the parent can integrate while children run, then one bounded ultraterm_hub wait. Never start a background run merely to wait immediately. A background dispatch holds up to ~25 s for each launched worker to produce its first model output: `Started` means no launched worker has died yet, and a worker that fails before it (router refusal, auth, route, spawn, a first request that errors) makes the call throw with that cause and cancels its siblings (a provider quota or usage-limit refusal on an implicit wave instead re-runs the same tasks on the next tier before `Started`).",
@@ -2070,11 +2213,12 @@ export function createUltratermSubagentsExtension(
     pi.registerTool({
       name: "ultraterm_hub",
       label: "UltraTerm Hub",
-      description: "Inspect this native session's live and checkpointed USAP runs: list, status, bounded wait, cancel, send, redirect, inbox, diagnose, or explicitly resume unfinished work. Redirect appends instructions to a running worker without cancellation or new permissions. Resume never repeats completed tasks; host exit interrupts execution but preserves checkpoints.",
+      description: "Inspect this native session's live and checkpointed USAP runs: list, status, bounded wait, cancel, send, redirect, inbox, diagnose, or explicitly resume unfinished work. `routes` (read-only) prints, per task class, the estimates the router ranks on (pass rate, expected cost and seconds, evidence counts, demoted routes and why); `record-outcome` attaches a verification verdict (runId, outcome, optional taskId and source) to the evidence a classed run left. Redirect appends instructions to a running worker without cancellation or new permissions. Resume never repeats completed tasks; host exit interrupts execution but preserves checkpoints.",
       promptSnippet: "Inspect, wait for, cancel, or message an existing USAP run",
       promptGuidelines: [
         "Runs and relay actions belong only to this native parent session. IDs copied from other sessions are historical, not controllable here.",
-        "runId is required for every action except list.",
+        "runId is required for every action except list and routes.",
+        "routes prints the per-class route estimates from the evidence store; after you verify a classed run's work (a test gate, a reviewer wave), record-outcome with its runId and outcome pass or fail so the router learns from the verdict.",
         "Send needs to and body; replies need kind=reply and the exact replyTo.",
         "Wait with finite timeouts; avoid polling.",
       ],
@@ -2101,6 +2245,36 @@ export function createUltratermSubagentsExtension(
                 : runs.map((run) => renderRunProgress(run)).join("\n").slice(0, MAX_TOOL_CONTENT),
             }],
             details: { action: "list" as const, runs: runs.map((run) => toRunView(run, linksFor(current, run))), persistence: persistenceOf(current), readOnly: !current.store && current.checkpointDegraded, checkpointError: current.checkpointError ?? null, checkpointHealth: current.checkpointHealth.diagnose(), shutdownWarning: warning ?? null },
+          };
+        }
+
+        if (params.action === "routes") {
+          const store = evidenceStoreOf(dependencies);
+          const view = store.view();
+          const configured = routingConfigOrEmpty().taskClasses ?? {};
+          const now = (dependencies.now ?? Date.now)();
+          const names = [...new Set([...Object.keys(configured), ...view.tasks.map((task) => task.taskClass)])]
+            .filter((name) => params.taskClass === undefined || name === params.taskClass).sort();
+          const reports = names.map((name) => classReport(name, configured[name]?.chain ?? [], settingsOf(configured[name] ?? {}), view, now));
+          const header = `Route evidence: ${view.tasks.length} task record(s) in ${store.path}${store.lastError ? ` (last store error: ${store.lastError})` : ""}.`;
+          return {
+            content: [{ type: "text" as const, text: [header, ...(reports.length === 0 ? ["No task class is configured and the store holds no classed record."] : reports.map(formatClassReport))].join("\n").slice(0, MAX_TOOL_CONTENT) }],
+            details: { action: "routes" as const, store: { path: store.path, records: view.tasks.length, lastError: store.lastError ?? null }, reports },
+          };
+        }
+        if (params.action === "record-outcome") {
+          const store = evidenceStoreOf(dependencies);
+          const target = requireRunId(params);
+          if (params.outcome !== "pass" && params.outcome !== "fail") throw new TypeError("record-outcome needs outcome pass or fail");
+          const taskId = params.taskId?.trim() || undefined;
+          const covered = store.view().tasks.filter((task) => !task.hop && task.runId === target && (taskId === undefined || task.taskId === taskId));
+          if (covered.length === 0) {
+            return { content: [{ type: "text" as const, text: `No classed evidence for run ${target}${taskId ? ` task ${taskId}` : ""} in ${store.path}; nothing was recorded. Only tasks of a wave a task class steered leave evidence.` }], details: { action: "record-outcome" as const, recorded: false, runId: target } };
+          }
+          const recorded = store.recordVerdict({ runId: target, ...(taskId ? { taskId } : {}), outcome: params.outcome, source: params.source ?? "operator", ...(params.body ? { note: params.body.slice(0, 300) } : {}), at: (dependencies.now ?? Date.now)() });
+          return {
+            content: [{ type: "text" as const, text: recorded ? `Recorded ${params.outcome} (${params.source ?? "operator"}) for ${covered.length} task record(s) of run ${target}: ${[...new Set(covered.map((task) => `${task.taskClass}/${task.route}`))].join(", ")}.` : `Could not write the verdict to ${store.path}: ${store.lastError ?? "unknown error"}` }],
+            details: { action: "record-outcome" as const, recorded, runId: target, tasks: covered.length },
           };
         }
 
@@ -2187,7 +2361,7 @@ export function createUltratermSubagentsExtension(
             requireImages: snapshot.selection?.images === true,
             thinkingReason: "Continue the explicitly budgeted checkpoint on its original model and reasoning level.",
             concurrency: snapshot.concurrency, timeoutMs: snapshot.timeoutMs, maxTurns: snapshot.maxTurns,
-            background: true, tasks: unfinished.map((task) => ({ label: task.label, task: task.task, role: task.role, mayEdit: task.mayEdit, ...(task.mayEdit ? { ownedPaths: task.ownedPaths } : {}), allowBash: task.allowBash })),
+            background: true, tasks: unfinished.map((task) => ({ label: task.label, task: task.task, role: task.role, mayEdit: task.mayEdit, ...(task.mayEdit ? { ownedPaths: task.ownedPaths } : {}), allowBash: task.allowBash, ...(task.taskClass ? { taskClass: task.taskClass } : {}) })),
           };
           // Resume preserves the original harness: claude-code checkpoints ride
           // the same explicit CLI route and continue their session with
@@ -2233,7 +2407,14 @@ export function createUltratermSubagentsExtension(
           // `automaticReview` is not carried over, so the resume never re-arms the Claude review fallback.
           const automaticSource = snapshot.selection?.source === "automatic-review" || snapshot.selection?.source === "automatic-review-fallback" ? snapshot.selection.source : undefined;
           // Independence follows the work, not the route: a resumed Claude-tier run still needs Opus verification.
-          run.selection = { ...resumeSelection, ...(automaticSource ? { source: automaticSource } : {}), ...(snapshot.selection?.independence ? { independence: snapshot.selection.independence } : {}) };
+          // A resume names its route explicitly, so the profile that served the original run is carried only when it
+          // is still an operator profile with an `ensure` hook for this exact route: the worker needs its server again.
+          const recordedProfile = snapshot.selection?.profile;
+          const ensureProfile = recordedProfile !== undefined && !resumeApi && !claudeResume
+            && routingConfigOrEmpty().workerProfiles?.some((profile) => profile.id === recordedProfile && profile.ensure !== undefined && profile.model === snapshot.model) === true
+            ? recordedProfile : undefined;
+          run.selection = { ...resumeSelection, ...(automaticSource ? { source: automaticSource } : {}), ...(snapshot.selection?.independence ? { independence: snapshot.selection.independence } : {}),
+            ...(ensureProfile ? { profile: ensureProfile } : {}), ...(snapshot.selection?.taskClass ? { taskClass: { ...snapshot.selection.taskClass } } : {}) };
           run.resumedFrom = runId;
           if (run.maxTurns > snapshot.maxTurns || run.timeoutMs > snapshot.timeoutMs) throw new Error("Resume refused: a resume never raises the original turn or time budget");
           run.ownerSessionId = current.ownerSessionId;

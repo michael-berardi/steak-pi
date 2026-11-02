@@ -14,6 +14,9 @@ import { routingConfig, RoutingConfigError, setRoutingConfigOverride } from "../
 import { isSubscriptionOrLocalRoute } from "../src/subscription-first-routing.ts";
 import { claudeFallbackTier, configuredWorkerProfiles, defaultClaudeCodeRoute, loadWorkerProfiles, resolveWorkerSelection } from "../src/subagents/model-selection.ts";
 import { quotaChain, quotaProviderOf } from "../src/subagents/provider-quota.ts";
+import { ensureOf, withProfileEnsure } from "../src/subagents/profile-ensure.ts";
+import { analyzeWaveClasses, configuredTaskClass } from "../src/subagents/task-class.ts";
+import { BUILTIN_WORKER_PROFILES } from "../src/subagents/model-selection.ts";
 import { implicitReviewRoute } from "../src/subagents/reviewer-fallback.ts";
 import modelRoutePolicy from "../extensions/model-route-policy.ts";
 
@@ -89,6 +92,31 @@ describe("shipped defaults are empty", () => {
     expect(isAllowlistedPaidRoute(route)).toBe(false);
     expect(createAllowlistApproval()(route)).toBe(false);
     expect(createExplicitPaidApproval("provider-b/model-name", route)(route)).toBe(false);
+  });
+});
+
+describe("task classes and ensure hooks ship empty", () => {
+  it("configures no class, no chain for a class and no launch hook", () => {
+    expect(routingConfig().taskClasses).toBeUndefined();
+    expect(configuredTaskClass("any-class")).toBeUndefined();
+    expect(configuredWorkerProfiles().some((profile) => "ensure" in profile)).toBe(false);
+    expect(BUILTIN_WORKER_PROFILES.some((profile) => "ensure" in profile)).toBe(false);
+    expect(ensureOf({ model: "provider-a/model-name", selection: { profile: "steak-pi/preferred-free", provider: "steak-pi", modelId: "preferred-free", source: "chain", images: false, tools: true } })).toBeUndefined();
+  });
+
+  it("ignores a declared class with nothing configured, and routes exactly as without it", () => {
+    const wave = analyzeWaveClasses([{ label: "leaf", taskClass: "any-class" }], { refuseConflict: true });
+    expect(wave.active).toBeUndefined();
+    expect(wave.unknown).toEqual(["any-class"]);
+    // The class is not an input of selection at all: an implicit dispatch fails with the same config key.
+    expect(() => select({ tasks: [{ label: "leaf", task: "test", taskClass: "any-class" }] })).toThrow("No text worker chain configured: set textWorkerChain in ~/.config/ultraterm/routing.json.");
+  });
+
+  it("runs a profile launch with no hook straight through to the worker", async () => {
+    const runner = vi.fn(async () => ({ state: "done" as const, output: "", turns: 0, usage: {} as never }));
+    const run = { id: "run-1", model: "steak-pi/preferred-free", selection: { profile: "steak-pi/preferred-free" } } as never;
+    await withProfileEnsure(runner)({ run, task: {} as never, signal: new AbortController().signal, onProgress: () => {} });
+    expect(runner).toHaveBeenCalledTimes(1);
   });
 });
 

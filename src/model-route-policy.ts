@@ -1,3 +1,4 @@
+import type { TaskClassDecision } from "./subagents/types.ts";
 import { withCatalogExtras } from "./catalog-extras.ts";
 import type { ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { activeTemporaryWorkerRoute, ensureTemporaryFreeMetadata, FREE_PROVIDER, assertTemporaryFreeRequest, isTemporaryFreeModel, preferredFreeMetadata, selectPreferredFreePhysical, temporaryFreeOptions, withTemporaryFreeCatalog, TemporaryFreeRouteRequestError } from "./temporary-free-route.ts";
@@ -51,7 +52,8 @@ export interface ChainFallbackOptions {
   requireImages?: boolean;
   approvePaidRoute?: PaidApproval;
   registry: ChainRegistry;
-  onFallback?: (from: WorkerRouteStep, to: Model) => void;
+  /** `cause` is the error text of the route that was left, bounded by the caller. */
+  onFallback?: (from: WorkerRouteStep, to: Model, cause?: string) => void;
 }
 
 /** Caller-facing half of {@link ChainFallbackOptions}; the runtime supplies the registry. */
@@ -436,8 +438,38 @@ export const isExpertReviewModel = (model: Pick<Model, "provider" | "id">): bool
   return expert !== undefined && model.provider === expert.provider && model.id === expert.id;
 };
 
+/** One step of a task class's chain, resolved against the worker profiles in scope. */
+export interface TaskClassStep {
+  /** The chain entry exactly as the operator wrote it (a profile id or a `provider/model` route). */
+  entry: string;
+  step: WorkerRouteStep;
+  /** The worker profile the entry named; its thinking and `ensure` apply to the run. */
+  profile?: string;
+  /** Set when the step can never launch (for example a retired route): the named cause. */
+  blocked?: string;
+}
+/** A configured task class, ready to be walked before the default chain. */
+export interface TaskClassWalk {
+  name: string;
+  steps: readonly TaskClassStep[];
+  requiresTestGate: boolean;
+  note?: string;
+  /** Ranks the steps that passed every launch check (in chain order) on the class's evidence. Absent: chain order.
+   * It names no route itself: the entries are the operator's chain entries. */
+  rank?: (candidates: ReadonlyArray<{ entry: string; route: string }>) => TaskClassRanking;
+}
+/** What a class ranker returns: the failover order of the routes it kept, why it chose, and who it held out. */
+export interface TaskClassRanking {
+  order: readonly string[];
+  decision: TaskClassDecision;
+  excluded: ReadonlyArray<{ entry: string; cause: string }>;
+}
+
 export type ChainOptions = {
   requireImages?: boolean;
+  /** The configured class that steers this implicit text wave: its chain is walked first, with the same
+   * launch, quota, paid-route and `onlyWhen` checks as the default chain, and the default route follows. */
+  taskClass?: TaskClassWalk;
   approvePaidRoute?: (model: Model) => boolean;
   /** Dispatch-time quota veto: a step whose provider the account router has proven
    * exhausted is skipped, so selection never lands on a route that cannot launch. A
@@ -539,7 +571,7 @@ export function withPreOutputChainFallback(
       let current: WorkerRouteStep = { provider: from.provider, id: from.id };
       const attempted = new Set([`${from.provider}/${from.id}`]);
       for (;;) {
-        let hop: { model: Model; stream: NativeStream } | undefined;
+        let hop: { model: Model; stream: NativeStream; cause: string } | undefined;
         let emitted = false;
         for await (const event of source) {
           // A start event is only metadata; content/tool starts permanently end fallback.
@@ -554,7 +586,7 @@ export function withPreOutputChainFallback(
               { requireImages: fallback.requireImages, approvePaidRoute: fallback.approvePaidRoute });
             const stream = candidate && !attempted.has(`${candidate.provider}/${candidate.id}`) ? invoke(candidate) : undefined;
             if (candidate && stream) {
-              hop = { model: candidate, stream };
+              hop = { model: candidate, stream, cause: event.error.errorMessage ?? "" };
               continue;
             }
           }
@@ -562,7 +594,7 @@ export function withPreOutputChainFallback(
           if (event.type === "done" || event.type === "error") terminal = true;
         }
         if (!hop) break;
-        fallback.onFallback?.(current, hop.model);
+        fallback.onFallback?.(current, hop.model, hop.cause);
         attempted.add(`${hop.model.provider}/${hop.model.id}`);
         current = { provider: hop.model.provider, id: hop.model.id };
         source = hop.stream;
