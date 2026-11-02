@@ -1,7 +1,7 @@
 // The real supervisor, lease files, health wait and idle stop, against a stand-in "llama-server": a script that
 // only answers /health. No model is loaded and nothing is downloaded.
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -90,6 +90,63 @@ describe("on-demand server, for real processes", () => {
       await expect(ensure(deps, "model-a", pidHolder(process.pid))).rejects.toMatchObject({ code: "port-busy" });
       expect((await status(deps)).holders).toBe(0);
     } finally { holder.close(); }
+  });
+});
+
+describe("bin/steak-pi local, as a real process", () => {
+  // 2026-11-02: an unref'd sleep let Node exit mid-await with code 0: `local ensure` returned before /health and `local stop`
+  // exited inside its lock, leaving the lock behind.
+  // The real CLI entry (cli.ts main) in its own Node process, so an exit mid-await shows as it would in production. The host's
+  // memory, disk and other model servers are replaced like in the in-process tests above (this Mac may be running one).
+  const harness = () => {
+    const file = join(root.path, "cli-harness.ts");
+    writeFileSync(file, `import { main } from ${JSON.stringify(fileURLToPath(new URL("../src/local/cli.ts", import.meta.url)))};
+import { systemDeps } from ${JSON.stringify(fileURLToPath(new URL("../src/local/runtime.ts", import.meta.url)))};
+const deps = { ...systemDeps(${JSON.stringify(join(root.path, "local"))}), availableBytes: () => 64 * 1024 ** 3, diskPercent: () => 10, otherServers: () => [] };
+main(process.argv.slice(2), { deps }).then((code) => { process.exitCode = code; });
+`);
+    return file;
+  };
+  const cli = (...args: string[]) => spawnSync(process.execPath, ["--experimental-strip-types", "--no-warnings", harness(), ...args], { encoding: "utf8", timeout: 60_000, env: { ...process.env, PI_CODING_AGENT_DIR: root.path, HOME: root.path } });
+
+  it("ensure returns only once the server answers /health, and stop leaves no lock", async () => {
+    const started = cli("start", "model-a");
+    expect(started.status, started.stderr).toBe(0);
+    expect(await deps.health(port)).toBe(true); // already healthy the moment the command returns (the stand-in needs 300 ms)
+    const stopped = cli("stop");
+    expect(stopped.status, stopped.stderr).toBe(0);
+    expect(existsSync(join(deps.dir, "lock"))).toBe(false);
+    expect(await deps.portFree(port)).toBe(true);
+    // The next command is never told another one holds the lock.
+    const again = cli("status");
+    expect(again.status, again.stderr).toBe(0);
+  }, 90_000);
+
+  it("the supervisor outlives the process that started it, so closing a session leaves the server to its grace", async () => {
+    // 2026-11-02: the supervisor died with the slot that started it, stopping the server at once.
+    const started = cli("start", "model-a");
+    expect(started.status, started.stderr).toBe(0);
+    const record = JSON.parse(readFileSync(join(deps.dir, "server.json"), "utf8")) as { supervisorPid: number };
+    // The CLI that spawned it has exited; the supervisor's parent is launchd/init, not that process.
+    const parent = spawnSync("ps", ["-o", "ppid=", "-p", String(record.supervisorPid)], { encoding: "utf8" }).stdout.trim();
+    expect(parent).toBe("1");
+    expect(await deps.health(port)).toBe(true);
+    const t0 = Date.now();
+    const stopped = cli("stop");
+    expect(stopped.status, stopped.stderr).toBe(0);
+    expect(await deps.portFree(port)).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(30_000);
+  }, 90_000);
+
+  it("a lock left by a process that died is taken over at once", () => {
+    const lock = join(deps.dir, "lock");
+    mkdirSync(lock, { recursive: true });
+    writeFileSync(join(lock, "owner"), "999999\n");
+    const old = (Date.now() - 5_000) / 1000;
+    utimesSync(lock, old, old);
+    const result = cli("status");
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).not.toMatch(/holds/);
   });
 });
 

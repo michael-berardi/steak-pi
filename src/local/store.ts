@@ -87,15 +87,31 @@ export function listProfiles(dir: string): LaunchProfile[] {
     .flatMap((name) => { const profile = readJson<LaunchProfile>(join(folder, name)); return profile ? [profile] : []; });
 }
 
-/** Run `fn` holding the directory lock (an atomic mkdir; a lock older than two minutes belongs to a dead process). */
+/** Run `fn` holding the directory lock: an atomic mkdir that records its owner (PID). A lock whose owner is gone is taken over at
+ * once; one older than two minutes is treated as abandoned, whatever its owner file says. */
 export async function withLock<T>(dir: string, fn: () => T | Promise<T>, sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms))): Promise<T> {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const lock = join(dir, "lock");
+  const owner = join(lock, "owner");
+  const ownerAlive = (): boolean => {
+    try {
+      const pid = Number(readFileSync(owner, "utf8").trim());
+      if (!Number.isInteger(pid) || pid <= 0) return false;
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "EPERM";
+    }
+  };
   for (let attempt = 0; ; attempt++) {
-    try { mkdirSync(lock); break; }
+    try { mkdirSync(lock); writeFileSync(owner, `${process.pid}\n`, { mode: 0o600 }); break; }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      try { if (Date.now() - statSync(lock).mtimeMs > 120_000) { rmSync(lock, { recursive: true, force: true }); continue; } } catch { continue; }
+      try {
+        const age = Date.now() - statSync(lock).mtimeMs;
+        // A just-created lock may not have its owner file yet: give it a moment before calling it dead.
+        if (age > 120_000 || (age > 1_000 && !ownerAlive())) { rmSync(lock, { recursive: true, force: true }); continue; }
+      } catch { continue; }
       if (attempt > 200) throw new LocalError("lock-busy", `another steak-pi local command holds ${lock}`);
       await sleep(50);
     }

@@ -45,8 +45,15 @@ export function createLocalHook(deps: LocalHookDeps): (pi: ExtensionAPI) => void
 
     pi.on("session_start", (_event, ctx) => { sync(ctx.model, ctx); });
     pi.on("model_select", (event, ctx) => { sync(event.model, ctx); });
-    // The first prompt of a session must not race the server coming up.
-    pi.on("before_agent_start", async () => { await pending; });
+    // The first prompt of a session must not race the server coming up, and a start that failed (memory, a busy port,
+    // another server) is tried again before the next prompt instead of failing every prompt until /reload.
+    pi.on("before_agent_start", async (_event, ctx) => {
+      await pending;
+      if (held === undefined && ctx.model?.provider === LOCAL_PROVIDER) {
+        sync(ctx.model, ctx);
+        await pending;
+      }
+    });
     pi.on("session_shutdown", async () => {
       await pending;
       if (held !== undefined) { held = undefined; await deps.release().catch(() => undefined); }

@@ -103,8 +103,30 @@ describe("local model hook", () => {
     await h.fire("session_start", {});
     await h.fire("before_agent_start");
     expect(h.notes.at(-1)).toEqual(["error", "steak-pi local: REFUSED (disk-full): the disk is 95% used"]);
+    // A failed start is tried again before the next prompt (2026-11-02: every prompt failed until /reload).
+    expect(h.log).toEqual(["ensure:model-a", "ensure:model-a"]);
+    await h.fire("before_agent_start");
+    expect(h.log).toEqual(["ensure:model-a", "ensure:model-a", "ensure:model-a"]);
     await h.fire("session_shutdown", {});
-    expect(h.log).toEqual(["ensure:model-a"]); // no release for a hold that was never taken
+    expect(h.log.filter((entry) => entry === "release")).toEqual([]); // no release for a hold that was never taken
+  });
+
+  it("a start that failed once succeeds on the next prompt without /reload", async () => {
+    let fail = true;
+    const log: string[] = [];
+    const handlers = new Map<string, Handler>();
+    createLocalHook({
+      ensure: async (id) => { log.push(`ensure:${id}`); if (fail) { fail = false; throw new Error("REFUSED (insufficient-memory)"); } return { started: true, baseUrl: "u" }; },
+      release: async () => { log.push("release"); },
+    })({ on: (name: string, handler: Handler) => { handlers.set(name, handler); } } as never);
+    const ctx = { model: model("local", "model-a"), ui: { notify: () => undefined } };
+    await handlers.get("session_start")!({}, ctx);
+    await handlers.get("before_agent_start")!({}, ctx);
+    expect(log).toEqual(["ensure:model-a", "ensure:model-a"]);
+    await handlers.get("before_agent_start")!({}, ctx);
+    expect(log).toEqual(["ensure:model-a", "ensure:model-a"]); // held now: no more starts
+    await handlers.get("session_shutdown")!({}, ctx);
+    expect(log.at(-1)).toBe("release");
   });
 
   it("is registered by the package's default export", () => {
