@@ -124,6 +124,14 @@ refused. Details in [docs/CLAUDE-CODE.md](./docs/CLAUDE-CODE.md). The provider
 derives from [pi-claude-code](https://github.com/earendil-works/pi-claude-code)
 by Armin Ronacher (MIT).
 
+## Local models
+
+Slot any GGUF into Pi as `local/<id>`: `steak-pi local add <file.gguf | owner/repo:quant>` reads the header, sizes the
+context to this machine (one slot, flash attention, q8_0 KV cache, 6 GiB of RAM kept free) and writes one `local`
+provider to `models.json`. Then `pi --model local/<id>`: `llama-server` starts on demand and stops after 10 idle minutes.
+It refuses, naming the cause, when memory is short, the disk is above 90% or another model server runs. No model ships
+with Steak Pi; workers use `ensure`/`release`. Details: [docs/LOCAL-MODELS.md](./docs/LOCAL-MODELS.md).
+
 ## Subagents (USAP)
 
 Running Claude Code workers accept `ultraterm_hub send` and `redirect` without

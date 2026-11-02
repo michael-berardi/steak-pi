@@ -189,6 +189,47 @@ describe("shipped files are provider-neutral", () => {
     expect(docs).toMatch(/minPassRate/);
   });
 
+  it("ship the local-model module with no model, repo, file name or service of its own", () => {
+    // The local module sizes and serves whatever GGUF the operator points `local add` at. No model family, Hugging Face
+    // repo, quant-tagged file name or default id ships in it, and nothing installs an always-on service.
+    const MODEL_FAMILY = /\b(?:qwen\d*|gemma\d*|mistral|mixtral|llama[-\s]?\d[\w.]*|phi-?\d|gpt-oss|nemotron|granite|olmo|smollm|swift[-\s]?\d|ornith|flint|nanbeige|kimi|minimax|command-r|starcoder|codestral|devstral|bartowski|unsloth)\b/i;
+    const HF_REPO_LITERAL = /huggingface\.co\/(?!api\/)[\w.-]+\/[\w.-]+|\bhf\.co\/|\b[\w.-]+\/[\w.-]*-GGUF\b/i;
+    const QUANT_FILE = /[\w.-]*[-_](?:I?Q\d(?:_[A-Z0-9]+)+|F16|BF16)\.gguf\b/;
+    const SERVICE = /launchctl|LaunchAgent|LaunchDaemon|\.plist\b|\bsystemctl\b|\bsystemd\b|\bcrontab\b|brew services/i;
+    for (const sample of ["Qwen3.8-27B", "gemma-3", "llama-3.2", "swift-1.5", "bartowski", "vendor/Name-GGUF", "https://huggingface.co/vendor/name"]) {
+      expect(MODEL_FAMILY.test(sample) || HF_REPO_LITERAL.test(sample), sample).toBe(true);
+    }
+    for (const sample of ["model-Q4_K_M.gguf", "x-IQ3_S.gguf", "m-BF16.gguf"]) expect(QUANT_FILE.test(sample), sample).toBe(true);
+    for (const sample of ["launchctl load x", "a LaunchAgent", "systemctl --user start"]) expect(SERVICE.test(sample), sample).toBe(true);
+    for (const sample of ["llama-server", "llama.cpp", "my-model", "owner/repo:quant", "huggingface.co/api/models/x/tree", "https://huggingface.co/${model.repo}/resolve"]) {
+      expect(MODEL_FAMILY.test(sample) || HF_REPO_LITERAL.test(sample) || QUANT_FILE.test(sample), sample).toBe(false);
+    }
+    const readme = join(root, "README.md");
+    const section = readFileSync(readme, "utf8").split(/^## /m).find((part) => part.startsWith("Local models")) ?? "";
+    expect(section.length, "README keeps its Local models section").toBeGreaterThan(200);
+    expect(section.trim().split("\n").slice(1).filter((line) => line.trim()).length, "the README section stays five lines").toBe(5);
+    const module = shipped.filter((path) => {
+      const rel = relative(root, path);
+      return rel.startsWith("src/local/") || rel.startsWith("extensions/local/") || rel === "docs/LOCAL-MODELS.md";
+    });
+    expect(module.map((path) => relative(root, path)).sort()).toEqual([
+      "docs/LOCAL-MODELS.md", "extensions/local/index.ts", "src/local/cli.ts", "src/local/gguf.ts", "src/local/hardware.ts",
+      "src/local/hf.ts", "src/local/main.ts", "src/local/profile.ts", "src/local/runtime.ts", "src/local/store.ts",
+    ]);
+    const scanned = [...module, readme];
+    const named = (pattern: RegExp) => hits(scanned, pattern).filter((hit) => hit.path !== "README.md" || section.includes(hit.text)).map(describeHit);
+    expect(named(MODEL_FAMILY)).toEqual([]);
+    expect(named(HF_REPO_LITERAL)).toEqual([]);
+    expect(named(QUANT_FILE)).toEqual([]);
+    expect(hits(module, SERVICE).filter((hit) => hit.path !== "docs/LOCAL-MODELS.md").map(describeHit)).toEqual([]);
+    // The documented sizing constants really are the shipped ones.
+    const hardware = readFileSync(join(root, "src/local/hardware.ts"), "utf8");
+    expect(hardware).toMatch(/HEADROOM_BYTES = 6 \* GIB/);
+    expect(hardware).toMatch(/DEFAULT_CTX_CAP = 32768/);
+    expect(hardware).toMatch(/DISK_MAX_PERCENT = 90/);
+    expect(readFileSync(join(root, "docs/LOCAL-MODELS.md"), "utf8")).toMatch(/6 GiB headroom/);
+  });
+
   it("use no operator-specific Claude account id, label or folder in examples, docs or fixtures", () => {
     for (const sample of ["claude-kl", ".claude-kl/", '"kl"', "Claude (KL)", "CLAUDE (kl)"]) expect(OPERATOR_ACCOUNT.test(sample), sample).toBe(true);
     for (const sample of ["team-2", "Claude (Team)", ".claude-team-2", "kl-2x"]) expect(OPERATOR_ACCOUNT.test(sample), sample).toBe(false);

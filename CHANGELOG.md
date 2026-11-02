@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.20.0 (2026-11-02)
+
+- **A built-in local-model module: one generic `local` profile you slot any model into.** `steak-pi local add
+  <gguf path | owner/repo[:quant]> [--name id] [--ctx N] [--port N] [-- extra llama-server args]` reads the GGUF header
+  (architecture, native context, attention shape, chat template; a small reader, no new dependency, and for a Hugging
+  Face spec only the file list and the first few MiB of the chosen quant) and writes ONE `local` provider plus that model into
+  `~/.pi/agent/models.json` (timestamped backup first, five kept; atomic; mode 0600; other providers untouched) and a
+  launch profile under `~/.pi/agent/local/`. It prints exactly what it chose and why. The context is sized from the
+  machine: `total RAM - 6 GiB headroom - weights`, divided by the q8_0 KV cost per token from the metadata (hybrid and
+  per-layer attention costed layer by layer), capped at 32768 unless `--ctx` asks for more, never above the model's
+  native context, rounded down to a power of two; a model the machine cannot hold, or less than 8192 tokens, is refused.
+  One slot, flash attention, q8_0 KV cache, a 2 GiB prompt cache. When the chat template supports `reasoning_effort` or
+  `enable_thinking`, the model gets a chat-template reasoning map; otherwise it is plain. Sampling comes only from the
+  file's own `general.sampling.*`.
+- **On-demand server.** `local start|stop|status [id]` run `llama-server` (from `PATH`, or `STEAK_PI_LLAMA_SERVER`, else a
+  named error with the install hint) in the background, owned by Steak Pi (PID, start time and port recorded; only that
+  is ever stopped), with refcounted leases under `~/.pi/agent/local/` and an idle auto-stop after a grace (default 10
+  minutes) once the last user lets go. A start is refused with a named cause when another local model server runs, the
+  port is taken, free plus reclaimable RAM cannot hold weights + KV cache + server overhead, the disk is above 90%, or the
+  model file is gone; it waits for `/health` (bounded) and stops a server that never came up. `stop` confirms the port
+  is released. No LaunchAgent and no always-on service.
+- **`local ensure <id>` / `local release <id>`**: argv commands for `routing.json` `workerProfiles[].ensure`, so slots and
+  USAP workers bring the server up on demand and let it go. Holders are Pi processes; a holder that died is dropped.
+- **Pi extension hook.** The package's `extensions/local` takes a lease when a session starts on a `local/...` model or the
+  model is switched to one (the first prompt waits for the server), and gives it back on a switch away or at session end.
+  Other models are untouched; USAP workers do not load it.
+- Docs: README "Local models" and `docs/LOCAL-MODELS.md` (sizing math, constraints, refusals, how to slot in another model).
+- Tests: hardware sizing (36 GiB with a 12 GB model gives 32768; a 16 GiB machine refuses or shrinks), the GGUF reader on
+  synthetic files, the `models.json` writer (backup, atomic, preserving other providers), lease refcounts and idle stop with
+  a fake clock and server, every refusal, the extension hook, real-process start/share/stop against a stand-in server that
+  only answers `/health`, and neutrality (no model name, repo or file name in the shipped module).
+
 ## 0.19.0 (2026-11-02)
 
 - **Task classes: route a kind of task to the route that measured best for it.** `routing.json` gains an optional
