@@ -1,4 +1,5 @@
 import { assertActiveModelSelector } from "../retired-model-selection.ts";
+import { TASK_CLASS_MAX_LENGTH, TASK_CLASS_PATTERN } from "../routing-config.ts";
 import { isClaudeAccountId } from "./claude-account.ts";
 import { claudeOwnedPathRules } from "./claude-owned-paths.ts";
 import { claudeCodeModelOf } from "./model-selection.ts";
@@ -169,6 +170,15 @@ function normalizeHarness(value: unknown, field: string): HarnessId {
   return value as HarnessId;
 }
 
+/** A task class is a lowercase slug. A well-formed class the operator did not configure is routed as no class. */
+function normalizeTaskClass(value: unknown, field: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !TASK_CLASS_PATTERN.test(value) || value.length > TASK_CLASS_MAX_LENGTH) {
+    fail(`${field} must be a lowercase slug of at most ${TASK_CLASS_MAX_LENGTH} characters (letters, digits and single hyphens)`);
+  }
+  return value;
+}
+
 function normalizeRole(value: unknown, field: string): SubagentRole {
   if (value === undefined) return "worker";
   if (value !== "scout" && value !== "worker" && value !== "reviewer") {
@@ -269,6 +279,7 @@ export function normalizeDispatch(
     const role = normalizeRole(source.role, `${field}.role`);
     const mayEdit = booleanOrDefault(source.mayEdit, false, `${field}.mayEdit`);
     const allowBash = booleanOrDefault(source.allowBash, false, `${field}.allowBash`);
+    const taskClass = normalizeTaskClass(source.taskClass, `${field}.taskClass`);
     // harness claude-code enforces ownedPaths through CLI permission rules
     // (claude-worker.ts) and allowBash through its tool allowlist, so write and
     // shell leaves follow the same policy as Pi leaves.
@@ -317,6 +328,7 @@ export function normalizeDispatch(
       mayEdit,
       ownedPaths,
       allowBash,
+      ...(taskClass === undefined ? {} : { taskClass }),
       state: "queued" as const,
       output: "",
       turns: 0,

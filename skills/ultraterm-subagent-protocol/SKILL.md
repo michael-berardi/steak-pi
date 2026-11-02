@@ -71,6 +71,7 @@ Change: concrete work
 Acceptance: observable evidence and return shape
 Permissions: may edit/use shell
 Ownership: exclusive writable paths or boundary; omit for read-only leaves
+Class (optional): `taskClass`, only a class the operator defined in routing.json
 ```
 
 Prefer leaves of ~12 tool turns; this is sizing guidance, not a runtime cap.
@@ -244,6 +245,31 @@ parent-profile defaults; the implicit review admission boundary precedes native
 Pi role defaults. A model family the operator pinned to one subscription route
 (`subscriptionRouteChecks` `modelPattern`) runs only there. Unavailable
 auth/models fail closed without fallback.
+
+**Task classes.** A leaf may carry `taskClass`, a lowercase slug from the operator's
+`taskClasses` in routing.json (Steak Pi ships none; the operator's own notes or the
+dispatch note say which exist). On an implicit text worker wave a configured class
+walks its own chain first (worker profiles or exact routes, with the default chain's
+launch, quota, paid-route and `onlyWhen` checks), then the normal route; the receipt
+(`run.selection.taskClass`: `served` / `fallback` / `ignored`, with the reason) and the
+`Task class …` line of the dispatch note say which. One run uses one route: give every
+leaf of a wave the same class (or none) and dispatch different classes as separate
+waves; two configured classes in one wave are refused. An unconfigured class is
+ignored with a note, never an error, and a class never overrides an explicit
+`model`/`profile`/`harness`/`claudeAccount` or steers reviewers and image waves. When
+the note says the class requires a test gate, run that gate before accepting the work:
+the class is routed on the evidence that a gate checks it. A route that needs a server
+(a local model) is a worker profile with an `ensure` hook in routing.json: USAP runs
+it before each worker launches, refuses the launch with its stderr as the named cause
+(an implicit wave then falls through to the next step in the same call), and runs
+`release` when the worker ends however it ends. Never put a command in a task or a
+dispatch argument; hooks come only from the operator's routing.json. Which step serves a
+class is decided by recorded evidence once the class has priors or outcomes (cost per
+correct result, with a small exploration share and automatic demotion of a route that keeps
+failing); the dispatch note shows the numbers. Teach it: after you verify a classed run
+(a test gate, a reviewer wave), call hub `record-outcome` with its `runId` and `pass` or
+`fail`; hub `routes` prints the per-class estimates. A leaf on a test-gated class ends its
+report with `TEST-GATE: pass` or `TEST-GATE: fail`.
 
 Set `requireImages: true` for visual critics or render inspection. The registry
 must advertise image input and a native text/tool adapter must be available.

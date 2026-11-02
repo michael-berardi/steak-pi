@@ -97,6 +97,9 @@ export interface SubagentTaskInput {
   mayEdit?: boolean;
   ownedPaths?: string[];
   allowBash?: boolean;
+  /** Operator-named task class (a lowercase slug). Steers an implicit text wave onto the chain the
+   * operator configured for that class (`taskClasses` in routing.json); unknown classes are ignored. */
+  taskClass?: string;
 }
 
 /** Sanitized proof that a leaf ran on the explicit Claude API route. Every field
@@ -131,6 +134,62 @@ export interface ClaudeSubscriptionReceipt {
   attested: { preflight: true; init: boolean };
 }
 
+/** One route's standing in a classed decision: the estimates the ranking used and why it was or was not eligible. */
+export interface TaskClassEstimate {
+  /** The class chain entry (profile id or `provider/model`). */
+  entry: string;
+  /** `ranked`: eligible. `demoted`: held out after repeated failures. `floor`: held out under the pass-rate floor.
+   * `probe`: held out until a re-probe is due, or being re-probed now. `unavailable`: failed a launch check. */
+  status: "ranked" | "demoted" | "floor" | "probe" | "unavailable";
+  cause?: string;
+  /** Decided outcomes in the store (pass + fail) and the operator prior's `n`. */
+  n: number;
+  priorN: number;
+  /** Posterior mean of p(pass); null with neither evidence nor prior. */
+  passRate: number | null;
+  /** The Thompson draw this decision used (ranked routes only). */
+  sampledPassRate?: number;
+  expectedCostUsd: number | null;
+  expectedSeconds: number | null;
+  /** (E[cost] + timeWeight x E[seconds]) / p(pass), at the posterior mean: lower is better. */
+  score: number | null;
+}
+
+/** The evidence-driven decision behind a classed pick, kept whole so a surprising route can be debugged. */
+export interface TaskClassDecision {
+  /** `chain-order`: no priors or evidence, so the configured order. `exploit`: the best expected score won.
+   * `thompson`: a posterior draw preferred another route. `explore`: the exploration share picked a weaker route.
+   * `probe`: a demoted route was re-probed after its cooldown. */
+  mode: "chain-order" | "exploit" | "thompson" | "explore" | "probe";
+  winner: string;
+  explored: boolean;
+  /** Launchable, non-demoted routes in the order a failover follows (winner first). */
+  order: Array<{ entry: string; route: string }>;
+  estimates: TaskClassEstimate[];
+  timeWeight: number;
+  minPassRate: number;
+  explore: number;
+}
+
+/** How a wave's declared task class steered (or did not steer) its route: the receipt for `taskClasses`. */
+export interface TaskClassSelection {
+  name: string;
+  /** `served`: a step of the class chain launched the wave. `fallback`: the class is configured but no step could
+   * launch, so the normal route ran. `ignored`: the class does not steer this wave (not configured, or an
+   * explicit, reviewer or image wave). */
+  outcome: "served" | "fallback" | "ignored";
+  /** Bounded, named cause: the serving step, or why each step (or the whole class) was not used. */
+  reason: string;
+  /** The class chain entry that served the wave (`served` only). */
+  step?: string;
+  /** The class is routed on the evidence that a test gate checks its results. */
+  requiresTestGate?: boolean;
+  /** The operator's own note for the class. */
+  note?: string;
+  /** The ranking behind a served pick (present when the class was ranked). */
+  decision?: TaskClassDecision;
+}
+
 export interface ModelSelection {
   provider: string;
   modelId: string;
@@ -152,6 +211,8 @@ export interface ModelSelection {
    * receipt): the router cause of each exhausted provider it skipped and, on the Claude tier, which
    * tier it chose and why. Present only on a quota-fallback run. */
   fallbackReason?: string;
+  /** Present when a task of the wave declared a task class: how it did or did not steer the route. */
+  taskClass?: TaskClassSelection;
   /** Foreign runners keep their harness identity instead of a native route. */
   harness?: HarnessId;
   images: boolean;
@@ -188,6 +249,19 @@ export interface NormalizedTask {
   mayEdit: boolean;
   ownedPaths: string[];
   allowBash: boolean;
+  /** The class the dispatch declared for this task (provenance only; the run's route is already frozen). */
+  taskClass?: string;
+}
+
+/** Sanitized receipt of a profile's `ensure` hook for one worker launch. It names the profile and the
+ * outcome, never the command line, its environment or its full output. */
+export interface ProfileEnsureReceipt {
+  profile: string;
+  /** `ensured`: the command succeeded and the worker ran. `refused`: it failed, so the worker never launched.
+   * `released`: the release command ran after the worker ended. `release-failed`: it did not succeed. */
+  state: "ensured" | "refused" | "released" | "release-failed";
+  /** Bounded cause (stderr or timeout) for `refused` and `release-failed`. */
+  cause?: string;
 }
 
 export interface RelayEnvelope {
@@ -249,9 +323,15 @@ export interface TaskRecord extends NormalizedTask {
   changedPaths?: string[];
   /** Last observed worker step (tool name or compaction/retry phase). */
   lastStep?: string;
+  /** The `ensure` hook of the worker's profile, when it has one (see `profile-ensure.ts`). */
+  profileEnsure?: ProfileEnsureReceipt;
   /** Pre-output runtime chain hops, journaled as `from->to` route pairs so usage and
    * reports name the provider/model that actually served each request. */
   routeFallbacks?: string[];
+  /** Why each route in `routeFallbacks` was left (bounded error text), with what it spent: the evidence for the route left. */
+  routeHopDetails?: Array<{ from: string; to: string; cause: string; costUsd: number; seconds: number }>;
+  /** An empty or output-exhausted reply was retried once on the same route with a higher output budget. */
+  retriedOnSameRoute?: true;
   providerAccount?: { provider: "opencode-go"; id: "primary" | "b"; label: string; lease: string } |
     { provider: "codex"; id: "primary" | "fallback"; label: string; lease: string };
   /** The operator's implicit review route and its configured Pi fallback (`implicitReview`). */
@@ -347,6 +427,9 @@ export interface WorkerRunContext {
   onProgress: (progress: WorkerProgress) => void;
   /** Optional parent-supplied session directory used when creating a persisted session. */
   sessionDir?: string;
+  /** Set by the coordinator when it re-runs an empty or output-exhausted reply. `boost`: raise the output budget
+   * (to `maxTokens`, or the runner's own higher default). `alternate`: run on that index of the frozen ranked alternates. */
+  reply?: { boost?: true; maxTokens?: number; alternate?: number };
 }
 
 export type WorkerRunner = (context: WorkerRunContext) => Promise<WorkerResult>;

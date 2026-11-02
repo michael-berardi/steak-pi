@@ -3,9 +3,10 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { assertActiveModelIdentity, assertActiveModelSelector, isRetiredRoute, retiredRouteError } from "../retired-model-selection.ts";
-import { assertModelRoute, assertSubscriptionRequest, selectChainedWorkerModel, selectWorkerModel, selectWorkerThinking,
+import type { TaskClassRanking } from "../model-route-policy.ts";
+import { NoChainRouteError, assertModelRoute, assertSubscriptionRequest, selectChainedWorkerModel, selectWorkerModel, selectWorkerThinking,
   workerChainFor, type ChainOptions } from "../model-route-policy.ts";
-import { routingConfig, routingConfigPath } from "../routing-config.ts";
+import { routingConfig, routingConfigOrEmpty, routingConfigPath } from "../routing-config.ts";
 import type { DispatchInput, ModelSelection, SubagentTaskInput } from "./types.ts";
 import { activeTemporaryWorkerRoute, assertTemporaryFreeRequest, isTemporaryFreeModel, PREFERRED_FREE_PROFILE } from "../temporary-free-route.ts";
 export { retiredRouteError } from "../retired-model-selection.ts";
@@ -172,7 +173,7 @@ export function resolveWorkerSelection(
   parentProfileId = process.env.ULTRATERM_HARNESS_PROFILE,
   options: ChainOptions = {},
   roleDefaults?: RoleDefaults,
-): { model: Model; thinkingLevel: Thinking; selection: ModelSelection } {
+): { model: Model; thinkingLevel: Thinking; selection: ModelSelection; alternates?: ClassAlternate[] } {
   // The native Pi registry stream adapters cannot serve foreign harnesses.
   // Claude Code dispatch must branch to its explicit CLI route before selection;
   // fail closed here so no caller can route it through the registry by accident.
@@ -210,6 +211,37 @@ export function resolveWorkerSelection(
   // A /model change must not inherit defaults belonging to a stale launch profile.
   const parentProfile = namedParent && namedParent.model === parentKey ? namedParent : parents.length === 1 ? parents[0] : undefined;
   const review = input.tasks.some((task) => task.role === "reviewer");
+  // A configured task class steers an implicit text wave: its chain is walked first with the default chain's
+  // own checks (authentication, catalog, spendability, quota veto, `onlyWhen`). When no step can launch the
+  // normal route below resolves exactly as it would without a class.
+  const classWalk = options.taskClass && !explicit && !review && input.requireImages !== true && !input.harness ? options.taskClass : undefined;
+  const classUsable = classWalk?.steps.filter((entry) => entry.blocked === undefined) ?? [];
+  type ClassUsable = (typeof classUsable)[number];
+  /** Launchable steps with their models, ranked on evidence when the walk carries a ranker; chain order otherwise. */
+  let classHit: { model: Model; index: number; entry: ClassUsable; ordered: Array<{ entry: ClassUsable; model: Model }> } | undefined;
+  let classRanking: TaskClassRanking | undefined;
+  if (classWalk && classUsable.length > 0) {
+    // Every step that passes the default chain's own checks, in chain order: pick the first, drop it and the
+    // ineligible steps before it, repeat. Ranking then reorders only these.
+    const launchable: Array<{ entry: ClassUsable; model: Model }> = [];
+    let rest = classUsable;
+    while (rest.length > 0) {
+      try {
+        const picked = selectChainedWorkerModel(registry, rest.map((entry) => entry.step), { ...options, requireImages: false });
+        const at = rest.findIndex((entry) => entry.step.provider === picked.provider && entry.step.id === picked.id);
+        launchable.push({ entry: rest[at], model: picked });
+        rest = rest.slice(at + 1);
+      } catch (error) {
+        if (!(error instanceof NoChainRouteError)) throw error;
+        break;
+      }
+    }
+    classRanking = launchable.length > 0 ? classWalk.rank?.(launchable.map((item) => ({ entry: item.entry.entry, route: route(item.model) }))) : undefined;
+    const ordered = classRanking
+      ? classRanking.order.flatMap((entry) => launchable.filter((item) => item.entry.entry === entry))
+      : launchable;
+    if (ordered.length > 0) classHit = { model: ordered[0].model, index: classUsable.indexOf(ordered[0].entry), entry: ordered[0].entry, ordered };
+  }
   // An implicit dispatch whose profile default landed on an exhausted provider re-resolves the
   // configured default text chain (`textWorkerChain`) with that provider skipped. An explicit selector
   // never takes this path, and neither do reviewer or image waves.
@@ -221,11 +253,13 @@ export function resolveWorkerSelection(
   const chainProfile = forceChain ? defaultChainProfile() : undefined;
   const configured = temporary ? { profile: PREFERRED_FREE_PROFILE } : forceChain ? (chainProfile ? { profile: chainProfile } : undefined) : review ? defaults.reviewerDefault ?? parentProfile?.reviewerDefault ?? parentProfile?.workerDefault : defaults.workerDefault ?? parentProfile?.workerDefault;
   const chosen = explicit ? selector({ ...(requested.model !== undefined ? { model: requested.model } : {}), ...(requested.profile !== undefined ? { profile: requested.profile } : {}) }, "USAP selection") : configured ? selector(configured, "USAP profile default") : undefined;
-  const profile = forceChain
-    ? (chainProfile ? profiles.find((candidate) => candidate.id === chainProfile) ?? configuredWorkerProfiles().find((candidate) => candidate.id === chainProfile) : undefined)
-    : chosen?.profile ? profileById(chosen.profile) : undefined;
+  const profile = classHit
+    ? classHit.entry.profile !== undefined ? profiles.find((candidate) => candidate.id === classHit.entry.profile) : undefined
+    : forceChain
+      ? (chainProfile ? profiles.find((candidate) => candidate.id === chainProfile) ?? configuredWorkerProfiles().find((candidate) => candidate.id === chainProfile) : undefined)
+      : chosen?.profile ? profileById(chosen.profile) : undefined;
   // Automatic defaults resolve the final chain; an explicit selector stays exact.
-  const automatic = forceChain || (!explicit && (chosen === undefined || (chosen.model === undefined && (profile?.autoChain === true || (review && profile?.autoReviewChain === true)))));
+  const automatic = classHit !== undefined || forceChain || (!explicit && (chosen === undefined || (chosen.model === undefined && (profile?.autoChain === true || (review && profile?.autoReviewChain === true)))));
   // Explicit native Pi reviewer waves retain configured role metadata. Implicit
   // all-reviewer waves are admitted separately by the official Claude boundary.
   const headRoute = (key: string | undefined) => {
@@ -237,6 +271,7 @@ export function resolveWorkerSelection(
   // (or fails on) a configured chain. A reviewer wave whose profile head keeps no chain of its
   // own leads with the operator's `reviewerChainHead`, when one is configured.
   const resolveChain = (): readonly { provider: string; id: string }[] => {
+    if (classHit) return classHit.ordered.map((item) => item.entry.step);
     if (forceChain) return workerChainFor(undefined, chainImages);
     const head = headRoute(profile?.model);
     const config = routingConfig();
@@ -247,7 +282,7 @@ export function resolveWorkerSelection(
   };
   const chain = automatic ? resolveChain() : [];
   const key = automatic ? undefined : profile?.model ?? chosen?.model;
-  const model = automatic
+  const model = classHit ? classHit.model : automatic
     ? selectChainedWorkerModel(registry, chain, { ...options, requireImages: input.requireImages === true })
     : key ? findModel(key, registry)
     : selectWorkerModel(parent, input.tasks.map((task) => task.role), registry, options);
@@ -268,13 +303,24 @@ export function resolveWorkerSelection(
   if (model.api === "pi-virtual" && (model.provider !== "steak-pi" || model.id !== "preferred-free")) throw new Error("USAP virtual worker route is not approved.");
   if (input.requireImages && !images) throw new Error(`USAP model ${route(model)} does not advertise image input. Select an authenticated vision model for image inspection; no fallback was selected.`);
   const thinkingLevel = selectWorkerThinking(model, profile?.thinking ?? inheritedThinking, input.thinking, input.thinkingReason);
-  const result: { model: Model; thinkingLevel: Thinking; selection: ModelSelection } = {
+  const result: { model: Model; thinkingLevel: Thinking; selection: ModelSelection; alternates?: ClassAlternate[] } = {
     model, thinkingLevel,
     selection: {
       provider: model.provider, modelId: model.id,
       ...(profile ? { profile: profile.id } : {}),
       ...(parentProfile ? { parentProfile: parentProfile.id } : {}),
       source: explicit ? "override" : automatic ? "chain" : configured ? "profile-default" : "legacy-default",
+      ...(classWalk ? { taskClass: {
+        name: classWalk.name,
+        outcome: classHit ? "served" as const : "fallback" as const,
+        reason: classHit ? `step ${classHit.index + 1} of ${classUsable.length} (${classHit.entry.entry}) launched`
+          : classRanking && classRanking.excluded.length > 0 ? `every launchable step of the class chain is held out (${classRanking.excluded.map((item) => `${item.entry}: ${item.cause}`).join(" | ")})`
+          : "no step of the class chain could launch",
+        ...(classHit ? { step: classHit.entry.entry } : {}),
+        ...(classRanking ? { decision: classRanking.decision } : {}),
+        ...(classWalk.requiresTestGate ? { requiresTestGate: true } : {}),
+        ...(classWalk.note ? { note: classWalk.note } : {}),
+      } } : {}),
       // Ordered automatic routes, so a receipt shows the chain that produced the run.
       ...(automatic ? { chainRoutes: chain.map((step) => `${step.provider}/${step.id}`) } : {}),
       harness: "pi" as const,
@@ -282,5 +328,22 @@ export function resolveWorkerSelection(
     },
   };
   assertWorkerSelectionOverride(requested, result.selection);
+  // The ranked routes behind the winner, resolved now: a reply that comes back empty after its one retry moves to
+  // the next of these without a new dispatch. A route whose profile runs an `ensure` hook is not offered, because
+  // that hook only wraps the route the run started on.
+  if (classHit) {
+    const hooked = new Set((routingConfigOrEmpty().workerProfiles ?? []).filter((candidate) => candidate.ensure !== undefined).map((candidate) => candidate.id));
+    const alternates = classHit.ordered.slice(1).flatMap((item): ClassAlternate[] => {
+      if (item.entry.profile !== undefined && hooked.has(item.entry.profile)) return [];
+      try {
+        const level = selectWorkerThinking(item.model, profiles.find((candidate) => candidate.id === item.entry.profile)?.thinking ?? inheritedThinking, input.thinking, input.thinkingReason);
+        return [{ entry: item.entry.entry, model: item.model, thinkingLevel: level, ...(item.entry.profile ? { profile: item.entry.profile } : {}) }];
+      } catch { return []; }
+    });
+    if (alternates.length > 0) result.alternates = alternates;
+  }
   return result;
 }
+
+/** A ranked class route behind the winner, resolved at dispatch for a per-task failover. */
+export interface ClassAlternate { entry: string; model: Model; thinkingLevel: Thinking; profile?: string }

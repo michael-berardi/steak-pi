@@ -20,10 +20,12 @@ import {
   type UsageTotals,
   type WorkerProgress,
   type WorkerResult,
+  type WorkerRunContext,
   type WorkerRunner,
 } from "./types.ts";
 import { abortError, sessionScheduler, type SessionScheduler } from "./scheduler.ts";
 import { MIN_RESUME_BUDGET_MS, transientFailure } from "./auto-resume.ts";
+import { classifyFailure } from "./route-evidence.ts";
 import { defaultMachineSlots, type MachineCapacitySnapshot, type MachineSlots, type NoopSlots } from "./machine-slots.ts";
 
 const TERMINAL_TASK_STATES = new Set<TaskState>([
@@ -58,6 +60,24 @@ export interface CoordinatorOptions {
   onChange?: (run: RunRecord) => void;
   sessionDir?: (run: RunRecord, task: TaskRecord) => string | undefined;
   now?: () => number;
+  /** Called once as each task settles, with isolated copies. A throw here never changes the task. */
+  onTaskSettled?: (run: RunRecord, task: TaskRecord) => void;
+  /**
+   * What a classed run may do about a reply that came back empty or out of output budget, or a route that was
+   * refused on spent credits or a server error after output began: retry once on the same route with a higher output
+   * budget, then move to the next ranked route (`alternates`, as `provider/model`, in order). Absent: neither happens.
+   */
+  replyPolicy?: (run: RunRecord, task: TaskRecord) => { maxTokens?: number; alternates: readonly string[] } | undefined;
+}
+
+/** An empty or output-exhausted reply: the worker answered but wrote nothing a parent can use. */
+export function emptyReplyKind(result: Pick<WorkerResult, "state" | "output" | "error">): "empty-output" | "reasoning-exhausted" | undefined {
+  if (result.state === "done") return reportBody(result.output) ? undefined : "empty-output";
+  if (result.state !== "failed") return undefined;
+  const error = result.error ?? "";
+  if (/ran out of output tokens|stopReason length/i.test(error)) return "reasoning-exhausted";
+  if (/Child produced no final output/i.test(error)) return "empty-output";
+  return undefined;
 }
 
 export class CoordinatorWaitTimeoutError extends Error {
@@ -218,6 +238,8 @@ export class SubagentCoordinator {
   private readonly onChange?: (run: RunRecord) => void;
   private readonly sessionDir?: CoordinatorOptions["sessionDir"];
   private readonly now: () => number;
+  private readonly onTaskSettled?: CoordinatorOptions["onTaskSettled"];
+  private readonly replyPolicy?: CoordinatorOptions["replyPolicy"];
   private readonly runs = new Map<string, RunRuntime>();
   private closed = false;
   private shutdownPromise?: Promise<void>;
@@ -230,6 +252,8 @@ export class SubagentCoordinator {
     this.onChange = options.onChange;
     this.sessionDir = options.sessionDir;
     this.now = options.now ?? Date.now;
+    this.onTaskSettled = options.onTaskSettled;
+    this.replyPolicy = options.replyPolicy;
   }
 
   /** Start a normalized run and return an isolated initial snapshot. */
@@ -539,6 +563,13 @@ export class SubagentCoordinator {
           // and turns, so earlier attempts are carried forward here.
           const prior = { usage: emptyUsage(), turns: 0, toolErrors: 0, toolSuccesses: 0 };
           let result: WorkerResult;
+          // Classed runs only: one same-route retry of an empty reply, then the next ranked route.
+          let reply: WorkerRunContext["reply"];
+          let retriedOnRoute = false;
+          let alternateIndex = -1;
+          let leftRouteAt = this.now();
+          let leftRouteCost = 0;
+          let currentRoute = runtime.record.model;
           for (let attempt = 0; ; attempt += 1) {
             // Automatic continuation shares the original task budget. Supply
             // an attempt-local run view so neither runner replenishes it and
@@ -551,6 +582,7 @@ export class SubagentCoordinator {
               task,
               signal: taskRuntime.controller.signal,
               sessionDir: this.sessionDir?.(runtime.record, task),
+              ...(reply ? { reply } : {}),
               onProgress: (progress) => this.applyProgress(runtime, task, attempt === 0 ? progress : {
                 ...progress,
                 ...(progress.usage ? { usage: addUsage(cloneUsage(prior.usage), progress.usage) } : {}),
@@ -565,6 +597,43 @@ export class SubagentCoordinator {
                 turns: prior.turns + safeTurns(result.turns, 0),
                 toolErrors: prior.toolErrors + safeTurns(result.toolErrors, 0),
                 toolSuccesses: prior.toolSuccesses + safeTurns(result.toolSuccesses, 0) };
+            }
+            // Self-healing for a classed run. A spent-credit or server-error refusal moves to the next ranked route at
+            // once; an empty or output-exhausted reply is retried once here with a higher output budget, then moves on.
+            const emptyKind = emptyReplyKind(result);
+            const refusal = result.state === "failed" ? classifyFailure(result.error) : undefined;
+            const hardRefusal = refusal === "quota" || refusal === "http-5xx";
+            const policy = (emptyKind || hardRefusal) && !isTerminal(task.state) && !taskRuntime.stopState && !taskRuntime.controller.signal.aborted
+              && safeTurns(result.turns, 0) < runtime.record.maxTurns && this.remainingRunBudgetMs(runtime) >= MIN_RESUME_BUDGET_MS
+              ? this.replyPolicy?.(runtime.record, task) : undefined;
+            const nextAlternate = policy?.alternates[alternateIndex + 1];
+            if (policy && (emptyKind && !hardRefusal && !retriedOnRoute || nextAlternate !== undefined)) {
+              await result.cleanup;
+              const spent = result.usage?.cost?.total ?? 0;
+              if (emptyKind && !hardRefusal && !retriedOnRoute) {
+                retriedOnRoute = true;
+                task.retriedOnSameRoute = true;
+                reply = { boost: true, ...(policy.maxTokens !== undefined ? { maxTokens: policy.maxTokens } : {}) };
+                task.lastStep = `retry ${emptyKind} with a higher output budget`;
+              } else {
+                alternateIndex += 1;
+                const cause = `${emptyKind ?? refusal}: ${String(result.error ?? "empty reply").slice(0, 200)}`;
+                task.routeFallbacks = [...(task.routeFallbacks ?? []), `${currentRoute}->${nextAlternate}`];
+                task.routeHopDetails = [...(task.routeHopDetails ?? []), { from: currentRoute, to: nextAlternate!, cause, costUsd: Math.max(0, spent - leftRouteCost), seconds: Math.max(0, (this.now() - leftRouteAt) / 1000) }];
+                task.lastStep = `model-fallback:${currentRoute}->${nextAlternate}`;
+                currentRoute = nextAlternate!;
+                leftRouteAt = this.now();
+                leftRouteCost = spent;
+                reply = { alternate: alternateIndex };
+              }
+              prior.usage = cloneUsage(result.usage);
+              prior.turns = safeTurns(result.turns, 0);
+              prior.toolErrors = safeTurns(result.toolErrors, 0);
+              prior.toolSuccesses = safeTurns(result.toolSuccesses, 0);
+              task.usage = cloneUsage(prior.usage);
+              task.turns = prior.turns;
+              this.observe(runtime);
+              continue;
             }
             const transient = result.state === "failed" ? transientFailure(result.error, attempt) : undefined;
             if (transient && safeTurns(result.turns, 0) >= runtime.record.maxTurns) {
@@ -750,6 +819,9 @@ export class SubagentCoordinator {
     runtime.completionCount += 1;
     this.finishRunIfSettled(runtime);
     this.observe(runtime);
+    try { this.onTaskSettled?.(cloneRun(runtime.record), cloneTask(task)); } catch {
+      // Evidence is observation: it must never turn a settled task into a failure.
+    }
     this.notify(runtime);
     this.pruneTerminalRuns();
   }

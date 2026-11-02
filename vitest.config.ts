@@ -29,6 +29,8 @@ export default defineConfig({
       HOME: home,
       STEAK_PI_ROUTING_CONFIG: join(fixtures, "routing.json"),
       STEAK_PI_PAID_ROUTES: join(fixtures, "paid-routes.json"),
+      // The task-class router's evidence store is a state file: tests write theirs under the private HOME.
+      STEAK_PI_ROUTE_EVIDENCE: join(home, "route-evidence.jsonl"),
     },
   },
 });
