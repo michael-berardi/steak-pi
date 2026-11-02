@@ -227,12 +227,14 @@ async function waitPortFree(deps: Deps, port: number, timeoutMs = 10_000): Promi
 /** Stop what Steak Pi started: the supervisor stops its server in order; if the supervisor is gone, the server it
  * recorded (same PID, same start time) is stopped directly. Resolves once the port is released. */
 async function stopRecord(deps: Deps, record: ServerRecord): Promise<{ portReleased: boolean }> {
+  // The server gets exactly one SIGTERM, then SIGKILL: a second SIGTERM makes llama.cpp abort mid-shutdown (a Metal
+  // assertion, 2026-11-02). A live supervisor sends that SIGTERM itself when asked to stop; only without one does stop send it.
   const supervisor = deps.alive(record.supervisorPid, record.supervisorStart);
   if (supervisor) deps.signal(record.supervisorPid, "SIGTERM");
   const deadline = deps.now() + 30_000;
   while (deps.alive(record.supervisorPid, record.supervisorStart) && deps.now() < deadline) await deps.sleep(250);
   if (record.serverPid !== undefined && deps.alive(record.serverPid, record.serverStart)) {
-    deps.signal(record.serverPid, "SIGTERM", true);
+    if (!supervisor) deps.signal(record.serverPid, "SIGTERM", true);
     const until = deps.now() + 15_000;
     while (deps.alive(record.serverPid, record.serverStart) && deps.now() < until) await deps.sleep(250);
     if (deps.alive(record.serverPid, record.serverStart)) deps.signal(record.serverPid, "SIGKILL", true);
@@ -302,7 +304,9 @@ export async function supervise(deps: Deps, id: string, stopRequested: Promise<v
 
 // ---- the real machine -------------------------------------------------------------------------------------------------
 
-const sleepFor = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms).unref?.(); });
+// A referenced timer: the CLI must stay alive while it waits for /health or a stop (an unref'd timer let Node exit mid-await
+// with code 0, so `local ensure` reported success before the server was up and `local stop` left its lock behind).
+const sleepFor = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
 
 function procStart(pid: number): string | undefined {
   try { return execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", timeout: 5000 }).trim() || undefined; } catch { return undefined; }
@@ -359,13 +363,16 @@ export function systemDeps(dir: string): Deps {
       return findOnPath("llama-server");
     },
     spawnSupervisor: (id) => {
-      const log = openSync(join(dir, "server.log"), "a", 0o600);
-      try {
-        const child = spawn(process.execPath, ["--no-warnings", fileURLToPath(new URL("./main.ts", import.meta.url)), "_supervise", id],
-          { detached: true, stdio: ["ignore", log, log], env: process.env, cwd: dir });
-        child.unref();
-        return child.pid ?? 0;
-      } finally { closeSync(log); }
+      // Double fork: a short-lived shell starts the supervisor in the background and exits, so the supervisor belongs to
+      // launchd/init, not to the Pi session that asked for it. Closing that session (UltraTerm stops a slot's whole process
+      // tree) then leaves the server to its idle grace instead of stopping it on the spot (2026-11-02).
+      const log = join(dir, "server.log");
+      const main = fileURLToPath(new URL("./main.ts", import.meta.url));
+      const out = execFileSync("/bin/sh", ["-c", 'umask 077; "$0" --no-warnings "$1" _supervise "$2" </dev/null >>"$3" 2>&1 & echo $!', process.execPath, main, id, log],
+        { encoding: "utf8", env: process.env, cwd: dir, timeout: 10_000 });
+      const pid = Number(out.trim());
+      if (!Number.isInteger(pid) || pid <= 0) throw new LocalError("supervisor-spawn", `could not start the local server supervisor (got ${JSON.stringify(out.trim().slice(0, 40))})`);
+      return pid;
     },
     spawnServer: (binary, args, logFile) => {
       const log = openSync(logFile, "a", 0o600);

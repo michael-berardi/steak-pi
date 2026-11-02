@@ -247,6 +247,43 @@ describe("idle auto-stop (fake clock, fake server)", () => {
   });
 });
 
+describe("one SIGTERM per server", () => {
+  it("stop lets a live supervisor send the server's SIGTERM; it never sends a second one", async () => {
+    // 2026-11-02: a second SIGTERM made llama.cpp abort with a Metal assertion mid-shutdown.
+    const { dir, fake } = setup();
+    fake.state.healthy = true;
+    await ensure(fake.deps, "model-a", manualHolder());
+    const record = readJson<ServerRecord>(join(dir, "server.json"))!;
+    fake.alive.add(7002);
+    writeFileSync(join(dir, "server.json"), JSON.stringify({ ...record, serverPid: 7002, serverStart: "start-7002" }));
+    // The supervisor, asked to stop, has already sent its server the one SIGTERM and exits; the server is still shutting
+    // down (Metal teardown) when stop looks. Stop must wait and then SIGKILL, never SIGTERM it again.
+    const base = fake.deps.signal;
+    fake.deps.signal = (pid, signal, group) => {
+      fake.signals.push({ pid, signal, group: group === true });
+      if (pid === 7002) { if (signal === "SIGKILL") fake.alive.delete(7002); return; }
+      base(pid, signal, group);
+      fake.signals.pop();
+    };
+    await stop(fake.deps);
+    expect(fake.signals.filter((entry) => entry.pid === 7002).map((entry) => entry.signal)).toEqual(["SIGKILL"]);
+  });
+
+  it("without a supervisor, stop sends the server one SIGTERM, then SIGKILL only if it is still there", async () => {
+    const { dir, fake } = setup();
+    fake.state.healthy = true;
+    await ensure(fake.deps, "model-a", manualHolder());
+    const record = readJson<ServerRecord>(join(dir, "server.json"))!;
+    fake.alive.add(7003);
+    writeFileSync(join(dir, "server.json"), JSON.stringify({ ...record, serverPid: 7003, serverStart: "start-7003" }));
+    fake.alive.delete(record.supervisorPid);
+    const base = fake.deps.signal;
+    fake.deps.signal = (pid, signal, group) => { fake.signals.push({ pid, signal, group: group === true }); if (pid === 7003 && signal === "SIGKILL") fake.alive.delete(7003); else if (pid !== 7003) base(pid, signal, group); };
+    await stop(fake.deps);
+    expect(fake.signals.filter((entry) => entry.pid === 7003).map((entry) => entry.signal)).toEqual(["SIGTERM", "SIGKILL"]);
+  });
+});
+
 describe("orphans", () => {
   it("stops a recorded server whose supervisor is gone, then starts fresh", async () => {
     const { dir, fake } = setup();

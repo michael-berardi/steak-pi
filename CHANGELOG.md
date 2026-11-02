@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.20.1 (2026-11-02)
+
+- **`local ensure` waits for the server.** An unreferenced sleep timer let the CLI exit mid-wait with code 0, so `ensure`
+  reported success before `/health` answered and `stop` left its lock behind. The CLI now stays alive until it is done.
+- **A lock left by a process that died is taken over at once** (it records its owner), instead of blocking every local
+  command for two minutes.
+- **Closing a session no longer stops the server on the spot.** The supervisor is started outside the session's process
+  tree, so the server keeps its idle grace for the next user.
+- **One SIGTERM per server.** A second SIGTERM made llama.cpp abort mid-shutdown; `stop` lets the supervisor send it and
+  only follows up with SIGKILL.
+- **A failed start is retried before the next prompt**, instead of every prompt failing until `/reload`.
+
 ## 0.20.0 (2026-11-02)
 
 - **A built-in local-model module: one generic `local` profile you slot any model into.** `steak-pi local add
