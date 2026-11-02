@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock("node:child_process", async (original) => ({
   ...await original<typeof import("node:child_process")>(), spawn: mocks.spawn,
 }));
-import { discoverClaudeModels, getClaudeStatus, killProcessTree } from "../../extensions/claude-code/claude-cli.ts";
+import { discoverClaudeModels, getClaudeStatus, killProcessTree, resetClaudeStatusCache } from "../../extensions/claude-code/claude-cli.ts";
 
 class FakeChild extends EventEmitter {
   pid = 1234567;
@@ -29,6 +29,7 @@ class FakeChild extends EventEmitter {
 let child: FakeChild;
 let stop: (() => Promise<void>) | undefined;
 beforeEach(() => {
+  resetClaudeStatusCache();
   child = new FakeChild();
   mocks.spawn.mockReset().mockImplementation((command: string) => command === "taskkill" ? new FakeChild() : child);
   vi.spyOn(process, "kill").mockImplementation(() => true);

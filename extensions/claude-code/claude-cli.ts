@@ -155,11 +155,66 @@ async function captureProcess(
   }
 }
 
+/** One `claude auth status` per login at a time, and a settled answer reused briefly: every model and provider probe at
+ * startup used to spawn its own CLI (about 50 at once, a 7 GB spike per Pi start, 2026-11-02). A logged-out or uncertain
+ * answer is never cached, so a fresh sign-in is seen on the next check. */
+const STATUS_TTL_MS = 30_000;
+const statusInFlight = new Map<string, { promise: Promise<ClaudeStatus>; waiters: number; abort: AbortController }>();
+const statusCache = new Map<string, { status: ClaudeStatus; expires: number }>();
+
+/** Test seam: forget every shared and cached status. */
+export function resetClaudeStatusCache(): void {
+  statusInFlight.clear();
+  statusCache.clear();
+}
+
 export async function getClaudeStatus(
   envInput: Record<string, string | undefined> = process.env,
   signal?: AbortSignal,
 ): Promise<ClaudeStatus> {
+  signal?.throwIfAborted();
   const env = withConfigDirectory(envInput);
+  const key = JSON.stringify([configuredCommand(env), env.PATH, env.HOME, env.CLAUDE_CONFIG_DIR]);
+  const cached = statusCache.get(key);
+  if (cached && cached.expires > Date.now()) return cached.status;
+  let shared = statusInFlight.get(key);
+  if (!shared) {
+    // One probe per login. It is stopped only when every caller waiting on it has aborted: one caller leaving never fails
+    // the others, and a probe nobody waits for is never left running.
+    const abort = new AbortController();
+    const entry = { promise: undefined as unknown as Promise<ClaudeStatus>, waiters: 0, abort };
+    entry.promise = readClaudeStatus(env, abort.signal).then((status) => {
+      if (status.available && status.loggedIn) statusCache.set(key, { status, expires: Date.now() + STATUS_TTL_MS });
+      return status;
+    }).finally(() => { if (statusInFlight.get(key) === entry) statusInFlight.delete(key); });
+    statusInFlight.set(key, entry);
+    shared = entry;
+  }
+  const entry = shared;
+  entry.waiters++;
+  let left = false;
+  const leave = () => {
+    if (left) return;
+    left = true;
+    if (--entry.waiters === 0 && statusInFlight.get(key) === entry) {
+      statusInFlight.delete(key);
+      entry.abort.abort(signal?.reason);
+    }
+  };
+  if (!signal) {
+    try { return await entry.promise; } finally { if (!left) { left = true; entry.waiters--; } }
+  }
+  return await new Promise<ClaudeStatus>((resolve, reject) => {
+    const onAbort = () => { leave(); reject(signal.reason ?? new Error("aborted")); };
+    signal.addEventListener("abort", onAbort, { once: true });
+    entry.promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+      if (!left) { left = true; entry.waiters--; }
+    });
+  });
+}
+
+async function readClaudeStatus(env: Record<string, string>, signal?: AbortSignal): Promise<ClaudeStatus> {
   const command = await resolveClaudeExecutable(env);
   if (!command) return { available: false, loggedIn: false, subscription: false, detail: INSTALL_HINT };
   // Only Claude Code's own answer `loggedIn: false` means logged out. A check that timed out, crashed or printed
