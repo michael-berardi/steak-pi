@@ -4,6 +4,7 @@ import { createRegistryGuard } from "../src/model-route-policy.ts";
 import { activeTemporaryWorkerRoute, preferredFreeMetadata, selectPreferredFreePhysical, temporaryFreeStartupProvider } from "../src/temporary-free-route.ts";
 import { createExplicitPaidApproval, createSelectedRouteApproval, isAllowlistedPaidRoute, PAID_ROUTE_FLAG } from "../src/explicit-paid-route.ts";
 import { catalogStartupProviders } from "../src/catalog-extras.ts";
+import { providerSessionCleanup } from "../src/provider-session-cleanup.ts";
 
 type Model = NonNullable<ExtensionContext["model"]>;
 
@@ -14,6 +15,10 @@ export default function modelRoutePolicy(pi: ExtensionAPI): void {
   pi.registerProvider(temporaryFreeStartupProvider());
   // Operator catalog extras (`catalogExtras` in routing.json); none are shipped.
   for (const provider of catalogStartupProviders()) pi.registerProvider(provider);
+  const cleanupProviderSession = providerSessionCleanup();
+  pi.on("session_shutdown", (event, ctx) => {
+    if (event.reason !== "reload") cleanupProviderSession(ctx.sessionManager.getSessionId());
+  });
   if (activeTemporaryWorkerRoute()) {
     pi.registerVirtualModel({ ...preferredFreeMetadata, route: (_request, ctx) => selectPreferredFreePhysical(ctx.modelRegistry) });
   }

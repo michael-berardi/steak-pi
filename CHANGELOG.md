@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.20.2 (2026-11-02)
+
+- **Completed workers exit promptly.** Provider connections are closed when their session ends, without interrupting a reload or other sessions.
+
 ## 0.20.1 (2026-11-02)
 
 - **`local ensure` waits for the server.** An unreferenced sleep timer let the CLI exit mid-wait with code 0, so `ensure`
