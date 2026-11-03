@@ -18,6 +18,19 @@ function update(fail = false) {
     env: { PATH: `${root}/bin:/usr/bin:/bin`, HOME: root, PI_CODING_AGENT_DIR: path.join(root, "agent"), TEST_ROOT: root, TEST_CURL_FAIL: fail ? "1" : "0" },
   });
 }
+it("synthetic status resolves a Pi-relative Homebrew package from the agent directory", () => {
+  const agent = path.join(root, "agent");
+  const pkg = path.join(root, "opt", "steak-pi", "libexec");
+  fs.mkdirSync(agent, { recursive: true });
+  fs.mkdirSync(pkg, { recursive: true });
+  fs.writeFileSync(path.join(pkg, "package.json"), JSON.stringify({ name: "steak-pi", version: "9.8.7" }));
+  fs.writeFileSync(path.join(agent, "settings.json"), JSON.stringify({ packages: ["../opt/steak-pi/libexec"] }));
+  const result = spawnSync("/bin/sh", [path.resolve("bin/steak-pi"), "status"], {
+    cwd: root, encoding: "utf8", env: { PATH: `${root}/bin:/usr/bin:/bin`, HOME: root, PI_CODING_AGENT_DIR: agent },
+  });
+  expect(result.status).toBe(0);
+  expect(result.stdout).toContain("../opt/steak-pi/libexec  (v9.8.7)");
+});
 it("synthetic CLI update uses the GitHub API owner/repo path but preserves the Pi git spec", () => {
   const result = update();
   expect(result.status).toBe(0);
