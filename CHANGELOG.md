@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.21.0 (2026-11-03)
+
+- **Task classes can be assigned automatically.** An optional `taskClassRules` list in routing.json gives an implicit text
+  worker task that names no `taskClass` the class of the first matching rule (`when`: `role`, `mayEdit`, `allowBash`,
+  `textPattern`). Explicit classes, models and profiles always win; one wave keeps one inferred class and other tasks ride its
+  route. Rules name only configured classes (a typo is a named configuration error). Steak Pi ships no rule.
+
 ## 0.20.3 (2026-11-02)
 
 - **Homebrew installation status is reported correctly** when Pi stores its package path relative to the agent directory.

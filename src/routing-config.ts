@@ -179,6 +179,8 @@ export interface RoutingConfig {
   workerProfiles?: readonly ConfiguredWorkerProfile[];
   /** Operator-named task classes (`taskClasses`); absent means no class steers any route. */
   taskClasses?: Readonly<Record<string, TaskClassConfig>>;
+  /** Operator rules (`taskClassRules`) that give an implicit text task with no `taskClass` the first matching class; absent: none. */
+  taskClassRules?: readonly TaskClassRule[];
   /** `routeConditions` by route key, kept so a class chain step gets the same `onlyWhen` as a default chain step. */
   routeConditions?: Readonly<Record<string, OnlyWhenCondition>>;
   retiredModelPatterns?: readonly RetiredModelPattern[];
@@ -327,6 +329,39 @@ function parsePriors(value: unknown, key: string, chain: readonly string[]): Non
   }
   return priors;
 }
+export interface TaskClassRule {
+  class: string;
+  when: { role?: "scout" | "worker" | "reviewer"; mayEdit?: boolean; allowBash?: boolean; textPattern?: string };
+}
+const MAX_TASK_CLASS_RULES = 32;
+function parseTaskClassRules(value: unknown, classes: Readonly<Record<string, TaskClassConfig>> | undefined): TaskClassRule[] {
+  const rows = array(value, "taskClassRules");
+  if (rows.length > MAX_TASK_CLASS_RULES) return fail("taskClassRules", `expected at most ${MAX_TASK_CLASS_RULES} rules`);
+  return rows.map((row, index) => {
+    const key = `taskClassRules[${index}]`;
+    if (!object(row)) return fail(key, 'expected { class, when: { role?, mayEdit?, allowBash?, textPattern? } }');
+    for (const field of Object.keys(row)) if (field !== "class" && field !== "when") return fail(`${key}.${field}`, "unknown key (allowed: class, when)");
+    const name = text(row.class, `${key}.class`);
+    if (!classes || !Object.hasOwn(classes, name)) return fail(`${key}.class`, `class ${JSON.stringify(name)} is not in taskClasses`);
+    if (!object(row.when)) return fail(`${key}.when`, "expected an object");
+    const when: TaskClassRule["when"] = {};
+    for (const [field, v] of Object.entries(row.when)) {
+      if (field === "role") {
+        if (v !== "scout" && v !== "worker" && v !== "reviewer") return fail(`${key}.when.role`, "expected scout, worker or reviewer");
+        when.role = v;
+      } else if (field === "mayEdit" || field === "allowBash") {
+        if (typeof v !== "boolean") return fail(`${key}.when.${field}`, "expected true or false");
+        when[field] = v;
+      } else if (field === "textPattern") {
+        const pattern = text(v, `${key}.when.textPattern`);
+        try { new RegExp(pattern, "i"); } catch (error) { return fail(`${key}.when.textPattern`, `invalid regular expression: ${(error as Error).message}`); }
+        when.textPattern = pattern;
+      } else return fail(`${key}.when.${field}`, "unknown key (allowed: role, mayEdit, allowBash, textPattern)");
+    }
+    if (Object.keys(when).length === 0) return fail(`${key}.when`, "a rule needs at least one condition");
+    return { class: name, when };
+  });
+}
 function parseTaskClasses(value: unknown): Record<string, TaskClassConfig> {
   if (!object(value)) return fail("taskClasses", 'expected { "<class>": { chain: ["harness/profile or provider/model", ...], requiresTestGate, note } }');
   const entries = Object.entries(value);
@@ -444,6 +479,7 @@ export function parseRoutingConfig(raw: unknown): RoutingConfig {
     });
   }
   if (raw.taskClasses !== undefined) config.taskClasses = parseTaskClasses(raw.taskClasses);
+  if (raw.taskClassRules !== undefined) config.taskClassRules = parseTaskClassRules(raw.taskClassRules, config.taskClasses);
   if (raw.retiredModelPatterns !== undefined) {
     config.retiredModelPatterns = array(raw.retiredModelPatterns, "retiredModelPatterns").map((entry, index) => {
       const key = `retiredModelPatterns[${index}]`;

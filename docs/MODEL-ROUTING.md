@@ -75,6 +75,12 @@ JavaScript sources, case-insensitive unless noted. Unknown keys are ignored
   // Task classes: the operator's own names (lowercase slugs) for kinds of task, each with the chain that serves
   // it before the default chain. A step is a worker profile id or an exact provider/model route. A task opts in
   // with `taskClass` in its ultraterm_subagents call. Steak Pi ships no class.
+  // Optional: rules that give an implicit text task with no taskClass the first matching class (role, mayEdit, allowBash,
+  // textPattern; case-insensitive JavaScript regex). Explicit taskClass/model/profile always win. Steak Pi ships none.
+  "taskClassRules": [
+    { "class": "class-a", "when": { "role": "scout" } },
+    { "class": "class-a", "when": { "textPattern": "\\b(write|add)\\b.{0,40}\\btests?\\b" } }
+  ],
   "taskClasses": {
     "class-a": { "chain": ["steak-pi/local-a", "provider-a/model-name"], "requiresTestGate": true, "note": "routed on measured test-gated results" },
     // Evidence-driven ranking and self-healing are on whenever a class has priors or recorded evidence.
@@ -156,6 +162,7 @@ What each key replaces, and what happens without it:
 | `workerProfiles` | only the neutral virtual `steak-pi/preferred-free` and harness-manifest profiles exist |
 | `workerProfiles[].ensure` | no launch hook runs; a route that needs a server must already be up |
 | `taskClasses` | a task's `taskClass` is ignored with a note in the dispatch summary; routing is unchanged |
+| `taskClassRules` | a task joins a class only when its caller names `taskClass` |
 | `taskClasses.<class>.priors`, recorded evidence | the class chain order serves; no exploration, no demotion, nothing is learned from a class with no evidence |
 | `retiredModelPatterns`, `retiredProfiles` | nothing is retired |
 | `catalogExtras` | provider catalogs are exactly what Pi ships |
