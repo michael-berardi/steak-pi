@@ -42,7 +42,7 @@ describe("taskClassRules", () => {
 
   it("one wave keeps one inferred class; tasks with another ride the wave route", () => {
     configure({ taskClasses: CLASSES, taskClassRules: RULES });
-    const { tasks, inferred } = applyInferredTaskClasses([
+    const { tasks, inferred } = applyInferredTaskClasses<{ label: string; task: string; mayEdit: boolean; taskClass?: string }>([
       { label: "t1", task: "Write tests for a", mayEdit: true },
       { label: "t2", task: "Refactor b", mayEdit: true },
       { label: "t3", task: "Add unit tests for c", mayEdit: true },

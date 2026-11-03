@@ -12,6 +12,7 @@ import { capCacheBreakpoints, MAX_CACHE_BREAKPOINTS } from "./cache-control.ts";
 import { ClaudeWaitLimitError, transportTimeout, waitForOperation } from "./wait.ts";
 import { TurnRelay } from "./turn-relay.ts";
 import { usageCreditsAllowed, usageCreditsChargeError, type RateLimitInfo } from "./billing.ts";
+import { assertAccountReserve, reportRateLimit } from "./account-reserve.ts";
 import { envFlagEnabled } from "./env.ts";
 import type { DiscoveredClaudeModel } from "./model-catalog.ts";
 import type {
@@ -1119,6 +1120,12 @@ class ClaudeProcess {
     if (!this.isAlive()) throw new Error("Claude Code process is no longer available");
     input.signal?.throwIfAborted();
 
+    // A lent account's owner reserve is checked before every request, not only when the session started:
+    // a long session must stop at the floor instead of running the account into its limit.
+    const accountEnv = { ...process.env, ...input.env };
+    await assertAccountReserve(accountEnv);
+    input.signal?.throwIfAborted();
+
     let sawMessageStop = false;
     const deliver = (event: AnthropicStreamEvent) => {
       if (event.type === "message_stop") sawMessageStop = true;
@@ -1233,6 +1240,10 @@ class ClaudeProcess {
       if (!usage || typeof usage.input_tokens !== "number" || typeof usage.output_tokens !== "number") {
         throw new Error("Claude Code response did not include complete token usage");
       }
+
+      // Keep the router's reading current, so the next request's reserve check sees this turn.
+      const unrecorded = await reportRateLimit(accountEnv, rateLimit);
+      if (unrecorded) process.emitWarning(unrecorded, "ClaudeAccountReserve");
 
       // The response is already charged at this point, but stopping here keeps
       // Pi's agent loop from issuing more requests against usage credits.

@@ -56,6 +56,7 @@ import { truncatePiWorkerOutput, workerFinalReportInstructions, workerImplementa
 import { workerJournal } from "./coordinator.ts";
 import { turnBudgetPromptLine } from "./turn-budget.ts";
 import { PROCESS_LISTING_GUIDANCE } from "./process-listing-guidance.ts";
+import { assertAccountReserve, reportRateLimit, type RouterCall } from "../../extensions/claude-code/account-reserve.ts";
 import { assertClaudeReviewArgsShellFree, claudeShellPolicy } from "./claude-review-permissions.ts";
 import {
   admitClaudeApiRoute, assertClaudeApiStatus, claudeApiModelOf, claudeApiReceipt, receiptText,
@@ -377,6 +378,7 @@ export type ClaudeStreamEvent =
   | { kind: "tool_result"; isError: boolean; results: Array<{ id: string; isError: boolean }> }
   | { kind: "result"; subtype?: string; isError: boolean; result?: string; usage?: unknown; totalCostUsd?: number; numTurns?: number; models?: string[]; usageLimit?: true }
   | { kind: "replay"; uuid: string }
+  | { kind: "rate_limit"; info: Record<string, unknown>; sessionId?: string }
   | { kind: "other" }
   | { kind: "malformed" };
 
@@ -461,6 +463,12 @@ export function parseClaudeStreamLine(line: string): ClaudeStreamEvent {
       return { kind: "replay", uuid: event.uuid };
     }
     return { kind: "other" };
+  }
+  if (event.type === "rate_limit_event") {
+    const info = (parsed as { rate_limit_info?: unknown }).rate_limit_info;
+    const session = (parsed as { session_id?: unknown }).session_id;
+    if (!info || typeof info !== "object" || Array.isArray(info)) return { kind: "other" };
+    return { kind: "rate_limit", info: info as Record<string, unknown>, ...(typeof session === "string" ? { sessionId: session } : {}) };
   }
   if (event.type === "result") {
     if (typeof event.subtype !== "string" || typeof event.is_error !== "boolean"
@@ -562,6 +570,8 @@ export interface ClaudeWorkerRunnerOptions {
   /** Test seams; production always probes the official CLI with the child environment. */
   subscriptionAuthStatus?: (env: NodeJS.ProcessEnv) => Promise<unknown>;
   accountCommand?: AccountCommand;
+  /** Test seam for the per-turn owner-reserve check; production asks the UltraTerm account router. */
+  reserveRouter?: RouterCall;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -715,6 +725,8 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
       const previous = task.subscriptionReceipt;
       if (resuming && !admission && !previous && (!options.spawn || options.subscriptionAuthStatus)) throw new Error("Claude resume has no authenticated account receipt; inspect legacy work before a new dispatch");
       if (previous && (previous.account !== run.claudeAccount || previous.configMode !== (childEnv.CLAUDE_CONFIG_DIR ? "explicit" : "default") || previous.configDir !== childEnv.CLAUDE_CONFIG_DIR)) throw new Error("Claude subscription namespace changed since the previous attempt; no inference started");
+      // A lent account's owner reserve also binds a worker that inherited the account from its parent session.
+      if (!admission) await assertAccountReserve(childEnv, options.reserveRouter);
     } catch (error) { return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
     let apiPreflight = false;
     if (admission) {
@@ -855,6 +867,22 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
           return;
         }
         if (event.kind === "replay") { relay?.replay(event.uuid); continue; }
+        if (event.kind === "rate_limit") {
+          // Every official usage reading reaches the account router, and a lent account's owner reserve stops the
+          // worker as soon as it is reached, not only at launch (2026-11-03: a 62-turn reviewer ran a lent account
+          // past its five-hour floor into its limit because only the launch was checked).
+          if (subscriptionReceipt && !admission) {
+            const routedEnv = { ...childEnv };
+            void reportRateLimit(routedEnv, event.info, event.sessionId, options.reserveRouter)
+              .then(() => assertAccountReserve(routedEnv, options.reserveRouter))
+              .catch((error: unknown) => {
+                if (state.failure) return;
+                state.failure = `${errorText(error)}; worker stopped`;
+                killOnce(true);
+              });
+          }
+          continue;
+        }
         if (terminalResult && (event.kind === "assistant" || event.kind === "result")) {
           state.failure = "Claude CLI emitted model output after its final result";
           killOnce(false);
