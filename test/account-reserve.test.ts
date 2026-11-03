@@ -44,6 +44,12 @@ describe("owner reserve on a lent Claude account", () => {
     expect(sent).toMatchObject({ account: "lent", type: "rate_limit_event", rate_limit_info: info });
   });
 
+  it("carries the CLI session id, so the router also refreshes the dial's snapshot", async () => {
+    const calls: Array<{ args: string[]; stdin?: string }> = [];
+    await reportRateLimit({ ULTRATERM_PROVIDER_ACCOUNT: "lent" }, info, "0b8a2f8e-1c2d-4e5f-8a9b-0c1d2e3f4a5b", router({ ok: true }, calls));
+    expect(JSON.parse(calls[0].stdin!).session_id).toBe("0b8a2f8e-1c2d-4e5f-8a9b-0c1d2e3f4a5b");
+  });
+
   it("sends nothing for a reading without usage windows or without an account", () => {
     expect(rateLimitIngestPayload("lent", { status: "allowed" })).toBeUndefined();
   });

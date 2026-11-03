@@ -1153,6 +1153,7 @@ class ClaudeProcess {
     let result: NativeResult | undefined;
     let nativeError: string | undefined;
     let rateLimit: RateLimitInfo | undefined;
+    let rateLimitSession: string | undefined;
 
     try {
       await waitForOperation((async () => {
@@ -1186,6 +1187,7 @@ class ClaudeProcess {
           break;
         } else if (event.type === "rate_limit_event") {
           if (event.rate_limit_info && typeof event.rate_limit_info === "object") rateLimit = event.rate_limit_info;
+          if (typeof event.session_id === "string") rateLimitSession = event.session_id;
         } else if (event.type === "stream_event" && !this.relay.used) {
           deliver(event.event);
         }
@@ -1242,7 +1244,8 @@ class ClaudeProcess {
       }
 
       // Keep the router's reading current, so the next request's reserve check sees this turn.
-      const unrecorded = await reportRateLimit(accountEnv, rateLimit);
+      // The session id lets the router refresh the per-account snapshot the usage dial reads, not only its own reading.
+      const unrecorded = await reportRateLimit(accountEnv, rateLimit, rateLimitSession);
       if (unrecorded) process.emitWarning(unrecorded, "ClaudeAccountReserve");
 
       // The response is already charged at this point, but stopping here keeps

@@ -55,7 +55,7 @@ export type NativeOutputEvent =
   | { type: "assistant"; message: NativeMessage; error?: unknown }
   | NativeResult
   | { type: "stream_event"; event: AnthropicStreamEvent }
-  | { type: "rate_limit_event"; rate_limit_info?: RateLimitInfo }
+  | { type: "rate_limit_event"; rate_limit_info?: RateLimitInfo; session_id?: string }
   | { type: "control_response"; response: JsonRecord };
 
 export type AnthropicStreamEvent =
