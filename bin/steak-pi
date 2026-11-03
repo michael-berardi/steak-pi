@@ -60,6 +60,9 @@ pi_spec() {
   [ -f "$SETTINGS" ] || return 1
   hit=$(grep -o "\"[^\"]*$REPO@[^\"]*\"" "$SETTINGS" | head -n 1)
   [ -n "$hit" ] && { printf '%s' "$hit" | tr -d '"'; return 0; }
+  # Pi stores local paths relative to the agent directory, including Homebrew's opt path.
+  hit=$(grep -o '"[^"]*opt/steak-pi/libexec"' "$SETTINGS" | head -n 1)
+  [ -n "$hit" ] && { printf '%s' "$hit" | tr -d '"'; return 0; }
   # A release-folder entry may be relative to the Pi agent dir ("../../.local/share/steak-pi/releases/<v>/package").
   hit=$(grep -o "\"[^\"']*steak-pi/releases/[^\"/]*/package\"" "$SETTINGS" | head -n 1)
   [ -n "$hit" ] && { printf '%s' "$hit" | tr -d '"'; return 0; }
@@ -206,7 +209,8 @@ cmd_status() {
     root="${current#git:$REPO@}"
     case "$current" in
       git:*) loc="$PI_DIR/git/$REPO";;
-      *) loc="$current";;
+      /*) loc="$current";;
+      *) loc="$PI_DIR/$current";;
     esac
     pver=$(pkg_version "$loc" 2>/dev/null || echo "unknown")
     say "pi integration    $current  (v$pver)"

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.20.3 (2026-11-02)
+
+- **Homebrew installation status is reported correctly** when Pi stores its package path relative to the agent directory.
+
 ## 0.20.2 (2026-11-02)
 
 - **Completed workers exit promptly.** Provider connections are closed when their session ends, without interrupting a reload or other sessions.
