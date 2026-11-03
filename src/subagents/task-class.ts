@@ -12,7 +12,7 @@
  * classes in one wave are refused, because they ask for different routes.
  */
 import { isRetiredRoute } from "../retired-model-selection.ts";
-import { routeKey, routingConfigOrEmpty, TASK_CLASS_MAX_LENGTH, TASK_CLASS_PATTERN, type TaskClassConfig } from "../routing-config.ts";
+import { routeKey, routingConfigOrEmpty, TASK_CLASS_MAX_LENGTH, TASK_CLASS_PATTERN, type TaskClassConfig, type TaskClassRule } from "../routing-config.ts";
 import type { TaskClassRanking, TaskClassStep, TaskClassWalk } from "../model-route-policy.ts";
 import type { WorkerProfile } from "./model-selection.ts";
 import type { RouteEvidenceStore } from "./route-evidence.ts";
@@ -39,6 +39,43 @@ export interface WaveTaskClass {
   unknown: string[];
   /** Labels of tasks that declared no class, or one that is not configured, and so ride the wave's route. */
   riders: string[];
+}
+
+/** A task as the rules see it. */
+export interface RuleTask { label: string; task: string; role?: string; mayEdit?: boolean; allowBash?: boolean; taskClass?: string }
+
+/** The class the operator's `taskClassRules` give a task that names none, or undefined. Only configured classes are returned.
+ * Explicit classes always win; Steak Pi ships no rule (routing.json only). */
+export function inferTaskClass(task: RuleTask, rules: readonly TaskClassRule[] | undefined = routingConfigOrEmpty().taskClassRules): { name: string; rule: number } | undefined {
+  if (typeof task.taskClass === "string" || !rules) return undefined;
+  const role = task.role ?? "worker";
+  for (const [index, rule] of rules.entries()) {
+    const w = rule.when;
+    if (w.role !== undefined && w.role !== role) continue;
+    if (w.mayEdit !== undefined && (task.mayEdit === true) !== w.mayEdit) continue;
+    if (w.allowBash !== undefined && (task.allowBash === true) !== w.allowBash) continue;
+    if (w.textPattern !== undefined && !new RegExp(w.textPattern, "i").test(task.task)) continue;
+    if (configuredTaskClass(rule.class) === undefined) continue;
+    return { name: rule.class, rule: index };
+  }
+  return undefined;
+}
+
+/** Give every task that names no class its inferred class (copies; the input is not changed). One wave runs one route, so when
+ * the inferred classes differ, only the class of the first inferred task is kept and the others ride the wave's route. */
+export function applyInferredTaskClasses<T extends RuleTask>(tasks: readonly T[], rules?: readonly TaskClassRule[]): { tasks: T[]; inferred: Array<{ label: string; name: string; rule: number }> } {
+  const explicit = tasks.find((task) => typeof task.taskClass === "string" && configuredTaskClass(task.taskClass) !== undefined)?.taskClass;
+  let chosen: string | undefined = explicit;
+  const inferred: Array<{ label: string; name: string; rule: number }> = [];
+  const out = tasks.map((task) => {
+    const hit = inferTaskClass(task, rules);
+    if (!hit) return task;
+    if (chosen !== undefined && hit.name !== chosen) return task;
+    chosen = hit.name;
+    inferred.push({ label: task.label, ...hit });
+    return { ...task, taskClass: hit.name };
+  });
+  return { tasks: out, inferred };
 }
 
 /** Read what a wave's tasks declare. Throws {@link TaskClassConflictError} for two configured classes. */

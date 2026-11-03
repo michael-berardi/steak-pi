@@ -17,7 +17,7 @@ import { assertActiveModelSelector } from "../src/retired-model-selection.ts";
 import { loadWorkerProfiles, resolveWorkerSelection, resolveClaudeCodeSelection, assertClaudeCodeImageAdmission, claudeCodeModelOf, claudeCodeModelName, claudeFallbackTier, defaultClaudeCodeRoute, isClaudeCodeEffort, resolveClaudeCodeEffort, CLAUDE_CODE_EFFORTS, CLAUDE_CODE_ROUTES, type ClaudeFallbackTier, type WorkerProfile } from "../src/subagents/model-selection.ts";
 import { admitClaudeApiRoute, anyClaudeRouteModelOf, claudeApiConcurrency, claudeApiModelOf, CLAUDE_API_ROUTES, formatClaudeApiReceipt, isClaudeApiRoute, resolveClaudeApiSelection, stampClaudeApiRun } from "../src/subagents/claude-api-route.ts";
 import { AUTOMATIC_CHAIN_APPROVAL, NoChainRouteError, isDefaultTextChainExhausted, onlyWhenSkipReason, textWorkerChain, type ChainOptions, type TaskClassStep, type TaskClassWalk, type WorkerRouteStep } from "../src/model-route-policy.ts";
-import { analyzeWaveClasses, configuredTaskClass, ignoredTaskClass, resolveTaskClassWalk, type WaveTaskClass } from "../src/subagents/task-class.ts";
+import { analyzeWaveClasses, applyInferredTaskClasses, configuredTaskClass, ignoredTaskClass, resolveTaskClassWalk, type WaveTaskClass } from "../src/subagents/task-class.ts";
 import { RouteEvidenceStore, routeEvidencePath, recordSettledTask } from "../src/subagents/route-evidence.ts";
 import { classReport, describeDecision, formatClassReport, settingsOf, type Rng } from "../src/subagents/route-ranking.ts";
 import { isEnsureRefusal, withProfileEnsure, type EnsureExec } from "../src/subagents/profile-ensure.ts";
@@ -1834,7 +1834,7 @@ export function createUltratermSubagentsExtension(
      * throws, exactly as a single dispatch always did.
      */
     const dispatchWave = async (rawParams: unknown, signal: AbortSignal | undefined, onUpdate: RunBinding["onUpdate"], ctx: ExtensionContext, fallThroughs: readonly QuotaFallThrough[]) => {
-      const requested = rawParams as UltratermSubagentsParams;
+      let requested = rawParams as UltratermSubagentsParams;
       const startupWindowMs = dependencies.startupWindowMs ?? DEFAULT_STARTUP_WINDOW_MS;
       // Do not let a mixed implicit wave silently bypass the configured review
       // standard or spend expert quota on routine implementation leaves.
@@ -1893,6 +1893,10 @@ export function createUltratermSubagentsExtension(
       const quotaRouted = implicitRoute && !hasReviewer && requested.requireImages !== true;
       // Task classes steer only an implicit text worker wave, and a wave runs one route: two configured classes
       // in one wave are refused here, before any approval, checkpoint or worker exists.
+      // Operator taskClassRules (routing.json) classify an implicit text wave's tasks that name no class, so routine subagent and bot
+      // work reaches the routes measured best for it without every caller naming one. Explicit classes and routes always win.
+      const inferredClasses = quotaRouted ? applyInferredTaskClasses(requested.tasks) : { tasks: requested.tasks, inferred: [] };
+      if (inferredClasses.inferred.length) requested = { ...requested, tasks: inferredClasses.tasks };
       const waveClasses = analyzeWaveClasses(requested.tasks, { refuseConflict: quotaRouted });
       const classWalk = quotaRouted && waveClasses.active
         ? resolveTaskClassWalk(waveClasses.active.name, waveClasses.active.config, dependencies.profiles ?? loadWorkerProfiles(),
