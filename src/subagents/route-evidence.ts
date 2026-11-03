@@ -23,7 +23,7 @@ export type EvidenceOutcome = "pass" | "fail" | "unknown";
 /** Where the outcome came from, weakest last: a reviewer's verdict, a test gate the worker reported, an
  * operator's explicit record, or only the worker's own final state. */
 export type EvidenceSource = "verification" | "test-gate" | "operator" | "worker-state";
-export const FAILURE_KINDS = ["empty-output", "reasoning-exhausted", "tool-error", "http-4xx", "http-5xx", "quota", "other"] as const;
+export const FAILURE_KINDS = ["empty-output", "reasoning-exhausted", "tool-error", "http-4xx", "http-5xx", "quota", "rate-limit", "other"] as const;
 export type FailureKind = (typeof FAILURE_KINDS)[number];
 
 export interface TaskEvidence {
@@ -237,8 +237,11 @@ export function classifyFailure(error: string | undefined): FailureKind {
   // A budget stop says nothing about the route; its numbers must not read as an HTTP status.
   if (/turn.limit|-turn|turn budget|time budget|deadline|timed out after/i.test(message) && !/\b402\b|insufficient[_ ]credits/i.test(message)) return "other";
   if (/\b402\b|insufficient[_ ]credits|requires more credits|no endpoints? (?:found|available)|endpoints? out of \d+ requested|subscription_quota_exceeded|usage limit|quota[_ -]?(?:exhausted|exceeded|reached)/i.test(message)) return "quota";
+  // A 429 or rate limit is the route throttling right now, not a 4xx defect: it is held out at once (2026-11-03: a route kept
+  // receiving scouts while every call came back 429, because a 4xx only demotes after three in a row).
+  if (/\b429\b|too many requests|rate.?limit/i.test(message)) return "rate-limit";
   if (/\b5\d\d\b|overloaded|service unavailable|bad gateway|gateway time-?out/i.test(message)) return "http-5xx";
-  if (/\b4\d\d\b|rate.?limit/i.test(message)) return "http-4xx";
+  if (/\b4\d\d\b/i.test(message)) return "http-4xx";
   if (/no final output|produced no (?:final )?(?:output|answer)|empty (?:reply|response|output)/i.test(message)) return "empty-output";
   if (/out of output tokens|stopReason length|max_tokens|output budget|reasoning[^.]*(?:exhaust|budget|ran out)/i.test(message)) return "reasoning-exhausted";
   if (/tool[^.]*(?:error|fail)|(?:error|fail)[^.]*tool/i.test(message)) return "tool-error";

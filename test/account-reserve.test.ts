@@ -53,3 +53,23 @@ describe("owner reserve on a lent Claude account", () => {
     expect(event).toMatchObject({ kind: "rate_limit", info, sessionId: "0b8a2f8e-1c2d-4e5f-8a9b-0c1d2e3f4a5b" });
   });
 });
+
+import { buildPiWorkerSystemPrompt, WORKER_CHECK_SCOPE } from "../src/subagents/pi-worker.ts";
+import { buildClaudeWorkerPrompt } from "../src/subagents/claude-worker.ts";
+
+describe("worker check scope (2026-11-03: Terra workers refused builds and tests their task required)", () => {
+  it("never forbids a build, linter or test suite the task asks for", () => {
+    expect(WORKER_CHECK_SCOPE).toMatch(/ask for a build, linter or full test suite, run exactly what they ask/);
+    expect(WORKER_CHECK_SCOPE).toMatch(/without an AGENTS\.md is not a reason to stop/);
+    expect(WORKER_CHECK_SCOPE).not.toMatch(/^Do not run project-wide/);
+  });
+
+  it("both worker prompts carry it and neither keeps the unconditional ban", () => {
+    const run = { id: "r", goal: "g", constraints: [], contract: undefined, maxTurns: 8, model: "x/y" } as any;
+    const task = { id: "t", label: "l", task: "Run npm test", ownedPaths: ["/tmp/x"], mayEdit: true } as any;
+    for (const prompt of [buildPiWorkerSystemPrompt(run, task), buildClaudeWorkerPrompt(run, task)]) {
+      expect(prompt).toContain(WORKER_CHECK_SCOPE);
+      expect(prompt).not.toMatch(/Do not run project-wide builds, linters, or test suites\./);
+    }
+  });
+});

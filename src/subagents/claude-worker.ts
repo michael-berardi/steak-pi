@@ -52,7 +52,7 @@ import type { ChildProcess } from "node:child_process";
 import { OUTPUT_LIMIT, addUsage, emptyUsage, harnessOf, sanitizeUsage, type RunRecord, type TaskRecord,
   type ClaudeSubscriptionReceipt, type ClaudeApiReceipt, type UsageTotals, type WorkerProgress, type WorkerResult, type WorkerRunner } from "./types.ts";
 import { CLAUDE_CODE_DEFAULT_EFFORT, CLAUDE_CODE_EFFORTS, CLAUDE_CODE_MODEL, CLAUDE_CODE_ROUTE, ClaudeCodeEffortError, claudeCodeModelName, claudeCodeModelOf, isClaudeCodeEffort, type ClaudeCodeEffort, type ClaudeCodeModel } from "./model-selection.ts";
-import { truncatePiWorkerOutput, workerFinalReportInstructions, workerImplementationGate, workerTestGate } from "./pi-worker.ts";
+import { truncatePiWorkerOutput, WORKER_CHECK_SCOPE, workerFinalReportInstructions, workerImplementationGate, workerTestGate } from "./pi-worker.ts";
 import { workerJournal } from "./coordinator.ts";
 import { turnBudgetPromptLine } from "./turn-budget.ts";
 import { PROCESS_LISTING_GUIDANCE } from "./process-listing-guidance.ts";
@@ -342,7 +342,7 @@ export function buildClaudeWorkerPrompt(run: RunRecord, task: TaskRecord, relay 
     ...(claudeApiModelOf(run.model) ? ["This session runs in the CLI's minimal bare mode: Grep, Glob, Write and NotebookEdit may not be provided, so read files with Read and change files with Edit. The tools you actually hold are the ones available."] : []),
     ...(run.selection?.images ? ["Image inspection uses native Read on image files staged under the run cwd; inline attachments and image relay are unsupported. Read every image you claim to have inspected."] : []),
     relay ? CLAUDE_RELAY_PROMPT : "There is no relay tool on this harness: peer messaging is unsupported. Report coordination needs in your final report instead.",
-    "Do not run project-wide builds, linters, or test suites. Run only the focused checks needed for this leaf.",
+    WORKER_CHECK_SCOPE,
     "You have no commit, push, or deploy permission; this prompt grants none.",
     ...workerImplementationGate(run, task),
     ...workerTestGate(run, task),

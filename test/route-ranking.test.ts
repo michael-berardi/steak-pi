@@ -218,6 +218,11 @@ describe("self-healing: the floor, demotion, re-probe and promotion", () => {
     const health = routeHealth(tasks, [], settings({ demoteAfter: 50 }), clock + 1000);
     expect(health).toMatchObject({ state: "demoted", reason: "quota" });
   });
+  it("holds a rate-limited route out at once (2026-11-03: a route kept getting scouts while returning 429)", () => {
+    const tasks = [...many("route-a", 10, 0), row("route-a", "fail", { failureKind: "rate-limit" })];
+    const health = routeHealth(tasks, [], settings({ demoteAfter: 50 }), clock + 1000);
+    expect(health).toMatchObject({ state: "demoted", cause: "route is rate-limited (429)" });
+  });
   it("ignores unknown outcomes", () => {
     const tasks = [row("route-a", "fail"), row("route-a", "unknown"), row("route-a", "fail"), row("route-a", "unknown"), row("route-a", "fail")];
     expect(routeHealth(tasks, [], settings({ demoteAfter: 3 }), clock + 1)).toMatchObject({ state: "demoted", consecutiveFailures: 3 });
