@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.22.0 (2026-11-03)
+
+- **A lent Claude account's owner reserve now holds for every request, not only at launch.** When a session or a USAP Claude
+  worker runs on an account the UltraTerm account router reserves (for example "keep the last 20% of the five-hour window"),
+  each request asks the router first and stops with a named, non-retried error once the reserve is reached. Each turn's
+  official usage reading is fed back to the router, so the next check sees it. Before, a long session or a long headless
+  reviewer that started under the floor ran the account into its limit. Without the router both checks are inert.
+
 ## 0.21.0 (2026-11-03)
 
 - **Task classes can be assigned automatically.** An optional `taskClassRules` list in routing.json gives an implicit text
