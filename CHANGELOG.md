@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.22.2 (2026-11-03)
+
+- **The usage dial of a lent Claude account stays current.** Each turn's reading now carries the CLI session id, so the router
+  refreshes the snapshot the dial reads, not only its own copy.
+
 ## 0.22.1 (2026-11-03)
 
 - **Updating no longer deletes the release running sessions load.** The rollback kept is the release Pi was loading, not the
