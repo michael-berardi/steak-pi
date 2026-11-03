@@ -145,7 +145,7 @@ describe("failure kinds", () => {
     ["503 Service Unavailable", "http-5xx"],
     ["upstream error 502 bad gateway", "http-5xx"],
     ["provider overloaded", "http-5xx"],
-    ["HTTP 429 Too Many Requests", "http-4xx"],
+    ["HTTP 429 Too Many Requests", "rate-limit"],
     ["404 model not found", "http-4xx"],
     ["Child produced no final output", "empty-output"],
     ["Child ran out of output tokens before a final answer (stopReason length)", "reasoning-exhausted"],

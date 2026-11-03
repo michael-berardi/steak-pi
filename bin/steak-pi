@@ -116,6 +116,12 @@ update_release_folder() {
   command -v git >/dev/null 2>&1 || die "git not found; needed to download $tag."
   command -v npm >/dev/null 2>&1 || die "npm not found; needed to install $tag's dependencies."
   dest="$root/$ver"
+  # The release Pi loads now is the rollback, not this CLI's own version: a Homebrew CLI can be older than the release folder Pi
+  # runs (2026-11-03: a 0.20.3 CLI updated a 0.21.0 install, "kept" a 0.20.3 folder that did not exist and deleted 0.21.0 under the
+  # live sessions loading it, so none of them could start a Claude worker).
+  pinned=$(pi_spec) || pinned=""
+  pinned=${pinned%/package}; pinned=${pinned##*/}
+  [ -n "$pinned" ] || die "cannot tell which release Pi loads from $SETTINGS; nothing was changed"
   if [ ! -f "$dest/package/package.json" ]; then
     stage=$(mktemp -d "$root/.staging-$ver.XXXXXX") || die "cannot create a staging folder in $root"
     trap 'rm -rf "$stage"' EXIT INT TERM
@@ -140,13 +146,13 @@ update_release_folder() {
     if (!hit) { console.error("no release-folder entry in " + file); process.exit(1); }
     const tmp = file + ".steak-pi-update.tmp"; fs.writeFileSync(tmp, JSON.stringify(s, null, 2) + "\n", { mode: 0o600 }); fs.renameSync(tmp, file);
   ' "$SETTINGS" "$root" "$ver" || die "could not re-point $SETTINGS at $ver"
-  # Exactly one rollback: keep the version that was running, remove every other old release.
+  # Exactly one rollback: keep the release Pi was loading (running sessions still use it), remove every other old release.
   for old in "$root"/*/; do
     old=${old%/}; name=${old##*/}
-    case "$name" in "$ver"|"$VERSION"|.staging-*) continue;; esac
+    case "$name" in "$ver"|"$pinned"|.staging-*) continue;; esac
     rm -rf "$old"
   done
-  say "Steak Pi updated: $VERSION -> $ver (rollback kept: $root/$VERSION). Restart Pi or run /reload."
+  say "Steak Pi updated: $pinned -> $ver (rollback kept: $root/$pinned). Restart Pi or run /reload."
 }
 
 cmd_update() {
@@ -159,7 +165,8 @@ cmd_update() {
   if root=$(release_root); then
     TAG=$(latest_tag) || die "cannot reach GitHub to find the latest release."
     [ -n "$TAG" ] || die "no published release found."
-    if [ "${TAG#v}" = "$VERSION" ]; then say "Steak Pi is up to date ($VERSION)."; exit 0; fi
+    loaded=$(pi_spec) || loaded=""; loaded=${loaded%/package}; loaded=${loaded##*/}
+    if [ "${TAG#v}" = "$loaded" ]; then say "Steak Pi is up to date ($loaded)."; exit 0; fi
     update_release_folder "$root" "$TAG"
     exit 0
   fi

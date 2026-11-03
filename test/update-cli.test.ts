@@ -57,6 +57,16 @@ describe("steak-pi update for release-folder installs", () => {
     expect(existsSync(join(f.releases, "0.1.0"))).toBe(false); // older releases pruned
   });
 
+  it("keeps the release Pi loads as the rollback even when the CLI itself is older (2026-11-03)", () => {
+    // A Homebrew CLI at 0.1.0 updating a Pi that loads 0.16.0 must keep 0.16.0 (live sessions load worker modules from it).
+    const f = fixture("0.16.0", "0.17.0");
+    const r = run(f, "0.1.0", ["update"], "v0.17.0");
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toContain("Steak Pi updated: 0.16.0 -> 0.17.0");
+    expect(existsSync(join(f.releases, "0.16.0", "package"))).toBe(true);
+    expect(existsSync(join(f.releases, "0.1.0"))).toBe(false);
+  });
+
   it("is a no-op when already up to date", () => {
     const f = fixture("0.16.0", "0.16.0");
     const r = run(f, "0.16.0", ["update"], "v0.16.0");

@@ -158,6 +158,7 @@ export function routeHealth(tasks: readonly TaskEvidence[], probeTimes: readonly
     const window = decided.slice(Math.max(windowStart, index + 1 - settings.window), index + 1);
     const passes = window.filter((item) => item.outcome === "pass").length;
     if (task.failureKind === "quota") demoted = { reason: "quota", cause: "route refused on spent credits or a usage limit (quota)", since: task.at };
+    else if (task.failureKind === "rate-limit") demoted = { reason: "quota", cause: "route is rate-limited (429)", since: task.at };
     else if (consecutive >= settings.demoteAfter) {
       const kinds = [...new Set(decided.slice(index + 1 - consecutive, index + 1).map((item) => item.failureKind ?? "other"))].join(", ");
       demoted = { reason: "failures", cause: `${consecutive} consecutive failures (${kinds})`, since: task.at };

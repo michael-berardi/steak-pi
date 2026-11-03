@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.22.1 (2026-11-03)
+
+- **Updating no longer deletes the release running sessions load.** The rollback kept is the release Pi was loading, not the
+  CLI's own version. A Homebrew CLI older than the release folder had deleted the live release, and every running session then
+  failed to start a Claude worker ("the staged runtime ... was replaced").
+- **Workers run the builds, linters and test suites their task asks for.** Focused checks stay the default, but a task,
+  constraint or contract that requires a full suite now wins. A repository without an AGENTS.md is no longer a reason to stop.
+- **A rate-limited (429) route is held out of evidence routing at once,** instead of after three failures in a row.
+
 ## 0.22.0 (2026-11-03)
 
 - **A lent Claude account's owner reserve now holds for every request, not only at launch.** When a session or a USAP Claude

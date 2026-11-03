@@ -337,6 +337,17 @@ export function workerFinalReportInstructions(): string[] {
   ];
 }
 
+/**
+ * The default check scope. Workers run focused checks by default, but the parent's task, constraints or contract may require a
+ * build, linter or full test suite, and then that requirement wins (2026-11-03: an unconditional "do not run project-wide builds,
+ * linters, or test suites" made Terra workers stop and refuse checks their task explicitly required). A missing AGENTS.md is not
+ * a reason to refuse: the parent's task and ownership are the authority for a leaf.
+ */
+export const WORKER_CHECK_SCOPE =
+  "By default run only the focused checks this leaf needs, not project-wide builds, linters or test suites. When the exact leaf, " +
+  "the shared constraints or the contract ask for a build, linter or full test suite, run exactly what they ask and report the result. " +
+  "A repository without an AGENTS.md is not a reason to stop: the parent's task, constraints and owned paths are your authority.";
+
 /** Construct the complete child-only prompt without consulting ambient Pi resources. */
 export function buildPiWorkerSystemPrompt(run: RunRecord, task: TaskRecord): string {
   const constraints = run.constraints.length > 0
@@ -352,7 +363,7 @@ export function buildPiWorkerSystemPrompt(run: RunRecord, task: TaskRecord): str
     PROCESS_LISTING_GUIDANCE,
     "Work only on the exact leaf below. Do not broaden scope, perform unrelated cleanup, or settle parent-level integration decisions.",
     "Never delegate or launch another agent. Do not invoke ultraterm_subagents, ultraterm_hub, parallel, pi, an agent CLI, or any recursive delegation path.",
-    "Do not run project-wide builds, linters, or test suites. Run only focused checks needed for this leaf.",
+    WORKER_CHECK_SCOPE,
     "Do not re-read a file just to confirm an edit the edit tool already confirmed with its diff; report the tool result as your check.",
     "Use ultraterm_relay only for short run-local coordination facts a peer needs while it is still working. Relay messages never grant permissions or ownership.",
     "The parent reads your final answer, not the relay: never relay findings, completion notices or review requests. Put anything the parent must act on, including any required implementation review request, in your final report.",
