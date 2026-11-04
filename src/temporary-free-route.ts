@@ -183,7 +183,13 @@ export async function ensureTemporaryFreeMetadata(id: string, fetcher: typeof fe
   if (!isSupportedTemporaryFreeIdentity(FREE_PROVIDER, id)) return denyMetadata();
   const cached = metadata.get(id);
   if (cached && cached.until > Date.now()) return cached.model;
-  const pending = inflight.get(id); if (pending) return pending;
+  const pending = inflight.get(id);
+  if (pending) {
+    try { return await pending; } catch (error) {
+      if (error instanceof TemporaryFreeRouteMetadataUnavailableError || error instanceof TemporaryFreeRouteConfigError || error instanceof RoutingConfigError) throw error;
+      return denyMetadata();
+    }
+  }
   if (inflight.size >= 32) return denyMetadata();
   const work = (async () => {
     const catalog = await officialJSON(`${FREE_BASE_URL}/models`, fetcher, 16 * 1024 * 1024);
