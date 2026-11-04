@@ -4,7 +4,8 @@
 
 - **Temporary route errors identify malformed routing configuration.** A malformed
   routing file now reports its cause while the temporary route remains disabled and
-  the independent model guards remain active.
+  the independent model guards remain active. Cached routes also stop using a
+  worker profile after it is removed from routing configuration.
 
 ## 0.23.3 (2026-11-04)
 
