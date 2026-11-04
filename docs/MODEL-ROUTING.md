@@ -539,7 +539,10 @@ Set `temporaryFreeExclusions` in `routing.json` to an array of `{ "provider":
 joined by a space, case-insensitively; anchors apply to that combined string.
 If the key is absent or the file is malformed, free-route
 selection fails closed with a configuration error; an explicit empty array means
-no additional family exclusions.
+no additional family exclusions. Cached routes revalidate the free worker profile
+against removal or remapping and check that the fallback profile ID remains
+configured. An expired route whose free profile was removed or remapped still
+fails validation; remove the expired route file to restore normal selection.
 
 While active, ordinary implicit text workers select the virtual
 `steak-pi/preferred-free`, re-read before every model call. When inactive or
