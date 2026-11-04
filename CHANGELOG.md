@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.23.1 (2026-11-04)
+
+- **`write` no longer replaces a file the session never read.** In a same-model test against Claude Code, an agent
+  probed `notes.txt` with `cat -A` (not valid on macOS), took the error for "missing" and overwrote the file: 5 of 11
+  runs. A `write` to an existing path that was not read, edited or created in the session is now refused with an error
+  that names the fix, and a short rule in the system prompt says a failed command is not proof a file is missing.
+  After the change: 30 of 30 correct. `STEAK_PI_WRITE_GUARD=off` switches it off.
+- **README: same-model comparison with Claude Code** and a reproducible runner in `benchmarks/ab`.
+
 ## 0.23.0 (2026-11-04)
 
 - **Steak Pi reports its own state to UltraTerm.** In an UltraTerm pane, Steak Pi writes a small state file
