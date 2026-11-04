@@ -5,6 +5,8 @@
 - **Temporary free routes fail closed when exclusions are missing.** Set
   `temporaryFreeExclusions` in routing configuration before selecting a free route;
   malformed configuration also stops selection instead of silently allowing it.
+  Existing temporary routes require this setting after upgrading; normal model
+  protections remain active if a temporary route cannot be loaded.
 
 ## 0.23.1 (2026-11-04)
 

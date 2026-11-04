@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { assertActiveModelIdentity } from "../src/retired-model-selection.ts";
 import { createRegistryGuard } from "../src/model-route-policy.ts";
-import { activeTemporaryWorkerRoute, preferredFreeMetadata, selectPreferredFreePhysical, temporaryFreeStartupProvider } from "../src/temporary-free-route.ts";
+import { temporaryRouteForRegistration, preferredFreeMetadata, selectPreferredFreePhysical, temporaryFreeStartupProvider } from "../src/temporary-free-route.ts";
 import { createExplicitPaidApproval, createSelectedRouteApproval, isAllowlistedPaidRoute, PAID_ROUTE_FLAG } from "../src/explicit-paid-route.ts";
 import { catalogStartupProviders } from "../src/catalog-extras.ts";
 import { providerSessionCleanup } from "../src/provider-session-cleanup.ts";
@@ -19,7 +19,7 @@ export default function modelRoutePolicy(pi: ExtensionAPI): void {
   pi.on("session_shutdown", (event, ctx) => {
     if (event.reason !== "reload") cleanupProviderSession(ctx.sessionManager.getSessionId());
   });
-  if (activeTemporaryWorkerRoute()) {
+  if (temporaryRouteForRegistration()) {
     pi.registerVirtualModel({ ...preferredFreeMetadata, route: (_request, ctx) => selectPreferredFreePhysical(ctx.modelRegistry) });
   }
   pi.registerFlag(PAID_ROUTE_FLAG, { type: "string", description: "Exact paid profile selection; requires user paid-routes.json approval." });
