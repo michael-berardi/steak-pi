@@ -348,10 +348,8 @@ first.
 
 The starting prompt is about half the size: 10.4 K tokens against 21.6 K. Steak
 Pi was cheaper in 38 of 40 paired runs. It is not faster: multi-step tasks (a
-rename across files, a debugging task) take more turns. Without the cache warm-up
-the cost gap shrinks to about 11% and is not significant, because the first
-request pays for the prompt either way. This covers one model on the Claude
-route, small tasks and one machine. Reproduce it with
+rename across files, a debugging task) take more turns. This covers one model on
+the Claude route, small tasks and one machine. Reproduce it with
 [`benchmarks/ab`](./benchmarks/ab/run.py).
 
 ## Configuration
