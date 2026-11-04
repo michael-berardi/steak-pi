@@ -4,8 +4,10 @@
 
 - **Temporary route errors identify malformed routing configuration.** A malformed
   routing file now reports its cause while the temporary route remains disabled and
-  the independent model guards remain active. Cached routes also stop using a
-  worker profile after it is removed from routing configuration.
+  the independent model guards remain active. Concurrent metadata checks preserve
+  the same named errors. Cached routes stop using a worker profile if it is removed
+  or remapped. An expired route with a removed profile still fails validation; remove
+  the expired route to restore normal selection.
 
 ## 0.23.3 (2026-11-04)
 

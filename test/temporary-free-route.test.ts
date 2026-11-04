@@ -172,6 +172,7 @@ describe("synthetic: bounded generic approved free route", () => {
     expect(() => guarded.streamSimple(free, { messages: [] } as never)).toThrow(TemporaryFreeRouteConfigError);
     profiles.splice(1); save();
     expect(() => choose()).toThrow(TemporaryFreeRouteConfigError);
+    expect(() => guarded.streamSimple(free, { messages: [] } as never)).toThrow(TemporaryFreeRouteConfigError);
     vi.setSystemTime(Date.parse(config().expiresAt));
     profiles.splice(0); save();
     expect(() => choose()).toThrow(TemporaryFreeRouteConfigError);
@@ -281,7 +282,7 @@ describe("synthetic: bounded generic approved free route", () => {
     r.find = () => { writeFileSync(routingPath, "{"); return { ...free, id }; };
     await expect(selectPreferredFreePhysical(r)).rejects.toThrow(/cannot be read or parsed/);
   });
-  it("preserves missing-exclusions errors during endpoints and final request races", async () => {
+  it("preserves missing-exclusions errors after endpoints and during final request races", async () => {
     const { path, home } = fixture();
     const routingPath = join(home, "routing.json");
     vi.stubEnv("STEAK_PI_ROUTING_CONFIG", routingPath);
@@ -371,6 +372,35 @@ describe("synthetic: bounded generic approved free route", () => {
     for (const result of results) {
       expect(result.status).toBe("rejected");
       if (result.status === "rejected") expect(result.reason).toBeInstanceOf(TemporaryFreeRouteRequestError);
+    }
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it.each(["503", "missing-exclusions", "malformed-routing"])("preserves %s errors for concurrent metadata callers", async kind => {
+    const { home } = fixture();
+    const routingPath = join(home, "routing.json");
+    vi.stubEnv("STEAK_PI_ROUTING_CONFIG", routingPath);
+    setRoutingConfigOverride(undefined);
+    const valid = JSON.stringify({ workerProfiles: [{ id: "steak-pi/gpt-6-1-sol", model: "example/worker" }], temporaryFreeExclusions: [] });
+    writeFileSync(routingPath, valid);
+    const id = `example/concurrent-${kind}:free`;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const fetcher = vi.fn(async () => {
+      await gate;
+      if (kind === "503") return new Response("", { status: 503 });
+      writeFileSync(routingPath, kind === "malformed-routing" ? "{" : JSON.stringify({ workerProfiles: [] }));
+      return new Response(JSON.stringify({ data: [catalogEntry(id)] }));
+    });
+    const first = ensureTemporaryFreeMetadata(id, fetcher as typeof fetch);
+    const second = ensureTemporaryFreeMetadata(id, fetcher as typeof fetch);
+    release();
+    const results = await Promise.allSettled([first, second]);
+    for (const result of results) {
+      expect(result.status).toBe("rejected");
+      if (result.status === "rejected") {
+        expect(result.reason.name).toBe(kind === "503" ? "TemporaryFreeRouteMetadataUnavailableError" : kind === "malformed-routing" ? "RoutingConfigError" : "TemporaryFreeRouteConfigError");
+        expect(result.reason.message).toMatch(kind === "503" ? /503/ : kind === "malformed-routing" ? /cannot be read or parsed/ : /temporaryFreeExclusions/);
+      }
     }
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
