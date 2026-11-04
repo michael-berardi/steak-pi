@@ -18,6 +18,8 @@ function fixture(current: string, next: string) {
     writeFileSync(join(dir, "bin", "steak-pi"), readFileSync(CLI));
   };
   for (const v of ["0.1.0", current]) pkg(join(releases, v, "package"), v);
+  // 0.1.0 was replaced long ago (before any session that could still run), so an update may prune it.
+  writeFileSync(join(releases, "0.1.0", ".retired-at"), "1");
   const repo = join(home, "remote");
   pkg(repo, next);
   const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "ignore" });
@@ -65,6 +67,26 @@ describe("steak-pi update for release-folder installs", () => {
     expect(r.stdout).toContain("Steak Pi updated: 0.16.0 -> 0.17.0");
     expect(existsSync(join(f.releases, "0.16.0", "package"))).toBe(true);
     expect(existsSync(join(f.releases, "0.1.0"))).toBe(false);
+  });
+
+  it("keeps an old release a running session may still load (2026-11-03: 0.18.9 was removed under a live session)", () => {
+    const f = fixture("0.16.0", "0.17.0");
+    // 0.1.0 was retired an hour ago; a fake "pi" process that started two hours ago may still be loading it.
+    writeFileSync(join(f.releases, "0.1.0", ".retired-at"), String(Math.floor(Date.now() / 1000) - 3600));
+    const bin = join(f.home, "bin"); mkdirSync(bin);
+    writeFileSync(join(bin, "ps"), `#!/bin/sh
+case "$*" in
+  *lstart*) echo "$(LC_ALL=C date -r $(( $(date +%s) - 7200 )) '+%a %b %d %T %Y')";;
+  *) echo "4242 pi";;
+esac
+`, { mode: 0o755 });
+    const r = spawnSync("/bin/sh", [join(f.releases, "0.16.0", "package", "bin", "steak-pi"), "update"], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PI_CODING_AGENT_DIR: f.agent, STEAK_PI_LATEST_TAG: "v0.17.0", STEAK_PI_RELEASE_SOURCE: f.repo },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(existsSync(join(f.releases, "0.1.0", "package"))).toBe(true);
+    expect(r.stdout).toContain("still running");
   });
 
   it("is a no-op when already up to date", () => {
