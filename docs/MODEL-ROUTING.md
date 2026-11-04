@@ -532,6 +532,11 @@ route. Unknown fields, malformed timestamps, symlinks and unsafe ownership/write
 modes are named configuration errors. Only the free-tier adapter's provider and
 `:free` ids are supported; fresh official catalog and endpoint metadata must
 prove zero pricing and text/tool/reasoning capabilities before any request.
+Set `temporaryFreeExclusions` in `routing.json` to an array of `{ "provider":
+"openrouter", "pattern": "..." }` entries. Patterns match model ids and names
+case-insensitively. If the key is absent or the file is malformed, free-route
+selection fails closed with a configuration error; an explicit empty array means
+no additional family exclusions.
 
 While active, ordinary implicit text workers select the virtual
 `steak-pi/preferred-free`, re-read before every model call. When inactive or

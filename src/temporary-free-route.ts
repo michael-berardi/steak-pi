@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isRetiredModelSelector } from "./retired-model-selection.ts";
 import { isHiddenModel } from "./model-visibility.ts";
-import { routingConfigOrEmpty } from "./routing-config.ts";
+import { routingConfig, routingConfigOrEmpty } from "./routing-config.ts";
 
 type Model = NonNullable<ExtensionContext["model"]>;
 type Provider = NonNullable<ReturnType<ExtensionContext["modelRegistry"]["getProvider"]>>;
@@ -41,9 +41,11 @@ const failConfig = (): never => { throw new TemporaryFreeRouteConfigError("Tempo
 /** A suffix is necessary, never sufficient: authenticated coordinator data AND fresh
  * official metadata plus a final zero-price wire guard are required for dispatch. */
 export function isSupportedTemporaryFreeIdentity(provider: unknown, id: unknown, name = ""): boolean {
-  return provider === FREE_PROVIDER && typeof id === "string" && id.length <= 256 &&
-    /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*:free$/.test(id) &&
-    !(routingConfigOrEmpty().temporaryFreeExclusions ?? []).some((entry) =>
+  if (provider !== FREE_PROVIDER || typeof id !== "string" || id.length > 256 ||
+      !/^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*:free$/.test(id)) return false;
+  const exclusions = routingConfig().temporaryFreeExclusions;
+  if (exclusions === undefined) throw new TemporaryFreeRouteConfigError("Temporary free route denied: set temporaryFreeExclusions in ~/.config/ultraterm/routing.json.");
+  return !exclusions.some((entry) =>
       entry.provider === provider && entry.pattern.test(`${id} ${name}`)) &&
     !isRetiredModelSelector(id) && !isRetiredModelSelector(name) &&
     !isHiddenModel({ provider: FREE_PROVIDER, id: id.replace(/:free$/, "") });

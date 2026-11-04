@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.23.2 (2026-11-04)
+
+- **Temporary free routes fail closed when exclusions are missing.** Set
+  `temporaryFreeExclusions` in routing configuration before selecting a free route;
+  malformed configuration also stops selection instead of silently allowing it.
+
 ## 0.23.1 (2026-11-04)
 
 - **`write` no longer replaces a file the session never read.** In a same-model test against Claude Code, an agent

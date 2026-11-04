@@ -10,6 +10,8 @@ import { resolveWorkerSelection } from "../src/subagents/model-selection.ts";
 import { guardModelRuntime, guardProvider } from "../src/model-route-policy.ts";
 import modelRoutePolicy from "../extensions/model-route-policy.ts";
 import { FREE_MODEL, FREE_PROFILE, BUILTIN_WORKER_PROFILES } from "./helpers/routing-fixture.ts";
+import { setRoutingConfigOverride } from "../src/routing-config.ts";
+import { isSupportedTemporaryFreeIdentity } from "../src/temporary-free-route.ts";
 const dirs: string[] = [];
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const now = Date.parse("2026-10-20T14:00:00Z");
@@ -54,6 +56,44 @@ function nativeStream() {
 }
 const receipt = (model: Model) => ({ role: "assistant", content: [{ type: "text", text: "synthetic" }], api: model.api, provider: model.provider, model: model.id, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: now });
 describe("synthetic: bounded generic approved free route", () => {
+  it("fails closed with a named configuration error when exclusions are unset", async () => {
+    setRoutingConfigOverride({});
+    try {
+      for (const id of ["openai/gpt-6:free", "anthropic/claude:free", "z-ai/glm:free", "example/worker:free"]) {
+        expect(() => isSupportedTemporaryFreeIdentity("openrouter", id)).toThrow(/temporaryFreeExclusions/);
+        expect(() => protectTemporaryFreePayload({ model: id }, id)).toThrow(TemporaryFreeRouteConfigError);
+        await expect(ensureTemporaryFreeMetadata(id)).rejects.toThrow(TemporaryFreeRouteConfigError);
+      }
+      expect(() => validateTemporaryWorkerRoute(config())).toThrow(TemporaryFreeRouteConfigError);
+    } finally { setRoutingConfigOverride(undefined); }
+  });
+  it("rejects malformed routing files and non-array exclusions", () => {
+    const { home } = fixture();
+    const path = join(home, "routing.json");
+    vi.stubEnv("STEAK_PI_ROUTING_CONFIG", path);
+    for (const text of ["{", '{"temporaryFreeExclusions":null}']) {
+      writeFileSync(path, text);
+      expect(() => isSupportedTemporaryFreeIdentity("openrouter", "example/worker:free")).toThrow();
+    }
+  });
+  it("blocks guarded transport before a free request when exclusions disappear", () => {
+    fixture();
+    const stream = vi.fn();
+    const guarded = guardProvider({ id: "openrouter", getModels: () => [free], stream, streamSimple: stream, auth: {} } as never, () => false);
+    setRoutingConfigOverride({ workerProfiles: [{ id: "steak-pi/gpt-6-1-sol", model: "example/worker" }] });
+    try {
+      expect(() => guarded.streamSimple(free, { messages: [] } as never)).toThrow(TemporaryFreeRouteConfigError);
+      expect(stream).not.toHaveBeenCalled();
+    } finally { setRoutingConfigOverride(undefined); }
+  });
+  it("respects an explicit empty list and case-insensitive configured exclusions", () => {
+    try {
+      setRoutingConfigOverride({ temporaryFreeExclusions: [] });
+      expect(isSupportedTemporaryFreeIdentity("openrouter", "example/worker:free")).toBe(true);
+      setRoutingConfigOverride({ temporaryFreeExclusions: [{ provider: "openrouter", pattern: "claude" }] });
+      expect(isSupportedTemporaryFreeIdentity("openrouter", "example/worker:free", "CLAUDE")).toBe(false);
+    } finally { setRoutingConfigOverride(undefined); }
+  });
   it("normalizes canonical UTC milliseconds and admits generic data, retaining exact legacy alias", () => {
     expect(validateTemporaryWorkerRoute(config()).startsAt).toBe("2026-10-20T13:00:00.000Z");
     expect(validateTemporaryWorkerRoute({ ...config(), profile: "minimax-m3-1-flash-free" }).profile).toBe("minimax-m3-1-flash-free");
