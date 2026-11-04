@@ -207,7 +207,7 @@ export async function ensureTemporaryFreeMetadata(id: string, fetcher: typeof fe
   inflight.set(id, work);
   try { return await work; } catch (error) {
     metadata.delete(id);
-    if (error instanceof TemporaryFreeRouteMetadataUnavailableError) throw error;
+    if (error instanceof TemporaryFreeRouteMetadataUnavailableError || error instanceof TemporaryFreeRouteConfigError || error instanceof RoutingConfigError) throw error;
     return denyMetadata();
   } finally { inflight.delete(id); }
 }
@@ -276,7 +276,7 @@ export async function selectPreferredFreePhysical(registry: RouteRegistry): Prom
   if (!config) throw new TemporaryFreeRouteReturnToNormalError();
   try { await ensureTemporaryFreeMetadata(config.model); }
   catch (error) {
-    if (error instanceof TemporaryFreeRouteMetadataUnavailableError) throw error;
+    if (error instanceof TemporaryFreeRouteMetadataUnavailableError || error instanceof TemporaryFreeRouteConfigError || error instanceof RoutingConfigError) throw error;
     throw new TemporaryFreeRouteReturnToNormalError();
   }
   // Activation/expiry/revocation may race the lazy metadata fetch.
@@ -285,6 +285,6 @@ export async function selectPreferredFreePhysical(registry: RouteRegistry): Prom
   const candidate = registry.find(config.provider, config.model);
   if (!candidate || !registry.hasConfiguredAuth(candidate)) throw new TemporaryFreeRouteReturnToNormalError();
   try { assertTemporaryFreeRequest(candidate); }
-  catch (error) { if (error instanceof TemporaryFreeRouteConfigError) throw error; throw new TemporaryFreeRouteReturnToNormalError(); }
+  catch (error) { if (error instanceof TemporaryFreeRouteConfigError || error instanceof RoutingConfigError) throw error; throw new TemporaryFreeRouteReturnToNormalError(); }
   return { model: candidate, thinkingLevel: "high" };
 }
