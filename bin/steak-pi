@@ -111,6 +111,16 @@ release_root() {
   printf '%s' "$abs"
 }
 
+# Epoch seconds at which the oldest running Pi process started, or empty when none runs. Read-only (ps); a Pi session is a
+# process whose command name is pi or whose arguments run Pi's CLI.
+oldest_pi_start() {
+  # macOS and Linux ps both support lstart (an absolute start time); etimes is Linux-only.
+  ps -axo pid=,comm= 2>/dev/null | awk '$2 ~ /(^|\/)pi$/ {print $1}' | while read -r pid; do
+    started=$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null) || continue
+    date -j -f "%a %b %d %T %Y" "$started" +%s 2>/dev/null || date -d "$started" +%s 2>/dev/null
+  done | sort -n | head -n 1
+}
+
 update_release_folder() {
   root="$1"; tag="$2"; ver="${tag#v}"
   command -v git >/dev/null 2>&1 || die "git not found; needed to download $tag."
@@ -146,10 +156,23 @@ update_release_folder() {
     if (!hit) { console.error("no release-folder entry in " + file); process.exit(1); }
     const tmp = file + ".steak-pi-update.tmp"; fs.writeFileSync(tmp, JSON.stringify(s, null, 2) + "\n", { mode: 0o600 }); fs.renameSync(tmp, file);
   ' "$SETTINGS" "$root" "$ver" || die "could not re-point $SETTINGS at $ver"
-  # Exactly one rollback: keep the release Pi was loading (running sessions still use it), remove every other old release.
+  # Keep the release Pi was loading as the rollback. Remove an older release only when no running Pi session can still be
+  # loading it: a session loads the release that was pinned when it started and keeps it for its whole life, and USAP
+  # workers resolve their modules from it (2026-11-03: a two-day-old session lost 0.18.9 to a later update, so every subagent
+  # dispatch from it failed with "Cannot find module"). Each release records when it stopped being pinned (.retired-at);
+  # a release retired after the oldest running Pi process started may still be in use and is kept.
+  date +%s > "$root/$pinned/.retired-at.tmp" 2>/dev/null && [ ! -f "$root/$pinned/.retired-at" ] && mv "$root/$pinned/.retired-at.tmp" "$root/$pinned/.retired-at"
+  rm -f "$root/$pinned/.retired-at.tmp"
+  oldest=$(oldest_pi_start)
   for old in "$root"/*/; do
     old=${old%/}; name=${old##*/}
     case "$name" in "$ver"|"$pinned"|.staging-*) continue;; esac
+    retired=$(cat "$old/.retired-at" 2>/dev/null || true)
+    case "$retired" in ''|*[!0-9]*) date +%s > "$old/.retired-at"; say "Kept $old: it may still be loaded by a running session."; continue;; esac
+    if [ -n "$oldest" ] && [ "$retired" -gt "$oldest" ]; then
+      say "Kept $old: a session started before it was replaced is still running."
+      continue
+    fi
     rm -rf "$old"
   done
   say "Steak Pi updated: $pinned -> $ver (rollback kept: $root/$pinned). Restart Pi or run /reload."

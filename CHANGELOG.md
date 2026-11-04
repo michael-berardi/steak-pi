@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.22.3 (2026-11-04)
+
+- **An update keeps every release a running session may still load.** Each release records when it was replaced; an update
+  removes an old release only once every Pi session that could have started on it has ended. Before, a long-running
+  session lost its release to a later update and every subagent dispatch from it failed with "Cannot find module".
+
 ## 0.22.2 (2026-11-03)
 
 - **The usage dial of a lent Claude account stays current.** Each turn's reading now carries the CLI session id, so the router
