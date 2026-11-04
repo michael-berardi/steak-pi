@@ -117,6 +117,25 @@ describe("synthetic: bounded generic approved free route", () => {
       log.mockRestore();
     }
   });
+  it("reports malformed profile configuration even for expired temporary routes", () => {
+    const { path, home } = fixture();
+    const routingPath = join(home, "routing.json");
+    vi.stubEnv("STEAK_PI_ROUTING_CONFIG", routingPath);
+    setRoutingConfigOverride(undefined);
+    writeFileSync(routingPath, '{"workerProfiles":null}');
+    vi.setSystemTime(Date.parse(config().expiresAt));
+    expect(() => activeTemporaryWorkerRoute(path)).toThrow(/workerProfiles: expected an array/);
+  });
+  it("rejects a cached route when its configured fallback profile is removed", () => {
+    const { path, home } = fixture();
+    const routingPath = join(home, "routing.json");
+    vi.stubEnv("STEAK_PI_ROUTING_CONFIG", routingPath);
+    setRoutingConfigOverride(undefined);
+    writeFileSync(routingPath, JSON.stringify({ workerProfiles: [{ id: "steak-pi/gpt-6-1-sol", model: "example/worker" }], temporaryFreeExclusions: [] }));
+    expect(activeTemporaryWorkerRoute(path)?.model).toBe(FREE_MODEL);
+    writeFileSync(routingPath, JSON.stringify({ workerProfiles: [], temporaryFreeExclusions: [] }));
+    expect(() => activeTemporaryWorkerRoute(path)).toThrow(TemporaryFreeRouteConfigError);
+  });
   it("keeps guard registration available when routing becomes malformed after route caching", () => {
     const { path, home } = fixture();
     const routingPath = join(home, "routing.json");

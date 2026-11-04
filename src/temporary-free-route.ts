@@ -111,7 +111,8 @@ export function readTemporaryWorkerRoute(path = temporaryRoutePath()): Temporary
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.nlink !== 1 || stat.size > 16_384 || (stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid?.()) return failConfig();
     const sig = signature(stat);
-    if (localCache?.path === path && localCache.signature === sig) return { ...localCache.config };
+    // Routing profiles may change independently of the cached temporary-route file.
+    if (localCache?.path === path && localCache.signature === sig) return validateTemporaryWorkerRoute(localCache.config, true);
     const buffer = Buffer.alloc(16_385);
     let length = 0, count: number;
     while (length < buffer.length && (count = readSync(fd, buffer, length, buffer.length - length, null)) > 0) length += count;
