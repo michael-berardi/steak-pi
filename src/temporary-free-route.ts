@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isRetiredModelSelector } from "./retired-model-selection.ts";
 import { isHiddenModel } from "./model-visibility.ts";
-import { routingConfig, routingConfigOrEmpty, routingConfigPath, RoutingConfigError } from "./routing-config.ts";
+import { routingConfig, routingConfigPath, RoutingConfigError } from "./routing-config.ts";
 
 type Model = NonNullable<ExtensionContext["model"]>;
 type Provider = NonNullable<ReturnType<ExtensionContext["modelRegistry"]["getProvider"]>>;
@@ -56,12 +56,12 @@ export function isSupportedTemporaryFreeIdentity(provider: unknown, id: unknown,
  * configured worker profiles (`workerProfiles`) whose model is exactly this free route. */
 function isConfiguredFreeProfile(profile: unknown, provider: unknown, model: unknown): boolean {
   if (typeof profile !== "string" || typeof provider !== "string" || typeof model !== "string") return false;
-  return (routingConfigOrEmpty().workerProfiles ?? []).some((entry) =>
+  return (routingConfig().workerProfiles ?? []).some((entry) =>
     entry.id === `steak-pi/${profile}` && entry.model === `${provider}/${model}`);
 }
 /** The normal-profile return target must be one of the operator's configured worker profiles. */
 const isConfiguredProfile = (profile: unknown): boolean => typeof profile === "string" &&
-  (routingConfigOrEmpty().workerProfiles ?? []).some((entry) => entry.id === `steak-pi/${profile}`);
+  (routingConfig().workerProfiles ?? []).some((entry) => entry.id === `steak-pi/${profile}`);
 export function validateTemporaryWorkerRoute(value: unknown, allowExpired = false): TemporaryWorkerRoute {
   if (!value || typeof value !== "object" || Array.isArray(value)) return failConfig();
   const v = value as Record<string, unknown>;
@@ -122,7 +122,7 @@ export function readTemporaryWorkerRoute(path = temporaryRoutePath()): Temporary
   } catch (error) {
     localCache = undefined;
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    if (error instanceof TemporaryFreeRouteConfigError) throw error;
+    if (error instanceof TemporaryFreeRouteConfigError || error instanceof RoutingConfigError) throw error;
     return failConfig();
   } finally { if (fd !== undefined) closeSync(fd); }
 }
