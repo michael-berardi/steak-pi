@@ -1,3 +1,4 @@
+import { setSubagentCountReader, subagentActivityChanged } from "../src/tui/subagent-activity.ts";
 import { resolveStagedModule } from "../src/subagents/staged-runtime.ts";
 import { registryForSolSelection, type CreateIsolatedModelRuntime } from "../src/subagents/codex-selection.ts";
 import { GO_ACCOUNT_ROUTER_TIMEOUT_MS, type AccountCommand } from "../src/subagents/provider-accounts.ts";
@@ -1168,6 +1169,7 @@ export function createUltratermSubagentsExtension(
   }
   return function ultratermSubagentsExtension(pi: ExtensionAPI): void {
     let runtime: SessionRuntime | undefined;
+    setSubagentCountReader(() => runtime && !runtime.closed ? runtime.coordinator.activeRuns().length : 0);
     let clearedStatusUi: ExtensionContext["ui"] | undefined;
     // Replacements share leases with any late-disposing prior initialization.
     // Session-wide ceiling comes from usap-caps.json; each run stays capped at
@@ -1298,6 +1300,7 @@ export function createUltratermSubagentsExtension(
     const releaseRuntimeUi = (current: SessionRuntime, ctx: ExtensionContext | undefined, warning?: string): void => {
       if (runtime !== current) return;
       runtime = undefined;
+      subagentActivityChanged();
       const target = ctx ?? current.statusContext;
       if (!ownsContext(current, target)) return;
       try {
@@ -1535,6 +1538,7 @@ export function createUltratermSubagentsExtension(
         },
         onChange: (run) => {
           if (!created || created.closed) return;
+          subagentActivityChanged();
           saveCheckpoint(created, run, run.state !== "running", "lifecycle");
           if (run.state !== "running") created.checkpointStopping.delete(run.id);
           persistTelemetry(created, run);
