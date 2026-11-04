@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.23.0 (2026-11-04)
+
+- **Steak Pi reports its own state to UltraTerm.** In an UltraTerm pane, Steak Pi writes a small state file
+  (`$ULTRATERM_HOME/agent-state/<tmux session>.json`, mode 0600): working, idle, waiting on subagents or a long shell,
+  asking, or an error, plus whether the input box is empty. UltraTerm's rail and job queue read it instead of guessing from
+  the screen, so a redraw or a notice under the input box can no longer be mistaken for activity or unsent text. The file
+  refreshes every 10 seconds and is removed on exit. Nothing is written outside UltraTerm panes or inside subagents.
+
 ## 0.22.4 (2026-11-04)
 
 - **`steak-pi update --check` reports the release Pi actually loads.** A Homebrew CLI older than the release folder made a
