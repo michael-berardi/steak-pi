@@ -155,6 +155,28 @@ describe("synthetic: bounded generic approved free route", () => {
     writeFileSync(routingPath, JSON.stringify({ workerProfiles: [profiles[1]], temporaryFreeExclusions: [] }));
     expect(() => activeTemporaryWorkerRoute(path)).toThrow(TemporaryFreeRouteConfigError);
   });
+  it("fails closed through worker selection and transport after cached profile removal or remapping", () => {
+    const { path, home } = fixture();
+    const routingPath = join(home, "routing.json");
+    vi.stubEnv("STEAK_PI_ROUTING_CONFIG", routingPath);
+    setRoutingConfigOverride(undefined);
+    const profiles = [{ id: "steak-pi/gpt-6-1-sol", model: "example/worker" }, { id: "steak-pi/custom-free", model: `openrouter/${FREE_MODEL}` }];
+    const save = () => writeFileSync(routingPath, JSON.stringify({ workerProfiles: profiles, temporaryFreeExclusions: [] }));
+    writeFileSync(path, JSON.stringify({ ...config(), profile: "custom-free" })); save();
+    expect(activeTemporaryWorkerRoute(path)).toBeDefined();
+    const choose = () => resolveWorkerSelection(sol, "high", input as never, registry() as never, BUILTIN_WORKER_PROFILES, "", {}, {});
+    const stream = vi.fn();
+    const guarded = guardProvider({ id: "openrouter", getModels: () => [free], stream, streamSimple: stream, auth: {} } as never, () => false);
+    profiles[1].model = "openrouter/example/other:free"; save();
+    expect(() => choose()).toThrow(TemporaryFreeRouteConfigError);
+    expect(() => guarded.streamSimple(free, { messages: [] } as never)).toThrow(TemporaryFreeRouteConfigError);
+    profiles.splice(1); save();
+    expect(() => choose()).toThrow(TemporaryFreeRouteConfigError);
+    vi.setSystemTime(Date.parse(config().expiresAt));
+    profiles.splice(0); save();
+    expect(() => choose()).toThrow(TemporaryFreeRouteConfigError);
+    expect(stream).not.toHaveBeenCalled();
+  });
   it("keeps guard registration available when routing becomes malformed after route caching", () => {
     const { path, home } = fixture();
     const routingPath = join(home, "routing.json");
@@ -259,6 +281,26 @@ describe("synthetic: bounded generic approved free route", () => {
     r.find = () => { writeFileSync(routingPath, "{"); return { ...free, id }; };
     await expect(selectPreferredFreePhysical(r)).rejects.toThrow(/cannot be read or parsed/);
   });
+  it("preserves missing-exclusions errors during endpoints and final request races", async () => {
+    const { path, home } = fixture();
+    const routingPath = join(home, "routing.json");
+    vi.stubEnv("STEAK_PI_ROUTING_CONFIG", routingPath);
+    setRoutingConfigOverride(undefined);
+    const profiles = [{ id: "steak-pi/gpt-6-1-sol", model: "example/worker" }];
+    const valid = JSON.stringify({ workerProfiles: profiles, temporaryFreeExclusions: [] });
+    const missing = JSON.stringify({ workerProfiles: profiles });
+    const id = "example/exclusion-race:free";
+    writeFileSync(path, JSON.stringify({ ...config(), model: id }));
+    writeFileSync(routingPath, valid);
+    const fetcher = officialFetch(id);
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => { const response = await fetcher(url); if (url.endsWith("/endpoints")) writeFileSync(routingPath, missing); return response; }));
+    await expect(selectPreferredFreePhysical(registry())).rejects.toThrow(/temporaryFreeExclusions/);
+    writeFileSync(routingPath, valid);
+    vi.stubGlobal("fetch", officialFetch(id));
+    const r = registry();
+    r.find = () => { writeFileSync(routingPath, missing); return { ...free, id }; };
+    await expect(selectPreferredFreePhysical(r)).rejects.toThrow(/temporaryFreeExclusions/);
+  });
   it("never routes unleased Sol: expiry/auth/price loss produce a named checkpoint-switch signal", async () => {
     const { path } = fixture(); const r = registry();
     expect((await selectPreferredFreePhysical(r)).model.id).toBe(FREE_MODEL);
@@ -315,6 +357,22 @@ describe("synthetic: bounded generic approved free route", () => {
     const guarded = guardProvider({ id: "openrouter", getModels: () => [physical], stream, streamSimple: stream, auth: {} } as never, () => false);
     const result = await guarded.streamSimple(physical, { messages: [] } as never).result();
     expect(result.errorMessage).toContain(String(status)); expect(result.errorMessage).not.toContain(RETURN_TO_NORMAL); expect(stream).not.toHaveBeenCalled();
+  });
+  it("normalizes errors for all concurrent metadata callers", async () => {
+    fixture();
+    const id = "example/concurrent-invalid-json:free";
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const fetcher = vi.fn(async () => { await gate; return new Response("{"); });
+    const first = ensureTemporaryFreeMetadata(id, fetcher as typeof fetch);
+    const second = ensureTemporaryFreeMetadata(id, fetcher as typeof fetch);
+    release();
+    const results = await Promise.allSettled([first, second]);
+    for (const result of results) {
+      expect(result.status).toBe("rejected");
+      if (result.status === "rejected") expect(result.reason).toBeInstanceOf(TemporaryFreeRouteRequestError);
+    }
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
   it("deduplicates concurrent lazy metadata, caches it and refreshes only after TTL", async () => {
     fixture(); const id = "example/concurrent:free"; const fetcher = officialFetch(id);
