@@ -11,7 +11,7 @@ import { guardModelRuntime, guardProvider } from "../src/model-route-policy.ts";
 import modelRoutePolicy from "../extensions/model-route-policy.ts";
 import { FREE_MODEL, FREE_PROFILE, BUILTIN_WORKER_PROFILES } from "./helpers/routing-fixture.ts";
 import { setRoutingConfigOverride } from "../src/routing-config.ts";
-import { isSupportedTemporaryFreeIdentity } from "../src/temporary-free-route.ts";
+import { isSupportedTemporaryFreeIdentity, temporaryRouteForRegistration } from "../src/temporary-free-route.ts";
 const dirs: string[] = [];
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const now = Date.parse("2026-10-20T14:00:00Z");
@@ -57,7 +57,7 @@ function nativeStream() {
 const receipt = (model: Model) => ({ role: "assistant", content: [{ type: "text", text: "synthetic" }], api: model.api, provider: model.provider, model: model.id, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: now });
 describe("synthetic: bounded generic approved free route", () => {
   it("fails closed with a named configuration error when exclusions are unset", async () => {
-    setRoutingConfigOverride({});
+    setRoutingConfigOverride({ workerProfiles: [{ id: "steak-pi/gpt-6-1-sol", model: "example/worker" }] });
     try {
       for (const id of ["openai/gpt-6:free", "anthropic/claude:free", "z-ai/glm:free", "example/worker:free"]) {
         expect(() => isSupportedTemporaryFreeIdentity("openrouter", id)).toThrow(/temporaryFreeExclusions/);
@@ -66,6 +66,54 @@ describe("synthetic: bounded generic approved free route", () => {
       }
       expect(() => validateTemporaryWorkerRoute(config())).toThrow(TemporaryFreeRouteConfigError);
     } finally { setRoutingConfigOverride(undefined); }
+  });
+  it("installs session and worker guards when an existing temporary route lacks exclusions", () => {
+    fixture();
+    setRoutingConfigOverride({ workerProfiles: [{ id: "steak-pi/gpt-6-1-sol", model: "example/worker" }] });
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const handlers = new Map<string, Function>();
+      const registerFlag = vi.fn(); const registerVirtualModel = vi.fn();
+      modelRoutePolicy({ registerProvider: vi.fn(), registerVirtualModel, registerFlag, on: (name: string, handler: Function) => handlers.set(name, handler) } as never);
+      expect(registerFlag).toHaveBeenCalled();
+      expect(handlers.has("session_start")).toBe(true);
+      expect(handlers.has("before_agent_start")).toBe(true);
+      expect(registerVirtualModel).not.toHaveBeenCalled();
+      const provider = { id: "openrouter", getModels: () => [free], stream: vi.fn(), streamSimple: vi.fn(), auth: {} };
+      const registerNativeProvider = vi.fn();
+      const runtime = { getModel: () => undefined, getModels: () => [free], getProvider: () => provider,
+        getRegisteredNativeProvider: () => undefined, registerNativeProvider, isUsingOAuth: () => false };
+      guardModelRuntime(runtime as never);
+      expect(registerNativeProvider).toHaveBeenCalled();
+      expect(log).toHaveBeenCalledWith(expect.stringContaining("temporaryFreeExclusions"));
+      expect(() => assertTemporaryFreeRequest(free)).toThrow(TemporaryFreeRouteConfigError);
+    } finally { log.mockRestore(); setRoutingConfigOverride(undefined); }
+  });
+  it("ignores an expired route without exclusions but denies active and cached reactivation", () => {
+    const { path } = fixture();
+    setRoutingConfigOverride({ workerProfiles: [{ id: "steak-pi/gpt-6-1-sol", model: "example/worker" }] });
+    try {
+      expect(() => activeTemporaryWorkerRoute(path)).toThrow(/temporaryFreeExclusions/);
+      vi.setSystemTime(Date.parse(config().expiresAt));
+      expect(activeTemporaryWorkerRoute(path)).toBeUndefined();
+      expect(() => activeTemporaryWorkerRoute(path, now)).toThrow(/temporaryFreeExclusions/);
+    } finally { setRoutingConfigOverride(undefined); }
+  });
+  it("keeps guard registration available when routing becomes malformed after route caching", () => {
+    const { path, home } = fixture();
+    const routingPath = join(home, "routing.json");
+    vi.stubEnv("STEAK_PI_ROUTING_CONFIG", routingPath);
+    writeFileSync(routingPath, JSON.stringify({ workerProfiles: [{ id: "steak-pi/gpt-6-1-sol", model: "example/worker" }], temporaryFreeExclusions: [] }));
+    expect(activeTemporaryWorkerRoute(path)?.model).toBe(FREE_MODEL);
+    writeFileSync(routingPath, "{");
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(temporaryRouteForRegistration()).toBeUndefined();
+      expect(temporaryRouteForRegistration()).toBeUndefined();
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining("RoutingConfigError"));
+      expect(() => activeTemporaryWorkerRoute(path)).toThrow();
+    } finally { log.mockRestore(); }
   });
   it("rejects malformed routing files and non-array exclusions", () => {
     const { home } = fixture();

@@ -1,7 +1,7 @@
 import type { TaskClassDecision } from "./subagents/types.ts";
 import { withCatalogExtras } from "./catalog-extras.ts";
 import type { ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { activeTemporaryWorkerRoute, ensureTemporaryFreeMetadata, FREE_PROVIDER, assertTemporaryFreeRequest, isTemporaryFreeModel, preferredFreeMetadata, selectPreferredFreePhysical, temporaryFreeOptions, withTemporaryFreeCatalog, TemporaryFreeRouteRequestError } from "./temporary-free-route.ts";
+import { temporaryRouteForRegistration, ensureTemporaryFreeMetadata, FREE_PROVIDER, assertTemporaryFreeRequest, isTemporaryFreeModel, preferredFreeMetadata, selectPreferredFreePhysical, temporaryFreeOptions, withTemporaryFreeCatalog, TemporaryFreeRouteRequestError } from "./temporary-free-route.ts";
 import { createAllowlistApproval, findPaidRoute } from "./explicit-paid-route.ts";
 import { curatedPickerScope } from "./harness-profiles.ts";
 import { curatedPickerModels, sharedPickerModels } from "./model-visibility.ts";
@@ -286,7 +286,7 @@ export function guardModelRuntime(runtime: ModelRuntime, fallback?: ChainFallbac
   // SDK virtual routing runs at each model call, not just the next user turn.
   // Optional only for legacy/test SDK facades: preferred-free admission fails
   // without its virtual catalog entry, never impersonating a physical route.
-  if (active?.provider === "steak-pi" || runtime.getModel("steak-pi", "preferred-free") || activeTemporaryWorkerRoute()) {
+  if (active?.provider === "steak-pi" || runtime.getModel("steak-pi", "preferred-free") || temporaryRouteForRegistration()) {
     runtime.registerVirtualModel?.({ ...preferredFreeMetadata, route: () => selectPreferredFreePhysical({
       find: (provider, id) => runtime.getModel(provider, id),
       hasConfiguredAuth: model => runtime.hasConfiguredAuth(model.provider),

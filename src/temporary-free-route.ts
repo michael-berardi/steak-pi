@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isRetiredModelSelector } from "./retired-model-selection.ts";
 import { isHiddenModel } from "./model-visibility.ts";
-import { routingConfig, routingConfigOrEmpty } from "./routing-config.ts";
+import { routingConfig, routingConfigOrEmpty, routingConfigPath, RoutingConfigError } from "./routing-config.ts";
 
 type Model = NonNullable<ExtensionContext["model"]>;
 type Provider = NonNullable<ReturnType<ExtensionContext["modelRegistry"]["getProvider"]>>;
@@ -40,15 +40,17 @@ export interface TemporaryWorkerRoute {
 const failConfig = (): never => { throw new TemporaryFreeRouteConfigError("Temporary worker route configuration denied: invalid, unknown, or unsafe configuration."); };
 /** A suffix is necessary, never sufficient: authenticated coordinator data AND fresh
  * official metadata plus a final zero-price wire guard are required for dispatch. */
-export function isSupportedTemporaryFreeIdentity(provider: unknown, id: unknown, name = ""): boolean {
-  if (provider !== FREE_PROVIDER || typeof id !== "string" || id.length > 256 ||
-      !/^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*:free$/.test(id)) return false;
-  const exclusions = routingConfig().temporaryFreeExclusions;
-  if (exclusions === undefined) throw new TemporaryFreeRouteConfigError("Temporary free route denied: set temporaryFreeExclusions in ~/.config/ultraterm/routing.json.");
-  return !exclusions.some((entry) =>
-      entry.provider === provider && entry.pattern.test(`${id} ${name}`)) &&
+function isStructurallySupportedFreeIdentity(provider: unknown, id: unknown, name = ""): id is string {
+  return provider === FREE_PROVIDER && typeof id === "string" && id.length <= 256 &&
+    /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*:free$/.test(id) &&
     !isRetiredModelSelector(id) && !isRetiredModelSelector(name) &&
     !isHiddenModel({ provider: FREE_PROVIDER, id: id.replace(/:free$/, "") });
+}
+export function isSupportedTemporaryFreeIdentity(provider: unknown, id: unknown, name = ""): boolean {
+  if (!isStructurallySupportedFreeIdentity(provider, id, name)) return false;
+  const exclusions = routingConfig().temporaryFreeExclusions;
+  if (exclusions === undefined) throw new TemporaryFreeRouteConfigError(`Temporary free route denied: set temporaryFreeExclusions in ${routingConfigPath()}.`);
+  return !exclusions.some((entry) => entry.provider === provider && entry.pattern.test(`${id} ${name}`));
 }
 /** A free profile other than the virtual `preferred-free` must be one of the operator's
  * configured worker profiles (`workerProfiles`) whose model is exactly this free route. */
@@ -60,19 +62,20 @@ function isConfiguredFreeProfile(profile: unknown, provider: unknown, model: unk
 /** The normal-profile return target must be one of the operator's configured worker profiles. */
 const isConfiguredProfile = (profile: unknown): boolean => typeof profile === "string" &&
   (routingConfigOrEmpty().workerProfiles ?? []).some((entry) => entry.id === `steak-pi/${profile}`);
-export function validateTemporaryWorkerRoute(value: unknown): TemporaryWorkerRoute {
+export function validateTemporaryWorkerRoute(value: unknown, allowExpired = false): TemporaryWorkerRoute {
   if (!value || typeof value !== "object" || Array.isArray(value)) return failConfig();
   const v = value as Record<string, unknown>;
   const keys = ["schemaVersion", "provider", "model", "harness", "profile", "startsAt", "expiresAt", "fallbackHarness", "fallbackProfile", "zeroPriceOnly", "source", "evidence"];
   if (Object.keys(v).length !== keys.length || keys.some(key => !Object.hasOwn(v, key)) || v.schemaVersion !== 1 ||
       v.zeroPriceOnly !== true || v.fallbackHarness !== "steak-pi" || !isConfiguredProfile(v.fallbackProfile) ||
-      !isSupportedTemporaryFreeIdentity(v.provider, v.model) || v.harness !== "steak-pi" ||
+      !isStructurallySupportedFreeIdentity(v.provider, v.model) || v.harness !== "steak-pi" ||
       !(v.profile === "preferred-free" || isConfiguredFreeProfile(v.profile, v.provider, v.model))) return failConfig();
   for (const key of ["source", "evidence"]) if (typeof v[key] !== "string" || !(v[key] as string).trim() || (v[key] as string).length > 4096) return failConfig();
   const utc = (s: unknown): s is string => typeof s === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(s) && Number.isFinite(Date.parse(s)) && new Date(s).toISOString() === s.replace(/Z$/, s.includes(".") ? "Z" : ".000Z");
   if (!utc(v.startsAt) || !utc(v.expiresAt)) return failConfig();
   const duration = Date.parse(v.expiresAt) - Date.parse(v.startsAt);
   if (duration <= 0 || duration > 72 * 60 * 60_000) return failConfig();
+  if ((!allowExpired || Date.now() < Date.parse(v.expiresAt)) && !isSupportedTemporaryFreeIdentity(v.provider, v.model)) return failConfig();
   return { ...v, startsAt: new Date(v.startsAt).toISOString(), expiresAt: new Date(v.expiresAt).toISOString() } as unknown as TemporaryWorkerRoute;
 }
 function parseUniqueConfig(text: string): TemporaryWorkerRoute {
@@ -89,7 +92,7 @@ function parseUniqueConfig(text: string): TemporaryWorkerRoute {
       keys.add(key);
     }
   }
-  return validateTemporaryWorkerRoute(JSON.parse(text));
+  return validateTemporaryWorkerRoute(JSON.parse(text), true);
 }
 let localCache: { path: string; signature: string; config: TemporaryWorkerRoute } | undefined;
 const signature = (s: ReturnType<typeof fstatSync>) => `${s.dev}:${s.ino}:${s.size}:${s.mtimeMs}:${s.ctimeMs}:${s.mode}:${s.uid}:${s.nlink}`;
@@ -129,7 +132,22 @@ export function temporaryWorkerRouteStatus(config = readTemporaryWorkerRoute(), 
 }
 export function activeTemporaryWorkerRoute(path = temporaryRoutePath(), now = Date.now()): TemporaryWorkerRoute | undefined {
   const status = temporaryWorkerRouteStatus(readTemporaryWorkerRoute(path), now);
-  return status.state === "active" ? status.config : undefined;
+  if (status.state !== "active") return undefined;
+  // A previously expired cached route may become active if the clock moves backwards.
+  if (!isSupportedTemporaryFreeIdentity(status.config!.provider, status.config!.model)) return failConfig();
+  return status.config;
+}
+/** A rejected temporary route must not prevent the independent model guards from loading. */
+let lastRegistrationError: string | undefined;
+export function temporaryRouteForRegistration(): TemporaryWorkerRoute | undefined {
+  try { const route = activeTemporaryWorkerRoute(); lastRegistrationError = undefined; return route; }
+  catch (error) {
+    if (!(error instanceof TemporaryFreeRouteConfigError) && !(error instanceof RoutingConfigError)) throw error;
+    const message = `${error.name}: ${error.message} Temporary route disabled; model guards remain active.`;
+    if (message !== lastRegistrationError) console.error(message);
+    lastRegistrationError = message;
+    return undefined;
+  }
 }
 export function isTemporaryFreeModel(model: Pick<Model, "provider" | "id">): boolean {
   // All OpenRouter :free calls take this strict gate, including forbidden identities.
