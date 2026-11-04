@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.22.4 (2026-11-04)
+
+- **`steak-pi update --check` reports the release Pi actually loads.** A Homebrew CLI older than the release folder made a
+  finished update still read as "available".
+- **A parent that runs a long serial stretch is reminded once to fan out.** After 40 tool calls in a row without a subagent
+  dispatch, the parent gets one short note to send any independent part to `ultraterm_subagents` in one background wave.
+  Set `STEAK_PI_DELEGATION_NUDGE=off` to switch it off.
+
 ## 0.22.3 (2026-11-04)
 
 - **An update keeps every release a running session may still load.** Each release records when it was replaced; an update

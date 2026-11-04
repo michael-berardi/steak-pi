@@ -182,7 +182,14 @@ cmd_update() {
   if [ "${1:-}" = "--check" ]; then
     TAG=$(latest_tag) || die "cannot reach GitHub to check for updates."
     [ -n "$TAG" ] || die "no published release found."
-    if [ "${TAG#v}" = "$VERSION" ]; then say "Steak Pi is up to date ($VERSION)."; else say "Steak Pi ${TAG#v} is available (you have $VERSION). Run: steak-pi update"; fi
+    # Compare with the release Pi loads when it is a release-folder install: a Homebrew CLI can be older than that folder, and
+    # comparing the CLI made a successful update still read as "available" (2026-11-04).
+    have=$VERSION
+    if release_root >/dev/null 2>&1; then
+      loaded=$(pi_spec) || loaded=""; loaded=${loaded%/package}; loaded=${loaded##*/}
+      [ -n "$loaded" ] && have=$loaded
+    fi
+    if [ "${TAG#v}" = "$have" ]; then say "Steak Pi is up to date ($have)."; else say "Steak Pi ${TAG#v} is available (you have $have). Run: steak-pi update"; fi
     exit 0
   fi
   if root=$(release_root); then
