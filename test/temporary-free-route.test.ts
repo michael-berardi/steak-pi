@@ -136,6 +136,25 @@ describe("synthetic: bounded generic approved free route", () => {
     writeFileSync(routingPath, JSON.stringify({ workerProfiles: [], temporaryFreeExclusions: [] }));
     expect(() => activeTemporaryWorkerRoute(path)).toThrow(TemporaryFreeRouteConfigError);
   });
+  it("revalidates cached free-profile mapping and expired fallback consistently", () => {
+    const { path, home } = fixture();
+    const routingPath = join(home, "routing.json");
+    vi.stubEnv("STEAK_PI_ROUTING_CONFIG", routingPath);
+    setRoutingConfigOverride(undefined);
+    const profiles = [{ id: "steak-pi/gpt-6-1-sol", model: "example/worker" }, { id: "steak-pi/custom-free", model: `openrouter/${FREE_MODEL}` }];
+    writeFileSync(routingPath, JSON.stringify({ workerProfiles: profiles, temporaryFreeExclusions: [] }));
+    writeFileSync(path, JSON.stringify({ ...config(), profile: "custom-free" }));
+    expect(activeTemporaryWorkerRoute(path)?.model).toBe(FREE_MODEL);
+    profiles[1].model = "openrouter/example/other:free";
+    writeFileSync(routingPath, JSON.stringify({ workerProfiles: profiles, temporaryFreeExclusions: [] }));
+    expect(() => activeTemporaryWorkerRoute(path)).toThrow(TemporaryFreeRouteConfigError);
+    profiles[1].model = `openrouter/${FREE_MODEL}`;
+    writeFileSync(routingPath, JSON.stringify({ workerProfiles: profiles, temporaryFreeExclusions: [] }));
+    expect(activeTemporaryWorkerRoute(path)?.model).toBe(FREE_MODEL);
+    vi.setSystemTime(Date.parse(config().expiresAt));
+    writeFileSync(routingPath, JSON.stringify({ workerProfiles: [profiles[1]], temporaryFreeExclusions: [] }));
+    expect(() => activeTemporaryWorkerRoute(path)).toThrow(TemporaryFreeRouteConfigError);
+  });
   it("keeps guard registration available when routing becomes malformed after route caching", () => {
     const { path, home } = fixture();
     const routingPath = join(home, "routing.json");
@@ -221,6 +240,24 @@ describe("synthetic: bounded generic approved free route", () => {
     expect(() => choose({ requireImages: true })).toThrow();
     vi.setSystemTime(Date.parse(config().expiresAt)); expect(choose().model.id).toBe(terra.id);
     expect(() => choose({ profile: FREE_PROFILE })).toThrow(TemporaryFreeRouteUnavailableError);
+  });
+  it("preserves malformed routing causes during metadata and final request checks", async () => {
+    const { path, home } = fixture();
+    const routingPath = join(home, "routing.json");
+    vi.stubEnv("STEAK_PI_ROUTING_CONFIG", routingPath);
+    setRoutingConfigOverride(undefined);
+    const valid = JSON.stringify({ workerProfiles: [{ id: "steak-pi/gpt-6-1-sol", model: "example/worker" }], temporaryFreeExclusions: [] });
+    writeFileSync(routingPath, valid);
+    const id = "example/routing-race:free";
+    writeFileSync(path, JSON.stringify({ ...config(), model: id }));
+    const fetcher = officialFetch(id);
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => { const response = await fetcher(url); writeFileSync(routingPath, "{"); return response; }));
+    await expect(selectPreferredFreePhysical(registry())).rejects.toThrow(/cannot be read or parsed/);
+    writeFileSync(routingPath, valid);
+    vi.stubGlobal("fetch", officialFetch(id));
+    const r = registry();
+    r.find = () => { writeFileSync(routingPath, "{"); return { ...free, id }; };
+    await expect(selectPreferredFreePhysical(r)).rejects.toThrow(/cannot be read or parsed/);
   });
   it("never routes unleased Sol: expiry/auth/price loss produce a named checkpoint-switch signal", async () => {
     const { path } = fixture(); const r = registry();
