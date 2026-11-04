@@ -729,6 +729,18 @@ interface RetainedTeardown {
   warning: string;
 }
 
+/** Tool calls in a row without a dispatch before the parent is reminded once to fan out independent parts. */
+export const DELEGATION_NUDGE_AFTER = 40;
+export const DELEGATION_NUDGE_TEXT =
+  "[USAP] You have run many tool calls in a row without subagents. If any remaining part is independent of the rest " +
+  "(another repo or file set, research, a review, a separate fix), dispatch it now with ultraterm_subagents in one " +
+  "background wave and keep integrating here. If everything left is one tightly coupled change, continue.";
+
+/** USAP workers load no extensions, so this never runs inside one. The operator can switch it off with STEAK_PI_DELEGATION_NUDGE=off. */
+export function delegationNudgeDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return /^(?:0|off|false|no)$/i.test(env.STEAK_PI_DELEGATION_NUDGE ?? "");
+}
+
 interface SessionRuntime {
   /** Captured identity, never a mutable session-manager reference. */
   owner: string;
@@ -1796,6 +1808,24 @@ export function createUltratermSubagentsExtension(
 
     pi.on("tool_result", (event) => {
       if (event.toolName === "ultraterm_subagents") setToolActive(pi, "ultraterm_hub", true);
+    });
+
+    // Delegation nudge (2026-11-04: the operator found parents doing long serial work that independent subagents could have
+    // run in parallel). A parent that has run many tool calls in a row without dispatching gets one short reminder per run.
+    // Inert inside USAP workers (they never delegate) and when the operator turns it off.
+    let serialCalls = 0;
+    let nudged = false;
+    pi.on("agent_start", () => { serialCalls = 0; nudged = false; });
+    pi.on("turn_end", (event: any) => {
+      if (delegationNudgeDisabled()) return;
+      const names = (event?.toolResults ?? []).map((r: any) => r?.toolName ?? "");
+      if (names.includes("ultraterm_subagents") || names.includes("ultraterm_hub")) { serialCalls = 0; return; }
+      serialCalls += names.length;
+      if (nudged || serialCalls < DELEGATION_NUDGE_AFTER) return;
+      nudged = true;
+      try {
+        pi.sendMessage({ customType: "usap-delegation-nudge", display: false, content: DELEGATION_NUDGE_TEXT }, { deliverAs: "steer" });
+      } catch { /* a host that cannot take a steer keeps working; the nudge is advisory */ }
     });
 
     pi.on("agent_start", async (_event, ctx) => {

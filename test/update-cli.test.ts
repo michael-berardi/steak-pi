@@ -89,6 +89,12 @@ esac
     expect(r.stdout).toContain("still running");
   });
 
+  it("--check reports the release Pi loads, not an older CLI (2026-11-04)", () => {
+    const f = fixture("0.17.0", "0.17.0");
+    const r = run(f, "0.1.0", ["update", "--check"], "v0.17.0");
+    expect(r.stdout).toContain("Steak Pi is up to date (0.17.0).");
+  });
+
   it("is a no-op when already up to date", () => {
     const f = fixture("0.16.0", "0.16.0");
     const r = run(f, "0.16.0", ["update"], "v0.16.0");
