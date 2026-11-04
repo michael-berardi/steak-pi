@@ -1,0 +1,80 @@
+{"i": 6, "o": 256, "cr": 31043, "cw": 875, "turns": 3, "tools": 2, "arm": "sp", "task": "t2", "rep": 0, "ok": true, "sec": 7.9, "err": "", "chk_err": ""}
+{"i": 6, "o": 566, "cr": 64979, "cw": 5369, "turns": 3, "tools": null, "reported_cost": 0.00200719, "arm": "cc", "task": "t3", "rep": 0, "ok": true, "sec": 9.0, "err": "", "chk_err": ""}
+{"i": 6, "o": 392, "cr": 65359, "cw": 5608, "turns": 3, "tools": null, "reported_cost": 0.00197179, "arm": "cc", "task": "t2", "rep": 0, "ok": true, "sec": 9.1, "err": "", "chk_err": ""}
+{"i": 6, "o": 234, "cr": 31040, "cw": 822, "turns": 3, "tools": 2, "arm": "sp", "task": "t3", "rep": 0, "ok": true, "sec": 10.9, "err": "", "chk_err": ""}
+{"i": 8, "o": 1674, "cr": 90785, "cw": 7097, "turns": 5, "tools": null, "reported_cost": 0.0031650500000000004, "arm": "cc", "task": "t1", "rep": 0, "ok": true, "sec": 11.7, "err": "", "chk_err": ""}
+{"i": 6, "o": 846, "cr": 31479, "cw": 1670, "turns": 3, "tools": 4, "arm": "sp", "task": "t1", "rep": 0, "ok": true, "sec": 12.5, "err": "", "chk_err": ""}
+{"i": 4, "o": 132, "cr": 20452, "cw": 755, "turns": 2, "tools": 1, "arm": "sp", "task": "t6", "rep": 0, "ok": true, "sec": 4.5, "err": "", "chk_err": ""}
+{"i": 4, "o": 233, "cr": 41601, "cw": 4994, "turns": 2, "tools": null, "reported_cost": 0.0015317100000000001, "arm": "cc", "task": "t6", "rep": 0, "ok": true, "sec": 4.9, "err": "", "chk_err": ""}
+{"i": 6, "o": 495, "cr": 31254, "cw": 1151, "turns": 3, "tools": 2, "arm": "sp", "task": "t5", "rep": 0, "ok": true, "sec": 7.9, "err": "", "chk_err": ""}
+{"i": 10, "o": 1859, "cr": 114881, "cw": 7328, "turns": 6, "tools": null, "reported_cost": 0.00354491, "arm": "cc", "task": "t5", "rep": 0, "ok": true, "sec": 12.3, "err": "", "chk_err": ""}
+{"i": 10, "o": 2091, "cr": 116367, "cw": 7893, "turns": 12, "tools": null, "reported_cost": 0.0037887700000000003, "arm": "cc", "task": "t4", "rep": 0, "ok": true, "sec": 13.3, "err": "", "chk_err": ""}
+{"i": 6, "o": 765, "cr": 67620, "cw": 3086, "turns": 4, "tools": null, "reported_cost": 0.0016765, "arm": "cc", "task": "t7", "rep": 0, "ok": true, "sec": 8.1, "err": "", "chk_err": ""}
+{"i": 6, "o": 431, "cr": 31186, "cw": 1124, "turns": 3, "tools": 3, "arm": "sp", "task": "t7", "rep": 0, "ok": true, "sec": 8.5, "err": "", "chk_err": ""}
+{"i": 6, "o": 808, "cr": 32546, "cw": 641, "turns": 3, "tools": 4, "arm": "sp", "task": "t1", "rep": 1, "ok": true, "sec": 9.1, "err": "", "chk_err": ""}
+{"i": 6, "o": 352, "cr": 67466, "cw": 2604, "turns": 3, "tools": null, "reported_cost": 0.00137206, "arm": "cc", "task": "t2", "rep": 1, "ok": true, "sec": 6.3, "err": "", "chk_err": ""}
+{"i": 18, "o": 2939, "cr": 108537, "cw": 7837, "turns": 9, "tools": 14, "arm": "sp", "task": "t4", "rep": 0, "ok": true, "sec": 27.7, "err": "", "chk_err": ""}
+{"i": 10, "o": 1767, "cr": 118917, "cw": 5097, "turns": 7, "tools": null, "reported_cost": 0.0030930700000000003, "arm": "cc", "task": "t8", "rep": 0, "ok": true, "sec": 14.4, "err": "", "chk_err": ""}
+{"i": 6, "o": 1300, "cr": 70489, "cw": 1889, "turns": 4, "tools": null, "reported_cost": 0.0017332899999999997, "arm": "cc", "task": "t1", "rep": 1, "ok": true, "sec": 12.2, "err": "", "chk_err": ""}
+{"i": 6, "o": 293, "cr": 31044, "cw": 856, "turns": 3, "tools": 2, "arm": "sp", "task": "t2", "rep": 1, "ok": true, "sec": 6.9, "err": "", "chk_err": ""}
+{"i": 16, "o": 1713, "cr": 89576, "cw": 4291, "turns": 8, "tools": 8, "arm": "sp", "task": "t8", "rep": 0, "ok": true, "sec": 23.0, "err": "", "chk_err": ""}
+{"i": 8, "o": 381, "cr": 41953, "cw": 1087, "turns": 4, "tools": 3, "arm": "sp", "task": "t3", "rep": 1, "ok": true, "sec": 9.9, "err": "", "chk_err": ""}
+{"i": 8, "o": 785, "cr": 91064, "cw": 3051, "turns": 4, "tools": null, "reported_cost": 0.00191414, "arm": "cc", "task": "t3", "rep": 1, "ok": true, "sec": 9.1, "err": "", "chk_err": ""}
+{"i": 4, "o": 232, "cr": 46342, "cw": 252, "turns": 2, "tools": null, "reported_cost": 0.00063022, "arm": "cc", "task": "t6", "rep": 1, "ok": true, "sec": 7.1, "err": "", "chk_err": ""}
+{"i": 10, "o": 2036, "cr": 121587, "cw": 2451, "turns": 12, "tools": null, "reported_cost": 0.00272507, "arm": "cc", "task": "t4", "rep": 1, "ok": true, "sec": 14.0, "err": "", "chk_err": ""}
+{"i": 10, "o": 1533, "cr": 54651, "cw": 3686, "turns": 5, "tools": 10, "arm": "sp", "task": "t4", "rep": 1, "ok": true, "sec": 13.8, "err": "", "chk_err": ""}
+{"i": 4, "o": 136, "cr": 20452, "cw": 755, "turns": 2, "tools": 1, "arm": "sp", "task": "t6", "rep": 1, "ok": true, "sec": 6.2, "err": "", "chk_err": ""}
+{"i": 10, "o": 1365, "cr": 117324, "cw": 4120, "turns": 5, "tools": null, "reported_cost": 0.0026807400000000005, "arm": "cc", "task": "t5", "rep": 1, "ok": true, "sec": 12.2, "err": "", "chk_err": ""}
+{"i": 6, "o": 465, "cr": 31631, "cw": 1572, "turns": 3, "tools": 3, "arm": "sp", "task": "t7", "rep": 1, "ok": true, "sec": 7.7, "err": "", "chk_err": ""}
+{"i": 14, "o": 1473, "cr": 79304, "cw": 4003, "turns": 7, "tools": 7, "arm": "sp", "task": "t5", "rep": 1, "ok": true, "sec": 19.5, "err": "", "chk_err": ""}
+{"i": 6, "o": 912, "cr": 68059, "cw": 3647, "turns": 4, "tools": null, "reported_cost": 0.00186659, "arm": "cc", "task": "t7", "rep": 1, "ok": true, "sec": 8.3, "err": "", "chk_err": ""}
+{"i": 6, "o": 1355, "cr": 67978, "cw": 3695, "turns": 4, "tools": null, "reported_cost": 0.0020968799999999998, "arm": "cc", "task": "t1", "rep": 2, "ok": true, "sec": 10.2, "err": "", "chk_err": ""}
+{"i": 6, "o": 236, "cr": 31648, "cw": 250, "turns": 3, "tools": 2, "arm": "sp", "task": "t2", "rep": 2, "ok": true, "sec": 7.1, "err": "", "chk_err": ""}
+{"i": 12, "o": 1665, "cr": 144135, "cw": 5156, "turns": 7, "tools": null, "reported_cost": 0.00330625, "arm": "cc", "task": "t8", "rep": 1, "ok": true, "sec": 15.1, "err": "", "chk_err": ""}
+{"i": 6, "o": 352, "cr": 70070, "cw": 0, "turns": 3, "tools": null, "reported_cost": 0.0008773000000000001, "arm": "cc", "task": "t2", "rep": 2, "ok": true, "sec": 7.8, "err": "", "chk_err": ""}
+{"i": 6, "o": 805, "cr": 31479, "cw": 1701, "turns": 3, "tools": 4, "arm": "sp", "task": "t1", "rep": 2, "ok": true, "sec": 9.2, "err": "", "chk_err": ""}
+{"i": 14, "o": 1344, "cr": 78052, "cw": 2929, "turns": 7, "tools": 8, "arm": "sp", "task": "t8", "rep": 1, "ok": true, "sec": 17.7, "err": "", "chk_err": ""}
+{"i": 6, "o": 389, "cr": 67536, "cw": 2636, "turns": 3, "tools": null, "reported_cost": 0.0013976600000000002, "arm": "cc", "task": "t3", "rep": 2, "ok": true, "sec": 6.6, "err": "", "chk_err": ""}
+{"i": 6, "o": 226, "cr": 31038, "cw": 814, "turns": 3, "tools": 2, "arm": "sp", "task": "t3", "rep": 2, "ok": true, "sec": 6.8, "err": "", "chk_err": ""}
+{"i": 4, "o": 134, "cr": 20452, "cw": 755, "turns": 2, "tools": 1, "arm": "sp", "task": "t6", "rep": 2, "ok": true, "sec": 5.6, "err": "", "chk_err": ""}
+{"i": 4, "o": 235, "cr": 44157, "cw": 2440, "turns": 2, "tools": null, "reported_cost": 0.00104747, "arm": "cc", "task": "t6", "rep": 2, "ok": true, "sec": 7.7, "err": "", "chk_err": ""}
+{"i": 8, "o": 1643, "cr": 93132, "cw": 4415, "turns": 5, "tools": null, "reported_cost": 0.00263662, "arm": "cc", "task": "t5", "rep": 2, "ok": true, "sec": 13.6, "err": "", "chk_err": ""}
+{"i": 12, "o": 2781, "cr": 145563, "cw": 6031, "turns": 14, "tools": null, "reported_cost": 0.0040535300000000005, "arm": "cc", "task": "t4", "rep": 2, "ok": true, "sec": 17.0, "err": "", "chk_err": ""}
+{"i": 12, "o": 1262, "cr": 65661, "cw": 2773, "turns": 6, "tools": 5, "arm": "sp", "task": "t5", "rep": 2, "ok": true, "sec": 16.3, "err": "", "chk_err": ""}
+{"i": 14, "o": 2069, "cr": 80031, "cw": 5073, "turns": 7, "tools": 12, "arm": "sp", "task": "t4", "rep": 2, "ok": true, "sec": 21.5, "err": "", "chk_err": ""}
+{"i": 6, "o": 513, "cr": 31646, "cw": 1629, "turns": 3, "tools": 3, "arm": "sp", "task": "t7", "rep": 2, "ok": true, "sec": 8.9, "err": "", "chk_err": ""}
+{"i": 10, "o": 1357, "cr": 117497, "cw": 4168, "turns": 6, "tools": null, "reported_cost": 0.00268807, "arm": "cc", "task": "t7", "rep": 2, "ok": true, "sec": 12.7, "err": "", "chk_err": ""}
+{"i": 6, "o": 817, "cr": 31479, "cw": 1674, "turns": 3, "tools": 4, "arm": "sp", "task": "t1", "rep": 3, "ok": true, "sec": 8.7, "err": "", "chk_err": ""}
+{"i": 6, "o": 354, "cr": 67465, "cw": 2619, "turns": 3, "tools": null, "reported_cost": 0.00137605, "arm": "cc", "task": "t2", "rep": 3, "ok": true, "sec": 6.5, "err": "", "chk_err": ""}
+{"i": 6, "o": 237, "cr": 31649, "cw": 251, "turns": 3, "tools": 2, "arm": "sp", "task": "t2", "rep": 3, "ok": true, "sec": 6.9, "err": "", "chk_err": ""}
+{"i": 10, "o": 1558, "cr": 118586, "cw": 5101, "turns": 6, "tools": null, "reported_cost": 0.00298606, "arm": "cc", "task": "t8", "rep": 2, "ok": true, "sec": 13.3, "err": "", "chk_err": ""}
+{"i": 6, "o": 1441, "cr": 68258, "cw": 4262, "turns": 4, "tools": null, "reported_cost": 0.0022560800000000006, "arm": "cc", "task": "t1", "rep": 3, "ok": true, "sec": 11.3, "err": "", "chk_err": ""}
+{"i": 16, "o": 1683, "cr": 91120, "cw": 3368, "turns": 8, "tools": 8, "arm": "sp", "task": "t8", "rep": 2, "ok": true, "sec": 21.2, "err": "", "chk_err": ""}
+{"i": 6, "o": 279, "cr": 31149, "cw": 922, "turns": 3, "tools": 2, "arm": "sp", "task": "t3", "rep": 3, "ok": true, "sec": 7.6, "err": "", "chk_err": ""}
+{"i": 8, "o": 623, "cr": 91927, "cw": 3342, "turns": 4, "tools": null, "reported_cost": 0.00189997, "arm": "cc", "task": "t3", "rep": 3, "ok": true, "sec": 9.0, "err": "", "chk_err": ""}
+{"i": 4, "o": 229, "cr": 46342, "cw": 249, "turns": 2, "tools": null, "reported_cost": 0.00062812, "arm": "cc", "task": "t6", "rep": 3, "ok": true, "sec": 4.8, "err": "", "chk_err": ""}
+{"i": 4, "o": 134, "cr": 21207, "cw": 0, "turns": 2, "tools": 1, "arm": "sp", "task": "t6", "rep": 3, "ok": true, "sec": 5.3, "err": "", "chk_err": ""}
+{"i": 8, "o": 928, "cr": 42716, "cw": 1746, "turns": 4, "tools": 4, "arm": "sp", "task": "t5", "rep": 3, "ok": true, "sec": 11.4, "err": "", "chk_err": ""}
+{"i": 12, "o": 2484, "cr": 147923, "cw": 2962, "turns": 13, "tools": null, "reported_cost": 0.0033148300000000004, "arm": "cc", "task": "t4", "rep": 3, "ok": true, "sec": 15.7, "err": "", "chk_err": ""}
+{"i": 6, "o": 470, "cr": 32277, "cw": 938, "turns": 3, "tools": 3, "arm": "sp", "task": "t7", "rep": 3, "ok": true, "sec": 7.9, "err": "", "chk_err": ""}
+{"i": 6, "o": 876, "cr": 68059, "cw": 3589, "turns": 4, "tools": null, "reported_cost": 0.0018369900000000002, "arm": "cc", "task": "t7", "rep": 3, "ok": true, "sec": 11.9, "err": "", "chk_err": ""}
+{"i": 10, "o": 1826, "cr": 118693, "cw": 5342, "turns": 6, "tools": null, "reported_cost": 0.0031693300000000006, "arm": "cc", "task": "t8", "rep": 3, "ok": true, "sec": 13.1, "err": "", "chk_err": ""}
+{"i": 16, "o": 3564, "cr": 99372, "cw": 9821, "turns": 8, "tools": 17, "arm": "sp", "task": "t4", "rep": 3, "ok": true, "sec": 27.2, "err": "", "chk_err": ""}
+{"i": 10, "o": 1902, "cr": 117610, "cw": 4650, "turns": 6, "tools": null, "reported_cost": 0.0030581, "arm": "cc", "task": "t5", "rep": 3, "ok": true, "sec": 22.7, "err": "", "chk_err": ""}
+{"i": 8, "o": 1469, "cr": 93212, "cw": 4372, "turns": 5, "tools": null, "reported_cost": 0.00254182, "arm": "cc", "task": "t1", "rep": 4, "ok": true, "sec": 12.4, "err": "", "chk_err": ""}
+{"i": 6, "o": 236, "cr": 31043, "cw": 855, "turns": 3, "tools": 2, "arm": "sp", "task": "t2", "rep": 4, "ok": true, "sec": 8.5, "err": "", "chk_err": ""}
+{"i": 6, "o": 898, "cr": 32546, "cw": 717, "turns": 3, "tools": 4, "arm": "sp", "task": "t1", "rep": 4, "ok": true, "sec": 10.6, "err": "", "chk_err": ""}
+{"i": 6, "o": 352, "cr": 69633, "cw": 435, "turns": 3, "tools": null, "reported_cost": 0.0009599300000000001, "arm": "cc", "task": "t2", "rep": 4, "ok": true, "sec": 8.2, "err": "", "chk_err": ""}
+{"i": 6, "o": 258, "cr": 31717, "cw": 290, "turns": 3, "tools": 2, "arm": "sp", "task": "t3", "rep": 4, "ok": true, "sec": 7.3, "err": "", "chk_err": ""}
+{"i": 18, "o": 1521, "cr": 103364, "cw": 3586, "turns": 9, "tools": 10, "arm": "sp", "task": "t8", "rep": 3, "ok": true, "sec": 21.9, "err": "", "chk_err": ""}
+{"i": 8, "o": 815, "cr": 93324, "cw": 930, "turns": 4, "tools": null, "reported_cost": 0.00152754, "arm": "cc", "task": "t3", "rep": 4, "ok": true, "sec": 11.9, "err": "", "chk_err": ""}
+{"i": 4, "o": 140, "cr": 21074, "cw": 137, "turns": 2, "tools": 1, "arm": "sp", "task": "t6", "rep": 4, "ok": true, "sec": 5.5, "err": "", "chk_err": ""}
+{"i": 4, "o": 144, "cr": 44157, "cw": 2349, "turns": 2, "tools": null, "reported_cost": 0.0009837700000000001, "arm": "cc", "task": "t6", "rep": 4, "ok": true, "sec": 4.8, "err": "", "chk_err": ""}
+{"i": 8, "o": 1676, "cr": 93115, "cw": 4371, "turns": 5, "tools": null, "reported_cost": 0.0026441499999999996, "arm": "cc", "task": "t5", "rep": 4, "ok": true, "sec": 12.8, "err": "", "chk_err": ""}
+{"i": 10, "o": 1877, "cr": 118056, "cw": 5047, "turns": 11, "tools": null, "reported_cost": 0.0031294600000000006, "arm": "cc", "task": "t4", "rep": 4, "ok": true, "sec": 13.0, "err": "", "chk_err": ""}
+{"i": 10, "o": 1534, "cr": 55223, "cw": 3254, "turns": 5, "tools": 10, "arm": "sp", "task": "t4", "rep": 4, "ok": true, "sec": 15.1, "err": "", "chk_err": ""}
+{"i": 6, "o": 826, "cr": 70294, "cw": 1390, "turns": 4, "tools": null, "reported_cost": 0.00139454, "arm": "cc", "task": "t7", "rep": 4, "ok": true, "sec": 8.5, "err": "", "chk_err": ""}
+{"i": 6, "o": 425, "cr": 31188, "cw": 1135, "turns": 3, "tools": 3, "arm": "sp", "task": "t7", "rep": 4, "ok": true, "sec": 8.0, "err": "", "chk_err": ""}
+{"i": 10, "o": 1129, "cr": 53360, "cw": 2910, "turns": 5, "tools": 5, "arm": "sp", "task": "t5", "rep": 4, "ok": true, "sec": 15.5, "err": "", "chk_err": ""}
+{"i": 10, "o": 1816, "cr": 118465, "cw": 5111, "turns": 6, "tools": null, "reported_cost": 0.00311585, "arm": "cc", "task": "t8", "rep": 4, "ok": true, "sec": 11.4, "err": "", "chk_err": ""}
+{"i": 18, "o": 1500, "cr": 101814, "cw": 4233, "turns": 9, "tools": 9, "arm": "sp", "task": "t8", "rep": 4, "ok": true, "sec": 23.9, "err": "", "chk_err": ""}

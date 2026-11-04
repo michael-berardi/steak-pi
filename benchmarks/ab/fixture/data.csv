@@ -1,0 +1,6 @@
+id,customer,amount,status
+1,ana,10.50,paid
+2,ben,20.00,pending
+3,cy,5.25,paid
+4,di,100.00,refunded
+5,ed,7.00,paid

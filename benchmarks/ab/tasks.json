@@ -1,0 +1,8 @@
+{"t1":"Fix the bugs in util.py so slugify, chunk and median behave as test_util.py expects (slugify must also trim edges and collapse punctuation/whitespace runs into single hyphens). pytest is not installed; verify with python3. Keep changes minimal.",
+"t2":"In config.json set port to 9090 and debug to true. Change nothing else.",
+"t3":"Append a new line 'delta' to notes.txt.",
+"t4":"Rename the function calc_total to order_total everywhere in the shop package (definition, imports and all call sites). Do not change behaviour.",
+"t5":"Add a function parse_kv(s) to util.py: it parses 'a=1;b=2' into {'a':'1','b':'2'}. Strip whitespace around keys and values, ignore empty segments, split each segment on the first '=' only, and return {} for an empty string.",
+"t6":"Which file defines reorder_level, and what is the default value of its safety parameter? Answer in one sentence; do not modify any files.",
+"t7":"Create paid_total.py in this directory that reads data.csv with the csv module and prints the sum of the amount column for rows whose status is 'paid', formatted with 2 decimals. Run it once to check.",
+"t8":"Discount codes in the shop package are supposed to apply once, as README.md says, but totals look too low. Find and fix the cause. Keep the change minimal."}

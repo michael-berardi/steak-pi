@@ -78,6 +78,7 @@ command). The check runs at most every 6 hours, in the background; `STEAK_PI_NO_
 | **Local compaction** | Summaries built in 10–300 ms with no model call; the full raw session stays searchable |
 | **Verify after edit** | Runs your project check after edits and hands failures straight back to the agent |
 | **Phased todo** | A plan pinned in the terminal, saved per session |
+| **Write guard** | `write` refuses to replace an existing file the session has not read; the error says to read it first |
 | **Finish guard** | A turn cannot end while todo items are open or the final reply lists unfinished work; capped, never after an abort, error or stop request, on by default |
 | **Companion UI** | One status line for state, model, context pressure, cache use and cost, in your Pi theme |
 | **Skill catalog lite** | Keeps large skill catalogs inside a byte budget without dropping any skill |
@@ -327,6 +328,32 @@ completes the eight-file fixture without subagents, so its timing is not a
 parallel-worker comparison. Earlier measurements are in
 [`benchmarks/`](./benchmarks/usap/README.md).
 
+### Against Claude Code
+
+Same small Claude model at medium effort, same eight small Python tasks, five
+repeats each, both harnesses on stock config (no `CLAUDE.md`, `AGENTS.md`, skills,
+hooks or MCP), run order alternated, every result checked by a script. Measured
+November 4, 2026 on macOS. Cost uses one rate table for both (output $0.50, cache
+read $0.01, cache write $0.20 per million tokens), which reproduces Claude Code's
+own reported cost to within $0.0000012 per run. Each lane warmed its prompt cache
+first.
+
+| 80 runs | Claude Code | Steak Pi | Steak Pi / Claude Code (95% CI) |
+| --- | ---: | ---: | ---: |
+| Correct | 40 / 40 | 40 / 40 | |
+| Input tokens | 3.71 M | 1.96 M | 0.53 (0.47–0.59) |
+| Output tokens | 46.4 K | 34.5 K | 0.74 (0.63–0.86) |
+| Cost | $0.089 | $0.053 | 0.59 (0.50–0.70) |
+| Wall time | 434 s | 482 s | 1.11 (0.97–1.26) |
+
+The starting prompt is about half the size: 10.4 K tokens against 21.6 K. Steak
+Pi was cheaper in 38 of 40 paired runs. It is not faster: multi-step tasks (a
+rename across files, a debugging task) take more turns. Without the cache warm-up
+the cost gap shrinks to about 11% and is not significant, because the first
+request pays for the prompt either way. This covers one model on the Claude
+route, small tasks and one machine. Reproduce it with
+[`benchmarks/ab`](./benchmarks/ab/run.py).
+
 ## Configuration
 
 | Setting | Default | Effect |
@@ -335,6 +362,7 @@ parallel-worker comparison. Earlier measurements are in
 | `~/.pi/agent/ultracompress.json` | built-in | Compaction thresholds and recall budgets |
 | `~/.pi/agent/steak-pi.json` → `finishGuard` | on, 3 pushes | Finish guard (above) |
 | `STEAK_PI_FINISH_GUARD=0` | on | Turn the finish guard off |
+| `STEAK_PI_WRITE_GUARD=off` | on | Allow `write` to replace a file the session has not read |
 | `STEAK_PI_DEFER_TOOLS=off` | on | Expose every tool from the first request |
 | `STEAK_PI_WORKER_SDK=unbundled` | host bundle | Workers load their own Pi SDK copy |
 | `STEAK_PI_SKILL_CATALOG_LITE=off` | on | Keep Pi's stock skill catalog |
