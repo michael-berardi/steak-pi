@@ -99,6 +99,24 @@ describe("synthetic: bounded generic approved free route", () => {
       expect(() => activeTemporaryWorkerRoute(path, now)).toThrow(/temporaryFreeExclusions/);
     } finally { setRoutingConfigOverride(undefined); }
   });
+  it("reports an uncached malformed routing file during registration without activating the route", () => {
+    const { path, home } = fixture();
+    const routingPath = join(home, "routing.json");
+    vi.stubEnv("STEAK_PI_ROUTING_CONFIG", routingPath);
+    writeFileSync(routingPath, "{");
+    setRoutingConfigOverride(undefined);
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(temporaryRouteForRegistration()).toBeUndefined();
+      expect(log).toHaveBeenCalledWith(expect.stringContaining("RoutingConfigError"));
+      expect(log).toHaveBeenCalledWith(expect.stringContaining("cannot be read or parsed"));
+      expect(() => activeTemporaryWorkerRoute(path)).toThrow(/cannot be read or parsed/);
+    } finally {
+      writeFileSync(routingPath, JSON.stringify({ workerProfiles: [{ id: "steak-pi/gpt-6-1-sol", model: "example/worker" }], temporaryFreeExclusions: [] }));
+      temporaryRouteForRegistration(); // Clear the registration log deduplication state for subsequent tests.
+      log.mockRestore();
+    }
+  });
   it("keeps guard registration available when routing becomes malformed after route caching", () => {
     const { path, home } = fixture();
     const routingPath = join(home, "routing.json");

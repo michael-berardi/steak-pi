@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.23.4 (2026-11-04)
+
+- **Temporary route errors identify malformed routing configuration.** A malformed
+  routing file now reports its cause while the temporary route remains disabled and
+  the independent model guards remain active.
+
 ## 0.23.3 (2026-11-04)
 
 - **A task class steers a wave only when it fits the whole wave.** Every task must carry the class; otherwise the
