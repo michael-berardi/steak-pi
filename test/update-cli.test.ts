@@ -51,8 +51,33 @@ describe("steak-pi update for release-folder installs", () => {
     expect(fallback.stdout).toContain(`pi integration    ${join(f.releases, "0.1.0", "package")}  (v0.1.0)`);
     const updated = run(f, "0.16.0", ["update"], "v0.17.0");
     expect(updated.status, updated.stderr).toBe(0);
+    expect(existsSync(join(f.releases, "0.1.0", "package"))).toBe(true); // old releases are retained
+    // Every known agent directory on this machine follows the update (2026-11-04: 4 of 5 stayed behind).
+    expect(JSON.parse(readFileSync(join(other, "settings.json"), "utf8")).packages[0]).toContain("0.17.0");
+  });
+
+  it("re-points every known Pi agent directory on this machine, on any old version, and nothing else (2026-11-04)", () => {
+    // UltraTerm runs Pi from ~/.pi/agent and one agent dir per provider account; updating only the caller's left 4 of 5 behind.
+    const f = fixture("0.16.0", "0.17.0");
+    const accounts = join(f.home, ".ultraterm", "provider-accounts");
+    const write = (dir: string, packages: unknown[]) => { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, "settings.json"), JSON.stringify({ packages, theme: "keep" })); };
+    const defaultAgent = join(f.home, ".pi", "agent");
+    write(defaultAgent, [join(f.releases, "0.16.0", "package")]);
+    write(join(accounts, "codex", "primary", "agent"), [join(f.releases, "0.1.0", "package")]);          // an older version
+    write(join(accounts, "opencode-go", "b", "agent"), [{ source: join(f.releases, "0.16.0", "package"), extensions: [] }]);
+    const foreign = join(f.home, "elsewhere", "steak-pi", "releases", "0.16.0", "package");               // another releases root
+    write(join(accounts, "claude", "x", "agent"), [foreign]);
+    const r = run(f, "0.16.0", ["update"], "v0.17.0");
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toContain("Also re-pointed 3 other Pi agent settings on this machine to 0.17.0.");
+    const read = (dir: string) => JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"));
+    expect(read(defaultAgent).packages).toEqual([join(f.releases, "0.17.0", "package")]);
+    expect(read(join(accounts, "codex", "primary", "agent")).packages).toEqual([join(f.releases, "0.17.0", "package")]);
+    expect(read(join(accounts, "opencode-go", "b", "agent")).packages).toEqual([{ source: join(f.releases, "0.17.0", "package"), extensions: [] }]);
+    expect(read(join(accounts, "opencode-go", "b", "agent")).theme).toBe("keep");
+    expect(read(join(accounts, "claude", "x", "agent")).packages).toEqual([foreign]);                   // not ours: untouched
+    expect(read(f.agent).packages).toEqual(["../share/steak-pi/releases/0.17.0/package"]);
     expect(existsSync(join(f.releases, "0.1.0", "package"))).toBe(true);
-    expect(JSON.parse(readFileSync(join(other, "settings.json"), "utf8")).packages[0]).toContain("0.1.0");
   });
 
   it("preserves an incomplete existing destination", () => {

@@ -147,6 +147,31 @@ update_release_folder() {
     if (!hit) { console.error("no release-folder entry in " + file); process.exit(1); }
     const tmp = file + ".steak-pi-update.tmp"; fs.writeFileSync(tmp, JSON.stringify(s, null, 2) + "\n", { mode: 0o600 }); fs.renameSync(tmp, file);
   ' "$SETTINGS" "$root" "$ver" || die "could not re-point $SETTINGS at $ver"
+  # The same machine runs Pi from several known agent directories: the default ~/.pi/agent and one per UltraTerm provider
+  # account (~/.ultraterm/provider-accounts/<provider>/<account>/agent). Each has its own settings.json, so updating only the
+  # caller's left the others on the old release (2026-11-04: 4 of 5 stayed behind). Re-point every KNOWN directory whose
+  # settings pin a release folder under this same releases root; unknown directories elsewhere are never touched.
+  others=0
+  for known in "$HOME/.pi/agent/settings.json" "${ULTRATERM_HOME:-$HOME/.ultraterm}"/provider-accounts/*/*/agent/settings.json; do
+    [ -f "$known" ] && [ ! -L "$known" ] || continue
+    [ "$(CDPATH= cd -- "$(dirname -- "$known")" 2>/dev/null && pwd -P)" = "$(CDPATH= cd -- "$(dirname -- "$SETTINGS")" 2>/dev/null && pwd -P)" ] && continue
+    if node -e '
+      const fs = require("node:fs"); const path = require("node:path"); const [file, root, ver] = process.argv.slice(1);
+      let s; try { s = JSON.parse(fs.readFileSync(file, "utf8")); } catch { process.exit(2); }
+      const dir = path.dirname(file); let hit = false;
+      const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+      const realRoot = real(root);
+      // Same releases root only: <root>/<version>/package, wherever the entry is written relative from.
+      const under = (src) => real(path.dirname(path.dirname(path.resolve(dir, src.replace(/^~(?=\/)/, process.env.HOME))))) === realRoot;
+      s.packages = (s.packages || []).map((p) => { const src = typeof p === "string" ? p : p?.source ?? "";
+        if (!/steak-pi\/releases\/[^/]+\/package$/.test(src) || !under(src)) return p; hit = true;
+        const next = src.replace(/releases\/[^/]+\/package$/, "releases/" + ver + "/package");
+        return typeof p === "string" ? next : { ...p, source: next }; });
+      if (!hit) process.exit(3);
+      const tmp = file + ".steak-pi-update.tmp"; fs.writeFileSync(tmp, JSON.stringify(s, null, 2) + "\n", { mode: 0o600 }); fs.renameSync(tmp, file);
+    ' "$known" "$root" "$ver" 2>/dev/null; then others=$((others + 1)); fi
+  done
+  [ "$others" -gt 0 ] && say "Also re-pointed $others other Pi agent setting$([ "$others" -eq 1 ] || echo s) on this machine to $ver."
   # PI_CODING_AGENT_DIR can point anywhere, including unavailable locations. There is no
   # complete registry of persistent pins, so neither process age nor a directory scan can
   # prove a release is unused. Retain every release, regardless of stale retirement markers.
