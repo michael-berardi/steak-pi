@@ -12,52 +12,80 @@ export interface LocalHookDeps {
 const LOCAL_PROVIDER = "local";
 
 /**
- * Keep the local model server up while this Pi process is on a `local/...` model: take one lease when a session
- * starts on one (or the model is switched to one), let go when the model is switched away or the session ends.
- * The server stops by itself after an idle grace once the last lease is gone. Sessions on any other model are
- * untouched: no file is read and nothing is started.
+ * Keep the local model server up only while this Pi process is really using it: one lease from the start of a run on a
+ * `local/...` model (`before_agent_start`) until Pi settles (`agent_settled`: nothing more will run on its own). Between
+ * prompts a session holds nothing, so a pane left open at its prompt no longer pins gigabytes of weights and memory; the
+ * server stops after its idle grace once the last run anywhere has settled (2026-11-05: one idle pane kept a model loaded
+ * for seven hours). Selecting a local model (session start or a switch) warms the server with a lease it lets go at once,
+ * so the first prompt does not wait for the weights unless the grace has already passed. Other models are untouched.
  */
 export function createLocalHook(deps: LocalHookDeps): (pi: ExtensionAPI) => void {
   return (pi) => {
-    let held: string | undefined;
+    let held: string | undefined; // the model this process holds a lease on: only while a run is active
+    let warmed: string | undefined; // the selected local model already warmed, so a repeat selection is not a second start
+    let compacting = false; // a lease taken only for a compaction outside a run (manual /compact)
     let pending: Promise<void> = Promise.resolve();
+    const queue = (step: () => Promise<void>): Promise<void> => (pending = pending.then(step, step));
 
-    const sync = (model: Model, ctx: ExtensionContext) => {
-      const wanted = model?.provider === LOCAL_PROVIDER ? model.id : undefined;
-      if (wanted === held) return;
-      const previous = held;
-      held = wanted;
-      pending = pending.then(async () => {
-        if (previous) await deps.release().catch(() => undefined);
-        if (!wanted) return;
+    const report = (ctx: ExtensionContext, error: unknown) => {
+      const text = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(text, "error");
+      if (ctx.hasUI === false) process.stderr.write(`${text}\n`); // print mode has no notification area
+    };
+    const letGo = async () => {
+      if (held === undefined) return;
+      held = undefined;
+      await deps.release().catch(() => undefined);
+    };
+    const take = async (id: string, ctx: ExtensionContext): Promise<boolean> => {
+      try {
+        const result = await deps.ensure(id);
+        if (result.started) ctx.ui.notify(`Local model ${id} is ready at ${result.baseUrl}.`, "info");
+        return true;
+      } catch (error) { report(ctx, error); return false; }
+    };
+    const localId = (model: Model) => (model?.provider === LOCAL_PROVIDER ? model.id : undefined);
+
+    /** A local model was selected: start it in the background and let go at once, so its idle grace runs from now. */
+    const select = (model: Model, ctx: ExtensionContext) => {
+      const wanted = localId(model);
+      if (wanted === warmed) return;
+      warmed = wanted;
+      void queue(async () => {
+        if (held !== undefined && held !== wanted) await letGo();
+        if (!wanted || held === wanted) return;
         ctx.ui.notify(`Starting local model ${wanted}; the first start loads the weights and can take a minute.`, "info");
-        try {
-          const result = await deps.ensure(wanted);
-          if (result.started) ctx.ui.notify(`Local model ${wanted} is ready at ${result.baseUrl}.`, "info");
-        } catch (error) {
-          if (held === wanted) held = undefined;
-          const text = error instanceof Error ? error.message : String(error);
-          ctx.ui.notify(text, "error");
-          if (ctx.hasUI === false) process.stderr.write(`${text}\n`); // print mode has no notification area
-        }
+        if (await take(wanted, ctx)) await deps.release().catch(() => undefined);
+        else if (warmed === wanted) warmed = undefined;
       });
     };
 
-    pi.on("session_start", (_event, ctx) => { sync(ctx.model, ctx); });
-    pi.on("model_select", (event, ctx) => { sync(event.model, ctx); });
-    // The first prompt of a session must not race the server coming up, and a start that failed (memory, a busy port,
-    // another server) is tried again before the next prompt instead of failing every prompt until /reload.
+    pi.on("session_start", (_event, ctx) => { select(ctx.model, ctx); });
+    pi.on("model_select", (event, ctx) => { select(event.model, ctx); });
+    // A run holds the server: the prompt waits for it to be up (the weights reload if it stopped while idle), and a start
+    // that failed (memory, a busy port, another server) is tried again on the next prompt instead of until /reload.
     pi.on("before_agent_start", async (_event, ctx) => {
-      await pending;
-      if (held === undefined && ctx.model?.provider === LOCAL_PROVIDER) {
-        sync(ctx.model, ctx);
-        await pending;
-      }
+      const wanted = localId(ctx.model);
+      await queue(async () => {
+        if (held !== undefined && held !== wanted) await letGo();
+        if (!wanted || held === wanted) return;
+        if (await take(wanted, ctx)) { held = wanted; warmed = wanted; }
+      });
     });
-    pi.on("session_shutdown", async () => {
-      await pending;
-      if (held !== undefined) { held = undefined; await deps.release().catch(() => undefined); }
+    // Pi will not continue on its own: the run is over and this process no longer uses the server.
+    pi.on("agent_settled", async () => { compacting = false; await queue(letGo); });
+    // A manual /compact summarizes with the session model outside any run: hold the server for it, then let go.
+    pi.on("session_before_compact", async (_event, ctx) => {
+      const wanted = localId(ctx.model);
+      await queue(async () => {
+        if (!wanted || held !== undefined) return;
+        if (await take(wanted, ctx)) { held = wanted; compacting = true; }
+      });
     });
+    const compacted = async () => { if (compacting) { compacting = false; await queue(letGo); } };
+    pi.on("session_compact", compacted);
+    pi.on("session_compact_failed", compacted);
+    pi.on("session_shutdown", async () => { await queue(letGo); });
   };
 }
 

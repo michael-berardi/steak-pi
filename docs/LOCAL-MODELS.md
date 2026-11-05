@@ -97,10 +97,16 @@ is recorded there is ever stopped), `server.log`. Environment: `STEAK_PI_LOCAL_G
 
 ## In a Pi session
 
-The package loads a small extension: when a session starts on a `local/...` model, or the model is switched to one,
-it takes a lease and brings the server up (the first prompt waits for it); when the model is switched away or the
-session ends it gives the lease back. A refusal is shown with its named cause. Sessions on any other model never touch
-it. USAP workers do not load extensions; they use `ensure`/`release`, below.
+The package loads a small extension. A session holds the server only while a run is active: it takes a lease when a
+prompt starts on a `local/...` model (the prompt waits for the server, reloading the weights if it stopped while idle)
+and gives it back when Pi settles, meaning nothing more will run on its own. A manual `/compact` holds it the same way
+for the summary. A pane left open at its prompt holds
+nothing, so the idle grace starts as soon as the last run anywhere has settled; an unused model never stays loaded,
+whatever happens to the session afterwards (a model change that fires no event, a pane left open for hours). When a
+session starts on a local model or switches to one, the server is warmed in the background and its lease is returned
+at once, so the first prompt inside the grace period does not wait. A refusal is shown with its named cause and tried
+again on the next prompt. Sessions on any other model never touch it. USAP workers do not load extensions; they use
+`ensure`/`release`, below.
 
 ## For USAP workers
 
@@ -122,7 +128,6 @@ route (see [model routing](./MODEL-ROUTING.md)).
 ## Slot in a different model
 
 Run `steak-pi local add` again with the other file or spec. Both stay under the one `local` provider; only one server
-runs at a time, and switching models mid-session releases the old lease and takes the new one (an idle server for the
-old model is replaced). To change one model's settings, `add` it again with `--ctx`, `--port` or `-- <llama-server args>`
+runs at a time, and switching models mid-session warms the new one (an idle server for the old model is replaced). To change one model's settings, `add` it again with `--ctx`, `--port` or `-- <llama-server args>`
 (for example a speculative-decoding flag your build supports), or edit its entry in `models.json` (Pi's side: sampling,
 thinking map, token limit) and its profile under `~/.pi/agent/local/profiles/` (the server side).

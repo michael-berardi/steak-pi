@@ -21,20 +21,20 @@ serious sessions need: parallel subagents with hard limits, compaction that
 costs no model calls, checks that run after every edit, and a status line that
 tells you what the agent is doing.
 
-Current release: **0.23.5**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
+Current release: **0.23.7**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
 [UltraTerm](https://paretocybernetics.com/software/).
 
 ## Install
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.23.5
+pi install git:github.com/michael-berardi/steak-pi@v0.23.7
 ```
 
 Or from the release archive, without Git:
 
 ```sh
-shasum -a 256 -c steak-pi-0.23.5.tgz.sha256
-tar -xzf steak-pi-0.23.5.tgz
+shasum -a 256 -c steak-pi-0.23.7.tgz.sha256
+tar -xzf steak-pi-0.23.7.tgz
 npm install --ignore-scripts --prefix "$PWD/package"
 pi install "$PWD/package"
 ```
@@ -131,7 +131,7 @@ by Armin Ronacher (MIT).
 
 Slot any GGUF into Pi as `local/<id>`: `steak-pi local add <file.gguf | owner/repo:quant>` reads the header, sizes the
 context to this machine (one slot, flash attention, q8_0 KV cache, 6 GiB of RAM kept free) and writes one `local`
-provider to `models.json`. Then `pi --model local/<id>`: `llama-server` starts on demand and stops after 10 idle minutes.
+provider to `models.json`. Then `pi --model local/<id>`: `llama-server` starts on demand, is held only while a prompt runs, and stops after 10 minutes with no run.
 It refuses, naming the cause, when memory is short, the disk is above 90% or another model server runs. No model ships
 with Steak Pi; workers use `ensure`/`release`. Details: [docs/LOCAL-MODELS.md](./docs/LOCAL-MODELS.md).
 

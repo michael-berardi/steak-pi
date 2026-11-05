@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.23.7 (2026-11-05)
+
+- **An unused local model unloads.** A session now holds the local model server only while a run is active (from the
+  start of a prompt until Pi settles), not for as long as it is open on a `local/...` model. A pane left at its prompt,
+  or one whose model changed without a selection event, no longer keeps the weights and their memory loaded: the
+  server stops after its idle grace once the last run has settled. Before, one idle pane kept a model loaded for hours.
+  Selecting a local model still warms it, so a prompt inside the grace period starts at once; a manual `/compact` holds
+  it for the summary.
+
 ## 0.23.6 (2026-11-04)
 
 - **`steak-pi update` moves every Pi agent directory on the machine.** Besides the one it runs under, it re-points the
