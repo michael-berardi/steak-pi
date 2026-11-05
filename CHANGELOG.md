@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.23.6 (2026-11-04)
+
+- **`steak-pi update` moves every Pi agent directory on the machine.** Besides the one it runs under, it re-points the
+  default `~/.pi/agent` and every UltraTerm provider-account agent directory whose settings pin a release in the same
+  releases folder, whatever older version they were on. Before, only the caller's settings moved and the other accounts
+  kept loading the old release. Settings that point at another releases folder are never touched.
+
 ## 0.23.5 (2026-11-04)
 
 - **Status identifies the Pi settings file.** Release-folder updates preserve existing releases, which may be pinned by other agent directories or used by running sessions. An incomplete destination is preserved and reported instead of replaced.

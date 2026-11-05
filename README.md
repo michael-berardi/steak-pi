@@ -53,7 +53,7 @@ steak-pi status       # installed version, selected Pi settings file and integra
 steak-pi update       # install the latest release (--check only reports)
 ```
 
-For release-folder installations, updates retain existing releases because other Pi agent directories or running sessions may still use them.
+For release-folder installations, `steak-pi update` re-points the default `~/.pi/agent` and every UltraTerm provider-account agent directory that pins a release in the same releases folder, and retains existing releases because running sessions may still use them.
 
 For UltraTerm-managed launches, update the supported Homebrew package with
 `brew upgrade michael-berardi/pareto-software-distribution/steak-pi`.
