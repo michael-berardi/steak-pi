@@ -153,12 +153,46 @@ describe("wave classes", () => {
     expect(configuredTaskClass("constructor")).toBeUndefined();
   });
 
-  it("names the one configured class, the unknown ones and the tasks that ride along", () => {
+  it("names the one configured class, the unknown ones and the tasks without it, and then does not steer", () => {
     configure(CONFIG);
     const wave = analyzeWaveClasses(tasks("class-a", "mystery", undefined, "class-a"), { refuseConflict: true });
-    expect(wave.active?.name).toBe("class-a");
+    // 2026-11-04: tasks without the class never ride its route; the wave runs the normal chain and says why.
+    expect(wave.active).toBeUndefined();
+    expect(wave.declared[0]).toBe("class-a");
     expect(wave.unknown).toEqual(["mystery"]);
     expect(wave.riders).toEqual(["leaf-1", "leaf-2"]);
+    expect(wave.skipped).toMatch(/tasks without it \("leaf-1", "leaf-2"\) would ride its route/);
+  });
+
+  it("steers a wave whose every task carries the class", () => {
+    configure(CONFIG);
+    const wave = analyzeWaveClasses(tasks("class-a", "class-a"), { refuseConflict: true });
+    expect(wave.active?.name).toBe("class-a");
+    expect(wave.skipped).toBeUndefined();
+  });
+
+  it("one classed task in a four-task wave does not move the wave onto the class route", () => {
+    configure(CONFIG);
+    const wave = analyzeWaveClasses(tasks("class-a", undefined, undefined, undefined), { refuseConflict: true });
+    expect(wave.active).toBeUndefined();
+    expect(wave.skipped).toMatch(/would ride its route/);
+  });
+
+  it("a class with one slot never takes a wider wave", () => {
+    configure({ ...CONFIG, taskClasses: { ...CONFIG.taskClasses, "class-a": { ...CONFIG.taskClasses["class-a"], slots: 1 } } });
+    expect(analyzeWaveClasses(tasks("class-a"), { refuseConflict: true }).active?.name).toBe("class-a");
+    const wide = analyzeWaveClasses(tasks("class-a", "class-a", "class-a"), { refuseConflict: true });
+    expect(wide.active).toBeUndefined();
+    expect(wide.skipped).toMatch(/3 tasks and its routes take 1 at a time/);
+  });
+
+  it("a small-scope class skips workers that may edit and run a shell", () => {
+    configure({ ...CONFIG, taskClasses: { ...CONFIG.taskClasses, "class-a": { ...CONFIG.taskClasses["class-a"], maxScope: "small" } } });
+    const big = analyzeWaveClasses([{ label: "impl", taskClass: "class-a", mayEdit: true, allowBash: true }], { refuseConflict: true });
+    expect(big.active).toBeUndefined();
+    expect(big.skipped).toMatch(/small tasks and a task may edit and run a shell/);
+    const small = analyzeWaveClasses([{ label: "scout", taskClass: "class-a", allowBash: true }], { refuseConflict: true });
+    expect(small.active?.name).toBe("class-a");
   });
 
   it("refuses two configured classes, but ignores them when the wave is not steered", () => {
@@ -403,14 +437,15 @@ describe("dispatch: task class routing and the ensure hook", () => {
     } finally { await t.close(); }
   });
 
-  it("lets tasks without the class ride the wave's route and names them", async () => {
+  it("never moves tasks without the class onto its route: the wave runs the normal chain and says why", async () => {
+    // 2026-11-04: one "test-writing" task sent a four-task payments implementation wave onto a one-slot local model.
     configure(CONFIG);
     const t = build();
     try {
       const result = await t.dispatch({ tasks: [leaf("class-a"), { ...leaf(), label: "rider" }, { ...leaf("mystery"), label: "stray" }] });
-      expect(result.details.run.model).toBe(LOCAL);
-      expect(result.content[0].text).toMatch(/Tasks without this class \("rider", "stray"\) ride the same route/);
-      expect(result.content[0].text).toContain("Ignored, not configured: mystery.");
+      expect(result.details.run.model).toBe(FALLBACK);
+      expect(result.details.run.selection.taskClass).toMatchObject({ name: "class-a", outcome: "ignored" });
+      expect(result.content[0].text).toMatch(/does not steer this wave because tasks without it \("rider", "stray"\) would ride its route/);
     } finally { await t.close(); }
   });
 

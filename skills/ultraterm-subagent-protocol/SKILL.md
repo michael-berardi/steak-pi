@@ -252,9 +252,11 @@ dispatch note say which exist). On an implicit text worker wave a configured cla
 walks its own chain first (worker profiles or exact routes, with the default chain's
 launch, quota, paid-route and `onlyWhen` checks), then the normal route; the receipt
 (`run.selection.taskClass`: `served` / `fallback` / `ignored`, with the reason) and the
-`Task class …` line of the dispatch note say which. One run uses one route: give every
-leaf of a wave the same class (or none) and dispatch different classes as separate
-waves; two configured classes in one wave are refused. An unconfigured class is
+`Task class …` line of the dispatch note say which. One run uses one route, and a class
+steers a wave only when every leaf carries it, the wave fits the class's `slots`, and
+(for a `maxScope: "small"` class) no leaf may both edit and run a shell; otherwise the
+normal chain runs and the note says why. Dispatch a classed leaf in its own wave;
+two configured classes in one wave are refused. An unconfigured class is
 ignored with a note, never an error, and a class never overrides an explicit
 `model`/`profile`/`harness`/`claudeAccount` or steers reviewers and image waves. When
 the note says the class requires a test gate, run that gate before accepting the work:

@@ -390,6 +390,8 @@ Per-class keys (all optional; Steak Pi ships no class, route or number of its ow
 | `window` | `10` | decided outcomes the rolling pass rate looks at (the floor needs `min(window, 5)` of them) |
 | `cooldownMinutes` | `30` | how long a demoted route stays out before one re-probe |
 | `retryMaxTokens` | double the model's own | output budget for the one same-route retry of an empty reply |
+| `slots` | none | most tasks one wave may run on this class's routes at once (a local server with one slot is `1`); a wider wave runs the normal chain |
+| `maxScope` | none | `"small"`: the class is for small, bounded tasks; a wave with a task that may both edit and run a shell runs the normal chain |
 | `priors` | none | `{ "<chain entry>": { "pass", "n", "costUsd", "seconds" } }`: `pass` of `n` earlier trials, mean cost and seconds of a trial |
 
 A worked example. Two routes serve `class-a`, and the operator's own benchmark gave starting values:

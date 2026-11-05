@@ -115,6 +115,10 @@ export interface TaskClassConfig {
   cooldownMinutes?: number;
   /** Output budget for the one same-route retry of an empty or output-exhausted reply (default: double the model's own). */
   retryMaxTokens?: number;
+  /** Most tasks one wave may run on this class's routes at once (a local server with one slot is 1). A wider wave skips the class. */
+  slots?: number;
+  /** "small": the class is for small, bounded tasks; a wave with a task that may both edit and run a shell skips it. */
+  maxScope?: "small";
   /** Starting estimates per chain entry: `pass` of `n` earlier trials, and the mean cost and seconds of a trial. */
   priors?: Readonly<Record<string, { pass: number; n: number; costUsd?: number; seconds?: number }>>;
 }
@@ -304,7 +308,7 @@ function parseEnsure(value: unknown, key: string): ProfileEnsureConfig {
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
   };
 }
-const TASK_CLASS_KEYS = ["chain", "requiresTestGate", "note", "timeWeight", "minPassRate", "explore", "demoteAfter", "window", "cooldownMinutes", "retryMaxTokens", "priors"];
+const TASK_CLASS_KEYS = ["chain", "requiresTestGate", "note", "timeWeight", "minPassRate", "explore", "demoteAfter", "window", "cooldownMinutes", "retryMaxTokens", "slots", "maxScope", "priors"];
 function boundedNumber(value: unknown, key: string, min: number, max: number, integer = false): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max || (integer && !Number.isInteger(value))) {
     return fail(key, `expected ${integer ? "an integer" : "a number"} from ${min} to ${max}`);
@@ -396,6 +400,8 @@ function parseTaskClasses(value: unknown): Record<string, TaskClassConfig> {
       ...(entry.window !== undefined ? { window: boundedNumber(entry.window, `${key}.window`, 2, 500, true) } : {}),
       ...(entry.cooldownMinutes !== undefined ? { cooldownMinutes: boundedNumber(entry.cooldownMinutes, `${key}.cooldownMinutes`, 1, 10_080) } : {}),
       ...(entry.retryMaxTokens !== undefined ? { retryMaxTokens: boundedNumber(entry.retryMaxTokens, `${key}.retryMaxTokens`, 256, 1_048_576, true) } : {}),
+      ...(entry.slots !== undefined ? { slots: boundedNumber(entry.slots, `${key}.slots`, 1, 64, true) } : {}),
+      ...(entry.maxScope !== undefined ? { maxScope: entry.maxScope === "small" ? "small" as const : fail(`${key}.maxScope`, 'expected "small"') } : {}),
       ...(entry.priors !== undefined ? { priors: parsePriors(entry.priors, `${key}.priors`, chain) } : {}),
     };
   }

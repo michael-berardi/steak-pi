@@ -7,9 +7,11 @@
  * chain) and falls back to the normal route. Steak Pi ships no class, chain or profile: the whole table
  * is operator configuration, and a class the operator did not configure is ignored, never an error.
  *
- * One run uses one frozen route, so a wave steers on one class. Tasks that declare no class (or one that
- * is not configured) ride on that route and the dispatch note names them; two different configured
- * classes in one wave are refused, because they ask for different routes.
+ * One run uses one frozen route, so a wave steers on one class, and only when the class fits the WHOLE wave: every
+ * task carries it, the wave is no wider than the class's `slots`, and a `maxScope: "small"` class sees no task that may
+ * both edit and run a shell. Otherwise the class is skipped and the normal chain runs (2026-11-04: one classed
+ * task sent a four-task payments implementation wave onto a one-slot local model). Two different configured classes in
+ * one wave are refused, because they ask for different routes.
  */
 import { isRetiredRoute } from "../retired-model-selection.ts";
 import { routeKey, routingConfigOrEmpty, TASK_CLASS_MAX_LENGTH, TASK_CLASS_PATTERN, type TaskClassConfig, type TaskClassRule } from "../routing-config.ts";
@@ -37,8 +39,29 @@ export interface WaveTaskClass {
   declared: string[];
   /** Declared classes the operator did not configure. */
   unknown: string[];
-  /** Labels of tasks that declared no class, or one that is not configured, and so ride the wave's route. */
+  /** Labels of tasks that declared no class, or one that is not configured. */
   riders: string[];
+  /** Why the configured class does not steer this wave (it then runs the normal route), or undefined when it does. */
+  skipped?: string;
+}
+
+/** A task as the class-fit check sees it. */
+export interface FitTask { label: string; taskClass?: string; mayEdit?: boolean; allowBash?: boolean }
+
+/** Why a configured class cannot steer this wave, or undefined when it fits. */
+export function classWaveMisfit(name: string, config: TaskClassConfig, tasks: readonly FitTask[]): string | undefined {
+  const riders = tasks.filter((task) => task.taskClass !== name);
+  if (riders.length > 0) {
+    return `tasks without it (${riders.slice(0, 8).map((task) => JSON.stringify(task.label.slice(0, 40))).join(", ")}) would ride its route; dispatch the ${name} task${tasks.length - riders.length === 1 ? "" : "s"} as a separate wave to use it`;
+  }
+  if (config.slots !== undefined && tasks.length > config.slots) {
+    return `the wave has ${tasks.length} tasks and its routes take ${config.slots} at a time`;
+  }
+  if (config.maxScope === "small") {
+    const big = tasks.filter((task) => task.mayEdit === true && task.allowBash === true);
+    if (big.length > 0) return `it is configured for small tasks and ${big.length === 1 ? "a task" : `${big.length} tasks`} may edit and run a shell`;
+  }
+  return undefined;
 }
 
 /** A task as the rules see it. */
@@ -79,7 +102,7 @@ export function applyInferredTaskClasses<T extends RuleTask>(tasks: readonly T[]
 }
 
 /** Read what a wave's tasks declare. Throws {@link TaskClassConflictError} for two configured classes. */
-export function analyzeWaveClasses(tasks: readonly Pick<SubagentTaskInput, "label" | "taskClass">[], opts: { refuseConflict: boolean }): WaveTaskClass {
+export function analyzeWaveClasses(tasks: readonly (Pick<SubagentTaskInput, "label" | "taskClass"> & { mayEdit?: boolean; allowBash?: boolean })[], opts: { refuseConflict: boolean }): WaveTaskClass {
   const declared = [...new Set(tasks.flatMap((task) => typeof task.taskClass === "string" ? [task.taskClass] : []))];
   const configured = declared.filter((name) => configuredTaskClass(name) !== undefined);
   const unknown = declared.filter((name) => !configured.includes(name));
@@ -87,9 +110,11 @@ export function analyzeWaveClasses(tasks: readonly Pick<SubagentTaskInput, "labe
     throw new TaskClassConflictError(`Tasks of one wave declare task classes with different chains (${configured.join(", ")}); one run uses one route, so dispatch each class as its own wave. No fallback was selected.`);
   }
   const name = configured[0];
-  const active = name === undefined ? undefined : { name, config: configuredTaskClass(name)! };
-  const riders = active === undefined ? [] : tasks.filter((task) => task.taskClass !== name).map((task) => task.label);
-  return { ...(active ? { active } : {}), declared, unknown, riders };
+  const config = name === undefined ? undefined : configuredTaskClass(name)!;
+  const riders = name === undefined ? [] : tasks.filter((task) => task.taskClass !== name).map((task) => task.label);
+  const skipped = name === undefined ? undefined : classWaveMisfit(name, config!, tasks);
+  const active = name === undefined || skipped !== undefined ? undefined : { name, config: config! };
+  return { ...(active ? { active } : {}), declared, unknown, riders, ...(skipped !== undefined ? { skipped } : {}) };
 }
 
 /** What ranks a class on evidence: the store, a random source and a clock, each injectable. */
