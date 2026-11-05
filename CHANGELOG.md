@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.23.3 (2026-11-04)
+
+- **A task class steers a wave only when it fits the whole wave.** Every task must carry the class; otherwise the
+  wave runs the normal worker chain and the dispatch note names the tasks and why. Before, one classed task sent a
+  four-task implementation wave onto the class's single-slot local route.
+- **New task class fields in routing.json:** `slots` (most tasks the class's routes take at once; a wider wave skips the
+  class) and `maxScope: "small"` (a wave with a task that may both edit and run a shell skips the class).
+
 ## 0.23.2 (2026-11-04)
 
 - **Temporary free routes fail closed when exclusions are missing.** Set

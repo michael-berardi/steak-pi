@@ -243,7 +243,8 @@ describe("one evidence record when each task of a classed wave settles", () => {
     const store = newStore();
     const t = build({ store, runner: async () => ({ state: "done", output: "Evidence: fine", turns: 2, usage: usageWith(0.0123, 345) }) });
     try {
-      const result = await t.dispatch({ tasks: [leaf("class-a", "first"), leaf("class-a", "second"), leaf(undefined, "rider")] });
+      // A classed wave carries the class on every task (an unclassed task sends the wave to the normal chain).
+      const result = await t.dispatch({ tasks: [leaf("class-a", "first"), leaf("class-a", "second")] });
       const records = store.view().tasks;
       expect(records).toHaveLength(2);
       expect(records.map((record) => record.label).sort()).toEqual(["first", "second"]);
