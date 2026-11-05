@@ -21,20 +21,20 @@ serious sessions need: parallel subagents with hard limits, compaction that
 costs no model calls, checks that run after every edit, and a status line that
 tells you what the agent is doing.
 
-Current release: **0.23.4**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
+Current release: **0.23.5**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
 [UltraTerm](https://paretocybernetics.com/software/).
 
 ## Install
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.23.4
+pi install git:github.com/michael-berardi/steak-pi@v0.23.5
 ```
 
 Or from the release archive, without Git:
 
 ```sh
-shasum -a 256 -c steak-pi-0.23.4.tgz.sha256
-tar -xzf steak-pi-0.23.4.tgz
+shasum -a 256 -c steak-pi-0.23.5.tgz.sha256
+tar -xzf steak-pi-0.23.5.tgz
 npm install --ignore-scripts --prefix "$PWD/package"
 pi install "$PWD/package"
 ```
@@ -49,9 +49,11 @@ where you have not set them yourself:
 ```sh
 steak-pi run          # same arguments as pi
 steak-pi env          # show what it sets
-steak-pi status       # what is installed and how it is managed
+steak-pi status       # installed version, selected Pi settings file and integration
 steak-pi update       # install the latest release (--check only reports)
 ```
+
+For release-folder installations, updates retain existing releases because other Pi agent directories or running sessions may still use them.
 
 For UltraTerm-managed launches, update the supported Homebrew package with
 `brew upgrade michael-berardi/pareto-software-distribution/steak-pi`.

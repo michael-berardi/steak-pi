@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.23.5 (2026-11-04)
+
+- **Status identifies the Pi settings file.** Release-folder updates preserve existing releases, which may be pinned by other agent directories or used by running sessions. An incomplete destination is preserved and reported instead of replaced.
+
 ## 0.23.4 (2026-11-04)
 
 - **Temporary route errors identify malformed routing configuration.** A malformed
