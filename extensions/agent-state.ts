@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { constants, chmodSync, closeSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { constants, chmodSync, closeSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, parse, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -28,11 +28,18 @@ const parentOf = (pid: number): number | undefined => {
     return Number.isInteger(value) && value > 0 ? value : undefined;
   } catch { return undefined; }
 };
-/** Is `pid` a live process above this one? The ppid chain is walked at most 64 steps. */
+/** When `pid` started (`ps` lstart), the identity that tells a live process from a later one that reused its PID. */
+const startOf = (pid: number): string | undefined => {
+  try { return execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] }).trim() || undefined; } catch { return undefined; }
+};
+const WALK_BUDGET_MS = 3000;
+/** Is `pid` a live process above this one? The ppid chain is walked at most 64 steps and `WALK_BUDGET_MS`
+ * (a hung `ps` must not stall the agent for the sum of its timeouts). */
 function isLiveAncestor(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid || !isAlive(pid)) return false;
   let current: number | undefined = process.ppid;
-  for (let step = 0; step < 64 && current !== undefined && current > 1; step++) {
+  const until = Date.now() + WALK_BUDGET_MS;
+  for (let step = 0; step < 64 && current !== undefined && current > 1 && Date.now() < until; step++) {
     if (current === pid) return true;
     current = parentOf(current);
   }
@@ -40,7 +47,12 @@ function isLiveAncestor(pid: number): boolean {
 }
 /** The state file belongs to the pane's top-level agent. A nested pi (a `pi -p` run from a bash tool) inherits the pane's key. */
 function ownedByAncestor(path: string): boolean {
-  try { return isLiveAncestor(Number((JSON.parse(readFileSync(path, "utf8")) as { pid?: unknown }).pid)); } catch { return false; }
+  try {
+    const owner = JSON.parse(readFileSync(path, "utf8")) as { pid?: unknown; pidStart?: unknown };
+    // A PID that now belongs to a different process (reused after a crash) does not own the file, even above this process.
+    if (typeof owner.pidStart === "string" && startOf(Number(owner.pid)) !== owner.pidStart) return false;
+    return isLiveAncestor(Number(owner.pid));
+  } catch { return false; }
 }
 const failureDetail = (error: unknown): string => {
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
@@ -48,12 +60,29 @@ const failureDetail = (error: unknown): string => {
   return text.replace(/\s+/g, " ").slice(0, 80);
 };
 
+/** Remove temp files a killed writer left (`<key>.json.<pid>.<hex>.tmp` with a dead PID, and the old fixed `<key>.json.tmp`). */
+function sweepTemps(dir: string, key: string): void {
+  try {
+    checkPath(dir);
+    for (const name of readdirSync(dir)) {
+      const match = name === `${key}.json.tmp` ? [name, "0"] : new RegExp(`^${key.replace(/[.]/g, "\\.")}\\.json\\.(\\d+)\\.[0-9a-f]+\\.tmp$`).exec(name);
+      if (!match) continue;
+      const pid = Number(match[1]);
+      if (pid > 0 && isAlive(pid)) continue;
+      try { unlinkSync(join(dir, name)); } catch { /* best effort */ }
+    }
+  } catch { /* no directory yet, or not readable: nothing to sweep */ }
+}
+
 export default function agentStateExtension(pi: ExtensionAPI): void {
   const key = process.env.ULTRATERM_TMUX_SESSION;
   if (!key || !/^[A-Za-z0-9._-]{1,80}$/.test(key)) return;
   const dir = join(process.env.ULTRATERM_HOME || join(homedir(), ".ultraterm"), "agent-state");
   const path = join(dir, `${key}.json`);
-  if (ownedByAncestor(path)) return; // nested process: never writes, never warns, never removes the pane agent's file
+  let nested = ownedByAncestor(path); // nested process: never writes, never warns, never removes the pane agent's file
+  if (nested) return;
+  const ownStart = startOf(process.pid);
+  sweepTemps(dir, key);
   const tmpName = () => `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`; // unique per write: no leftover or second writer can block it
   let state = initialCompanionState();
   let ctx: ExtensionContext | undefined;
@@ -66,7 +95,7 @@ export default function agentStateExtension(pi: ExtensionAPI): void {
     try { if (ctx?.hasUI) ctx.ui.notify(message, "warning"); else process.stderr.write(`${message}\n`); } catch { /* never interrupt Pi */ }
   };
   const write = () => {
-    if (!ctx || closed) return;
+    if (!ctx || closed || nested) return;
     let fd: number | undefined; let ownTmp = false; const tmp = tmpName();
     try {
       const now = Date.now(); const subagents = getSubagentCount();
@@ -80,7 +109,7 @@ export default function agentStateExtension(pi: ExtensionAPI): void {
       const activity = prompt ? "asking" : !state.agentActive && turn.kind === "error" ? "error" : waiting ? "waiting" : state.agentActive ? "working" : "idle";
       let inputEmpty: boolean | null = null;
       try { const text = ctx.ui.getEditorText(); if (typeof text === "string") inputEmpty = text === ""; } catch { /* unavailable */ }
-      const data = JSON.stringify({ v: 1, pid: process.pid, sessionId: ctx.sessionManager.getSessionId(), sessionFile: ctx.sessionManager.getSessionFile() ?? null, seq: ++seq, at: now, state: activity, turn, tools: tools.length, shellSince, subagents, prompt, inputEmpty, error: turn.kind === "error" ? "Agent run failed" : null });
+      const data = JSON.stringify({ v: 1, pid: process.pid, pidStart: ownStart ?? null, sessionId: ctx.sessionManager.getSessionId(), sessionFile: ctx.sessionManager.getSessionFile() ?? null, seq: ++seq, at: now, state: activity, turn, tools: tools.length, shellSince, subagents, prompt, inputEmpty, error: turn.kind === "error" ? "Agent run failed" : null });
       if (Buffer.byteLength(data) > 4096) throw new Error("state too large");
       checkPath(dir); mkdirSync(dir, { recursive: true, mode: 0o700 }); checkPath(dir); chmodSync(dir, 0o700);
       checkPath(path); checkPath(tmp);
@@ -94,7 +123,7 @@ export default function agentStateExtension(pi: ExtensionAPI): void {
   const update = (action: CompanionAction, context: ExtensionContext) => { ctx = context; state = reduceCompanionState(state, action); write(); };
   const cleanup = () => { if (closed) return; closed = true; clearInterval(timer); unsubscribe(); process.removeListener("exit", cleanup); try { checkPath(path); if (Number((JSON.parse(readFileSync(path, "utf8")) as { pid?: unknown }).pid) === process.pid) unlinkSync(path); } catch {} };
   const unsubscribe = onSubagentActivityChanged(write);
-  const timer = setInterval(write, 10_000); timer.unref();
+  const timer = setInterval(() => { nested = ownedByAncestor(path); write(); }, 10_000); timer.unref();
   process.once("exit", cleanup);
   pi.on("session_start", async (_event, context) => { ctx = context; state = initialCompanionState(); shells.clear(); turn = { kind: "final", endedAt: null }; write(); });
   pi.on("agent_start", async (_event, context) => { turn = { kind: "running", endedAt: null }; shells.clear(); update({ type: "agent_start" }, context); });

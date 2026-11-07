@@ -152,6 +152,8 @@ describe("steak-pi local ensure / release / status / start / stop", () => {
     expect(await main(["check", "nope"], options)).toBe(1);
     expect(err.at(-1)).toMatch(/REFUSED \(unknown-model\)/);
     expect(await main(["check"], options)).toBe(1);
+    expect(await main(["check", "Bad Id!"], options)).toBe(1); // a malformed id is a usage error (1), not a refusal (2)
+    expect(err.at(-1)).toMatch(/REFUSED \(bad-id\)/);
   });
 
   it("start pins the server until stop; status shows it; stop confirms the port", async () => {

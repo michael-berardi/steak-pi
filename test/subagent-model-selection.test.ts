@@ -549,6 +549,13 @@ describe("synthetic: profile ids that name a Claude Code route, and honest profi
     expect(claudeCodeRouteOfProfile("steak-pi/opus-5-5", profiles)).toEqual({ route: "claude-code/claude-opus-5-5" });
     expect(claudeCodeRouteOfProfile("steak-pi/opencode-go", profiles)).toBeUndefined();
   });
+  it("matches a route by name only as <short> or steak-pi/<short>; any other prefix is some other profile", () => {
+    for (const id of ["openrouter/sonnet-5-5", "claude-code-api/haiku-5-5", "anthropic/opus-5-5", "x/steak-pi/haiku-5-5"]) {
+      expect(claudeCodeRouteOfProfile(id, profiles)).toBeUndefined();
+    }
+    expect(claudeCodeRouteOfProfile("haiku-5-5", [])).toEqual({ route: "claude-code/claude-haiku-5-5" });
+    expect(claudeCodeRouteOfProfile("steak-pi/haiku-5-5", [])).toEqual({ route: "claude-code/claude-haiku-5-5" });
+  });
   it("refuses a claude-code profile that is not a runnable route, naming the routes to use", () => {
     expect(claudeCodeRouteOfProfile("steak-pi/fable-5-1", profiles)).toEqual({ refused: expect.stringMatching(/claude-code\/claude-fable-5-1.*use one of claude-code\/claude-haiku-5-5, claude-code\/claude-sonnet-5-5, claude-code\/claude-opus-5-5/) });
   });

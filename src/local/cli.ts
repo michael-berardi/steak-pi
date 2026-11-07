@@ -136,17 +136,17 @@ export async function main(argv: string[], options: CliOptions = {}): Promise<nu
       }
       case "check": {
         if (!rest[0]) { io.err(USAGE); return 1; }
-        const id = checkId(rest[0]);
         try {
+          const id = checkId(rest[0]);
           const result = await check(deps, id);
           io.out(result.kind === "running"
-            ? (result.healthy ? `ok: local/${id} is running` : `ok: local/${id} is starting (the server is up but not healthy yet)`)
+            ? (result.healthy ? `ok: local/${id} is running` : `ok: local/${id} is up but not healthy yet (still loading, or wedged: see the log in \`steak-pi local status\`)`)
             : `ok: local/${id} fits (needs ${gib(result.need)}, ${gib(result.free)} free)`);
           return 0;
         } catch (error) {
           if (!(error instanceof LocalError)) throw error;
           io.err(`steak-pi local: REFUSED (${error.code}): ${error.message}`);
-          return error.code === "unknown-model" ? 1 : 3;
+          return error.code === "unknown-model" || error.code === "bad-id" ? 1 : 3;
         }
       }
       case "release": {

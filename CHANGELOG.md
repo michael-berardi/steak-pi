@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.23.10 (2026-11-06)
+
+Fixes every finding of the Opus check of 0.23.9.
+
+- **Replacing an idle or orphaned local server works again (regression).** Preflight ran while the server being replaced
+  still held the shared port (8089) and its memory, so switching local models, or recovering an orphan, was refused with
+  `port-busy` / `insufficient-memory`. Preflight now ignores the replaced server's own port and counts its weights as free,
+  and runs again after the stop. A refused start still never stops the idle server.
+- **A refused local start covers every run, and is bound to its model.** The ensure-and-abort decision moved to
+  `agent_start`, so triggered turns (`sendMessage` with `triggerTurn`) and retries are covered. The refusal applies only
+  while the model it was made for is selected, and only this hook's own abort (`stopReason: aborted`) is rewritten.
+  `session_before_compact` cancels the compaction when the server cannot start.
+- **A profile id names a Claude subscription route only as `<short>` or `steak-pi/<short>`.** Ids under any other prefix
+  no longer become that route. `claudeAccount` with a profile stays refused unless it is `steak-pi/<short>`.
+- **Agent state:** the state file records the writer's start time, so a reused PID no longer silences the real agent;
+  ownership is rechecked on the heartbeat; the ancestor walk is capped at 3 s; stale temp files of dead writers are swept.
+- **`steak-pi local check`:** a malformed id exits 1 (usage), and a server that is up but not healthy is said so.
+- **An explicit Claude subscription route is refused when the router proves Claude exhausted**, like a native route.
+- **A usage limit on a route outside every `providerQuotaFallback` tier** (for example `xiaomi`) now names that config key
+  in the dispatch error instead of failing silently. Adding the provider to `providerQuotaFallback` (`metered: false`) is
+  operator configuration and is not changed here.
+- Stale comments about image waves and "both pinned routes" corrected.
+
 ## 0.23.9 (2026-11-06)
 
 - **A local model that cannot start now stops the run with its cause.** When the hook could not start a `local/...` model

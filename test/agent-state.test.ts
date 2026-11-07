@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import extension from "../extensions/agent-state.ts";
@@ -88,6 +89,36 @@ describe("agent state writer", () => {
     await emit("session_shutdown");
     writeFileSync(file(), JSON.stringify({ v: 1, pid: 1, state: "working" })); // alive, not an ancestor we walk to
     start(); await emit("session_start"); expect(state().pid).toBe(process.pid);
+  });
+  const startOfPid = (pid: number) => execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim();
+  it("a file whose pid was reused by an ancestor (different start time) does not silence the new agent", async () => {
+    mkdirSync(join(home, "agent-state"), { recursive: true, mode: 0o700 });
+    writeFileSync(file(), JSON.stringify({ v: 1, pid: process.ppid, pidStart: "Mon Jan  1 00:00:00 1990", state: "working" }));
+    start(); await emit("session_start");
+    expect(state().pid).toBe(process.pid); expect(state().pidStart).toBe(startOfPid(process.pid));
+  });
+  it("a file whose pid AND start time match a live ancestor stays untouched", async () => {
+    mkdirSync(join(home, "agent-state"), { recursive: true, mode: 0o700 });
+    const own = JSON.stringify({ v: 1, pid: process.ppid, pidStart: startOfPid(process.ppid), state: "working" });
+    writeFileSync(file(), own);
+    start(); await emit("session_start"); await emit("agent_start");
+    expect(readFileSync(file(), "utf8")).toBe(own);
+  });
+  it("rechecks ownership on the heartbeat: an ancestor that takes the file over silences a running writer", async () => {
+    start(); await emit("session_start"); expect(state().pid).toBe(process.pid);
+    const own = JSON.stringify({ v: 1, pid: process.ppid, pidStart: startOfPid(process.ppid), state: "working" });
+    writeFileSync(file(), own);
+    vi.advanceTimersByTime(10000); await emit("agent_start");
+    expect(readFileSync(file(), "utf8")).toBe(own);
+  });
+  it("sweeps temp files of dead writers (and the old fixed name) at startup, keeping a live writer's", async () => {
+    const dir = join(home, "agent-state"); mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(dir, "pane.json.tmp"), "x");
+    writeFileSync(join(dir, `pane.json.${2 ** 22 + 777}.abcdef012345.tmp`), "x");
+    writeFileSync(join(dir, `pane.json.${process.pid}.abcdef012345.tmp`), "x");
+    writeFileSync(join(dir, "other.json.tmp"), "x");
+    start(); await emit("session_start");
+    expect(readdirSync(dir).sort()).toEqual(["other.json.tmp", `pane.json.${process.pid}.abcdef012345.tmp`, "pane.json"].sort());
   });
   it("a real failure warns once with what failed, and a later success recovers silently", async () => {
     mkdirSync(join(home, "agent-state"), { recursive: true, mode: 0o700 });

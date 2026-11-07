@@ -117,6 +117,54 @@ describe("refusals", () => {
     expect(readJson<ServerRecord>(join(dir, "server.json"))?.id).toBe("model-b");
   });
 
+  it("replaces an idle server of another model on the SAME port (the port stays taken until the stop)", async () => {
+    const { dir, fake } = setup();
+    seedProfile(dir, { id: "model-b" }); // same default port as model-a
+    fake.alive.add(301).add(302);
+    fake.state.healthy = true;
+    await ensure(fake.deps, "model-a", pidHolder(301));
+    await release(fake.deps, pidHolder(301));
+    fake.deps.portFree = async () => !fake.alive.has(5000); // model-a's supervisor holds the port until it is stopped
+    const result = await ensure(fake.deps, "model-b", pidHolder(302));
+    expect(result.started).toBe(true);
+    expect(readJson<ServerRecord>(join(dir, "server.json"))?.id).toBe("model-b");
+  });
+
+  it("replaces an orphaned server (supervisor gone, server alive) on the same port", async () => {
+    const { dir, fake } = setup();
+    fake.state.healthy = true;
+    await ensure(fake.deps, "model-a", pidHolder(100));
+    await release(fake.deps, pidHolder(100));
+    const record = readJson<ServerRecord>(join(dir, "server.json"))!;
+    fake.alive.delete(record.supervisorPid);
+    fake.alive.add(777);
+    writeFileSync(join(dir, "server.json"), JSON.stringify({ ...record, serverPid: 777, serverStart: "start-777" }));
+    fake.deps.portFree = async () => !fake.alive.has(777);
+    expect((await ensure(fake.deps, "model-a", pidHolder(100))).started).toBe(true);
+    expect(fake.alive.has(777)).toBe(false);
+  });
+
+  it("counts the replaced server's memory as free before the stop", async () => {
+    const { dir, fake } = setup();
+    seedProfile(dir, { id: "model-b" });
+    fake.state.healthy = true;
+    await ensure(fake.deps, "model-a", pidHolder(100));
+    await release(fake.deps, pidHolder(100));
+    fake.deps.availableBytes = () => (fake.alive.has(5000) ? 1 * GIB : 64 * GIB); // model-a's weights are still resident until it stops
+    expect((await ensure(fake.deps, "model-b", pidHolder(100))).started).toBe(true);
+  });
+
+  it("a refused start leaves the idle server running (it is refused before any stop)", async () => {
+    const { dir, fake } = setup();
+    seedProfile(dir, { id: "model-b", source: { kind: "file", path: "/nonexistent/gone.gguf" } });
+    fake.state.healthy = true;
+    await ensure(fake.deps, "model-a", pidHolder(100));
+    await release(fake.deps, pidHolder(100));
+    expect((await refusal(ensure(fake.deps, "model-b", pidHolder(100)))).code).toBe("model-missing");
+    expect(fake.alive.has(5000)).toBe(true);
+    expect(readJson<ServerRecord>(join(dir, "server.json"))?.id).toBe("model-a");
+  });
+
   it("health-timeout: a server that never reports healthy is stopped and its lease given back", async () => {
     const { dir, fake } = setup();
     const error = await refusal(ensure(fake.deps, "model-a", pidHolder(100)));
