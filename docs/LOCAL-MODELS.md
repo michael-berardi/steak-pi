@@ -26,6 +26,7 @@ other Pi model: pick it with `--model` or `/model`.
 | `local start [id]` | Start the server and keep it up until `stop` (a pinned lease). `id` is optional when only one model was added. |
 | `local stop` | Stop the server Steak Pi started (only that one) and confirm the port is released. |
 | `local status [id]` | Server state, number of users, idle time, and the added models. |
+| `local check <id>` | Read-only: runs the disk, memory and model-file checks `ensure` runs, without starting anything or taking a lease. Prints `ok: local/<id> is running` or `ok: local/<id> fits (needs X GiB, Y GiB free)` and exits 0; a start that would be refused prints the `REFUSED` line and exits 3; an unknown id exits 1. Use it before dispatching a worker onto a local model. `ensure` and `check` share one decision function, so they cannot disagree. |
 | `local ensure <id>` / `local release <id>` | Take / give back one lease. For `routing.json` and hooks (below). |
 
 A Hugging Face spec is read without downloading the model: only the file list and the first few MiB of the chosen

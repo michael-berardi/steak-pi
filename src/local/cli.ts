@@ -5,16 +5,16 @@
  *   start [id] | stop | status [id]      run and inspect the on-demand server by hand
  *   ensure <id> | release <id>           argv-friendly lease commands for routing.json `workerProfiles[].ensure`
  *
- * Refusals exit 2 and print one line: `steak-pi local: REFUSED (<cause>): <detail>`.
+ * `check <id>` is the read-only form of ensure (exit 0 ok, 3 refused, 1 unknown id). Refusals exit 2 and print one line: `steak-pi local: REFUSED (<cause>): <detail>`.
  */
 import { existsSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { readGguf, type GgufInfo } from "./gguf.ts";
-import { totalMemory } from "./hardware.ts";
+import { gib, totalMemory } from "./hardware.ts";
 import { HF_SPEC, readHfHeader, resolveHf, type Fetch } from "./hf.ts";
 import { DEFAULT_PORT, idFromSource, planProfile, PlanError, type Source } from "./profile.ts";
-import { ensure, manualHolder, pidHolder, release, status, stop, supervise, systemDeps, type Deps } from "./runtime.ts";
+import { check, ensure, manualHolder, pidHolder, release, status, stop, supervise, systemDeps, type Deps } from "./runtime.ts";
 import { checkId, listProfiles, localDir, LocalError, modelsJsonPath, readProfile, upsertLocalModel, writeProfile } from "./store.ts";
 
 export interface Io { out(text: string): void; err(text: string): void }
@@ -27,6 +27,7 @@ const USAGE = `usage: steak-pi local <command>
   stop            stop the server Steak Pi started
   status [id]     show the server, its users and the added models
   ensure <id>     take a lease and bring the server up (for routing.json ensure.command)
+  check <id>      read-only: would 'ensure' start it? ok (exit 0), REFUSED (exit 3), unknown id (exit 1)
   release <id>    let go of that lease (for ensure.release); the server stops after an idle grace`;
 
 const SHARD_FIRST = /-00001-of-(\d{5})\.gguf$/i;
@@ -132,6 +133,21 @@ export async function main(argv: string[], options: CliOptions = {}): Promise<nu
         const result = await ensure(deps, checkId(rest[0]), holder());
         io.out(`ready: local/${rest[0]} at ${result.baseUrl} (${result.started ? "started" : "already running"})`);
         return 0;
+      }
+      case "check": {
+        if (!rest[0]) { io.err(USAGE); return 1; }
+        const id = checkId(rest[0]);
+        try {
+          const result = await check(deps, id);
+          io.out(result.kind === "running"
+            ? (result.healthy ? `ok: local/${id} is running` : `ok: local/${id} is starting (the server is up but not healthy yet)`)
+            : `ok: local/${id} fits (needs ${gib(result.need)}, ${gib(result.free)} free)`);
+          return 0;
+        } catch (error) {
+          if (!(error instanceof LocalError)) throw error;
+          io.err(`steak-pi local: REFUSED (${error.code}): ${error.message}`);
+          return error.code === "unknown-model" ? 1 : 3;
+        }
       }
       case "release": {
         if (!rest[0]) { io.err(USAGE); return 1; }

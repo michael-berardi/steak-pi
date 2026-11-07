@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { LocalError } from "../src/local/store.ts";
 import localModels, { createLocalHook } from "../extensions/local/index.ts";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
@@ -13,14 +14,15 @@ function harness(options: { fail?: () => string | undefined } = {}) {
     ensure: async (id) => {
       log.push(`ensure:${id}`);
       const failure = options.fail?.();
-      if (failure) throw new Error(failure);
+      if (failure) throw new LocalError("insufficient-memory", failure);
       return { started: true, baseUrl: "http://127.0.0.1:1/v1" };
     },
     release: async () => { log.push("release"); },
   })({ on: (name: string, handler: Handler) => { handlers.set(name, handler); } } as never);
-  const ctx = { model: undefined as unknown, ui: { notify: (text: string, kind: string) => notes.push([kind, text]) } };
-  const fire = async (name: string, event: unknown = {}) => { await handlers.get(name)?.(event, ctx); await tick(); };
-  return { fire, ctx, log, notes };
+  const aborts: string[] = [];
+  const ctx = { model: undefined as unknown, abort: () => { aborts.push("abort"); }, ui: { notify: (text: string, kind: string) => notes.push([kind, text]) } };
+  const fire = async (name: string, event: unknown = {}) => { const result = await handlers.get(name)?.(event, ctx); await tick(); return result as { message?: Record<string, unknown> } | undefined; };
+  return { fire, ctx, log, notes, aborts };
 }
 
 describe("local model hook", () => {
@@ -116,26 +118,46 @@ describe("local model hook", () => {
     expect(released).toBe(true);
   });
 
-  it("surfaces a refusal by its named cause, holds nothing, and tries again on the next prompt", async () => {
+  it("a refused start stops the run before any request with the refusal as its error, holds nothing, and tries again on the next prompt", async () => {
     let failing = true;
-    const h = harness({ fail: () => (failing ? "steak-pi local: REFUSED (insufficient-memory): close something heavy" : undefined) });
+    const reason = "starting swift-1-5 needs about 16.4 GiB but only 14.2 GiB is free or reclaimable";
+    const h = harness({ fail: () => (failing ? reason : undefined) });
     h.ctx.model = model("local", "model-a");
     await h.fire("session_start");
+    h.notes.length = 0;
     await h.fire("before_agent_start");
-    expect(h.notes.at(-1)).toEqual(["error", "steak-pi local: REFUSED (insufficient-memory): close something heavy"]);
+    expect(h.aborts).toEqual([]); // an abort this early would be a no-op in Pi: it comes once the run has started
+    await h.fire("agent_start");
+    expect(h.aborts).toEqual(["abort"]);
+    const aborted = { role: "assistant", content: [], stopReason: "aborted", errorMessage: "Request was aborted" };
+    const replaced = await h.fire("message_end", { message: aborted });
+    expect(replaced?.message).toMatchObject({ role: "assistant", stopReason: "error", errorMessage: `steak-pi local: REFUSED (insufficient-memory): ${reason}` });
+    expect(await h.fire("message_end", { message: aborted })).toBeUndefined(); // only that run's message
+    expect(h.notes).toEqual([]); // the run's error is the notice, not a second one
     expect(h.log).toEqual(["ensure:model-a", "ensure:model-a"]);
     await h.fire("agent_settled");
     expect(h.log).not.toContain("release"); // no release for a hold that was never taken
     failing = false;
     await h.fire("before_agent_start");
+    await h.fire("agent_start");
+    expect(h.aborts).toHaveLength(1); // the retry started, so this run is not aborted
+    expect(await h.fire("message_end", { message: { role: "assistant", stopReason: "stop" } })).toBeUndefined();
     expect(h.log).toEqual(["ensure:model-a", "ensure:model-a", "ensure:model-a"]);
     await h.fire("agent_settled");
     expect(h.log.at(-1)).toBe("release");
   });
 
+  it("a warm-up refusal is still only a notification", async () => {
+    const h = harness({ fail: () => "no memory" });
+    h.ctx.model = model("local", "model-a");
+    await h.fire("session_start");
+    expect(h.notes.at(-1)).toEqual(["error", "steak-pi local: REFUSED (insufficient-memory): no memory"]);
+    expect(h.aborts).toEqual([]);
+  });
+
   it("is registered by the package's default export", () => {
     const events: string[] = [];
     localModels({ on: (name: string) => { events.push(name); } } as never);
-    expect(events.sort()).toEqual(["agent_settled", "before_agent_start", "model_select", "session_before_compact", "session_compact", "session_compact_failed", "session_shutdown", "session_start"]);
+    expect(events.sort()).toEqual(["agent_settled", "agent_start", "before_agent_start", "message_end", "model_select", "session_before_compact", "session_compact", "session_compact_failed", "session_shutdown", "session_start"]);
   });
 });

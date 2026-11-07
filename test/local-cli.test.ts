@@ -132,6 +132,28 @@ describe("steak-pi local ensure / release / status / start / stop", () => {
     expect(readProfile(state, "model-a")).toBeDefined();
   });
 
+  it("check is read-only and agrees with ensure: fits, running, refused (exit 3), unknown id (exit 1)", async () => {
+    const { out, err, options, fake, state } = await added();
+    fake.alive.add(100);
+    expect(await main(["check", "model-a"], options)).toBe(0);
+    expect(out.at(-1)).toMatch(/^ok: local\/model-a fits \(needs \d+\.\d GiB, \d+\.\d GiB free\)$/);
+    expect(fake.calls).toEqual([]); // started nothing
+    expect(existsSync(join(state, "server.json"))).toBe(false);
+    expect(existsSync(join(state, "leases.json"))).toBe(false); // took no lease
+    fake.state.available = 0.5 * GIB;
+    expect(await main(["check", "model-a"], options)).toBe(3);
+    expect(err.at(-1)).toMatch(/^steak-pi local: REFUSED \(insufficient-memory\): starting model-a needs about .* but only 0\.5 GiB is free or reclaimable/);
+    expect(await main(["ensure", "model-a"], options)).toBe(2); // ensure refuses with the very same line
+    expect(err.at(-1)).toBe(err.at(-2));
+    fake.state.available = 64 * GIB;
+    expect(await main(["ensure", "model-a"], options)).toBe(0);
+    expect(await main(["check", "model-a"], options)).toBe(0);
+    expect(out.at(-1)).toBe("ok: local/model-a is running");
+    expect(await main(["check", "nope"], options)).toBe(1);
+    expect(err.at(-1)).toMatch(/REFUSED \(unknown-model\)/);
+    expect(await main(["check"], options)).toBe(1);
+  });
+
   it("start pins the server until stop; status shows it; stop confirms the port", async () => {
     const { out, options, fake } = await added();
     expect(await main(["start"], options)).toBe(0); // one model added: no id needed

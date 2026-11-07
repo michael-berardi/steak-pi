@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import extension from "../extensions/agent-state.ts";
 import { createIsolatedResourceLoader } from "../src/subagents/pi-worker.ts";
@@ -57,6 +57,46 @@ describe("agent state writer", () => {
   it("refuses symlink destinations and reports errors once", async () => {
     symlinkSync(home, join(home, "agent-state")); start(); await emit("session_start"); vi.advanceTimersByTime(20000);
     expect(ctx.ui.notify).toHaveBeenCalledTimes(1); expect(existsSync(join(home, "pane.json"))).toBe(false);
+  });
+  it("a stale .tmp left by a killed process, old-style or not, never blocks a write", async () => {
+    mkdirSync(join(home, "agent-state"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(home, "agent-state", "pane.json.tmp"), "partial");
+    writeFileSync(join(home, "agent-state", `pane.json.${process.pid}.deadbeef.tmp`), "partial");
+    start(); await emit("session_start");
+    expect(state().state).toBe("idle"); expect(ctx.ui.notify).not.toHaveBeenCalled();
+    expect(readdirSync(join(home, "agent-state")).filter(name => name !== "pane.json.tmp" && !name.endsWith("deadbeef.tmp"))).toEqual(["pane.json"]); // no own temp left behind
+  });
+  it("two writers on one key both succeed without a warning", async () => {
+    const first: Record<string, any> = {}; const second: Record<string, any> = {};
+    extension({ on: (name: string, fn: any) => { first[name] = fn; } } as any);
+    extension({ on: (name: string, fn: any) => { second[name] = fn; } } as any);
+    for (let round = 0; round < 3; round++) { await first.session_start({}, ctx); await second.agent_start({}, ctx); await first.agent_settled({}, ctx); }
+    expect(ctx.ui.notify).not.toHaveBeenCalled(); expect(readdirSync(join(home, "agent-state"))).toEqual(["pane.json"]);
+    await first.session_shutdown({}, ctx); await second.session_shutdown({}, ctx);
+  });
+  it("a nested process under the pane agent never writes, warns or removes the pane agent's file", async () => {
+    mkdirSync(join(home, "agent-state"), { recursive: true, mode: 0o700 });
+    const own = JSON.stringify({ v: 1, pid: process.ppid, state: "working" });
+    writeFileSync(file(), own); // the pane agent: a live ancestor of this process
+    start(); await emit("session_start"); await emit("agent_start"); vi.advanceTimersByTime(20000); await emit("session_shutdown");
+    expect(readFileSync(file(), "utf8")).toBe(own); expect(ctx.ui.notify).not.toHaveBeenCalled(); expect(readdirSync(join(home, "agent-state"))).toEqual(["pane.json"]);
+  });
+  it("a file whose pid is dead, or alive but not an ancestor, is taken over", async () => {
+    mkdirSync(join(home, "agent-state"), { recursive: true, mode: 0o700 });
+    writeFileSync(file(), JSON.stringify({ v: 1, pid: 2 ** 22 + 12345, state: "working" }));
+    start(); await emit("session_start"); expect(state().pid).toBe(process.pid);
+    await emit("session_shutdown");
+    writeFileSync(file(), JSON.stringify({ v: 1, pid: 1, state: "working" })); // alive, not an ancestor we walk to
+    start(); await emit("session_start"); expect(state().pid).toBe(process.pid);
+  });
+  it("a real failure warns once with what failed, and a later success recovers silently", async () => {
+    mkdirSync(join(home, "agent-state"), { recursive: true, mode: 0o700 });
+    mkdirSync(file()); // a directory where the file must go: rename fails
+    start(); await emit("session_start"); vi.advanceTimersByTime(20000);
+    expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
+    expect(ctx.ui.notify.mock.calls[0][0]).toMatch(/^Agent state file could not be written \([A-Z]+\)$/);
+    rmSync(file(), { recursive: true }); vi.advanceTimersByTime(10000);
+    expect(state().pid).toBe(process.pid); expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
   });
   it("excludes all extensions from isolated worker resources", () => {
     expect(createIsolatedResourceLoader("task").getExtensions().extensions).toEqual([]);

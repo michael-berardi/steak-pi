@@ -1,4 +1,6 @@
-import { constants, chmodSync, closeSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { constants, chmodSync, closeSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, parse, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -17,23 +19,55 @@ function checkPath(path: string): void {
   }
 }
 
+const isAlive = (pid: number): boolean => {
+  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+};
+const parentOf = (pid: number): number | undefined => {
+  try {
+    const value = Number.parseInt(execFileSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] }).trim(), 10);
+    return Number.isInteger(value) && value > 0 ? value : undefined;
+  } catch { return undefined; }
+};
+/** Is `pid` a live process above this one? The ppid chain is walked at most 64 steps. */
+function isLiveAncestor(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid || !isAlive(pid)) return false;
+  let current: number | undefined = process.ppid;
+  for (let step = 0; step < 64 && current !== undefined && current > 1; step++) {
+    if (current === pid) return true;
+    current = parentOf(current);
+  }
+  return false;
+}
+/** The state file belongs to the pane's top-level agent. A nested pi (a `pi -p` run from a bash tool) inherits the pane's key. */
+function ownedByAncestor(path: string): boolean {
+  try { return isLiveAncestor(Number((JSON.parse(readFileSync(path, "utf8")) as { pid?: unknown }).pid)); } catch { return false; }
+}
+const failureDetail = (error: unknown): string => {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  const text = code ?? (error instanceof Error ? error.message : String(error));
+  return text.replace(/\s+/g, " ").slice(0, 80);
+};
+
 export default function agentStateExtension(pi: ExtensionAPI): void {
   const key = process.env.ULTRATERM_TMUX_SESSION;
   if (!key || !/^[A-Za-z0-9._-]{1,80}$/.test(key)) return;
   const dir = join(process.env.ULTRATERM_HOME || join(homedir(), ".ultraterm"), "agent-state");
-  const path = join(dir, `${key}.json`); const tmp = `${path}.tmp`;
+  const path = join(dir, `${key}.json`);
+  if (ownedByAncestor(path)) return; // nested process: never writes, never warns, never removes the pane agent's file
+  const tmpName = () => `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`; // unique per write: no leftover or second writer can block it
   let state = initialCompanionState();
   let ctx: ExtensionContext | undefined;
   let seq = 0; let reported = false; let closed = false;
   let turn: { kind: "running" | "final" | "error" | "aborted"; endedAt: number | null } = { kind: "final", endedAt: null };
   const shells = new Map<string, number>();
-  const report = () => {
+  const report = (error: unknown) => {
     if (reported) return; reported = true;
-    try { if (ctx?.hasUI) ctx.ui.notify("Agent state file could not be written", "warning"); else process.stderr.write("Agent state file could not be written\n"); } catch { /* never interrupt Pi */ }
+    const message = `Agent state file could not be written (${failureDetail(error)})`;
+    try { if (ctx?.hasUI) ctx.ui.notify(message, "warning"); else process.stderr.write(`${message}\n`); } catch { /* never interrupt Pi */ }
   };
   const write = () => {
     if (!ctx || closed) return;
-    let fd: number | undefined; let ownTmp = false;
+    let fd: number | undefined; let ownTmp = false; const tmp = tmpName();
     try {
       const now = Date.now(); const subagents = getSubagentCount();
       const tools = Object.values(state.activeTools); const shellSince = shells.size ? Math.min(...shells.values()) : null;
@@ -53,11 +87,12 @@ export default function agentStateExtension(pi: ExtensionAPI): void {
       fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); ownTmp = true;
       writeFileSync(fd, data); closeSync(fd); fd = undefined;
       checkPath(dirname(path)); checkPath(path); renameSync(tmp, path); ownTmp = false;
-    } catch { report(); }
+      reported = false; // a later success recovers silently; a new failure may warn again
+    } catch (error) { report(error); }
     finally { if (fd !== undefined) try { closeSync(fd); } catch {} if (ownTmp) try { unlinkSync(tmp); } catch {} }
   };
   const update = (action: CompanionAction, context: ExtensionContext) => { ctx = context; state = reduceCompanionState(state, action); write(); };
-  const cleanup = () => { if (closed) return; closed = true; clearInterval(timer); unsubscribe(); process.removeListener("exit", cleanup); try { checkPath(path); unlinkSync(path); } catch {} };
+  const cleanup = () => { if (closed) return; closed = true; clearInterval(timer); unsubscribe(); process.removeListener("exit", cleanup); try { checkPath(path); if (Number((JSON.parse(readFileSync(path, "utf8")) as { pid?: unknown }).pid) === process.pid) unlinkSync(path); } catch {} };
   const unsubscribe = onSubagentActivityChanged(write);
   const timer = setInterval(write, 10_000); timer.unref();
   process.once("exit", cleanup);
