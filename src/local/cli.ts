@@ -121,7 +121,8 @@ export async function main(argv: string[], options: CliOptions = {}): Promise<nu
         const profiles = listProfiles(deps.dir).filter((entry) => !rest[0] || entry.id === rest[0]);
         if (rest[0] && !profiles.length) throw new LocalError("unknown-model", `no local model "${rest[0]}"`);
         io.out([
-          state.running ? `server   local/${state.running.id} on port ${state.running.port} (pid ${state.running.serverPid ?? "starting"}), ${state.healthy ? "healthy" : "not healthy yet"}` : "server   stopped",
+          ...(state.orphan ? [`server   local/${state.orphan.id} on port ${state.orphan.port} (pid ${state.orphan.pid}) was orphaned (supervisor gone): ${state.orphan.action === "stopped" ? `stopped (idle past the grace), port ${state.orphan.portReleased ? "released" : "STILL HELD, check the process list"}` : "adopted by a new supervisor"}`] : []),
+          state.running ? `server   local/${state.running.id} on port ${state.running.port} (pid ${state.running.serverPid ?? "starting"}), ${state.supervisorGone ? "orphaned (supervisor gone)" : state.healthy ? "healthy" : "not healthy yet"}` : "server   stopped",
           `users    ${state.holders}${state.holders ? "" : state.running && state.idleMs !== undefined ? `, idle ${minutes(state.idleMs)} (stops after ${minutes(state.graceMs)} idle)` : ""}`,
           ...profiles.map((entry) => `model    local/${entry.id}  ctx ${entry.ctx}, port ${entry.port}, ${entry.source.kind === "file" ? entry.source.path : entry.source.spec}`),
           ...(profiles.length ? [] : ["model    none added yet"]),
@@ -158,7 +159,9 @@ export async function main(argv: string[], options: CliOptions = {}): Promise<nu
       case "_supervise": {
         if (!rest[0] || !readProfile(deps.dir, rest[0])) return 1;
         const stopped = new Promise<void>((resolveStop) => { for (const name of ["SIGTERM", "SIGINT"] as const) process.once(name, () => resolveStop()); });
-        const result = await supervise(deps, rest[0], stopped);
+        const adoptPid = Number(process.env.STEAK_PI_ADOPT_PID);
+        const adopt = Number.isInteger(adoptPid) && adoptPid > 0 ? { pid: adoptPid, start: process.env.STEAK_PI_ADOPT_START || undefined } : undefined;
+        const result = await supervise(deps, rest[0], stopped, adopt);
         io.err(`supervisor: local/${rest[0]} stopped (${result.reason}); port ${result.portReleased ? "released" : "STILL HELD"}`);
         return 0;
       }

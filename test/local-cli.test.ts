@@ -171,6 +171,28 @@ describe("steak-pi local ensure / release / status / start / stop", () => {
     expect(out.at(-1)).toMatch(/^server\s+stopped\nusers\s+0/);
   });
 
+  it("status says orphaned (supervisor gone), never healthy, for a server without its supervisor", async () => {
+    const { out, options, fake, state } = await added();
+    await main(["start"], options);
+    const path = join(state, "server.json");
+    const record = JSON.parse(readFileSync(path, "utf8"));
+    fake.alive.delete(record.supervisorPid);
+    fake.alive.add(7001);
+    // No recorded start time: it cannot be proven to be the server, so it is reported but not touched.
+    writeFileSync(path, JSON.stringify({ ...record, serverPid: 7001, serverStart: undefined }));
+    expect(await main(["status"], options)).toBe(0);
+    expect(out.at(-1)).toMatch(/pid 7001\), orphaned \(supervisor gone\)\n/);
+    expect(out.at(-1)).not.toMatch(/healthy/);
+    // With a proven start time and no holders past the grace it is stopped, and status says so.
+    writeFileSync(path, JSON.stringify({ ...record, serverPid: 7001, serverStart: "start-7001" }));
+    await main(["stop"], options); // (clears the leases; the record is rewritten below)
+    writeFileSync(path, JSON.stringify({ ...record, serverPid: 7001, serverStart: "start-7001" }));
+    fake.alive.add(7001);
+    fake.clock.t += fake.deps.graceMs + 1000;
+    expect(await main(["status"], options)).toBe(0);
+    expect(out.at(-1)).toMatch(/was orphaned \(supervisor gone\): stopped \(idle past the grace\), port released\nserver\s+stopped/);
+  });
+
   it("prints usage for nothing or an unknown command", async () => {
     const { err, out, options } = setup();
     expect(await main([], options)).toBe(0);

@@ -50,7 +50,8 @@ export interface Deps {
   /** Other model servers on this machine, by executable name (never their command lines). */
   otherServers(exclude: number[]): Array<{ pid: number; name: string }>;
   findServerBinary(): string | undefined;
-  spawnSupervisor(id: string): number;
+  /** Start a detached supervisor; with `adopt` it takes over an already-running server instead of starting one. */
+  spawnSupervisor(id: string, adopt?: { pid: number; start?: string }): number;
   spawnServer(binary: string, args: string[], log: string): { pid: number; exited: Promise<number | null> };
   graceMs: number;
   healthTimeoutMs: number;
@@ -137,6 +138,40 @@ function runningServer(deps: Deps): ServerRecord | undefined {
   return undefined;
 }
 
+export interface Orphan { id: string; port: number; pid: number; action: "stopped" | "adopted"; portReleased?: boolean }
+
+/** The recorded server that is still running (same PID and start time) although its supervisor is gone. Nothing else is ever matched. */
+function orphanOf(deps: Deps): ServerRecord | undefined {
+  const record = readJson<ServerRecord>(serverPath(deps));
+  if (!record || record.serverPid === undefined || record.serverStart === undefined) return undefined;
+  if (deps.alive(record.supervisorPid, record.supervisorStart)) return undefined;
+  return deps.alive(record.serverPid, record.serverStart) ? record : undefined;
+}
+
+/**
+ * Self-heal an orphan (call under the lock): with live holders, or idle for less than the grace, a new supervisor adopts the
+ * server and takes over idle-stopping; idle past the grace, it is stopped, its port confirmed free and server.json cleared.
+ */
+async function reconcileLocked(deps: Deps): Promise<Orphan | undefined> {
+  const record = orphanOf(deps);
+  if (!record || record.serverPid === undefined) return undefined;
+  const state = leaseState(deps);
+  const base = { id: record.id, port: record.port, pid: record.serverPid };
+  if (state.holders === 0 && (state.idleMs ?? 0) >= deps.graceMs) {
+    const { portReleased } = await stopRecord(deps, record);
+    return { ...base, action: "stopped", portReleased };
+  }
+  const supervisorPid = deps.spawnSupervisor(record.id, { pid: record.serverPid, start: record.serverStart });
+  writeAtomic(serverPath(deps), `${JSON.stringify({ ...record, supervisorPid, supervisorStart: deps.procStart(supervisorPid) })}\n`);
+  return { ...base, action: "adopted" };
+}
+
+/** Every entry point that is not already under the lock runs this first. Never throws: healing must not break the command. */
+export async function reconcile(deps: Deps): Promise<Orphan | undefined> {
+  if (!orphanOf(deps)) return undefined;
+  try { return await withLock(deps.dir, () => reconcileLocked(deps)); } catch { return undefined; }
+}
+
 async function preflight(deps: Deps, profile: LaunchProfile, running: ServerRecord | undefined): Promise<{ need: number; free: number }> {
   if (!deps.findServerBinary()) refuse("llama-server-missing", `llama-server was not found on PATH; ${INSTALL_HINT}`);
   if (profile.source.kind === "file" && !existsSync(profile.source.path)) refuse("model-missing", `the model file is gone: ${profile.source.path}`);
@@ -186,6 +221,7 @@ export async function planStart(deps: Deps, profile: LaunchProfile): Promise<Sta
 /** Read-only: would `ensure` for this model attach, start, or be refused? Takes no lease and starts nothing. */
 export async function check(deps: Deps, id: string): Promise<{ kind: "running"; healthy: boolean } | { kind: "fits"; need: number; free: number }> {
   const profile = requireProfile(deps, id);
+  await reconcile(deps);
   const plan = await planStart(deps, profile);
   if (plan.kind === "attach") return { kind: "running", healthy: await deps.health(profile.port) };
   return { kind: "fits", need: plan.need, free: plan.free };
@@ -210,6 +246,7 @@ export async function ensure(deps: Deps, id: string, holder: HolderRef): Promise
   let started = false;
   await withLock(deps.dir, async () => {
     runningServer(deps); // drop a stale record before deciding
+    await reconcileLocked(deps); // an orphan is stopped (idle past the grace) or adopted by a new supervisor
     const plan = await planStart(deps, profile);
     if (plan.kind === "start") {
       if (plan.stop) {
@@ -248,6 +285,7 @@ export async function ensure(deps: Deps, id: string, holder: HolderRef): Promise
 
 /** Let go of one reference. The server stops by itself after the grace period once the last one is gone. */
 export async function release(deps: Deps, holder: HolderRef): Promise<{ remaining: number }> {
+  await reconcile(deps);
   return withLock(deps.dir, () => releaseLease(deps, holder));
 }
 
@@ -293,30 +331,37 @@ export async function stop(deps: Deps): Promise<StopResult> {
   });
 }
 
-export interface Status { running?: ServerRecord; healthy: boolean; holders: number; idleMs?: number; graceMs: number }
+export interface Status { orphan?: Orphan; supervisorGone?: boolean; running?: ServerRecord; healthy: boolean; holders: number; idleMs?: number; graceMs: number }
 export async function status(deps: Deps): Promise<Status> {
+  const orphan = await reconcile(deps);
   const running = runningServer(deps);
   const { holders, idleSince } = peekLeases(deps);
-  return { ...(running ? { running } : {}), healthy: running ? await deps.health(running.port) : false, holders, ...(idleSince !== undefined ? { idleMs: deps.now() - idleSince } : {}), graceMs: deps.graceMs };
+  return { ...(orphan ? { orphan } : {}), ...(running && !deps.alive(running.supervisorPid, running.supervisorStart) ? { supervisorGone: true } : {}), ...(running ? { running } : {}), healthy: running ? await deps.health(running.port) : false, holders, ...(idleSince !== undefined ? { idleMs: deps.now() - idleSince } : {}), graceMs: deps.graceMs };
 }
 
 // ---- the supervisor ---------------------------------------------------------------------------------------------------
 
 export interface SuperviseResult { reason: "idle" | "server-exited" | "signal"; portReleased: boolean }
 
+/** An already-running server (recorded PID and start time) as a supervised child: it "exits" when that process is gone. */
+function adoptServer(deps: Deps, adopt: { pid: number; start?: string }): { pid: number; exited: Promise<number | null> } {
+  const exited = (async () => { while (deps.alive(adopt.pid, adopt.start)) await deps.sleep(500); return null; })();
+  return { pid: adopt.pid, exited };
+}
+
 /** Own the llama-server child of `id`: keep it while leases exist, stop it once idle for the grace period (or on SIGTERM),
  * confirm the port is released and remove the record. `stopRequested` resolves when the supervisor is told to stop. */
-export async function supervise(deps: Deps, id: string, stopRequested: Promise<void> = new Promise(() => {})): Promise<SuperviseResult> {
+export async function supervise(deps: Deps, id: string, stopRequested: Promise<void> = new Promise(() => {}), adopt?: { pid: number; start?: string }): Promise<SuperviseResult> {
   const profile = readProfile(deps.dir, id);
   const binary = deps.findServerBinary();
   if (!profile || !binary) throw new LocalError(profile ? "llama-server-missing" : "unknown-model", profile ? `llama-server was not found on PATH; ${INSTALL_HINT}` : `no local model "${id}"`);
-  const child = deps.spawnServer(binary, serverArgs(profile), logPath(deps));
+  const child = adopt ? adoptServer(deps, adopt) : deps.spawnServer(binary, serverArgs(profile), logPath(deps));
   let exited = false;
   void child.exited.then(() => { exited = true; });
   let asked = false;
   void stopRequested.then(() => { asked = true; });
   const record = readJson<ServerRecord>(serverPath(deps));
-  if (record) writeAtomic(serverPath(deps), `${JSON.stringify({ ...record, serverPid: child.pid, serverStart: deps.procStart(child.pid) })}\n`);
+  if (record && !adopt) writeAtomic(serverPath(deps), `${JSON.stringify({ ...record, serverPid: child.pid, serverStart: deps.procStart(child.pid) })}\n`);
   // The loop only reads the leases (no lock): a stop in progress holds the lock while it waits for this process.
   let idleSince: number | undefined;
   let reason: SuperviseResult["reason"] = "idle";
@@ -356,6 +401,32 @@ export function findOnPath(name: string, path = process.env.PATH ?? ""): string 
   }
   return undefined;
 }
+
+/**
+ * The server must never outlive its supervisor. macOS has no PR_SET_PDEATHSIG, and a SIGKILLed supervisor runs no handler,
+ * so llama-server runs under this tiny sh watchdog (a separate process in the server's own group): every 2 s it checks that
+ * its parent is still the supervisor that started it (`ps` ppid; a dead parent re-parents it to launchd, ppid 1, which also
+ * defeats PID reuse) and, when not, sends the server exactly one SIGTERM (a second one aborts llama.cpp mid-shutdown), then
+ * SIGKILL after 15 s. A group SIGTERM from the supervisor reaches the server directly; the watchdog ignores it and just waits.
+ * The watchdog's PID is the recorded serverPid (its start time identifies it); it lives exactly as long as the server.
+ */
+export const WATCHDOG = [
+  'sup=$1; shift',
+  '"$@" & s=$!',
+  'trap : TERM INT',
+  'while kill -0 $s 2>/dev/null; do',
+  '  p=$(ps -o ppid= -p $$ 2>/dev/null | tr -d " ")',
+  '  if [ "$p" != "$sup" ]; then',
+  '    kill $s 2>/dev/null; n=0',
+  '    while kill -0 $s 2>/dev/null && [ $n -lt 30 ]; do sleep 0.5; n=$((n+1)); done',
+  '    kill -9 $s 2>/dev/null; break',
+  '  fi',
+  '  sleep 2',
+  'done',
+  'wait $s; code=$?',
+  'while kill -0 $s 2>/dev/null; do wait $s 2>/dev/null; sleep 0.2; done',
+  'exit $code',
+].join("\n");
 
 const envSeconds = (name: string, fallback: number): number => {
   const value = Number(process.env[name]);
@@ -398,14 +469,14 @@ export function systemDeps(dir: string): Deps {
       if (override) { try { accessSync(override, constants.X_OK); return override; } catch { return undefined; } }
       return findOnPath("llama-server");
     },
-    spawnSupervisor: (id) => {
+    spawnSupervisor: (id, adopt) => {
       // Double fork: a short-lived shell starts the supervisor in the background and exits, so the supervisor belongs to
       // launchd/init, not to the Pi session that asked for it. Closing that session (UltraTerm stops a slot's whole process
       // tree) then leaves the server to its idle grace instead of stopping it on the spot (2026-11-02).
       const log = join(dir, "server.log");
       const main = fileURLToPath(new URL("./main.ts", import.meta.url));
       const out = execFileSync("/bin/sh", ["-c", 'umask 077; "$0" --no-warnings "$1" _supervise "$2" </dev/null >>"$3" 2>&1 & echo $!', process.execPath, main, id, log],
-        { encoding: "utf8", env: process.env, cwd: dir, timeout: 10_000 });
+        { encoding: "utf8", env: { ...process.env, ...(adopt ? { STEAK_PI_ADOPT_PID: String(adopt.pid), STEAK_PI_ADOPT_START: adopt.start ?? "" } : {}) }, cwd: dir, timeout: 10_000 });
       const pid = Number(out.trim());
       if (!Number.isInteger(pid) || pid <= 0) throw new LocalError("supervisor-spawn", `could not start the local server supervisor (got ${JSON.stringify(out.trim().slice(0, 40))})`);
       return pid;
@@ -413,7 +484,7 @@ export function systemDeps(dir: string): Deps {
     spawnServer: (binary, args, logFile) => {
       const log = openSync(logFile, "a", 0o600);
       try {
-        const child = spawn(binary, args, { detached: true, stdio: ["ignore", log, log], env: process.env, cwd: dir });
+        const child = spawn("/bin/sh", ["-c", WATCHDOG, "steak-pi-server", String(process.pid), binary, ...args], { detached: true, stdio: ["ignore", log, log], env: process.env, cwd: dir });
         const exited = new Promise<number | null>((resolve) => { child.once("exit", (code) => resolve(code)); child.once("error", () => resolve(null)); });
         return { pid: child.pid ?? 0, exited };
       } finally { closeSync(log); }
