@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { CLAUDE_CODE_HAIKU_ROUTE, CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_ROUTES, CLAUDE_CODE_SONNET_ROUTE, assertClaudeCodeImageAdmission, claudeCodeModelName, claudeCodeModelOf, claudeFallbackTier, loadWorkerProfiles, loadRoleDefaults, resolveClaudeCodeSelection, resolveWorkerSelection, RETIRED_ROUTE, retiredRouteError } from "../src/subagents/model-selection.ts";
+import { CLAUDE_CODE_HAIKU_ROUTE, CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_ROUTES, CLAUDE_CODE_SONNET_ROUTE, assertClaudeCodeImageAdmission, claudeCodeModelName, claudeCodeModelOf, claudeCodeRouteOfProfile, claudeFallbackTier, loadWorkerProfiles, loadRoleDefaults, resolveClaudeCodeSelection, resolveWorkerSelection, RETIRED_ROUTE, retiredRouteError } from "../src/subagents/model-selection.ts";
 import { NoChainRouteError, type ChainOptions } from "../src/model-route-policy.ts";
 import type { QuotaSnapshot } from "../src/subagents/provider-quota.ts";
 import type { DispatchInput, SubagentTaskInput } from "../src/subagents/types.ts";
@@ -373,10 +373,10 @@ describe("synthetic: P-0579 claude-code staged native Read-image admission (synt
   });
   it.each([
     undefined, "", "claude-opus-5-5", "claude-sonnet-5-5", "anthropic/claude-opus-5-5", "claude-code/claude-opus-5",
-    "claude-code/claude-opus-5-5-fast", "claude-code/claude-fable-5-1", "claude-code/claude-haiku-5-5", " claude-code/claude-opus-5-5",
+    "claude-code/claude-opus-5-5-fast", "claude-code/claude-fable-5-1", " claude-code/claude-opus-5-5",
     "claude-code/claude-opus-5-5 ", "CLAUDE-CODE/claude-opus-5-5", "claude-code/", "openai-codex/gpt-6.1-terra", "xiaomi/mimo-v2.6-flash",
   ])("refuses a non-exact route %j before any image review starts", (route) => {
-    expect(() => assertClaudeCodeImageAdmission(route)).toThrow(/admits only claude-code\/claude-sonnet-5-5 or claude-code\/claude-opus-5-5.*no fallback/);
+    expect(() => assertClaudeCodeImageAdmission(route)).toThrow(/admits only claude-code\/claude-haiku-5-5, claude-code\/claude-sonnet-5-5, claude-code\/claude-opus-5-5.*no fallback/);
   });
   it("keeps the two admitted selections distinct instead of defaulting one to the other", () => {
     expect(resolveClaudeCodeSelection("claude-sonnet-5-5").modelId).toBe("claude-sonnet-5-5");
@@ -449,12 +449,16 @@ describe("synthetic: automatic quota fallback tier (cheapest capable Claude mode
       expect(tier!.reason).toMatch(why);
     }
   });
-  it("keeps Haiku an internal tier: pinned to its exact route, never an explicit route and never admitted for images", () => {
+  it("admits Haiku as an explicit subscription route and for image review, keeping Fable and older models refused", () => {
     expect(CLAUDE_CODE_HAIKU_ROUTE).toBe("claude-code/claude-haiku-5-5");
     expect(claudeCodeModelOf(CLAUDE_CODE_HAIKU_ROUTE)).toBe("claude-haiku-5-5");
     expect(claudeCodeModelName("claude-haiku-5-5")).toBe("Haiku 5.5");
-    expect(CLAUDE_CODE_ROUTES).not.toContain(CLAUDE_CODE_HAIKU_ROUTE);
-    expect(() => assertClaudeCodeImageAdmission(CLAUDE_CODE_HAIKU_ROUTE)).toThrow(/admits only claude-code\/claude-sonnet-5-5 or claude-code\/claude-opus-5-5/);
+    expect(CLAUDE_CODE_ROUTES).toEqual([CLAUDE_CODE_HAIKU_ROUTE, CLAUDE_CODE_SONNET_ROUTE, CLAUDE_CODE_OPUS_ROUTE]);
+    expect(assertClaudeCodeImageAdmission(CLAUDE_CODE_HAIKU_ROUTE)).toBe("claude-haiku-5-5");
+    expect(resolveClaudeCodeSelection("claude-haiku-5-5")).toMatchObject({ provider: "claude-code", modelId: "claude-haiku-5-5", images: true });
+    for (const refused of ["claude-code/claude-fable-5-1", "claude-code/claude-haiku-4-5", "claude-code/claude-sonnet-4-5"]) {
+      expect(CLAUDE_CODE_ROUTES).not.toContain(refused);
+    }
     for (const near of ["claude-code/claude-haiku-5", "claude-code/haiku", "claude-code-api/claude-haiku-5-5", "anthropic/claude-haiku-5-5"]) {
       expect(claudeCodeModelOf(near)).toBeUndefined();
     }
@@ -523,5 +527,33 @@ describe("synthetic: exhausted-provider chain skipping for implicit routes", () 
     expect(choose(sol, { model: "openai-codex/gpt-6.1-terra" }, registry(), solFirst, options)).toMatchObject({ model: sol, selection: { source: "override" } });
     expect(choose(sol, { profile: "steak-pi/gpt-6-1-terra" }, registry(), solFirst, options).selection.source).toBe("override");
     expect(choose(sol, { tasks: [{ label: "r", task: "r", role: "reviewer" }] }, registry(), solFirst, { forceDefaultChain: true }).selection.profile).not.toBe("steak-pi/opencode-go");
+  });
+});
+
+describe("synthetic: profile ids that name a Claude Code route, and honest profile errors", () => {
+  const profiles = [{ id: "steak-pi/opencode-go", model: "opencode-go/deepseek-v4.1-flash" }, { id: "steak-pi/gpt-6-1-terra", model: "openai-codex/gpt-6.1-terra" },
+    { id: "steak-pi/fable-5-1", model: "claude-code/claude-fable-5-1" }, { id: "steak-pi/dup", model: "xiaomi/mimo-v2.6-pro" }, { id: "other/dup", model: "xiaomi/mimo-v2.6-flash" }];
+  it("says not found and lists the nearest available ids", () => {
+    expect(() => choose(sol, { profile: "steak-pi/opencode-gp" }, registry(), profiles as never))
+      .toThrow(/unavailable: not found in the loaded worker profiles \(nearest available ids: steak-pi\/opencode-go,/);
+  });
+  it("says ambiguous and lists the matches", () => {
+    expect(() => choose(sol, { profile: "dup" }, registry(), [...profiles, { id: "steak-pi/dup", model: "xiaomi/mimo-v2.6-pro" }] as never))
+      .toThrow(/is ambiguous: it matches steak-pi\/dup, steak-pi\/dup/);
+  });
+  it("resolves a profile whose model is a claude-code route, even when the loaded catalog lacks it (stale manifest)", () => {
+    const haiku = { id: "steak-pi/haiku-5-5", model: "claude-code/claude-haiku-5-5" };
+    expect(claudeCodeRouteOfProfile("steak-pi/haiku-5-5", [haiku])).toEqual({ route: "claude-code/claude-haiku-5-5" });
+    expect(claudeCodeRouteOfProfile("steak-pi/haiku-5-5", profiles)).toEqual({ route: "claude-code/claude-haiku-5-5" });
+    expect(claudeCodeRouteOfProfile("sonnet-5-5", profiles)).toEqual({ route: "claude-code/claude-sonnet-5-5" });
+    expect(claudeCodeRouteOfProfile("steak-pi/opus-5-5", profiles)).toEqual({ route: "claude-code/claude-opus-5-5" });
+    expect(claudeCodeRouteOfProfile("steak-pi/opencode-go", profiles)).toBeUndefined();
+  });
+  it("refuses a claude-code profile that is not a runnable route, naming the routes to use", () => {
+    expect(claudeCodeRouteOfProfile("steak-pi/fable-5-1", profiles)).toEqual({ refused: expect.stringMatching(/claude-code\/claude-fable-5-1.*use one of claude-code\/claude-haiku-5-5, claude-code\/claude-sonnet-5-5, claude-code\/claude-opus-5-5/) });
+  });
+  it("the native selector names the route to use when handed a claude-code profile directly", () => {
+    expect(() => choose(sol, { profile: "steak-pi/haiku-5-5" }, registry(), [{ id: "steak-pi/haiku-5-5", model: "claude-code/claude-haiku-5-5" }] as never))
+      .toThrow(/runs the Claude Code subscription route claude-code\/claude-haiku-5-5.*name model claude-code\/claude-haiku-5-5/);
   });
 });

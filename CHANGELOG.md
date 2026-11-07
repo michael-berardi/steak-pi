@@ -14,6 +14,17 @@
   per write (a leftover from a killed process, or a second process on the same pane, no longer blocks every later write),
   and a nested pi started from a tool inside the pane (which inherits the pane's key) leaves the pane agent's state file
   alone. A real failure still warns, now with its cause, and a later successful write recovers silently.
+- **An implicit image wave no longer dies on a cooling-down GPT account.** It skipped the quota walk text waves get, so it
+  launched on the first image step and failed with `every GPT account is cooling down ... No fallback was selected`. It now
+  walks `multimodalWorkerChain` with the same launch and quota checks (MiMo after GPT), then falls to `claudeFallbackTier`
+  by the text-wave rules, receipts and dispatch note (every skipped step is named). Every Claude model, Haiku included,
+  is admitted for image review (native Read of staged files).
+- **The Haiku subscription route can be named explicitly**, with the same effort, account and quota rules as Sonnet and
+  Opus. Fable and older models stay refused.
+- **`steak-pi/haiku-5-5` and `steak-pi/sonnet-5-5` work as profiles.** A profile whose model is a `claude-code/<model>` route
+  (or the route's short name, so a harness manifest that lags the app's bundled one no longer matters) runs that route; a
+  Claude profile that is not runnable is refused naming the routes to use. An unknown profile now says "not found" with the
+  nearest ids, and an ambiguous one lists its matches, instead of "unavailable or ambiguous".
 
 ## 0.23.8 (2026-11-06)
 

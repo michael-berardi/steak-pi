@@ -9,6 +9,7 @@ import { NoChainRouteError, assertModelRoute, assertSubscriptionRequest, selectC
 import { routingConfig, routingConfigOrEmpty, routingConfigPath } from "../routing-config.ts";
 import type { DispatchInput, ModelSelection, SubagentTaskInput } from "./types.ts";
 import { activeTemporaryWorkerRoute, assertTemporaryFreeRequest, isTemporaryFreeModel, PREFERRED_FREE_PROFILE } from "../temporary-free-route.ts";
+import { claudeCodeRouteOfProfile } from "./claude-code-models.ts";
 export { retiredRouteError } from "../retired-model-selection.ts";
 
 type Model = NonNullable<ExtensionContext["model"]>;
@@ -140,9 +141,25 @@ export function loadWorkerProfiles(directory = join(homedir(), ".config", "ultra
   return [...profiles.values()];
 }
 
+/** The loaded profile ids closest to a missing one, for the not-found message. */
+function nearestProfileIds(id: string, ids: readonly string[], limit = 5): string[] {
+  const tail = (value: string) => value.slice(value.lastIndexOf("/") + 1).toLowerCase();
+  const distance = (a: string, b: string): number => {
+    let row = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i += 1) {
+      const next = [i];
+      for (let j = 1; j <= b.length; j += 1) next[j] = Math.min(row[j] + 1, next[j - 1] + 1, row[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      row = next;
+    }
+    return row[b.length];
+  };
+  return [...new Set(ids)].map((candidate) => ({ candidate, score: distance(tail(id), tail(candidate)) }))
+    .sort((a, b) => a.score - b.score || a.candidate.localeCompare(b.candidate)).slice(0, limit).map((item) => item.candidate);
+}
+
 export { CLAUDE_CODE_OPUS_MODEL, CLAUDE_CODE_SONNET_MODEL, CLAUDE_CODE_HAIKU_MODEL, CLAUDE_CODE_MODEL, CLAUDE_CODE_EFFORTS, CLAUDE_CODE_DEFAULT_EFFORT,
   CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_SONNET_ROUTE, CLAUDE_CODE_HAIKU_ROUTE, CLAUDE_CODE_ROUTE, CLAUDE_CODE_ROUTES,
-  claudeCodeModelOf, claudeCodeModelName, claudeFallbackTier, defaultClaudeCodeRoute, resolveClaudeCodeSelection,
+  claudeCodeModelOf, claudeCodeModelName, claudeCodeRouteOfProfile, claudeFallbackTier, defaultClaudeCodeRoute, resolveClaudeCodeSelection,
   ClaudeCodeEffortError, isClaudeCodeEffort, resolveClaudeCodeEffort,
   assertClaudeCodeImageAdmission, type ClaudeCodeEffort, type ClaudeCodeModel, type ClaudeCodeFallbackRoute, type ClaudeFallbackTier } from "./claude-code-models.ts";
 
@@ -198,7 +215,17 @@ export function resolveWorkerSelection(
   const profileById = (id: string): WorkerProfile => {
     assertActiveModelSelector(id);
     const matches = profiles.filter((p) => p.id === id || (!id.includes("/") && p.id === `steak-pi/${id}`));
-    if (matches.length !== 1) throw new Error(`USAP profile ${id} is unavailable or ambiguous; use its harness/profile identity.`);
+    if (matches.length === 0) {
+      const near = nearestProfileIds(id, profiles.map((p) => p.id));
+      throw new Error(`USAP profile ${id} is unavailable: not found in the loaded worker profiles${near.length > 0 ? ` (nearest available ids: ${near.join(", ")})` : " (none are loaded)"}; use its harness/profile identity.`);
+    }
+    if (matches.length > 1) throw new Error(`USAP profile ${id} is ambiguous: it matches ${matches.map((p) => p.id).join(", ")}; use its harness/profile identity.`);
+    const claude = claudeCodeRouteOfProfile(id, profiles);
+    if (claude) {
+      throw new Error("route" in claude
+        ? `USAP profile ${id} runs the Claude Code subscription route ${claude.route}, which is not a native Pi route; name model ${claude.route} (or harness claude-code) instead.`
+        : claude.refused);
+    }
     assertActiveModelSelector(matches[0].id);
     assertActiveModelSelector(matches[0].model);
     if (matches[0].id === PREFERRED_FREE_PROFILE && matches[0].model !== PREFERRED_FREE_PROFILE) {
@@ -244,8 +271,8 @@ export function resolveWorkerSelection(
   }
   // An implicit dispatch whose profile default landed on an exhausted provider re-resolves the
   // configured default text chain (`textWorkerChain`) with that provider skipped. An explicit selector
-  // never takes this path, and neither do reviewer or image waves.
-  const forceChain = options.forceDefaultChain === true && !explicit && !review && input.requireImages !== true;
+  // never takes this path, and neither do reviewer waves. An image wave takes it over `multimodalWorkerChain`.
+  const forceChain = options.forceDefaultChain === true && !explicit && !review;
   // Only ordinary implicit text workers observe the temporary preference;
   // explicit model/profile/harness and all review/image gates remain exact.
   const temporary = !explicit && !review && !forceChain && !input.harness && !input.requireImages ? activeTemporaryWorkerRoute() : undefined;

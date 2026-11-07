@@ -16,9 +16,9 @@ import { missingConfigKey, routingConfig, RoutingConfigError } from "../routing-
  * existing auth only, with API-key/billing override env stripped at spawn). */
 export const CLAUDE_CODE_OPUS_MODEL = "claude-opus-5-5" as const;
 export const CLAUDE_CODE_SONNET_MODEL = "claude-sonnet-5-5" as const;
-/** Haiku is an internal tier only: it is not an explicit worker route (`CLAUDE_CODE_ROUTES`
- * omits it), so a caller naming it is refused exactly like any other unlisted model, and it
- * is never admitted for image review. Only an operator-configured fallback tier selects it. */
+/** Haiku is an explicit subscription route like Sonnet and Opus (the operator's standing worker
+ * chain includes it as a worker tier), with the same effort, account, quota and image rules.
+ * It is still never a default: only an operator-configured tier or an exact name selects it. */
 export const CLAUDE_CODE_HAIKU_MODEL = "claude-haiku-5-5" as const;
 /** The largest pinned model, kept under its historical name for callers. */
 export const CLAUDE_CODE_MODEL = CLAUDE_CODE_OPUS_MODEL;
@@ -32,9 +32,8 @@ export const CLAUDE_CODE_SONNET_ROUTE = `claude-code/${CLAUDE_CODE_SONNET_MODEL}
 export const CLAUDE_CODE_HAIKU_ROUTE = `claude-code/${CLAUDE_CODE_HAIKU_MODEL}` as const;
 export const CLAUDE_CODE_ROUTE = CLAUDE_CODE_OPUS_ROUTE;
 export type ClaudeCodeModel = typeof CLAUDE_CODE_OPUS_MODEL | typeof CLAUDE_CODE_SONNET_MODEL | typeof CLAUDE_CODE_HAIKU_MODEL;
-/** Routes a caller may name explicitly. The internal tier is deliberately absent: only an
- * operator-configured quota fallback ({@link claudeFallbackTier}) ever selects it. */
-export const CLAUDE_CODE_ROUTES: readonly string[] = [CLAUDE_CODE_SONNET_ROUTE, CLAUDE_CODE_OPUS_ROUTE];
+/** Routes a caller may name explicitly. Fable and older models are not listed and stay refused. */
+export const CLAUDE_CODE_ROUTES: readonly string[] = [CLAUDE_CODE_HAIKU_ROUTE, CLAUDE_CODE_SONNET_ROUTE, CLAUDE_CODE_OPUS_ROUTE];
 export type ClaudeCodeFallbackRoute = typeof CLAUDE_CODE_HAIKU_ROUTE | typeof CLAUDE_CODE_SONNET_ROUTE | typeof CLAUDE_CODE_OPUS_ROUTE;
 
 /** A claude-code effort outside medium/high/xhigh, or high/xhigh asked for without a reason. */
@@ -147,10 +146,32 @@ export function resolveClaudeCodeSelection(model: ClaudeCodeModel = CLAUDE_CODE_
  * explicit pinned route passes, and the caller keeps the route it asked for.
  * There is no fallback, default or auth change; anything that is not an exact
  * route (undefined, prefix, fuzzy, other provider) fails closed. */
-export function assertClaudeCodeImageAdmission(route: string | undefined): Exclude<ClaudeCodeModel, typeof CLAUDE_CODE_HAIKU_MODEL> {
+export function assertClaudeCodeImageAdmission(route: string | undefined): ClaudeCodeModel {
   const model = claudeCodeModelOf(route);
-  if (model === undefined || model === CLAUDE_CODE_HAIKU_MODEL) {
-    throw new Error(`USAP claude-code image review admits only ${CLAUDE_CODE_SONNET_ROUTE} or ${CLAUDE_CODE_OPUS_ROUTE} (staged image files read natively under cwd); no fallback was selected.`);
+  if (model === undefined) {
+    throw new Error(`USAP claude-code image review admits only ${CLAUDE_CODE_ROUTES.join(", ")} (staged image files read natively under cwd); no fallback was selected.`);
   }
   return model;
+}
+
+/** The short profile name a claude-code route is offered under (`claude-code/claude-haiku-5-5` -> `haiku-5-5`),
+ * the id the UltraTerm steak-pi manifest ships it with. */
+export const claudeCodeProfileName = (route: string): string => route.replace(/^claude-code\/(?:claude-)?/, "");
+
+/**
+ * A worker profile id that names a Claude Code route, resolved independent of whichever harness manifest
+ * the loader happened to read (the user's copy can lag the one the app bundles): a loaded profile whose
+ * model is a `claude-code/<model>` route, or the route's own short name under any harness prefix
+ * (`steak-pi/haiku-5-5`, `haiku-5-5`). `route` is a dispatchable subscription route; `refused` names why a
+ * claude-code profile cannot run and which route to use instead. Undefined: not a Claude Code profile.
+ */
+export function claudeCodeRouteOfProfile(id: string, profiles: readonly { id: string; model: string }[]): { route: string } | { refused: string } | undefined {
+  const loaded = profiles.filter((profile) => profile.id === id || (!id.includes("/") && profile.id === `steak-pi/${id}`));
+  const viaProfile = loaded.length === 1 && loaded[0].model.startsWith("claude-code/") ? loaded[0].model : undefined;
+  const short = id.slice(id.lastIndexOf("/") + 1);
+  const viaName = viaProfile === undefined && loaded.length === 0 ? CLAUDE_CODE_ROUTES.find((route) => claudeCodeProfileName(route) === short) : undefined;
+  const route = viaProfile ?? viaName;
+  if (route === undefined) return undefined;
+  if (CLAUDE_CODE_ROUTES.includes(route)) return { route };
+  return { refused: `USAP profile ${id} names ${route}, which the claude-code harness does not run; use one of ${CLAUDE_CODE_ROUTES.join(", ")} (model: <route>).` };
 }

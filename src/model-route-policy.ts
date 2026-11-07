@@ -412,8 +412,15 @@ export class NoChainRouteError extends Error {
 /** True when `error` is exactly "the configured default text chain resolved nowhere" and
  * nothing else. A profile-default or reviewer chain with its own head is a different chain. */
 export function isDefaultTextChainExhausted(error: unknown): error is NoChainRouteError {
-  if (!(error instanceof NoChainRouteError) || error.multimodal) return false;
-  const chain = routingConfigOrEmpty().textWorkerChain ?? [];
+  return isDefaultChainExhausted(error) && !error.multimodal;
+}
+
+/** Same test for either default chain: `textWorkerChain` for a text wave, `multimodalWorkerChain` for an
+ * image wave (the error says which it walked). */
+export function isDefaultChainExhausted(error: unknown): error is NoChainRouteError {
+  if (!(error instanceof NoChainRouteError)) return false;
+  const config = routingConfigOrEmpty();
+  const chain = (error.multimodal ? config.multimodalWorkerChain : config.textWorkerChain) ?? [];
   return chain.length > 0 && error.tried.length === chain.length &&
     error.tried.every((step, index) => sameStep(step, chain[index]));
 }
