@@ -137,7 +137,7 @@ function runningServer(deps: Deps): ServerRecord | undefined {
   return undefined;
 }
 
-async function preflight(deps: Deps, profile: LaunchProfile, running: ServerRecord | undefined): Promise<void> {
+async function preflight(deps: Deps, profile: LaunchProfile, running: ServerRecord | undefined): Promise<{ need: number; free: number }> {
   if (!deps.findServerBinary()) refuse("llama-server-missing", `llama-server was not found on PATH; ${INSTALL_HINT}`);
   if (profile.source.kind === "file" && !existsSync(profile.source.path)) refuse("model-missing", `the model file is gone: ${profile.source.path}`);
   const used = deps.diskPercent(profile.source.kind === "file" ? profile.source.path : deps.dir);
@@ -149,6 +149,49 @@ async function preflight(deps: Deps, profile: LaunchProfile, running: ServerReco
   const need = startNeedBytes(profile.modelBytes, profile.ctx, profile.kvBytesPerToken);
   const free = deps.availableBytes();
   if (free < need) refuse("insufficient-memory", `starting ${profile.id} needs about ${gib(need)} (weights + KV cache at ${profile.ctx} tokens + server overhead) but only ${gib(free)} is free or reclaimable; close something heavy or lower the context with: steak-pi local add ... --ctx N`);
+  return { need, free };
+}
+
+export type StartPlan =
+  | { kind: "attach"; running: ServerRecord }
+  | { kind: "start"; stop?: ServerRecord; need: number; free: number };
+
+/**
+ * The one decision `ensure` and `check` both make, without changing anything: attach to the server already running for this
+ * model, or start it (first stopping an orphan or an idle server of another model). Throws `Refused` with the named cause
+ * when a start would not be allowed. Because `ensure` acts on this exact answer, `check` can never disagree with it.
+ */
+export async function planStart(deps: Deps, profile: LaunchProfile): Promise<StartPlan> {
+  const record = readJson<ServerRecord>(serverPath(deps));
+  const supervisorUp = !!record && deps.alive(record.supervisorPid, record.supervisorStart);
+  const serverUp = !!record && record.serverPid !== undefined && deps.alive(record.serverPid, record.serverStart);
+  let stop: ServerRecord | undefined;
+  if (record && (supervisorUp || serverUp)) {
+    // A server without its supervisor is an orphan nothing would ever stop: replace it.
+    if (supervisorUp && record.id === profile.id) return { kind: "attach", running: record };
+    if (supervisorUp) {
+      const { holders } = peekLeases(deps);
+      if (holders > 0) refuse("other-model-running", `${record.id} is running with ${holders} user(s) attached; one model server at a time (stop it with: steak-pi local stop)`);
+    }
+    stop = record;
+  }
+  const { need, free } = await preflight(deps, profile, stop);
+  return { kind: "start", ...(stop ? { stop } : {}), need, free };
+}
+
+/** Read-only: would `ensure` for this model attach, start, or be refused? Takes no lease and starts nothing. */
+export async function check(deps: Deps, id: string): Promise<{ kind: "running"; healthy: boolean } | { kind: "fits"; need: number; free: number }> {
+  const profile = requireProfile(deps, id);
+  const plan = await planStart(deps, profile);
+  if (plan.kind === "attach") return { kind: "running", healthy: await deps.health(profile.port) };
+  return { kind: "fits", need: plan.need, free: plan.free };
+}
+
+function requireProfile(deps: Deps, id: string): LaunchProfile {
+  const profile = readProfile(deps.dir, id);
+  if (profile) return profile;
+  const known = listProfiles(deps.dir).map((entry) => entry.id);
+  throw new LocalError("unknown-model", `no local model "${id}" (${known.length ? `known: ${known.join(", ")}` : "none added yet"}); add one with: steak-pi local add <gguf path or owner/repo:quant>`);
 }
 
 const logTail = (path: string): string => {
@@ -159,27 +202,13 @@ export interface EnsureResult { started: boolean; baseUrl: string }
 
 /** Take a lease for `id` and make sure its server is up and healthy. Throws `Refused` (or `LocalError`) with a named cause. */
 export async function ensure(deps: Deps, id: string, holder: HolderRef): Promise<EnsureResult> {
-  const profile = readProfile(deps.dir, id);
-  if (!profile) {
-    const known = listProfiles(deps.dir).map((entry) => entry.id);
-    throw new LocalError("unknown-model", `no local model "${id}" (${known.length ? `known: ${known.join(", ")}` : "none added yet"}); add one with: steak-pi local add <gguf path or owner/repo:quant>`);
-  }
+  const profile = requireProfile(deps, id);
   let started = false;
   await withLock(deps.dir, async () => {
-    let running = runningServer(deps);
-    if (running && !deps.alive(running.supervisorPid, running.supervisorStart)) {
-      // Its supervisor is gone, so nothing would ever stop it: stop the orphan we recorded and start fresh.
-      await stopRecord(deps, running);
-      running = undefined;
-    }
-    if (running && running.id !== profile.id) {
-      const { holders } = leaseState(deps);
-      if (holders > 0) refuse("other-model-running", `${running.id} is running with ${holders} user(s) attached; one model server at a time (stop it with: steak-pi local stop)`);
-      await stopRecord(deps, running);
-      running = undefined;
-    }
-    if (!running) {
-      await preflight(deps, profile, undefined);
+    runningServer(deps); // drop a stale record before deciding
+    const plan = await planStart(deps, profile);
+    if (plan.kind === "start") {
+      if (plan.stop) await stopRecord(deps, plan.stop);
       started = true;
     }
     acquireLease(deps, holder);

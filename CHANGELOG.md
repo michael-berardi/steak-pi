@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.23.9 (2026-11-06)
+
+- **A local model that cannot start now stops the run with its cause.** When the hook could not start a `local/...` model
+  (for example `starting swift-1-5 needs about 16.4 GiB ... but only 14.2 GiB is free or reclaimable`) it only notified,
+  and the prompt went to the dead endpoint: `Connection error.` five times, then `! error · Connection error.`. The run
+  is now aborted before any request and ends with `steak-pi local: REFUSED (<code>): <reason>` as its error, on screen and
+  in the session history. The next prompt tries the start again.
+- **`steak-pi local check <id>`.** A read-only preflight: the same disk, memory and model-file checks `ensure` runs, with
+  nothing started and no lease taken. Prints `ok: local/<id> is running` or `ok: local/<id> fits (needs X GiB, Y GiB free)`
+  (exit 0), the `REFUSED` line (exit 3), or exits 1 for an unknown id. `ensure` and `check` share one decision function.
+- **"Agent state file could not be written" no longer appears for the usual causes.** The temporary file name is now unique
+  per write (a leftover from a killed process, or a second process on the same pane, no longer blocks every later write),
+  and a nested pi started from a tool inside the pane (which inherits the pane's key) leaves the pane agent's state file
+  alone. A real failure still warns, now with its cause, and a later successful write recovers silently.
+
 ## 0.23.8 (2026-11-06)
 
 - **Peer notes read as instructions to act on.** A note another agent sends through UltraTerm now arrives labelled

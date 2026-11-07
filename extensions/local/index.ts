@@ -1,6 +1,10 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ensure, pidHolder, release, systemDeps, type EnsureResult } from "../../src/local/runtime.ts";
-import { localDir } from "../../src/local/store.ts";
+import { LocalError, localDir } from "../../src/local/store.ts";
+
+/** The one-line cause of a refused or failed start, in the form the CLI and the USAP profile-ensure hook print. */
+export const refusalText = (error: unknown): string =>
+  error instanceof LocalError ? `steak-pi local: REFUSED (${error.code}): ${error.message}` : `steak-pi local: ${error instanceof Error ? error.message : String(error)}`;
 
 type Model = ExtensionContext["model"];
 export interface LocalHookDeps {
@@ -28,7 +32,7 @@ export function createLocalHook(deps: LocalHookDeps): (pi: ExtensionAPI) => void
     const queue = (step: () => Promise<void>): Promise<void> => (pending = pending.then(step, step));
 
     const report = (ctx: ExtensionContext, error: unknown) => {
-      const text = error instanceof Error ? error.message : String(error);
+      const text = refusalText(error);
       ctx.ui.notify(text, "error");
       if (ctx.hasUI === false) process.stderr.write(`${text}\n`); // print mode has no notification area
     };
@@ -37,12 +41,17 @@ export function createLocalHook(deps: LocalHookDeps): (pi: ExtensionAPI) => void
       held = undefined;
       await deps.release().catch(() => undefined);
     };
-    const take = async (id: string, ctx: ExtensionContext): Promise<boolean> => {
+    let refusal: string | undefined; // why the run that is starting must not reach the dead endpoint; shown as its error
+    const take = async (id: string, ctx: ExtensionContext, inRun = false): Promise<boolean> => {
       try {
         const result = await deps.ensure(id);
         if (result.started) ctx.ui.notify(`Local model ${id} is ready at ${result.baseUrl}.`, "info");
         return true;
-      } catch (error) { report(ctx, error); return false; }
+      } catch (error) {
+        if (inRun) refusal = refusalText(error); // the run's own error carries it: no second notice
+        else report(ctx, error);
+        return false;
+      }
     };
     const localId = (model: Model) => (model?.provider === LOCAL_PROVIDER ? model.id : undefined);
 
@@ -64,16 +73,30 @@ export function createLocalHook(deps: LocalHookDeps): (pi: ExtensionAPI) => void
     pi.on("model_select", (event, ctx) => { select(event.model, ctx); });
     // A run holds the server: the prompt waits for it to be up (the weights reload if it stopped while idle), and a start
     // that failed (memory, a busy port, another server) is tried again on the next prompt instead of until /reload.
+    //
+    // A start that cannot happen must stop this run before any request: Pi swallows an error thrown from
+    // `before_agent_start` and sends the prompt anyway, and an abort that early is a no-op (the run resets it). So the
+    // refusal is remembered here, the run is aborted the moment it starts (`agent_start`, before the provider call), and
+    // the aborted assistant message is finalized as an error carrying the refusal text (`message_end`), so the screen and
+    // the session history name the cause instead of `Connection error`.
     pi.on("before_agent_start", async (_event, ctx) => {
       const wanted = localId(ctx.model);
+      refusal = undefined;
       await queue(async () => {
         if (held !== undefined && held !== wanted) await letGo();
         if (!wanted || held === wanted) return;
-        if (await take(wanted, ctx)) { held = wanted; warmed = wanted; }
+        if (await take(wanted, ctx, true)) { held = wanted; warmed = wanted; }
       });
     });
+    pi.on("agent_start", async (_event, ctx) => { if (refusal !== undefined) ctx.abort(); });
+    pi.on("message_end", async (event) => {
+      if (refusal === undefined || event.message.role !== "assistant") return undefined;
+      const text = refusal;
+      refusal = undefined;
+      return { message: { ...event.message, stopReason: "error", errorMessage: text } };
+    });
     // Pi will not continue on its own: the run is over and this process no longer uses the server.
-    pi.on("agent_settled", async () => { compacting = false; await queue(letGo); });
+    pi.on("agent_settled", async () => { compacting = false; refusal = undefined; await queue(letGo); });
     // A manual /compact summarizes with the session model outside any run: hold the server for it, then let go.
     pi.on("session_before_compact", async (_event, ctx) => {
       const wanted = localId(ctx.model);
