@@ -596,7 +596,7 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
       await expect(h.tools.get("ultraterm_subagents").execute("bad", { ...base, thinking }, undefined, undefined, h.ctx)).rejects.toThrow(/ClaudeCodeEffortError|Claude Code effort must be medium, high, xhigh/);
     }
     await expect(h.tools.get("ultraterm_subagents").execute("bad", { ...base, thinking: "high" }, undefined, undefined, h.ctx)).rejects.toThrow(/high effort needs a concrete task benefit in thinkingReason/);
-    await expect(h.tools.get("ultraterm_subagents").execute("bad", { ...base, model: "anthropic/claude-opus-5-5" }, undefined, undefined, h.ctx)).rejects.toThrow(/runs only claude-code\/claude-sonnet-5-5 or claude-code\/claude-opus-5-5/);
+    await expect(h.tools.get("ultraterm_subagents").execute("bad", { ...base, model: "anthropic/claude-opus-5-5" }, undefined, undefined, h.ctx)).rejects.toThrow(/runs only claude-code\/claude-haiku-5-5 or claude-code\/claude-sonnet-5-5 or claude-code\/claude-opus-5-5/);
     expect(runner).not.toHaveBeenCalled();
     const writer = await h.tools.get("ultraterm_subagents").execute("ok", { ...base, tasks: [{ label: "write", task: "write", role: "worker", mayEdit: true, allowBash: true, ownedPaths: [h.ctx.cwd] }] }, undefined, undefined, h.ctx);
     expect(writer.isError).not.toBe(true);
@@ -2362,14 +2362,62 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
       } finally { await shutdown(h); }
     });
 
-    it("keeps Haiku an internal tier: an explicit Haiku route is refused like any unlisted model", async () => {
+    it("admits an explicit Haiku subscription route (model or profile) and still refuses Fable", async () => {
       const runner = done();
       const { h } = quotaHarness(status({ codex: solOut }), runner);
       try {
-        await expect(dispatch(h, { harness: "claude-code", model: "claude-code/claude-haiku-5-5", tasks: plain }))
-          .rejects.toThrow(/runs only claude-code\/claude-sonnet-5-5 or claude-code\/claude-opus-5-5/);
-        expect(runner).not.toHaveBeenCalled();
+        for (const route of [{ harness: "claude-code", model: "claude-code/claude-haiku-5-5" }, { model: "claude-code/claude-haiku-5-5" }, { profile: "steak-pi/haiku-5-5" }]) {
+          const result = await dispatch(h, { ...route, tasks: plain });
+          expect(result.details.run).toMatchObject({ model: "claude-code/claude-haiku-5-5", harness: "claude-code", thinkingLevel: "medium" });
+        }
+        expect(runner).toHaveBeenCalledTimes(3);
+        await expect(dispatch(h, { harness: "claude-code", model: "claude-code/claude-fable-5-1", tasks: plain })).rejects.toThrow(/runs only/);
+        await expect(dispatch(h, { profile: "steak-pi/fable-5-1", tasks: plain })).rejects.toThrow(/unavailable: not found|does not run/);
+        expect(runner).toHaveBeenCalledTimes(3);
       } finally { await shutdown(h); }
+    });
+
+    describe("synthetic: an implicit image wave walks multimodalWorkerChain, then the Claude tier", () => {
+      const MIMO_ROUTE = "xiaomi/mimo-v2.6-flash";
+      const mimoModel = { provider: "xiaomi", id: "mimo-v2.6-flash", api: "openai-completions", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1", input: ["text", "image"] };
+      const images = [{ label: "look", task: "Read staged.png and report", role: "scout" }];
+      it("continues past a cooling-down Terra to the next multimodal step instead of refusing", async () => {
+        const runner = done();
+        const { h } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeUp }), runner, { approvePaidRoute: () => true }, undefined, [mimoModel]);
+        try {
+          const result = await dispatch(h, { tasks: images, requireImages: true });
+          expect(result.details.run.model).toBe(MIMO_ROUTE);
+          expect(result.content[0].text).toMatch(/Route note: GPT-6\.1 Terra: every GPT account is unavailable.*continues down the default chain on xiaomi\/mimo-v2\.6-flash/);
+        } finally { await shutdown(h); }
+      });
+      it("falls to claudeFallbackTier with image admission when no multimodal step can launch, naming why each was skipped", async () => {
+        const runner = done();
+        const { h } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeUp }), runner);
+        try {
+          const result = await dispatch(h, { tasks: images, requireImages: true });
+          expect(result.details.run).toMatchObject({ model: "claude-code/claude-haiku-5-5", harness: "claude-code" });
+          expect(result.details.run.selection).toMatchObject({ provider: "claude-code", images: true });
+          expect(runner.mock.calls[0][0].run.selection?.images).toBe(true);
+          expect(result.content[0].text).toMatch(/Route note: none of GPT-6\.1 Terra, .* could launch \(GPT-6\.1 Terra: every GPT account is unavailable/);
+          expect(result.content[0].text).toContain("Haiku 5.5 tier");
+        } finally { await shutdown(h); }
+      });
+      it("uses the substantial tier for a shell-capable image leaf, like a text wave", async () => {
+        const runner = done();
+        const { h } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeUp }), runner);
+        try {
+          const result = await dispatch(h, { requireImages: true, tasks: [{ label: "fix", task: "Read staged.png and fix", role: "worker", mayEdit: true, ownedPaths: ["src/x.ts"], allowBash: true }] });
+          expect(result.details.run.model).toBe("claude-code/claude-sonnet-5-5");
+        } finally { await shutdown(h); }
+      });
+      it("refuses synchronously naming every cause when the Claude accounts are out too", async () => {
+        const runner = done();
+        const { h } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeOut }), runner);
+        try {
+          await expect(dispatch(h, { tasks: images, requireImages: true })).rejects.toThrow(/no route that can launch this wave.*GPT-6\.1 Terra.*Claude subscription tier/);
+          expect(runner).not.toHaveBeenCalled();
+        } finally { await shutdown(h); }
+      });
     });
 
     describe("synthetic: a Go parent whose own store has no Codex login", () => {

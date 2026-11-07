@@ -15,9 +15,9 @@ import { SubagentCoordinator, CoordinatorWaitTimeoutError } from "../src/subagen
 import { normalizeDispatch, SubagentPolicyError } from "../src/subagents/policy.ts";
 import { assertKnownClaudeAccount, resolveClaudeAccount } from "../src/subagents/claude-account.ts";
 import { assertActiveModelSelector } from "../src/retired-model-selection.ts";
-import { loadWorkerProfiles, resolveWorkerSelection, resolveClaudeCodeSelection, assertClaudeCodeImageAdmission, claudeCodeModelOf, claudeCodeModelName, claudeFallbackTier, defaultClaudeCodeRoute, isClaudeCodeEffort, resolveClaudeCodeEffort, CLAUDE_CODE_EFFORTS, CLAUDE_CODE_ROUTES, type ClaudeFallbackTier, type WorkerProfile } from "../src/subagents/model-selection.ts";
+import { loadWorkerProfiles, resolveWorkerSelection, resolveClaudeCodeSelection, assertClaudeCodeImageAdmission, claudeCodeModelOf, claudeCodeModelName, claudeCodeRouteOfProfile, claudeFallbackTier, defaultClaudeCodeRoute, isClaudeCodeEffort, resolveClaudeCodeEffort, CLAUDE_CODE_EFFORTS, CLAUDE_CODE_ROUTES, type ClaudeFallbackTier, type WorkerProfile } from "../src/subagents/model-selection.ts";
 import { admitClaudeApiRoute, anyClaudeRouteModelOf, claudeApiConcurrency, claudeApiModelOf, CLAUDE_API_ROUTES, formatClaudeApiReceipt, isClaudeApiRoute, resolveClaudeApiSelection, stampClaudeApiRun } from "../src/subagents/claude-api-route.ts";
-import { AUTOMATIC_CHAIN_APPROVAL, NoChainRouteError, isDefaultTextChainExhausted, onlyWhenSkipReason, textWorkerChain, type ChainOptions, type TaskClassStep, type TaskClassWalk, type WorkerRouteStep } from "../src/model-route-policy.ts";
+import { AUTOMATIC_CHAIN_APPROVAL, NoChainRouteError, defaultWorkerChain, isDefaultChainExhausted, onlyWhenSkipReason, type ChainOptions, type TaskClassStep, type TaskClassWalk, type WorkerRouteStep } from "../src/model-route-policy.ts";
 import { analyzeWaveClasses, applyInferredTaskClasses, configuredTaskClass, ignoredTaskClass, resolveTaskClassWalk, type WaveTaskClass } from "../src/subagents/task-class.ts";
 import { RouteEvidenceStore, routeEvidencePath, recordSettledTask } from "../src/subagents/route-evidence.ts";
 import { classReport, describeDecision, formatClassReport, settingsOf, type Rng } from "../src/subagents/route-ranking.ts";
@@ -374,7 +374,7 @@ async function resolveNativeSelection(ctx: ExtensionContext, input: Parameters<t
     // the same isolated store an explicit dispatch of it gets. No eligible account, runtime or model there
     // leaves the original no-route error unchanged. A step already vetoed for quota is not offered at all.
     const parentTier = quotaProviderOf(ctx.model!);
-    const bridge = parentTier !== undefined && parentTier !== CODEX_QUOTA && isMeteredQuota(parentTier) && isDefaultTextChainExhausted(failure)
+    const bridge = parentTier !== undefined && parentTier !== CODEX_QUOTA && isMeteredQuota(parentTier) && isDefaultChainExhausted(failure)
       ? failure.tried.find((step) => quotaProviderOf(step) === CODEX_QUOTA && quota.skipRoute?.(step) !== true) : undefined;
     if (bridge) {
       const target = routeOfStep(bridge);
@@ -513,7 +513,7 @@ interface ImplicitWorkerRoute {
  *  2. a router-gated route is kept unless the router proves EVERY configured account of that
  *     provider unavailable (cooling down, signed out, or a 100% window). Busy, unknown and
  *     unreadable are not exhaustion, so a busy provider stays put;
- *  3. an exhausted route is never selected: the configured default chain (`textWorkerChain`)
+ *  3. an exhausted route is never selected: the configured default chain (`textWorkerChain`, or `multimodalWorkerChain` for an image wave)
  *     is walked with the exhausted providers skipped;
  *  4. when every step is out, the wave goes to the operator's `claudeFallbackTier` on the
  *     official claude-code subscription route (when one is configured), never to the paid
@@ -601,7 +601,7 @@ async function resolveImplicitWorkerRoute(
     return { ...route, taskClass };
   };
   try { first = await resolveNativeSelection(ctx, requested, dependencies, { skipRoute: step => skipStep(step, quota), quotaSnapshot: quota, ...(walk ? { taskClass: walk } : {}) }); } catch (error) { failure = error; }
-  if (!first && !isDefaultTextChainExhausted(failure)) throw failure;
+  if (!first && !isDefaultChainExhausted(failure)) throw failure;
   if (first) {
     const step = stepOfSelection(first.selection);
     const gated = quotaProviderOf(step);
@@ -619,7 +619,7 @@ async function resolveImplicitWorkerRoute(
         const slash = route.indexOf("/");
         const prior = { provider: route.slice(0, slash), id: route.slice(slash + 1) };
         // Keep the configured step so a skipped `onlyWhen` step names its condition, not a quota read.
-        const configured = textWorkerChain().find((step) => step.provider === prior.provider && step.id === prior.id) ?? prior;
+        const configured = defaultWorkerChain(requested.requireImages === true).find((step) => step.provider === prior.provider && step.id === prior.id) ?? prior;
         const block = tierBlock(quota!, configured);
         return block === undefined ? [] : [`${routeStepLabel(configured)}: ${block}`];
       });
@@ -630,7 +630,7 @@ async function resolveImplicitWorkerRoute(
       const next = await resolveNativeSelection(ctx, requested, dependencies, { forceDefaultChain: true, skipRoute: step => skipStep(step, quota), quotaSnapshot: quota });
       return withClass({ resolved: next, tried: [], causes: [`${routeStepLabel(step)}: ${cause}`] });
     } catch (error) {
-      if (!isDefaultTextChainExhausted(error)) throw error;
+      if (!isDefaultChainExhausted(error)) throw error;
       failure = error;
     }
   }
@@ -1869,6 +1869,13 @@ export function createUltratermSubagentsExtension(
      */
     const dispatchWave = async (rawParams: unknown, signal: AbortSignal | undefined, onUpdate: RunBinding["onUpdate"], ctx: ExtensionContext, fallThroughs: readonly QuotaFallThrough[]) => {
       let requested = rawParams as UltratermSubagentsParams;
+      // A profile that is a claude-code/<model> route (steak-pi/haiku-5-5, steak-pi/sonnet-5-5, ...) is that
+      // subscription route: resolve it before any native selection, which cannot serve it.
+      if (requested.profile !== undefined && requested.model === undefined) {
+        const claude = claudeCodeRouteOfProfile(requested.profile, dependencies.profiles ?? loadWorkerProfiles());
+        if (claude && "refused" in claude) throw new Error(claude.refused);
+        if (claude) requested = { ...requested, profile: undefined, model: claude.route };
+      }
       const startupWindowMs = dependencies.startupWindowMs ?? DEFAULT_STARTUP_WINDOW_MS;
       // Do not let a mixed implicit wave silently bypass the configured review
       // standard or spend expert quota on routine implementation leaves.
@@ -1924,15 +1931,18 @@ export function createUltratermSubagentsExtension(
       let tierTried: readonly WorkerRouteStep[] = [];
       let quotaCauses: string[] = [];
       let tierAccount: ImplicitWorkerRoute["claudeAccount"];
-      const quotaRouted = implicitRoute && !hasReviewer && requested.requireImages !== true;
+      // An implicit image wave takes the same quota walk as a text wave, over `multimodalWorkerChain`, then
+      // the Claude tier (every Claude model reads staged images natively). Only task classes stay text-only.
+      const quotaRouted = implicitRoute && !hasReviewer;
+      const textRouted = quotaRouted && requested.requireImages !== true;
       // Task classes steer only an implicit text worker wave, and a wave runs one route: two configured classes
       // in one wave are refused here, before any approval, checkpoint or worker exists.
       // Operator taskClassRules (routing.json) classify an implicit text wave's tasks that name no class, so routine subagent and bot
       // work reaches the routes measured best for it without every caller naming one. Explicit classes and routes always win.
-      const inferredClasses = quotaRouted ? applyInferredTaskClasses(requested.tasks) : { tasks: requested.tasks, inferred: [] };
+      const inferredClasses = textRouted ? applyInferredTaskClasses(requested.tasks) : { tasks: requested.tasks, inferred: [] };
       if (inferredClasses.inferred.length) requested = { ...requested, tasks: inferredClasses.tasks };
-      const waveClasses = analyzeWaveClasses(requested.tasks, { refuseConflict: quotaRouted });
-      const classWalk = quotaRouted && waveClasses.active
+      const waveClasses = analyzeWaveClasses(requested.tasks, { refuseConflict: textRouted });
+      const classWalk = textRouted && waveClasses.active
         ? resolveTaskClassWalk(waveClasses.active.name, waveClasses.active.config, dependencies.profiles ?? loadWorkerProfiles(),
           { store: evidenceStoreOf(dependencies), ...(dependencies.rng ? { rng: dependencies.rng } : {}), ...(dependencies.now ? { now: dependencies.now } : {}) })
         : undefined;
@@ -2223,7 +2233,7 @@ export function createUltratermSubagentsExtension(
         "The operator's routing.json decides the default worker chain, the expert reviewer and which routes need a bounded expert verification (verificationGates); a worker on a gated route is told which reviewer route to request through the parent. Read-only and report-only work need no automatic gate.",
         "taskClass (per task) names an operator-configured class from routing.json taskClasses so an implicit text worker wave runs the route the operator measured best for that class; omit it when unsure. Give every task of a wave the same class (or none), dispatch different classes as separate waves, and when the dispatch note says the class requires a test gate, run that gate before accepting the work.",
         "model or profile picks an explicit authenticated route (mutually exclusive, overrides roles). A model family the operator pinned to one subscription route (subscriptionRouteChecks modelPattern) runs only there. Routine text work stays on the configured automatic chain; do not pick the configured expert reviewer for routine work. requireImages=true for visual critics or render inspection.",
-        "harness claude-code (or an exact claude-code/<model> route) runs the official CLI on its pinned models at medium effort by default (high/xhigh only when thinking asks for it with a thinkingReason; any other level is refused); with no model named it runs the operator's claudeCodeDefaults. When no step of the configured chain can launch (not authenticated, not configured, not approved in ~/.pi/agent/paid-routes.json, or every account cooling down / at a 100% window per the account router; busy or unknown is NOT exhaustion), an implicit routine text wave runs on the configured claudeFallbackTier with no re-dispatch: ordinary for plain leaves, substantial when any leaf may edit AND run a shell or high/xhigh thinking is requested (the tier and why are named in the dispatch note and receipts); verify that work with an expert review. That fallback never uses the paid claude-code-api route, never passes a proven-ineligible Claude account, and if no route can launch the call is refused synchronously naming every cause. A spent plan the router cannot see, and a gateway's 402 / insufficient credits or no-endpoints-found refusal, only arrive at the request, so an implicit wave whose worker is refused on a provider usage limit before any output falls through to the next tier by itself within the same call (each tier once; the refused run stays failed; the receipt names it; both causes are named if the next tier also cannot launch); auth, route and spawn failures and a bare 429 still fail synchronously. An explicit route whose provider is exhausted is refused with the router cause, not rerouted. mayEdit+ownedPaths are CLI-enforced; allowBash is unsandboxed except read-only reviewers get no shell, even when requested. Stage git evidence for review. requireImages=true admits native Read-image of files staged under cwd, not inline attachments. Explicit routes never fall back; an implicit text review may use the configured implicitReview.fallback only on proven Claude quota/auth unavailability before output. Hub send/redirect steers running Claude workers through stream-json stdin; replies use the same run-local inbox. Native Pi resume is unavailable on this harness. An exact claude-code-api/<model> route runs this same headless CLI on approved Claude API credits: explicit only, never a default or fallback, admitted per dispatch and launch by the operator's task-scoped approval record with hard per-session budget ceilings, and a failure never falls back to the subscription or any other route. Promotional API credits cover headless runs only, never interactive Claude Code.",
+        "harness claude-code (or an exact claude-code/<model> route, the Haiku, Sonnet and Opus subscription routes alike, also by a profile that names one) runs the official CLI on its pinned models at medium effort by default (high/xhigh only when thinking asks for it with a thinkingReason; any other level is refused); with no model named it runs the operator's claudeCodeDefaults. When no step of the configured chain can launch (not authenticated, not configured, not approved in ~/.pi/agent/paid-routes.json, or every account cooling down / at a 100% window per the account router; busy or unknown is NOT exhaustion), an implicit routine wave (an image wave walks multimodalWorkerChain first, with the same checks, and every Claude model reads staged images) runs on the configured claudeFallbackTier with no re-dispatch: ordinary for plain leaves, substantial when any leaf may edit AND run a shell or high/xhigh thinking is requested (the tier and why are named in the dispatch note and receipts); verify that work with an expert review. That fallback never uses the paid claude-code-api route, never passes a proven-ineligible Claude account, and if no route can launch the call is refused synchronously naming every cause. A spent plan the router cannot see, and a gateway's 402 / insufficient credits or no-endpoints-found refusal, only arrive at the request, so an implicit wave whose worker is refused on a provider usage limit before any output falls through to the next tier by itself within the same call (each tier once; the refused run stays failed; the receipt names it; both causes are named if the next tier also cannot launch); auth, route and spawn failures and a bare 429 still fail synchronously. An explicit route whose provider is exhausted is refused with the router cause, not rerouted. mayEdit+ownedPaths are CLI-enforced; allowBash is unsandboxed except read-only reviewers get no shell, even when requested. Stage git evidence for review. requireImages=true admits native Read-image of files staged under cwd, not inline attachments. Explicit routes never fall back; an implicit text review may use the configured implicitReview.fallback only on proven Claude quota/auth unavailability before output. Hub send/redirect steers running Claude workers through stream-json stdin; replies use the same run-local inbox. Native Pi resume is unavailable on this harness. An exact claude-code-api/<model> route runs this same headless CLI on approved Claude API credits: explicit only, never a default or fallback, admitted per dispatch and launch by the operator's task-scoped approval record with hard per-session budget ceilings, and a failure never falls back to the subscription or any other route. Promotional API credits cover headless runs only, never interactive Claude Code.",
         "Background only when the parent can integrate while children run, then one bounded ultraterm_hub wait. Never start a background run merely to wait immediately. A background dispatch holds up to ~25 s for each launched worker to produce its first model output: `Started` means no launched worker has died yet, and a worker that fails before it (router refusal, auth, route, spawn, a first request that errors) makes the call throw with that cause and cancels its siblings (a provider quota or usage-limit refusal on an implicit wave instead re-runs the same tasks on the next tier before `Started`).",
         "For read-only tasks omit ownedPaths and state the read scope in task text; mayEdit requires ownedPaths. allowBash bypasses ownedPaths — grant only when operator-level shell access is necessary.",
       ],
