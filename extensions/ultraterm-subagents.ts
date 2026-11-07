@@ -1874,6 +1874,10 @@ export function createUltratermSubagentsExtension(
       if (requested.profile !== undefined && requested.model === undefined) {
         const claude = claudeCodeRouteOfProfile(requested.profile, dependencies.profiles ?? loadWorkerProfiles());
         if (claude && "refused" in claude) throw new Error(claude.refused);
+        // A profile id is not a subscription selector for claudeAccount, except the harness-qualified steak-pi/<short> form.
+        if (claude && requested.claudeAccount !== undefined && !requested.profile.startsWith("steak-pi/")) {
+          throw new Error("claudeAccount requires an explicit Claude subscription harness or exact model; Pi, API and profile routes are refused");
+        }
         if (claude) requested = { ...requested, profile: undefined, model: claude.route };
       }
       const startupWindowMs = dependencies.startupWindowMs ?? DEFAULT_STARTUP_WINDOW_MS;
@@ -1925,7 +1929,7 @@ export function createUltratermSubagentsExtension(
       // configured Claude tier). A Claude Code CLI route is not a Pi provider, so it cannot be a step of the Pi chain
       // and is reached here instead, only when the default chain cannot launch, never past a
       // proven-ineligible Claude account and never on the paid claude-code-api route. Explicit
-      // selections and image waves stay exact.
+      // selections stay exact; an image wave takes the same walk over multimodalWorkerChain.
       let nativeResolved: NativeSelection | undefined;
       let claudeTier: ClaudeFallbackTier | undefined;
       let tierTried: readonly WorkerRouteStep[] = [];
@@ -2028,6 +2032,14 @@ export function createUltratermSubagentsExtension(
         const cause = quotaProviderOf(step) === undefined ? undefined : routeQuotaBlock(await readQuota(), step);
         if (cause !== undefined) {
           throw new Error(`USAP explicit route ${routeOfStep(step)} cannot launch: ${cause}. Explicit routes are never rerouted, so no worker was started and no fallback was selected; wait for the window to return or choose another route yourself.`);
+        }
+      }
+      if (foreignHarness && !apiRoute && !implicitRoute && claudeTier === undefined && params.claudeAccount === undefined) {
+        // An explicit Claude subscription route is held to the same rule as a native one: never rerouted, but never launched
+        // into a subscription the router has proven exhausted or ineligible. (A pinned claudeAccount is the operator's choice.)
+        const cause = claudeQuotaBlock(await readQuota());
+        if (cause !== undefined) {
+          throw new Error(`USAP explicit route ${claudeRoute} cannot launch: ${cause}. Explicit routes are never rerouted, so no worker was started and no fallback was selected; wait for the window to return or choose another route yourself.`);
         }
       }
       let reviewFallbackRuntime: PiWorkerRuntime | undefined;
@@ -2186,7 +2198,10 @@ export function createUltratermSubagentsExtension(
           && !(final ?? startedRun)?.tasks.some((task) => task.outputStarted === true || task.state === "done")
           && startupFailures.every((task) => isEnsureRefusal(task.error));
         if (refusedByEnsure) return { fallThrough: { runId: run.id, route: model, providers: [], cause: boundedReason(failureText, 240), kind: "ensure" as const } satisfies QuotaFallThrough };
-        throw new Error(`USAP dispatch failed before any worker produced model output (run ${run.id} · ${model}): ${failureText}. ${aftermath} ${fallThroughs.length > 0
+        // A usage limit on a route that has no quota tier cannot fall through: say which config key would let it.
+        const ungated = quotaRouted && !claudeWorkerTier && startupFailures.every((task) => isQuotaLaunchFailure(launchFailureText(task))) && reachedProviders(final ?? startedRun ?? run).length === 0
+          ? ` Note: ${model} is in no providerQuotaFallback tier of ~/.config/ultraterm/routing.json, so this usage limit cannot fall through; add its provider there to let an implicit wave move on.` : "";
+        throw new Error(`USAP dispatch failed before any worker produced model output (run ${run.id} · ${model}): ${failureText}.${ungated} ${aftermath} ${fallThroughs.length > 0
           ? `This was the automatic fall-through after ${fallThroughSummary(fallThroughs)}: no further fall-through applies, so the dispatch fails with both causes.`
           : "No fallback was selected."}`);
       }

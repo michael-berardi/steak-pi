@@ -208,6 +208,7 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
       { claudeAccount: "b", model: "anthropic/claude-opus-5-5" },
       { claudeAccount: "b", harness: "claude-code", profile: "steak-claude-code/claude-opus-5-5" },
       { claudeAccount: "b", profile: "steak-pi/gpt-6-1-terra" },
+      { claudeAccount: "b", profile: "sonnet-5-5" },
       { claudeAccount: "b", model: "claude-opus-5-5" },
       { claudeAccount: "b", model: "claude-code/claude-opus-5-5/" },
       { claudeAccount: "b", model: "CLAUDE-CODE/claude-sonnet-5-5" },
@@ -2390,6 +2391,15 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
           expect(result.content[0].text).toMatch(/Route note: GPT-6\.1 Terra: every GPT account is unavailable.*continues down the default chain on xiaomi\/mimo-v2\.6-flash/);
         } finally { await shutdown(h); }
       });
+      it("names the routing.json key when a usage limit on an ungated tier (xiaomi) cannot fall through", async () => {
+        const runner = vi.fn(async (): ReturnType<WorkerRunner> => ({ state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "The usage limit has been reached" }));
+        const { h } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeUp }), runner, { approvePaidRoute: () => true, startupWindowMs: 2_000 }, undefined, [mimoModel]);
+        try {
+          const message = await dispatch(h, { tasks: images, requireImages: true }).then(() => "", (error: Error) => error.message);
+          expect(message).toMatch(/USAP dispatch failed before any worker produced model output \(run run-fixed-1 · xiaomi\/mimo-v2\.6-flash\)/);
+          expect(message).toMatch(/Note: xiaomi\/mimo-v2\.6-flash is in no providerQuotaFallback tier of ~\/\.config\/ultraterm\/routing\.json, so this usage limit cannot fall through/);
+        } finally { await shutdown(h); }
+      });
       it("falls to claudeFallbackTier with image admission when no multimodal step can launch, naming why each was skipped", async () => {
         const runner = done();
         const { h } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeUp }), runner);
@@ -2508,6 +2518,25 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
         const list = await h.tools.get("ultraterm_hub").execute("list", { action: "list" }, undefined, undefined, h.ctx);
         expect(list.details.runs).toEqual([]);
       } finally { await shutdown(h); }
+    });
+
+    it.each([
+      ["by model", { model: "claude-code/claude-haiku-5-5" }, "claude-code/claude-haiku-5-5"],
+      ["by harness and model", { harness: "claude-code", model: "claude-code/claude-sonnet-5-5" }, "claude-code/claude-sonnet-5-5"],
+      ["by profile", { profile: "steak-pi/haiku-5-5" }, "claude-code/claude-haiku-5-5"],
+    ])("refuses an explicit Claude subscription route when the router proves Claude exhausted (%s), and launches it when Claude is up", async (_name, selector, route) => {
+      const runner = done();
+      const out = quotaHarness(status({ claude: claudeOut }), runner);
+      try {
+        const attempt = dispatch(out.h, { ...selector, tasks: plain });
+        await expect(attempt).rejects.toThrow(new RegExp(`USAP explicit route ${route.replace(/[./]/g, "\\$&")} cannot launch: `));
+        await expect(attempt).rejects.toThrow(/Explicit routes are never rerouted, so no worker was started and no fallback was selected/);
+        expect(runner).not.toHaveBeenCalled();
+      } finally { await shutdown(out.h); }
+      const up = quotaHarness(status({ claude: claudeUp }), runner);
+      try {
+        expect((await dispatch(up.h, { ...selector, tasks: plain })).details.run.model).toBe(route);
+      } finally { await shutdown(up.h); }
     });
 
     it("still launches an explicit route whose provider is merely busy or unreadable", async () => {

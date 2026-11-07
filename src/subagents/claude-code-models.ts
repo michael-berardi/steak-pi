@@ -124,9 +124,9 @@ export function defaultClaudeCodeRoute(tasks: readonly { role?: string }[]): str
 
 /** The explicit foreign-harness routes in this USAP slice: the official headless
  * Claude Code CLI on one of its pinned models, at medium effort unless the
- * dispatch asks for high/xhigh (see {@link resolveClaudeCodeEffort}). Both are
- * override-provenance, never an automatic chain step, and neither falls back to
- * the other or to any other model. */
+ * dispatch asks for high/xhigh (see {@link resolveClaudeCodeEffort}). Each is
+ * override-provenance, never an automatic chain step, and none falls back to
+ * another or to any other model. */
 export function resolveClaudeCodeSelection(model: ClaudeCodeModel = CLAUDE_CODE_OPUS_MODEL): ModelSelection {
   return {
     provider: "claude-code",
@@ -135,8 +135,8 @@ export function resolveClaudeCodeSelection(model: ClaudeCodeModel = CLAUDE_CODE_
     harness: "claude-code",
     // Image review (P-0579) is the CLI's native Read tool on image files staged
     // under the run cwd. It is not an inline attachment or relay capability and
-    // it never widens the Read/Grep/Glob allowlist, so it is advertised on both
-    // pinned routes and nowhere else.
+    // it never widens the Read/Grep/Glob allowlist, so it is advertised on every
+    // pinned route and nowhere else.
     images: true,
     tools: true,
   };
@@ -161,15 +161,18 @@ export const claudeCodeProfileName = (route: string): string => route.replace(/^
 /**
  * A worker profile id that names a Claude Code route, resolved independent of whichever harness manifest
  * the loader happened to read (the user's copy can lag the one the app bundles): a loaded profile whose
- * model is a `claude-code/<model>` route, or the route's own short name under any harness prefix
- * (`steak-pi/haiku-5-5`, `haiku-5-5`). `route` is a dispatchable subscription route; `refused` names why a
+ * model is a `claude-code/<model>` route, or the route's own short name, bare or as `steak-pi/<short>`
+ * (`steak-pi/haiku-5-5`, `haiku-5-5`; no other prefix). `route` is a dispatchable subscription route; `refused` names why a
  * claude-code profile cannot run and which route to use instead. Undefined: not a Claude Code profile.
  */
 export function claudeCodeRouteOfProfile(id: string, profiles: readonly { id: string; model: string }[]): { route: string } | { refused: string } | undefined {
   const loaded = profiles.filter((profile) => profile.id === id || (!id.includes("/") && profile.id === `steak-pi/${id}`));
   const viaProfile = loaded.length === 1 && loaded[0].model.startsWith("claude-code/") ? loaded[0].model : undefined;
   const short = id.slice(id.lastIndexOf("/") + 1);
-  const viaName = viaProfile === undefined && loaded.length === 0 ? CLAUDE_CODE_ROUTES.find((route) => claudeCodeProfileName(route) === short) : undefined;
+  // By name only the route's own short name, bare or under the `steak-pi/` harness prefix. Any other prefix
+  // (`openrouter/sonnet-5-5`, `claude-code-api/haiku-5-5`) is some other profile and must reach the not-found refusal.
+  const named = id === short || id === `steak-pi/${short}`;
+  const viaName = viaProfile === undefined && loaded.length === 0 && named ? CLAUDE_CODE_ROUTES.find((route) => claudeCodeProfileName(route) === short) : undefined;
   const route = viaProfile ?? viaName;
   if (route === undefined) return undefined;
   if (CLAUDE_CODE_ROUTES.includes(route)) return { route };

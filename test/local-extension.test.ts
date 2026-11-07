@@ -21,8 +21,8 @@ function harness(options: { fail?: () => string | undefined } = {}) {
   })({ on: (name: string, handler: Handler) => { handlers.set(name, handler); } } as never);
   const aborts: string[] = [];
   const ctx = { model: undefined as unknown, abort: () => { aborts.push("abort"); }, ui: { notify: (text: string, kind: string) => notes.push([kind, text]) } };
-  const fire = async (name: string, event: unknown = {}) => { const result = await handlers.get(name)?.(event, ctx); await tick(); return result as { message?: Record<string, unknown> } | undefined; };
-  return { fire, ctx, log, notes, aborts };
+  const fire = async (name: string, event: unknown = {}) => { const result = await handlers.get(name)?.(event, ctx); await tick(); return result as { message?: Record<string, unknown>; cancel?: boolean } | undefined; };
+  return { fire, ctx, log, notes, aborts, cancelled: [] as string[] };
 }
 
 describe("local model hook", () => {
@@ -31,7 +31,7 @@ describe("local model hook", () => {
     h.ctx.model = model("local", "model-a");
     await h.fire("session_start", { reason: "startup" });
     expect(h.log).toEqual(["ensure:model-a", "release"]); // warmed, then let go: the idle grace runs from here
-    await h.fire("before_agent_start");
+    await h.fire("agent_start");
     expect(h.log).toEqual(["ensure:model-a", "release", "ensure:model-a"]);
     await h.fire("agent_settled");
     expect(h.log).toEqual(["ensure:model-a", "release", "ensure:model-a", "release"]);
@@ -44,7 +44,7 @@ describe("local model hook", () => {
     const h = harness();
     h.ctx.model = model("local", "model-a");
     await h.fire("session_start");
-    await h.fire("before_agent_start");
+    await h.fire("agent_start");
     await h.fire("session_shutdown");
     await h.fire("session_shutdown");
     expect(h.log.filter((entry) => entry === "release")).toHaveLength(2); // the warm-up and the run, nothing more
@@ -62,7 +62,7 @@ describe("local model hook", () => {
     await h.fire("session_compact_failed");
     expect(h.log.slice(-2)).toEqual(["ensure:model-a", "release"]);
     const before = h.log.length;
-    await h.fire("before_agent_start");
+    await h.fire("agent_start");
     await h.fire("session_before_compact"); // auto-compaction during a run: the run's lease covers it
     await h.fire("session_compact");
     expect(h.log).toHaveLength(before + 1);
@@ -75,7 +75,7 @@ describe("local model hook", () => {
     h.ctx.model = model("cloud", "model-a");
     await h.fire("session_start");
     await h.fire("model_select", { model: model("cloud", "other") });
-    await h.fire("before_agent_start");
+    await h.fire("agent_start");
     await h.fire("agent_settled");
     await h.fire("session_before_compact");
     await h.fire("session_compact");
@@ -92,11 +92,11 @@ describe("local model hook", () => {
     await h.fire("model_select", { model: model("local", "model-a") }); // the same selection again: no second start
     expect(h.log).toEqual(["ensure:model-a", "release"]);
     h.ctx.model = model("local", "model-a");
-    await h.fire("before_agent_start");
+    await h.fire("agent_start");
     await h.fire("model_select", { model: model("cloud", "x") });
     expect(h.log).toEqual(["ensure:model-a", "release", "ensure:model-a", "release"]);
     h.ctx.model = model("cloud", "x");
-    await h.fire("before_agent_start");
+    await h.fire("agent_start");
     await h.fire("agent_settled");
     expect(h.log).toHaveLength(4);
   });
@@ -110,7 +110,7 @@ describe("local model hook", () => {
     })({ on: (name: string, handler: Handler) => { handlers.set(name, handler); } } as never);
     const ctx = { model: model("local", "model-a"), ui: { notify: () => undefined } };
     let released = false;
-    const prompt = Promise.resolve(handlers.get("before_agent_start")!({}, ctx)).then(() => { released = true; });
+    const prompt = Promise.resolve(handlers.get("agent_start")!({}, ctx)).then(() => { released = true; });
     await new Promise((resolve) => setTimeout(resolve, 5));
     expect(released).toBe(false);
     finish();
@@ -125,26 +125,67 @@ describe("local model hook", () => {
     h.ctx.model = model("local", "model-a");
     await h.fire("session_start");
     h.notes.length = 0;
-    await h.fire("before_agent_start");
-    expect(h.aborts).toEqual([]); // an abort this early would be a no-op in Pi: it comes once the run has started
     await h.fire("agent_start");
     expect(h.aborts).toEqual(["abort"]);
     const aborted = { role: "assistant", content: [], stopReason: "aborted", errorMessage: "Request was aborted" };
     const replaced = await h.fire("message_end", { message: aborted });
     expect(replaced?.message).toMatchObject({ role: "assistant", stopReason: "error", errorMessage: `steak-pi local: REFUSED (insufficient-memory): ${reason}` });
     expect(await h.fire("message_end", { message: aborted })).toBeUndefined(); // only that run's message
+    expect(h.cancelled).toEqual([]);
     expect(h.notes).toEqual([]); // the run's error is the notice, not a second one
     expect(h.log).toEqual(["ensure:model-a", "ensure:model-a"]);
     await h.fire("agent_settled");
     expect(h.log).not.toContain("release"); // no release for a hold that was never taken
     failing = false;
-    await h.fire("before_agent_start");
     await h.fire("agent_start");
     expect(h.aborts).toHaveLength(1); // the retry started, so this run is not aborted
     expect(await h.fire("message_end", { message: { role: "assistant", stopReason: "stop" } })).toBeUndefined();
     expect(h.log).toEqual(["ensure:model-a", "ensure:model-a", "ensure:model-a"]);
     await h.fire("agent_settled");
     expect(h.log.at(-1)).toBe("release");
+  });
+
+  it("a refusal is bound to its model: a switch to a cloud model during the wait is not aborted", async () => {
+    const h = harness({ fail: () => "no memory" });
+    h.ctx.model = model("local", "model-a");
+    await h.fire("session_start");
+    const run = h.fire("agent_start");
+    h.ctx.model = model("cloud", "x"); // switched while the start was being made
+    await run;
+    expect(h.aborts).toEqual([]);
+    expect(await h.fire("message_end", { message: { role: "assistant", stopReason: "aborted" } })).toBeUndefined();
+  });
+
+  it("only this hook's own abort is rewritten, and only when the message really is aborted; a stale refusal does not leak", async () => {
+    const h = harness({ fail: () => "no memory" });
+    h.ctx.model = model("local", "model-a");
+    await h.fire("agent_start");
+    expect(h.aborts).toEqual(["abort"]);
+    expect(await h.fire("message_end", { message: { role: "assistant", stopReason: "stop" } })).toBeUndefined();
+    expect((await h.fire("message_end", { message: { role: "assistant", stopReason: "aborted" } }))?.message).toMatchObject({ stopReason: "error" });
+    // a later run on a cloud model starts clean
+    h.ctx.model = model("cloud", "x");
+    await h.fire("agent_start");
+    expect(h.aborts).toHaveLength(1);
+    expect(await h.fire("message_end", { message: { role: "assistant", stopReason: "aborted" } })).toBeUndefined();
+  });
+
+  it("a triggered turn (agent_start without before_agent_start) is covered", async () => {
+    const h = harness();
+    h.ctx.model = model("local", "model-a");
+    await h.fire("agent_start");
+    expect(h.log).toEqual(["ensure:model-a"]);
+    await h.fire("agent_settled");
+    expect(h.log.at(-1)).toBe("release");
+  });
+
+  it("a compaction is cancelled when the server cannot start, and goes ahead when it can", async () => {
+    let failing = true;
+    const h = harness({ fail: () => (failing ? "no memory" : undefined) });
+    h.ctx.model = model("local", "model-a");
+    expect(await h.fire("session_before_compact")).toEqual({ cancel: true });
+    failing = false;
+    expect(await h.fire("session_before_compact")).toBeUndefined();
   });
 
   it("a warm-up refusal is still only a notification", async () => {
@@ -158,6 +199,6 @@ describe("local model hook", () => {
   it("is registered by the package's default export", () => {
     const events: string[] = [];
     localModels({ on: (name: string) => { events.push(name); } } as never);
-    expect(events.sort()).toEqual(["agent_settled", "agent_start", "before_agent_start", "message_end", "model_select", "session_before_compact", "session_compact", "session_compact_failed", "session_shutdown", "session_start"]);
+    expect(events.sort()).toEqual(["agent_settled", "agent_start", "message_end", "model_select", "session_before_compact", "session_compact", "session_compact_failed", "session_shutdown", "session_start"]);
   });
 });

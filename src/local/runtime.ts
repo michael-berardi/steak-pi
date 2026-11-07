@@ -145,9 +145,13 @@ async function preflight(deps: Deps, profile: LaunchProfile, running: ServerReco
   const own = [running?.serverPid, running?.supervisorPid].filter((pid): pid is number => pid !== undefined);
   const other = deps.otherServers(own)[0];
   if (other) refuse("other-server", `PID ${other.pid} (${other.name}) is already running a local model; one model server at a time`);
-  if (!(await deps.portFree(profile.port))) refuse("port-busy", `127.0.0.1:${profile.port} is held by a process Steak Pi did not start`);
+  // The server being replaced holds its own port (every profile defaults to the same one): it is stopped before the start,
+  // so its port is not a conflict, and its weights and KV cache are memory the start gets back.
+  const replacedProfile = running ? readProfile(deps.dir, running.id) : undefined;
+  const replacedBytes = replacedProfile ? startNeedBytes(replacedProfile.modelBytes, replacedProfile.ctx, replacedProfile.kvBytesPerToken) : 0;
+  if (!(running && running.port === profile.port) && !(await deps.portFree(profile.port))) refuse("port-busy", `127.0.0.1:${profile.port} is held by a process Steak Pi did not start`);
   const need = startNeedBytes(profile.modelBytes, profile.ctx, profile.kvBytesPerToken);
-  const free = deps.availableBytes();
+  const free = deps.availableBytes() + replacedBytes;
   if (free < need) refuse("insufficient-memory", `starting ${profile.id} needs about ${gib(need)} (weights + KV cache at ${profile.ctx} tokens + server overhead) but only ${gib(free)} is free or reclaimable; close something heavy or lower the context with: steak-pi local add ... --ctx N`);
   return { need, free };
 }
@@ -208,7 +212,10 @@ export async function ensure(deps: Deps, id: string, holder: HolderRef): Promise
     runningServer(deps); // drop a stale record before deciding
     const plan = await planStart(deps, profile);
     if (plan.kind === "start") {
-      if (plan.stop) await stopRecord(deps, plan.stop);
+      if (plan.stop) {
+        await stopRecord(deps, plan.stop);
+        await preflight(deps, profile, undefined); // what the stop freed is now real: the port and memory must hold without the allowance
+      }
       started = true;
     }
     acquireLease(deps, holder);
