@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.23.11 (2026-11-06)
+
+A local model server can no longer outlive its supervisor.
+
+- **The server dies with its supervisor.** llama-server now runs under a tiny `sh` watchdog that checks every 2 s that
+  its parent is still the supervisor (`ps` ppid, which also defeats PID reuse) and stops the server when it is not, so a
+  SIGKILLed or crashed supervisor no longer leaves the model loaded (observed 2026-11-06: supervisor 77086 gone, server
+  77105 reparented to launchd and running for 50+ minutes). macOS has no `PR_SET_PDEATHSIG`; polling is the portable answer.
+- **Existing orphans heal themselves.** `status`, `check`, `ensure`/`start`, `release` and the extension's lease paths find a
+  recorded server whose supervisor is dead (matched on PID and start time, never anything else). Idle past the grace it is
+  stopped, the port confirmed free and `server.json` cleared; with holders, or inside the grace, a new supervisor adopts it
+  and takes over idle-stopping.
+- **`steak-pi local status` says `orphaned (supervisor gone)`** instead of `healthy`, and reports what it did about it.
+
 ## 0.23.10 (2026-11-06)
 
 Fixes every finding of the Opus check of 0.23.9.

@@ -1,7 +1,8 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ensure, manualHolder, pidHolder, Refused, release, status, stop, supervise, type Deps, type LeaseFile, type ServerRecord } from "../src/local/runtime.ts";
+import { execFileSync, spawn } from "node:child_process";
+import { ensure, WATCHDOG, manualHolder, pidHolder, Refused, release, status, stop, supervise, type Deps, type LeaseFile, type ServerRecord } from "../src/local/runtime.ts";
 import { LocalError, readJson } from "../src/local/store.ts";
 import { fakeMachine, GIB, seedProfile, tempDir, type Fake } from "./helpers/local-fixture.ts";
 
@@ -140,6 +141,7 @@ describe("refusals", () => {
     fake.alive.add(777);
     writeFileSync(join(dir, "server.json"), JSON.stringify({ ...record, serverPid: 777, serverStart: "start-777" }));
     fake.deps.portFree = async () => !fake.alive.has(777);
+    fake.clock.t += fake.deps.graceMs + 1000; // idle past the grace: reaped, then started fresh
     expect((await ensure(fake.deps, "model-a", pidHolder(100))).started).toBe(true);
     expect(fake.alive.has(777)).toBe(false);
   });
@@ -333,19 +335,89 @@ describe("one SIGTERM per server", () => {
 });
 
 describe("orphans", () => {
-  it("stops a recorded server whose supervisor is gone, then starts fresh", async () => {
-    const { dir, fake } = setup();
-    fake.alive.add(301);
-    fake.state.healthy = true;
-    await ensure(fake.deps, "model-a", pidHolder(301));
-    // The supervisor was killed hard; its server (recorded with its start time) is still alive.
-    const record = readJson<ServerRecord>(join(dir, "server.json"))!;
-    fake.alive.add(7001);
-    writeFileSync(join(dir, "server.json"), JSON.stringify({ ...record, serverPid: 7001, serverStart: "start-7001" }));
-    fake.alive.delete(record.supervisorPid);
+  /** A server recorded as started by a supervisor that was then killed hard (the server, with its start time, lives on). */
+  async function orphaned(holder?: number) {
+    const world = setup();
+    world.fake.alive.add(301);
+    world.fake.state.healthy = true;
+    await ensure(world.fake.deps, "model-a", pidHolder(301));
+    if (holder === undefined) await release(world.fake.deps, pidHolder(301));
+    const record = readJson<ServerRecord>(join(world.dir, "server.json"))!;
+    world.fake.alive.add(7001);
+    writeFileSync(join(world.dir, "server.json"), JSON.stringify({ ...record, serverPid: 7001, serverStart: "start-7001" }));
+    world.fake.alive.delete(record.supervisorPid);
+    return { ...world, record };
+  }
+  const recorded = (dir: string) => readJson<ServerRecord>(join(dir, "server.json"));
+
+  it("with live holders, ensure adopts the orphan: a new supervisor takes over and nothing is stopped", async () => {
+    const { dir, fake, record } = await orphaned(301);
     const result = await ensure(fake.deps, "model-a", pidHolder(301));
-    expect(result.started).toBe(true);
-    expect(fake.signals.some((entry) => entry.pid === 7001 && entry.signal === "SIGTERM" && entry.group)).toBe(true);
+    expect(result.started).toBe(false);
+    expect(fake.signals.some((entry) => entry.pid === 7001)).toBe(false);
     expect(fake.calls).toEqual(["supervisor:model-a", "supervisor:model-a"]);
+    expect(recorded(dir)).toMatchObject({ serverPid: 7001, serverStart: "start-7001" });
+    expect(recorded(dir)?.supervisorPid).not.toBe(record.supervisorPid);
   });
+
+  it("idle past the grace, any entry point stops the orphan, verifies the port and clears server.json", async () => {
+    for (const entry of ["status", "ensure", "release", "stop"] as const) {
+      const { dir, fake } = await orphaned();
+      fake.clock.t += fake.deps.graceMs + 1000;
+      if (entry === "status") {
+        const state = await status(fake.deps);
+        expect(state.orphan).toMatchObject({ action: "stopped", pid: 7001, portReleased: true });
+        expect(state.running).toBeUndefined();
+      }
+      if (entry === "ensure") expect((await ensure(fake.deps, "model-a", pidHolder(301))).started).toBe(true);
+      if (entry === "release") await release(fake.deps, pidHolder(301));
+      if (entry === "stop") await stop(fake.deps);
+      expect(fake.signals.some((e) => e.pid === 7001 && e.signal === "SIGTERM" && e.group)).toBe(true);
+      expect(fake.alive.has(7001)).toBe(false);
+      if (entry !== "ensure") expect(existsSync(join(dir, "server.json"))).toBe(false);
+    }
+  });
+
+  it("idle but inside the grace: status adopts it, so the new supervisor does the idle stop", async () => {
+    const { dir, fake } = await orphaned();
+    fake.clock.t += 60_000;
+    const state = await status(fake.deps);
+    expect(state.orphan).toMatchObject({ action: "adopted" });
+    expect(fake.signals.some((entry) => entry.pid === 7001)).toBe(false);
+    expect(recorded(dir)?.supervisorPid).toBeGreaterThan(5000);
+  });
+
+  it("never touches a process that is not the recorded server (start time differs)", async () => {
+    const { dir, fake } = await orphaned();
+    fake.clock.t += fake.deps.graceMs + 1000;
+    fake.deps.alive = (pid, start) => fake.alive.has(pid) && (start === undefined || start === `start-${pid}`) && pid !== 7001;
+    expect((await status(fake.deps)).orphan).toBeUndefined();
+    expect(fake.signals.some((entry) => entry.pid === 7001)).toBe(false);
+    expect(existsSync(join(dir, "server.json"))).toBe(false); // the stale record goes; the stranger is left alone
+  });
+
+  it("supervise in adopt mode idle-stops the adopted server after the grace", async () => {
+    const { dir, fake } = await orphaned();
+    const result = await supervise(fake.deps, "model-a", undefined, { pid: 7001, start: "start-7001" });
+    expect(result.reason).toBe("idle");
+    expect(fake.alive.has(7001)).toBe(false);
+    expect(existsSync(join(dir, "server.json"))).toBe(false);
+  });
+});
+
+describe("the server dies with its supervisor (real sh watchdog)", () => {
+  const gone = (pid: number): boolean => { try { process.kill(pid, 0); return false; } catch { return true; } };
+  it("SIGKILL of the supervisor stops the server within seconds", async () => {
+    // The middle sh stands in for the supervisor: it starts the watchdog with its own PID as `sup`.
+    const middle = spawn("/bin/sh", ["-c", `/bin/sh -c "$1" w $$ /bin/sleep 300 & echo $!; wait`, "m", WATCHDOG], { stdio: ["ignore", "pipe", "ignore"] });
+    const watchdog = Number(await new Promise<string>((resolve) => middle.stdout.once("data", (chunk) => resolve(String(chunk).trim()))));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const sleeper = Number(execFileSync("pgrep", ["-P", String(watchdog)], { encoding: "utf8" }).trim().split("\n")[0]);
+    expect(sleeper).toBeGreaterThan(0);
+    process.kill(middle.pid!, "SIGKILL");
+    const deadline = Date.now() + 8000;
+    while ((!gone(sleeper) || !gone(watchdog)) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(gone(sleeper)).toBe(true);
+    expect(gone(watchdog)).toBe(true);
+  }, 15_000);
 });
