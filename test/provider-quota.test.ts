@@ -134,6 +134,32 @@ describe("picking the Claude account an automatic fallback worker is pinned on",
     expect(await pick(eligible("primary", "Claude 1", { usedPercent: undefined }), coolingDown("b", "Claude 2"))).toBe("primary");
   });
 
+  it("picks a draining eligible account before the least-used rank", async () => {
+    const pick = async (...accounts: Array<Record<string, unknown>>) => pickClaudeAccount(await read(status({ claude: accounts }))).account?.id;
+    // A draining account wins outright, even though a non-draining account is less used.
+    expect(await pick(eligible("primary", "Claude 1", { usedPercent: 5 }), eligible("b", "Claude 2", { usedPercent: 90, spill: { draining: true, under: 30, why: "draining the green allowance to pace parity" } }))).toBe("b");
+    // Several draining accounts keep the existing least-used rank among them.
+    expect(await pick(eligible("primary", "Claude 1", { usedPercent: 70, spill: { draining: true } }), eligible("b", "Claude 2", { usedPercent: 25, spill: { draining: true } }))).toBe("b");
+  });
+
+  it("never picks a draining account the router marks ineligible", async () => {
+    const pick = async (...accounts: Array<Record<string, unknown>>) => pickClaudeAccount(await read(status({ claude: accounts }))).account?.id;
+    // Draining but ineligible is skipped, so the eligible account is chosen.
+    expect(await pick({ ...coolingDown("primary", "Claude 1"), spill: { draining: true } }, eligible("b", "Claude 2", { usedPercent: 90 }))).toBe("b");
+    // Only draining-ineligible accounts: nothing is picked and the cause is named.
+    const none = pickClaudeAccount(await read(status({ claude: [{ ...coolingDown("primary", "Claude 1"), spill: { draining: true } }] })));
+    expect(none.account).toBeUndefined();
+    expect(none.cause).toContain("no eligible Claude account");
+  });
+
+  it("keeps the old least-used rank when no account is draining", async () => {
+    const pick = async (...accounts: Array<Record<string, unknown>>) => pickClaudeAccount(await read(status({ claude: accounts }))).account?.id;
+    expect(await pick(eligible("primary", "Claude 1", { usedPercent: 70 }), eligible("b", "Claude 2", { usedPercent: 25 }))).toBe("b");
+    expect(await pick(eligible("primary", "Claude 1", { usedPercent: 5 }), eligible("b", "Claude 2", { usedPercent: 25 }))).toBe("primary");
+    // A non-boolean spill shape is treated as not draining, so the true-draining account still wins.
+    expect(await pick(eligible("primary", "Claude 1", { usedPercent: 70, spill: { draining: true } }), eligible("b", "Claude 2", { usedPercent: 25, spill: { draining: "yes" } }))).toBe("primary");
+  });
+
   it("names the cause when the router lists Claude accounts but none is eligible", async () => {
     const none = pickClaudeAccount(await read(status({ claude: [coolingDown("primary", "Claude 1"), busy("b", "Claude 2")] })));
     expect(none.account).toBeUndefined();

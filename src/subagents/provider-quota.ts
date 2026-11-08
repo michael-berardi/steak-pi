@@ -40,6 +40,9 @@ export interface QuotaAccount {
   exhausted?: boolean;
   /** The account's top-level reset time in epoch seconds, when the router reported one. */
   resetAt?: number;
+  /** True only when the router's `spill` block says this lent account is draining its green
+   * allowance down to pace parity and wants it to take automatic launches first. */
+  draining?: boolean;
   /** The router's usage windows for this account (for example `seven_day`). */
   windows?: ReadonlyArray<{ name?: string; usedPercent?: number; resetAt?: number }>;
   /** Why the router (or the usage evidence) says this account cannot launch; empty when it can. */
@@ -127,6 +130,7 @@ function evaluateProvider(provider: QuotaProvider, block: unknown, now: number):
       usedPercent: finite(w.usedPercent),
       resetAt: finite(w.resetAt),
     })) : undefined;
+    const spill = record(account.spill) ? account.spill : undefined;
     return {
       id: printable(account.id, `account ${index + 1}`, 40),
       label: printable(account.label, printable(account.id, `account ${index + 1}`, 40), 40),
@@ -138,6 +142,9 @@ function evaluateProvider(provider: QuotaProvider, block: unknown, now: number):
       why: printable(account.stateText, printable(account.ineligibleReason, "ineligible")),
       resetAt: finite(account.resetAt),
       windows,
+      // The spill signal is trusted only when the router says exactly `draining: true`; any
+      // other shape (absent, null, non-boolean) is treated as not draining.
+      draining: spill?.draining === true,
     };
   });
   const exhausted = rows.every((row) => row.evidence !== undefined);
@@ -151,6 +158,7 @@ function evaluateProvider(provider: QuotaProvider, block: unknown, now: number):
     id: row.id, label: row.label, ...(row.eligible !== undefined ? { eligible: row.eligible } : {}),
     ...(row.usedPercent !== undefined ? { usedPercent: row.usedPercent } : {}), ...(row.leases !== undefined ? { leases: row.leases } : {}),
     ...(row.resetAt !== undefined ? { resetAt: row.resetAt } : {}), ...(row.windows !== undefined ? { windows: row.windows } : {}),
+    ...(row.draining ? { draining: true } : {}),
     exhausted: row.evidence !== undefined,
     why: row.eligible === true ? "" : row.evidence?.detail ?? (row.eligible === false ? row.why : "the router did not report it eligible"),
   }));
@@ -264,8 +272,12 @@ export interface ClaudeAccountPick {
  * The Claude subscription account an automatic fallback worker is pinned on. Only an account the
  * router's own snapshot shows `eligible: true` is ever picked; a launch without a pinned account
  * would run on the parent's default login, which the same snapshot may show cooling down.
- * Among eligible accounts the least-used window wins (unmeasured accounts last), then the fewest
- * live leases, then router order, so successive waves spread across the configured accounts.
+ * A draining eligible account (the router's `spill.draining: true`: a lent plan being run down to
+ * pace parity) wins outright, before the least-used rank — the operator wants that plan's green
+ * allowance spent first. Among draining accounts, and among all non-draining ones, the least-used
+ * window wins (unmeasured accounts last), then the fewest live leases, then router order, so
+ * successive waves spread across the configured accounts. An account marked `draining` but
+ * `eligible: false` is never picked.
  *
  * An unreadable router, or one that lists no Claude account, proves nothing about any login: it
  * returns neither an account nor a cause, and the caller keeps its pre-existing behaviour.
@@ -278,10 +290,11 @@ export function pickClaudeAccount(snapshot: QuotaSnapshot): ClaudeAccountPick {
   if (pinnable.length === 0) {
     return { cause: `the router shows no eligible Claude account (${quota.rows.map((row) => `${row.label}: ${row.why}`).join("; ")})` };
   }
-  const rank = (row: QuotaAccount) => [row.usedPercent ?? Number.POSITIVE_INFINITY, row.leases ?? 0];
+  // Draining sorts first; the rest is the pre-existing least-used / fewest-leases / router-order rank.
+  const rank = (row: QuotaAccount) => [row.draining === true ? 0 : 1, row.usedPercent ?? Number.POSITIVE_INFINITY, row.leases ?? 0];
   const best = pinnable.reduce((chosen, row) => {
     const [a, b] = [rank(row), rank(chosen)];
-    return a[0] < b[0] || (a[0] === b[0] && a[1] < b[1]) ? row : chosen;
+    return a[0] < b[0] || (a[0] === b[0] && (a[1] < b[1] || (a[1] === b[1] && a[2] < b[2]))) ? row : chosen;
   });
   return { account: { id: best.id, label: best.label } };
 }
