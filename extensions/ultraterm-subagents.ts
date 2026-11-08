@@ -2,7 +2,9 @@ import { setSubagentCountReader, subagentActivityChanged } from "../src/tui/suba
 import { resolveStagedModule } from "../src/subagents/staged-runtime.ts";
 import { registryForSolSelection, type CreateIsolatedModelRuntime } from "../src/subagents/codex-selection.ts";
 import { GO_ACCOUNT_ROUTER_TIMEOUT_MS, type AccountCommand } from "../src/subagents/provider-accounts.ts";
-import { claudeQuotaBlock, CODEX_QUOTA, isMeteredQuota, isQuotaLaunchFailure, pickClaudeAccount, quotaChain, quotaProviderOf, readProviderQuota, routeQuotaBlock, type ClaudeAccountPick, type QuotaProvider, type QuotaSnapshot } from "../src/subagents/provider-quota.ts";
+import { claudeQuotaBlock, CODEX_QUOTA, isMeteredQuota, isQuotaLaunchFailure, pickClaudeAccount, rankClaudeAccounts, quotaChain, quotaProviderOf, readProviderQuota, routeQuotaBlock, type ClaudeAccountPick, type QuotaProvider, type QuotaSnapshot } from "../src/subagents/provider-quota.ts";
+import { noClaudeCause, planOnlyCause, resolveProjectPolicy, type ProjectPolicy } from "../src/subagents/project-policy.ts";
+import { AVAILABILITY_TTL_MS, computeAvailability } from "../src/subagents/route-availability.ts";
 import { canFallbackReview, implicitReviewFallbackRoute, implicitReviewRoute, isReadOnlyReviewWave, recordReviewFallback } from "../src/subagents/reviewer-fallback.ts";
 import { parseRoute, routeLabel, routingConfigOrEmpty, TASK_CLASS_MAX_LENGTH } from "../src/routing-config.ts";
 import { statSync } from "node:fs";
@@ -309,6 +311,8 @@ export interface UltratermSubagentsDependencies {
    * the real official CLI once per task. Never used for harness "pi" runs. */
   claudeSpawn?: ClaudeSpawn;
   accountCommand?: AccountCommand;
+  /** Test seam: the operator project policy file (default ~/.ultraterm/coordinator/policy.json, or ULTRATERM_COORDINATOR_POLICY). */
+  projectPolicyPath?: string;
   /** Test seam for the profile `ensure` / `release` commands; production spawns them with no shell. */
   ensureExec?: EnsureExec;
   /** The route evidence store the task-class router reads and writes (default: the USAP state directory). */
@@ -531,7 +535,10 @@ async function resolveImplicitWorkerRoute(
   readQuota: () => Promise<QuotaSnapshot>,
   fallThroughs: readonly QuotaFallThrough[] = [],
   walk?: TaskClassWalk,
+  policy: ProjectPolicy = {},
 ): Promise<ImplicitWorkerRoute> {
+  // A planOnly project never gets a paid metered route: the chain resolver asks this before it admits one.
+  if (policy.planOnly !== undefined) dependencies = { ...dependencies, approvePaidRoute: () => false };
   const spent = spentProviders(fallThroughs);
   const held = heldRoutes(fallThroughs);
   const heldBlock = (step: WorkerRouteStep): string | undefined => {
@@ -636,8 +643,13 @@ async function resolveImplicitWorkerRoute(
   }
   quota ??= await readQuota();
   const exhausted = failure as NoChainRouteError;
+  const paid = paidStepPredicate(ctx);
   const causes = exhausted.tried.map((step) =>
-    `${routeStepLabel(step)}: ${tierBlock(quota!, step) ?? "no authenticated route is available in this session and the reviewed route is not approved in ~/.pi/agent/paid-routes.json"}`);
+    `${routeStepLabel(step)}: ${tierBlock(quota!, step) ?? (policy.planOnly !== undefined && paid(step) ? planOnlyCause(policy) : "no authenticated route is available in this session and the reviewed route is not approved in ~/.pi/agent/paid-routes.json")}`);
+  // A noClaude project never reaches the Claude tier: the walk ends here, once, naming every skipped step.
+  if (policy.noClaude !== undefined) {
+    throw new Error(`USAP implicit routing found no route that can launch this wave (${[...causes, `Claude subscription tier: ${noClaudeCause(policy)}`].join(" | ")}). No route was started and no fallback was selected; wait for the earliest return named above, or name a route explicitly.`);
+  }
   const claudeBlock = claudeQuotaBlock(quota);
   const effortBlock = (() => {
     try { resolveClaudeCodeEffort(requested.thinking, requested.thinkingReason); return undefined; }
@@ -645,7 +657,20 @@ async function resolveImplicitWorkerRoute(
   })();
   // A tier worker launched without a pinned account would run on the parent's default login, which
   // the same snapshot may show cooling down while the other account is eligible: pin an eligible one.
-  const pick = claudeBlock === undefined ? pickClaudeAccount(quota) : {};
+  // The router's `select` is the authority at launch and can refuse an account its `status` row lists as eligible
+  // (a lent plan's reserve floor, a stale snapshot). Walk the eligible accounts best-first and keep the first one
+  // `select` accepts now, so an ineligible account is never picked while another one can launch.
+  const pick: ClaudeAccountPick = await (async () => {
+    if (claudeBlock !== undefined) return {};
+    const listed = pickClaudeAccount(quota!);
+    if (listed.account === undefined) return listed;
+    const refused: string[] = [];
+    for (const candidate of rankClaudeAccounts(quota!)) {
+      try { await resolveClaudeAccount(candidate.id, dependencies.accountCommand); return { account: candidate }; }
+      catch (error) { refused.push(`${candidate.label}: ${boundedReason(error instanceof Error ? error.message : String(error), 160)}`); }
+    }
+    return { cause: `the router would not select any Claude account now (${refused.join("; ")})` };
+  })();
   const accountBlock = claudeBlock ?? pick.cause;
   if (accountBlock !== undefined || effortBlock !== undefined) {
     throw new Error(`USAP implicit routing found no route that can launch this wave (${[...causes,
@@ -659,6 +684,21 @@ async function resolveImplicitWorkerRoute(
     throw new Error(`USAP implicit routing found no route that can launch this wave (${causes.join(" | ")}). No Claude subscription tier is configured (claudeFallbackTier in ~/.config/ultraterm/routing.json), so no fallback was selected; wait for a window to return or name a route explicitly.`);
   }
   return withClass({ tier, tried: exhausted.tried, causes, ...(pick.account ? { claudeAccount: pick.account } : {}) });
+}
+
+/** The operator policy for the project this dispatch runs in (the parent's cwd, its repository, and the paths tasks own). */
+const projectPolicyOf = (ctx: ExtensionContext, requested: UltratermSubagentsParams, dependencies: UltratermSubagentsDependencies): ProjectPolicy =>
+  resolveProjectPolicy(ctx.cwd, requested.tasks.flatMap((task) => task.ownedPaths ?? []), dependencies.projectPolicyPath !== undefined ? { policyPath: dependencies.projectPolicyPath } : {});
+
+/** True for a chain step on a paid metered route (not a subscription or local one): a planOnly project is never given one. */
+function paidStepPredicate(ctx: ExtensionContext): (step: WorkerRouteStep) => boolean {
+  return (step) => {
+    try {
+      const registry = ctx.modelRegistry;
+      const model = (registry.getAll?.() ?? registry.getAvailable()).find((candidate) => candidate.provider === step.provider && candidate.id === step.id);
+      return model !== undefined && !isSubscriptionOrLocalRoute(model, registry.isUsingOAuth(model));
+    } catch { return false; }
+  };
 }
 
 const taskLabel = (task: TaskRecord): string => task.label.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 40);
@@ -1795,6 +1835,29 @@ export function createUltratermSubagentsExtension(
       return renderSubagentResult({ content: [{ type: "text", text: typeof message.content === "string" ? message.content : "Subagents settled" }], details: runs.length === 1 ? { run: runs[0] } : { runs } }, options, theme);
     });
 
+    // Per-turn route availability: what is up, what is cooling until when, and the next usable route, so a parent
+    // never pins a dead account. One router read per cache window; any failure leaves the prompt untouched.
+    let availabilityCache: { at: number; key: string; line: string } | undefined;
+    pi.on("before_agent_start", async (event, ctx) => {
+      try {
+        const now = dependencies.now?.() ?? Date.now();
+        const key = ctx.cwd;
+        if (!availabilityCache || availabilityCache.key !== key || now - availabilityCache.at >= AVAILABILITY_TTL_MS) {
+          const chain = defaultWorkerChain(false);
+          const tier = routingConfigOrEmpty().claudeFallbackTier?.ordinary;
+          let line = "";
+          if (chain.length > 0 || tier !== undefined) {
+            const snapshot = await readProviderQuota(dependencies.accountCommand, now);
+            const policy = resolveProjectPolicy(ctx.cwd, [], dependencies.projectPolicyPath !== undefined ? { policyPath: dependencies.projectPolicyPath } : {});
+            line = computeAvailability({ snapshot, chain, ...(tier !== undefined ? { claudeTier: tier } : {}), policy, isPaid: paidStepPredicate(ctx) }).line;
+          }
+          availabilityCache = { at: now, key, line };
+        }
+        if (availabilityCache.line) return { systemPrompt: `${event.systemPrompt}\n\n${availabilityCache.line}` };
+      } catch { /* availability is advisory; the dispatch itself still checks the router */ }
+      return undefined;
+    });
+
     pi.on("session_start", async (_event, ctx) => {
       if (!sessionOwner(ctx)) throw new Error("USAP requires a native session identity; access refused.");
       if (runtime && !runtime.closed && ownsContext(runtime, ctx)) {
@@ -1930,7 +1993,13 @@ export function createUltratermSubagentsExtension(
       let quotaRead: Promise<QuotaSnapshot> | undefined;
       const readQuota = (): Promise<QuotaSnapshot> => quotaRead ??= readProviderQuota(dependencies.accountCommand, dependencies.now?.());
       const reviewQuota = readOnlyReviewFallback && requested.requireImages !== true ? await readQuota() : undefined;
-      const claudeBlock = reviewQuota ? claudeQuotaBlock(reviewQuota) : undefined;
+      // A noClaude project's implicit review never runs on the Claude review route: it takes the configured review
+      // fallback when it can, and otherwise refuses once, before anything starts.
+      const reviewPolicy = opusReviewDefault ? projectPolicyOf(ctx, requested, dependencies) : {};
+      if (reviewPolicy.noClaude !== undefined && reviewQuota === undefined) {
+        throw new Error(`USAP implicit review cannot run: Claude review route ${reviewRoute}: ${noClaudeCause(reviewPolicy)}${fallbackStep === undefined ? " | no implicitReview.fallback is configured" : " | the review fallback serves only read-only text reviews"}. No review was started and no fallback was selected; name a review route explicitly.`);
+      }
+      const claudeBlock = reviewPolicy.noClaude !== undefined ? noClaudeCause(reviewPolicy) : reviewQuota ? claudeQuotaBlock(reviewQuota) : undefined;
       const claudeUnavailable = claudeBlock !== undefined;
       if (!ctx.model) throw new Error("ultraterm_subagents requires a resolved current model");
       if (claudeUnavailable) {
@@ -1968,7 +2037,7 @@ export function createUltratermSubagentsExtension(
         : undefined;
       let taskClassReceipt: TaskClassSelection | undefined;
       if (quotaRouted) {
-        const route = await resolveImplicitWorkerRoute(ctx, requested, dependencies, readQuota, fallThroughs, classWalk);
+        const route = await resolveImplicitWorkerRoute(ctx, requested, dependencies, readQuota, fallThroughs, classWalk, projectPolicyOf(ctx, requested, dependencies));
         nativeResolved = route.resolved;
         claudeTier = route.tier;
         tierTried = route.tried;
@@ -2103,7 +2172,8 @@ export function createUltratermSubagentsExtension(
         };
       }
 
-      if (run.claudeAccount !== undefined) {
+      // A tier account the pick walk already had the router's `select` accept moments ago is not asked twice.
+      if (run.claudeAccount !== undefined && !(tierAccount !== undefined && tierAccount.id === run.claudeAccount)) {
         try { await resolveClaudeAccount(run.claudeAccount, dependencies.accountCommand); }
         catch (error) {
           // The tier account came from the router snapshot a moment ago: if the router now refuses it, say which and why.
@@ -2255,7 +2325,7 @@ export function createUltratermSubagentsExtension(
     pi.registerTool({
       name: "ultraterm_subagents",
       label: "UltraTerm Subagents",
-      description: "Dispatch 1-8 bounded tasks through Pi or the official headless Claude Code CLI. Implicit routine waves run the operator's configured worker chain (textWorkerChain / multimodalWorkerChain in ~/.config/ultraterm/routing.json), then the configured Claude subscription tier (claudeFallbackTier); implicit all-reviewer waves run the configured implicitReview route. With nothing configured an implicit wave fails with the config key to set, while explicit model/profile/harness routes always work. The router's quota is checked first: a configured tier whose every account is cooling down or at 100% is skipped. Explicit routes win and are never rerouted; an explicit route in an exhausted provider is refused with the router's cause. A task may declare a taskClass the operator configured in routing.json: an implicit text worker wave then walks that class's chain first (same launch, quota, paid-route and onlyWhen checks), then the normal route; one run uses one route and a class steers only a wave whose every task carries it (within its slots and scope), an unknown class is ignored with a note, and the receipt names the class and why its route was or was not chosen. A worker that fails before its first model output fails this call itself, background or not, except that an implicit wave refused on a provider quota or usage limit (402 / insufficient credits / no endpoints found, a usage-limit error, a cooling-down router refusal) re-runs the same tasks once on the next configured tier inside this call, before Started. Foreground default; ownedPaths grants guarded writes on either harness; allowBash is unsandboxed shell except Claude read-only reviewers get no Bash. Claude image review uses native Read on staged files under cwd.",
+      description: "Dispatch 1-8 bounded tasks through Pi or the official headless Claude Code CLI. Implicit routine waves run the operator's configured worker chain (textWorkerChain / multimodalWorkerChain in ~/.config/ultraterm/routing.json), then the configured Claude subscription tier (claudeFallbackTier); implicit all-reviewer waves run the configured implicitReview route. With nothing configured an implicit wave fails with the config key to set, while explicit model/profile/harness routes always work. The router's quota is checked first: a configured tier whose every account is cooling down or at 100% is skipped. Explicit routes win and are never rerouted; an explicit route in an exhausted provider is refused with the router's cause. A task may declare a taskClass the operator configured in routing.json: an implicit text worker wave then walks that class's chain first (same launch, quota, paid-route and onlyWhen checks), then the normal route; one run uses one route and a class steers only a wave whose every task carries it (within its slots and scope), an unknown class is ignored with a note, and the receipt names the class and why its route was or was not chosen. A worker that fails before its first model output fails this call itself, background or not, except that an implicit wave refused on a provider quota or usage limit (402 / insufficient credits / no endpoints found, a usage-limit error, a cooling-down router refusal) re-runs the same tasks once on the next configured tier inside this call, before Started. Each turn carries a one-line route availability notice (up, or COOLING until a time, HELD BACK, or NOT ALLOWED by project policy, plus the next usable route): omit model, profile and harness and let the router choose; never pin a COOLING, HELD BACK or NOT ALLOWED route. Foreground default; ownedPaths grants guarded writes on either harness; allowBash is unsandboxed shell except Claude read-only reviewers get no Bash. Claude image review uses native Read on staged files under cwd.",
       promptSnippet: "Dispatch bounded independent child tasks with explicit permissions and path ownership",
       promptGuidelines: [
         "Fan out by default: independent leaves (disjoint files, modules, screens, angles) dispatch in ONE parallel wave — width defaults to min(8, task count); provider ceilings come from the operator's usap-caps.json.",

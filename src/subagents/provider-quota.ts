@@ -285,16 +285,26 @@ export interface ClaudeAccountPick {
 export function pickClaudeAccount(snapshot: QuotaSnapshot): ClaudeAccountPick {
   const quota = snapshot.providers.claude;
   if (!quota || quota.unconfigured) return {};
-  const pinnable = quota.rows.filter((row): row is QuotaAccount & { id: ClaudeAccountId } =>
-    row.eligible === true && isClaudeAccountId(row.id));
-  if (pinnable.length === 0) {
+  const ranked = rankClaudeAccounts(snapshot);
+  if (ranked.length === 0) {
     return { cause: `the router shows no eligible Claude account (${quota.rows.map((row) => `${row.label}: ${row.why}`).join("; ")})` };
   }
+  return { account: ranked[0] };
+}
+
+/** Every pinnable (router-eligible) Claude account, best first: the order {@link pickClaudeAccount} takes its pick from.
+ * The caller walks it and keeps the first account the router's own `select` also accepts, so a snapshot that is a
+ * moment stale, or a `select` that applies a stricter guard (a lent plan's reserve floor), skips to the next account
+ * instead of failing the wave on one that cannot launch. */
+export function rankClaudeAccounts(snapshot: QuotaSnapshot): Array<{ id: ClaudeAccountId; label: string }> {
+  const quota = snapshot.providers.claude;
+  if (!quota || quota.unconfigured) return [];
+  const pinnable = quota.rows.filter((row): row is QuotaAccount & { id: ClaudeAccountId } =>
+    row.eligible === true && isClaudeAccountId(row.id));
   // Draining sorts first; the rest is the pre-existing least-used / fewest-leases / router-order rank.
   const rank = (row: QuotaAccount) => [row.draining === true ? 0 : 1, row.usedPercent ?? Number.POSITIVE_INFINITY, row.leases ?? 0];
-  const best = pinnable.reduce((chosen, row) => {
-    const [a, b] = [rank(row), rank(chosen)];
-    return a[0] < b[0] || (a[0] === b[0] && (a[1] < b[1] || (a[1] === b[1] && a[2] < b[2]))) ? row : chosen;
-  });
-  return { account: { id: best.id, label: best.label } };
+  return pinnable
+    .map((row, index) => ({ row, index, key: rank(row) }))
+    .sort((x, y) => x.key[0]! - y.key[0]! || x.key[1]! - y.key[1]! || x.key[2]! - y.key[2]! || x.index - y.index)
+    .map(({ row }) => ({ id: row.id, label: row.label }));
 }

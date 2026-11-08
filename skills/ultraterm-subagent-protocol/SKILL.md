@@ -4,7 +4,7 @@ description: Use at the start of nontrivial work and whenever deciding whether, 
 license: MIT
 metadata:
   acronym: USAP
-  version: 1.3.0
+  version: 1.4.0
 ---
 
 # UltraTerm Subagent Protocol
@@ -245,6 +245,22 @@ parent-profile defaults; the implicit review admission boundary precedes native
 Pi role defaults. A model family the operator pinned to one subscription route
 (`subscriptionRouteChecks` `modelPattern`) runs only there. Unavailable
 auth/models fail closed without fallback.
+
+**Route availability and project policy.** Each turn carries one line, refreshed
+from the account router at most every minute: every step of the implicit chain
+and the Claude tier as `up`, `COOLING until <time>`, `HELD BACK` (an `onlyWhen`
+condition) or `NOT ALLOWED (project policy)`, then the next usable route. Never
+pin a model, profile or Claude account that line marks anything but `up`: omit
+`model`, `profile` and `harness` and let the router choose; the router walks only
+steps that are allowed and available. The operator's coordinator policy
+(`noClaudeProjects`, `planOnlyProjects` in `~/.ultraterm/coordinator/policy.json`,
+matched on the folder names of the working directory, its repository and the
+paths a task owns) is applied to the implicit walk: a noClaude project never
+reaches a Claude tier or the Claude review route, a planOnly project is never
+given a paid route. With no step left the call refuses once, naming each skipped
+step and when it returns; wait, or name a route only if the operator asks. The
+Claude account for a tier is chosen only among accounts the router's `select`
+accepts now, so an ineligible account is skipped, never picked.
 
 **Task classes.** A leaf may carry `taskClass`, a lowercase slug from the operator's
 `taskClasses` in routing.json (Steak Pi ships none; the operator's own notes or the

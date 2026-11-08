@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.23.17 (2026-11-08)
+
+- **A parent can no longer aim at a dead route.** The implicit route now applies the operator's coordinator policy
+  (`noClaudeProjects`, `planOnlyProjects` in `~/.ultraterm/coordinator/policy.json`, matched on the folder names of the
+  working directory, its repository or worktree's main checkout, and the paths a task owns; no project names are built
+  in; an unreadable policy file restricts both, a missing one restricts nothing). It walks only steps that are allowed
+  and available: a noClaude project never reaches a Claude tier or the Claude review route, a planOnly project is never
+  given a paid route, and with nothing left the call refuses once naming each skipped step and when it returns.
+- **Every turn carries the route availability.** A compact line, refreshed from the account router at most every 60 s,
+  marks each chain step and the Claude tier `up`, `COOLING until <time>`, `HELD BACK` or `NOT ALLOWED (project policy)`,
+  names the next usable route and tells the parent to omit model/profile/harness and never pin anything not `up`. The
+  ultraterm-subagent-protocol skill says the same.
+- **The implicit Claude tier never picks an account the router would refuse.** The pick walks the router-eligible
+  accounts best first and keeps the first one `select --provider claude` accepts now, so an account listed eligible
+  that `select` refuses (reserve floor, stale snapshot) is skipped instead of failing the wave with "would not select
+  it now". 2026-11-08: two scout dispatches pinned to cooling routes were refused before launch, and an implicit wave
+  failed on a Claude account whose status was ineligible while two others were eligible.
+
 ## 0.23.16 (2026-11-08)
 
 - **A background run's completion is no longer lost when the host drops its queued steer.** A completion sent while the

@@ -4,7 +4,7 @@ import { CheckpointStore } from "../src/subagents/checkpoints.ts";
 import { normalizeDispatch } from "../src/subagents/policy.ts";
 import { claudeCodeModelOf, resolveClaudeCodeSelection, retiredRouteError } from "../src/subagents/model-selection.ts";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { GO_ACCOUNT_ROUTER_TIMEOUT_MS, isolatedCodexAgentDir, isolatedAgentPaths } from "../src/subagents/provider-accounts.ts";
 import { createPiWorkerRunner } from "../src/subagents/pi-worker.ts";
 import type { ExtensionAPI, ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -2361,9 +2361,133 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
       });
       try {
         await expect(dispatch(h, { tasks: plain })).rejects.toThrow(
-          /picked Claude 1 for the Haiku 5\.5 tier, but the router would not select it now \(Claude 1 is cooling down\)\. No worker was started and no fallback was selected/);
+          /the router would not select any Claude account now \(Claude 1: Claude 1 is cooling down; Claude 2: Claude 1 is cooling down\)\)\. No route was started and no fallback was selected/);
         expect(runner).not.toHaveBeenCalled();
       } finally { await shutdown(h); }
+    });
+
+    it("never picks an account the router's select refuses: it skips to the next eligible account", async () => {
+      const runner = done();
+      // The status row says "b" is eligible and draining (it would rank first), but `select` refuses it (reserve floor).
+      const lent = { ...usable("b", "Claude 2"), spill: { draining: true } };
+      const { h, accountCommand, selected } = quotaHarness(status({ codex: solOut, go: goOut, claude: [usable("primary", "Claude 1"), lent] }), runner);
+      const answer = accountCommand.getMockImplementation()!;
+      accountCommand.mockImplementation(async (args: string[]) => {
+        if (args[0] === "select" && args[4] === "b") throw new Error('Unsafe Claude provider account selection: Claude account "b" is not eligible (reserve floor); nothing was launched');
+        return answer(args);
+      });
+      try {
+        await dispatch(h, { tasks: plain });
+        expect(accountCommand.mock.calls.filter(([args]) => args[0] === "select").map(([args]) => args[4])).toEqual(["b", "primary"]);
+        expect(selected).toEqual(["primary"]);
+        expect(runner.mock.calls[0][0].run.claudeAccount).toBe("primary");
+      } finally { await shutdown(h); }
+    });
+
+    it("never picks a Claude account whose status row is ineligible while another one is eligible", async () => {
+      const runner = done();
+      const reserved = { configured: true, eligible: false, id: "b", label: "Claude 2", ineligibleReason: "usage unknown, reserve floor", windows: [] };
+      const { h, selected } = quotaHarness(status({ codex: solOut, go: goOut, claude: [reserved, usable("primary", "Claude 1")] }), runner);
+      try {
+        await dispatch(h, { tasks: plain });
+        expect(runner.mock.calls[0][0].run.claudeAccount).toBe("primary");
+        expect(selected).toEqual(["primary"]);
+      } finally { await shutdown(h); }
+    });
+
+    describe("synthetic: operator project policy and route availability", () => {
+      const projectOf = (h: ReturnType<typeof harness>) => basename(h.ctx.cwd).toLowerCase();
+      const withPolicy = (answer: unknown, runner: ReturnType<typeof done>, policy: Record<string, unknown>, extra: readonly unknown[] = [], overrides: Partial<UltratermSubagentsDependencies> = {}) => {
+        // The policy file is read at dispatch time, so it can be written once the harness (and its cwd) exists.
+        const path = join(mkdtempSync(join(tmpdir(), "steak-usap-policy-")), "policy.json");
+        const built = quotaHarness(answer, runner, { ...overrides, projectPolicyPath: path }, undefined, extra);
+        writeFileSync(path, JSON.stringify(Object.fromEntries(Object.entries(policy).map(([key, value]) => [key, value === "$project" ? [projectOf(built.h)] : value]))));
+        return { ...built, path };
+      };
+
+      it("never walks to Claude for a noClaude project, even when every other route is out and Claude is up", async () => {
+        const runner = done();
+        const { h, selected } = withPolicy(status({ codex: solOut, go: goOut, claude: claudeUp }), runner, { noClaudeProjects: "$project" });
+        try {
+          await expect(dispatch(h, { tasks: plain })).rejects.toThrow(
+            /found no route that can launch this wave \(.*Go.*unavailable.*\| Claude subscription tier: Claude is not allowed for this project \(policy noClaudeProjects: .+\)\)\. No route was started/);
+          expect(runner).not.toHaveBeenCalled();
+          expect(selected).toEqual([]);
+        } finally { await shutdown(h); }
+      });
+
+      it("keeps a noClaude project on the working non-Claude step", async () => {
+        const runner = done();
+        const { h, selected } = withPolicy(status({ codex: solUp, go: goOut, claude: claudeUp }), runner, { noClaudeProjects: "$project" });
+        try {
+          const result = await dispatch(h, { tasks: plain });
+          expect(result.details.run.model).toBe(SOL_ROUTE);
+          expect(selected).toEqual([]);
+        } finally { await shutdown(h); }
+      });
+
+      it("never gives a planOnly project a paid route, though the same wave without the policy takes it", async () => {
+        const runner = done();
+        const { h } = withPolicy(status({ codex: solOut, go: goOut, claude: claudeShort }), runner, { planOnlyProjects: "$project" },
+          [openRouterModel], { approvePaidRoute: () => true });
+        try {
+          const result = await dispatch(h, { tasks: plain });
+          expect(result.details.run.model).not.toBe(OPENROUTER_ROUTE);
+          expect(result.details.run.harness).toBe("claude-code");
+        } finally { await shutdown(h); }
+      });
+
+      it("applies no policy to a project the operator did not list", async () => {
+        const runner = done();
+        const { h } = withPolicy(status({ codex: solOut, go: goOut, claude: claudeUp }), runner, { noClaudeProjects: ["some-other-project"] });
+        try {
+          const result = await dispatch(h, { tasks: plain });
+          expect(result.details.run.harness).toBe("claude-code");
+        } finally { await shutdown(h); }
+      });
+
+      it("treats an unreadable policy file like the coordinator: Claude is refused", async () => {
+        const runner = done();
+        const { h, path } = withPolicy(status({ codex: solOut, go: goOut, claude: claudeUp }), runner, {});
+        writeFileSync(path, "{ not json");
+        try {
+          await expect(dispatch(h, { tasks: plain })).rejects.toThrow(/Claude is not allowed for this project \(policy noClaudeProjects: policy file is not valid JSON\)/);
+          expect(runner).not.toHaveBeenCalled();
+        } finally { await shutdown(h); }
+      });
+
+      it("tells the parent what is cooling and what is next, caches it for a minute, and never offers a cooling route to pin", async () => {
+        const runner = done();
+        let clock = 1_000_000;
+        const { h, accountCommand } = withPolicy(status({ codex: solUp, go: goOut, claude: claudeUp }), runner, {}, [], { now: () => clock });
+        try {
+          const before = h.handlers.get("before_agent_start")!;
+          const first = await before({ systemPrompt: "BASE" }, h.ctx) as { systemPrompt: string };
+          expect(first.systemPrompt.startsWith("BASE\n\n")).toBe(true);
+          expect(first.systemPrompt).toMatch(/Go[^;]*: COOLING until Mon 02:50/);
+          expect(first.systemPrompt).toMatch(/Next usable route: GPT-6\.1 Terra/);
+          expect(first.systemPrompt).toMatch(/Omit model, profile and harness .* never pin a COOLING, HELD BACK or NOT ALLOWED route/);
+          // Every route named as usable is up: no cooling route appears after "Next usable route".
+          expect(first.systemPrompt.split("Next usable route:")[1]).not.toMatch(/Go\b/);
+          clock += 30_000;
+          await before({ systemPrompt: "BASE" }, h.ctx);
+          expect(accountCommand.mock.calls.filter(([args]) => args[0] === "status")).toHaveLength(1);
+          clock += 31_000;
+          await before({ systemPrompt: "BASE" }, h.ctx);
+          expect(accountCommand.mock.calls.filter(([args]) => args[0] === "status")).toHaveLength(2);
+        } finally { await shutdown(h); }
+      });
+
+      it("marks a noClaude project's Claude tier NOT ALLOWED and never names it as the next route", async () => {
+        const runner = done();
+        const { h } = withPolicy(status({ codex: solOut, go: goOut, claude: claudeUp }), runner, { noClaudeProjects: "$project" });
+        try {
+          const text = ((await h.handlers.get("before_agent_start")!({ systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string }).systemPrompt;
+          expect(text).toMatch(/Claude subscription tier \([^)]*\): NOT ALLOWED \(project policy\)/);
+          expect(text).toMatch(/No route is usable now; the implicit dispatch refuses once/);
+          expect(text).not.toMatch(/Next usable route/);
+        } finally { await shutdown(h); }
+      });
     });
 
     it("runs the Claude tier at the requested high effort on the substantial tier instead of refusing it", async () => {
