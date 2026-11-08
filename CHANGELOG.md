@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.23.14 (2026-11-08)
+
+- **The finish guard catches an ending that announces the rest of the work.** A reply ending "**Next:** I'll add …",
+  "One gap I'm fixing now", "still needs a test and the build" or "I haven't published it yet" ended the turn before the
+  work was done. These now count as unfinished work, so the agent is pushed to keep going.
+
 ## 0.23.13 (2026-11-08)
 
 - **`steak-pi routing check [file]`.** Validates a `routing.json` with the exact parser every Pi turn uses, and names the

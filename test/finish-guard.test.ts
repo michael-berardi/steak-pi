@@ -201,3 +201,23 @@ describe("unfinished-work noun phrase", () => {
     expect(openWorkPhrases("We have 2 outstanding issues.")).toEqual(["We have 2 outstanding issues"]);
   });
 });
+
+describe("an ending that announces the rest instead of doing it (2026-11-08)", () => {
+  it("catches the wording of the reply that stopped early", () => {
+    const reply = [
+      "**One gap I'm fixing now.** Running `steak-pi routing check` in a terminal doesn't reach the check yet.",
+      "I've changed that command in the UltraTerm source; it still needs a test and the 4.8.0 build.",
+      "It's signed and notarized, but I haven't published it yet.",
+      "**Next:** I'll add the `routing` change on top of 4.7.6, test it, then build, install and publish both as 4.8.0.",
+    ].join("\n");
+    const phrases = openWorkPhrases(reply);
+    expect(phrases.length).toBeGreaterThanOrEqual(3);
+    expect(finishVerdict({ ...base, finalText: reply }).block).toBe(true);
+  });
+  it("does not flag finished work described in the past", () => {
+    expect(openWorkPhrases("I published 4.8.0, installed it and tested the switch.")).toEqual([]);
+    expect(openWorkPhrases("The next release will include it; this one is done and verified.")).toEqual([]);
+    expect(openWorkPhrases("It needs no further build.")).toEqual([]);
+  });
+});
+

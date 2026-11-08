@@ -44,6 +44,14 @@ const OPEN_WORK: readonly RegExp[] = [
   /\b(?:still (?:have|has|got)|there (?:is|are)(?: still)?|we have|i have)\s+(?:some |a few |several |\d+ )?(?:remaining|open|outstanding|unfinished) (?:items|work|tasks|issues)\b/i,
   /\bleft to do\b/i,
   /\bnext (?:step|i'?ll|i will)\b/i,
+  // 2026-11-08: a reply ended with "One gap I'm fixing now", "still needs a test and the build", "I haven't published
+  // it yet" and "**Next:** I'll add ..." and none of the patterns above caught it.
+  /(?:^|\n)\W*next\W*:\W*(?:i'?ll|i will|i'?m)\b/i,
+  /\b(?:i'?m|i am) (?:fixing|working on|finishing|building|adding|shipping) (?:it|that|this|them) now\b/i,
+  /\b(?:gap|issue|bug|part) (?:i'?m|i am) (?:fixing|working on|finishing) now\b/i,
+  /\bstill needs? (?:a |the |an )?(?:test|tests|build|release|fix|review|deploy|install|verification)\b/i,
+  /\b(?:haven'?t|have not|didn'?t|did not) (?:published|publish|released|release|deployed|deploy|installed|install|built|build|tested|test|merged|merge|pushed|push)\b/i,
+  /\bnot (?:published|released|deployed|installed|built|tested|merged|pushed) yet\b/i,
   /\bwhat'?s left\b/i,
   /\bnot yet (?:fixed|done|addressed)\b/i,
 ];
