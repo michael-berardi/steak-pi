@@ -39,6 +39,19 @@ export class HoldDeleteEditor extends PasteSafeEditor {
       super.handleInput(data);
       return;
     }
+    // tmux forwards a held Backspace as plain DEL (0x7f) autorepeat and may
+    // batch several bytes into one read. Count each byte as its own event so
+    // the hold still accumulates instead of inserting the bytes as text.
+    if (/^[\x7f\x08]+$/.test(data) && data.length > 1) {
+      for (const byte of data) {
+        this.handleBackspaceEvent(byte);
+      }
+      return;
+    }
+    this.handleBackspaceEvent(data);
+  }
+
+  private handleBackspaceEvent(data: string): void {
     const release = isKeyRelease(data);
     const backspace = data === "\x7f" || data === "\x08" || matchesKey(data, "backspace");
     if (!this.holdDeleteEnabled || !backspace || release) {
@@ -49,11 +62,14 @@ export class HoldDeleteEditor extends PasteSafeEditor {
     }
     const now = Date.now();
     const kittyRepeat = /^\x1b\[127;\d+:2u$/.test(data) && isKeyRepeat(data);
-    const kittyPress = /^\x1b\[127;\d+:1u$/.test(data);
     // 200ms exceeds normal macOS autorepeat intervals but separates deliberate taps.
     // Kitty repeat/release events explicitly identify a hold, regardless of gaps;
     // unflagged events fall back to timing because repeat reporting may be off.
-    if (this.holdStarted === undefined || kittyPress || (!kittyRepeat && now - this.lastBackspace >= 200)) {
+    // A kitty press event starts a hold or continues one: terminals that report
+    // event types but label every repeat as a press (flag 2 not implemented)
+    // would otherwise reset on each event and delete char-by-char forever. Only
+    // a release or a gap that separates deliberate taps ends a hold.
+    if (this.holdStarted === undefined || (!kittyRepeat && now - this.lastBackspace >= 200)) {
       this.holdStarted = now;
       this.cleared = false;
     }

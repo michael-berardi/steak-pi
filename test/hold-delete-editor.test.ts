@@ -1,5 +1,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { Editor, type EditorOptions, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import companionUiExtension from "../extensions/statusline.ts";
 import { HOLD_DELETE_CLEAR_MS, HoldDeleteEditor, holdDeleteEnabled } from "../src/tui/hold-delete-editor.ts";
 
 const settings = vi.hoisted(() => ({ text: "{}" }));
@@ -23,6 +25,33 @@ function editor() {
 }
 function repeat(e: Editor, count: number, interval = 100, key = "\x7f") {
   for (let i = 0; i < count; i++) { e.handleInput(key); vi.advanceTimersByTime(interval); }
+}
+function repeatChunk(e: Editor, count: number, interval = 100, chunk = "\x7f\x7f\x7f") {
+  for (let i = 0; i < count; i++) { e.handleInput(chunk); vi.advanceTimersByTime(interval); }
+}
+/** Mirrors the real host contract: setEditorComponent swaps the editor and snapshots text. */
+function statuslineHost() {
+  const tui = { terminal: { rows: 32 }, requestRender: vi.fn() } as unknown as TUI;
+  let editor: Editor = new Editor(tui, theme);
+  const handlers = new Map<string, (event: any, ctx: any) => unknown>();
+  const uiTheme = { ...theme, fg: (_token: string, text: string) => text, bold: identity };
+  const ctx = {
+    mode: "tui", cwd: "/fixture", model: { provider: "openai-codex", id: "gpt-6.1-sol" }, thinkingLevel: "medium",
+    getContextUsage: () => undefined,
+    sessionManager: { getEntries: () => [], getSessionName: () => undefined, getSessionFile: () => undefined },
+    ui: {
+      theme: uiTheme, setHeader: vi.fn(), setFooter: vi.fn(), setWorkingVisible: vi.fn(), setWorkingMessage: vi.fn(),
+      getEditorText: () => editor.getExpandedText(),
+      setEditorText: (text: string) => editor.setText(text),
+      setEditorComponent(factory: any) {
+        const text = editor.getText();
+        editor = factory(tui, theme, { matches: () => false });
+        editor.setText(text);
+      },
+    },
+  };
+  companionUiExtension({ on: (name: string, handler: any) => handlers.set(name, handler) } as unknown as ExtensionAPI);
+  return { current: () => editor, start: () => handlers.get("session_start")?.({ reason: "startup" }, ctx) };
 }
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(0); settings.text = "{}"; });
 afterEach(() => vi.useRealTimers());
@@ -54,6 +83,29 @@ describe("hold Backspace", () => {
     const e = editor(); e.setText("first\n" + "x".repeat(80));
     e.handleInput("\x1b[127u"); repeat(e, 4, 800, "\x1b[127;1:2u");
     expect(e.getText()).toBe("");
+  });
+  it("clears on batched DEL chunks as tmux forwards autorepeat", () => {
+    const e = editor(); e.setText("first line\n" + "x".repeat(80));
+    repeatChunk(e, 16); expect(e.getText()).not.toBe("");
+    e.handleInput("\x7f\x7f\x7f"); expect(e.getText()).toBe("");
+    e.handleInput("\x7f"); expect(e.getText()).toBe("");
+  });
+  it("batched DEL chunks still delete one char per byte under 1.5 seconds", () => {
+    const e = editor(); e.setText("abcdef");
+    repeatChunk(e, 2); expect(e.getText()).toBe("");
+  });
+  it("clears when the terminal labels every repeat as a kitty press", () => {
+    const e = editor(); e.setText("first line\n" + "x".repeat(80));
+    repeat(e, 18, 100, "\x1b[127;1:1u");
+    expect(e.getText()).toBe("");
+  });
+  it("the companion editor swap leaves hold-Backspace wired", () => {
+    const fixture = statuslineHost();
+    fixture.start();
+    expect(fixture.current()).toBeInstanceOf(HoldDeleteEditor);
+    fixture.current().setText("first line\n" + "x".repeat(80));
+    repeat(fixture.current(), 18, 100);
+    expect(fixture.current().getText()).toBe("");
   });
   it("does not treat pasted backspace bytes as a hold", () => {
     const e = editor(); e.setText("first\n" + "x".repeat(80));
