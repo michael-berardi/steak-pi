@@ -1,6 +1,6 @@
 // Steak Pi is a neutral tool. Its shipped files carry no model, provider or fallback choice and no
 // person's, client's or project's names: those belong in the operator's own routing.json and
-// paid-routes.json. This test keeps it that way. test/ is out of scope (fixtures may name models).
+// paid-routes.json. This test keeps it that way; fixtures are also scanned for personal names.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -65,6 +65,7 @@ const DISTRIBUTION_FILES = [
   "bin/steak-pi",
   "src/update-check.ts",
   "extensions/ultracompress/index.ts",
+  "test/steak-pi-updater.test.ts",
 ];
 // A line is allowed only when every personal-name hit on it sits inside a distribution URL.
 // The shared regex is non-global so `.test()` is stateless; stripping uses a fresh case-insensitive
@@ -140,7 +141,10 @@ describe("shipped files are provider-neutral", () => {
   });
 
   it("name no person, client or project", () => {
-    const personal = hits(shipped, PERSONAL)
+    const testFiles = files(join(root, "test")).filter((path) => relative(root, path) !== "test/neutrality.test.ts");
+    expect(testFiles.some((path) => relative(root, path) === "test/finish-guard.test.ts")).toBe(true);
+    expect(shipped.some((path) => relative(root, path).startsWith("docs/"))).toBe(true);
+    const personal = hits([...shipped, ...testFiles], PERSONAL)
       .filter((hit) => !allowedDistributionLine(hit.path, hit.text))
       .map(describeHit);
     expect(personal).toEqual([]);

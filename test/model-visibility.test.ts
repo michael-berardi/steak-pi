@@ -22,7 +22,7 @@ describe('shared picker visibility removes the OpenRouter DeepSeek Flash routes'
       '~deepseek/deepseek-flash-latest',
     ];
     const kept = [
-      // The reviewed default worker head (Mike 2026-10-31) is a distinct Exacto route, not a removed Flash alias.
+      // The reviewed default worker head (2026-10-31) is a distinct Exacto route, not a removed Flash alias.
       'deepseek/deepseek-v4.1-flash-1017:exacto',
       'deepseek/deepseek-v4-flash-vision-exp',
       'deepseek/deepseek-v4-flash-vision-exp:batch',

@@ -84,7 +84,7 @@ describe("companion state", () => {
 describe("responsive semantic rendering", () => {
   const snapshot: FooterSnapshot = {
     state: reduceCompanionState(initialCompanionState(), { type: "settled" }),
-    cwd: "/Users/demo/dev/a-project-with-a-long-name",
+    cwd: "/home/demo/dev/a-project-with-a-long-name",
     provider: "openai-codex",
     model: { id: "openai-codex/gpt-6.1-sol" },
     thinking: "high",

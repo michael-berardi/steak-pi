@@ -44,7 +44,7 @@ const chainModels = {
   mimoFlash: { ...astra, id: "mimo-v2.6-flash", name: "MiMo V2.6 Flash", provider: "xiaomi", api: "openai-completions", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1", input: ["text", "image"] } as Model,
   mimoPro: { ...astra, id: "mimo-v2.6-pro", name: "MiMo V2.6 Pro", provider: "xiaomi", api: "openai-completions", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1", input: ["text", "image"] } as Model,
   zaiGlm: { ...astra, id: "glm-5.3-flash", name: "GLM-5.3 Flash", provider: "zai", api: "openai-completions", baseUrl: "https://api.z.ai/api/coding/paas/v4", input: ["text", "image"] } as Model,
-  // The reviewed OpenRouter Exacto route that leads the default text worker chain (Mike 2026-10-31).
+  // The reviewed OpenRouter Exacto route that leads the default text worker chain (2026-10-31).
   openRouter: { ...astra, id: "deepseek/deepseek-v4.1-flash-1017:exacto", name: "DeepSeek V4.1 Flash (OpenRouter Exacto)", provider: "openrouter", api: "openai-completions", baseUrl: "https://openrouter.ai/api/v1", input: ["text"] } as Model,
 };
 const OPENROUTER_STEP = { provider: "openrouter", id: "deepseek/deepseek-v4.1-flash-1017:exacto" } as const;

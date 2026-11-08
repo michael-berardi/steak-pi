@@ -54,7 +54,7 @@ describe("companion extension integration", () => {
     };
     const ctx = {
       mode: "tui",
-      cwd: "/Users/demo/project",
+      cwd: "/home/demo/project",
       model: { provider: "zai", id: "glm-5.3-flash" },
       thinkingLevel: "high",
       getContextUsage: () => ({ percent: 12.5, contextWindow: 131_072, tokens: 16_384 }),
