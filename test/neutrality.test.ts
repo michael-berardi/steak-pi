@@ -1,14 +1,31 @@
 // Steak Pi is a neutral tool. Its shipped files carry no model, provider or fallback choice and no
 // person's, client's or project's names: those belong in the operator's own routing.json and
 // paid-routes.json. This test keeps it that way; fixtures are also scanned for personal names.
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
+import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 // STEAK_PI_NEUTRALITY_ROOT lets a reviewer point the same scan at another checkout (for example a
 // pre-change tree extracted with `git archive`) to prove the scan fails there.
 const root = process.env.STEAK_PI_NEUTRALITY_ROOT ?? fileURLToPath(new URL("..", import.meta.url));
+function privateTerms(path = process.env.OSS_PRIVATE_TERMS ?? join(homedir(), ".config/oss-audit/names.txt")): RegExp[] {
+  let content: string;
+  try { content = readFileSync(path, "utf8"); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  return content.split(/\r?\n/).map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"))
+    .map((term) => {
+      const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`${/^\w/.test(term) ? "\\b" : ""}${escaped}${/\w$/.test(term) ? "\\b" : ""}`, "i");
+    });
+}
+const hasPrivateTerm = (text: string, terms: RegExp[]) => terms.some((term) => term.test(text));
+
 const SHIPPED_DIRS = ["src", "bin", "scripts", "extensions", "skills", "docs", "themes", "benchmarks"];
 const TEXT = /\.(?:ts|mts|js|mjs|cjs|sh|py|md|json)$/;
 // Legal attribution, not routing: LICENSE files (and package.json author/repository metadata,
@@ -75,7 +92,7 @@ const allowedDistributionLine = (path: string, line: string) => {
   const rest = line.replace(new RegExp(DISTRIBUTION_URL.source, "gi"), "");
   return !PERSONAL.test(rest);
 };
-const PERSONAL = /\b(?:Mike|Berardi|Dana|Felix|acme|acme|Mouseia|acme)\b|libertydesign|Liberty Design|\/Users\/[A-Za-z]/i;
+const PERSONAL = /\b(?:Mike|Berardi|Felix|Mouseia)\b|libertydesign|Liberty Design|\/Users\/[A-Za-z]/i;
 
 // Task classes are the operator's: the names the first local-model measurements used, and any literal class table
 // in shipped source, would make a default of what routing.json owns. Docs use the placeholders class-a, class-b.
@@ -148,6 +165,27 @@ describe("shipped files are provider-neutral", () => {
       .filter((hit) => !allowedDistributionLine(hit.path, hit.text))
       .map(describeHit);
     expect(personal).toEqual([]);
+    const terms = privateTerms();
+    const privateHits = [...shipped, ...testFiles].filter((path) =>
+      readFileSync(path, "utf8").split("\n").some((line) => hasPrivateTerm(line, terms)));
+    expect(privateHits.map((path) => relative(root, path))).toEqual([]);
+  });
+
+  it("loads and matches literal private terms", () => {
+    const dir = mkdtempSync(join(tmpdir(), "neutrality-"));
+    try {
+      const path = join(dir, "terms.txt");
+      writeFileSync(path, "# comment\n\nzzqx-private.term\n");
+    const sample = join(dir, "sample.txt");
+    writeFileSync(sample, "a ZZQX-private.term here");
+      const terms = privateTerms(path);
+      expect(hasPrivateTerm(readFileSync(sample, "utf8"), terms)).toBe(true);
+      writeFileSync(sample, "a neutral line");
+      expect(hasPrivateTerm(readFileSync(sample, "utf8"), terms)).toBe(false);
+      expect(hasPrivateTerm("zzqx-privateXterm", terms)).toBe(false);
+      expect(hasPrivateTerm("xzzqx-private.term", terms)).toBe(false);
+      expect(privateTerms(join(dir, "missing"))).toEqual([]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   it("ship no task class, class chain or ensure hook of their own", () => {
