@@ -79,3 +79,92 @@ describe("worker check scope (2026-11-03: Terra workers refused builds and tests
     }
   });
 });
+
+// --- A session on a refused reserve account moves to the router's next eligible Claude account ---
+import { resolveRequestAccount, forgetSessionAccount } from "../extensions/claude-code/account-reserve.ts";
+
+type Call = { args: string[]; stdin?: string };
+const own = { id: "primary", label: "Claude 1", launchEnv: { unset: ["CLAUDE_CONFIG_DIR"] } };
+const second = { id: "b", label: "Claude 2", launchEnv: { set: { CLAUDE_CONFIG_DIR: "/home/x/.claude-b" } } };
+
+function fleet(opts: { lentReserve: unknown; select?: unknown; calls?: Call[]; reserveOf?: Record<string, unknown> }): RouterCall {
+  return async (args, stdin) => {
+    opts.calls?.push({ args, stdin });
+    if (args[0] === "status") {
+      return { providers: { claude: { accounts: [
+        { id: "lent", label: "Claude (Lent)", reserve: opts.lentReserve },
+        { ...own, reserve: opts.reserveOf?.primary }, { ...second, reserve: opts.reserveOf?.b },
+      ] } } };
+    }
+    if (args[0] === "select") return opts.select ?? { ok: true, account: own, reason: "most headroom" };
+    return { ok: true };
+  };
+}
+
+describe("a reserve refusal moves the session instead of stalling it", () => {
+  it("keeps the account untouched while its reserve holds", async () => {
+    const out = await resolveRequestAccount({ ULTRATERM_PROVIDER_ACCOUNT: "lent" }, "s-ok", fleet({ lentReserve: { ok: true } }));
+    expect(out.overrides).toBeUndefined();
+    expect(out.notice).toBeUndefined();
+  });
+
+  it("moves to the account the router selects, excluding the refused one, with a one-line notice", async () => {
+    const calls: Call[] = [];
+    const out = await resolveRequestAccount(
+      { ULTRATERM_PROVIDER_ACCOUNT: "lent", CLAUDE_CONFIG_DIR: "/home/x/.claude-lent" }, "s-move",
+      fleet({ lentReserve: { ok: false, why: "keeps 35% of its week for its owner (35% left, green)" }, calls }));
+    expect(calls.find((c) => c.args[0] === "select")!.args).toEqual(["select", "--provider", "claude", "--exclude", "lent"]);
+    expect(out.overrides).toEqual({ ULTRATERM_PROVIDER_ACCOUNT: "primary", CLAUDE_CONFIG_DIR: undefined, PI_CLAUDE_CODE_CONFIG_DIR: undefined });
+    expect(out.notice).toBe("Claude (Lent) keeps 35% of its week for its owner (35% left, green); this session continues on Claude 1.");
+    expect(out.notice).not.toMatch(/\n/);
+  });
+
+  it("points the session at the selected account's own config folder", async () => {
+    const out = await resolveRequestAccount({ ULTRATERM_PROVIDER_ACCOUNT: "lent" }, "s-folder",
+      fleet({ lentReserve: { ok: false, why: "x" }, select: { ok: true, account: second } }));
+    expect(out.overrides).toEqual({ ULTRATERM_PROVIDER_ACCOUNT: "b", CLAUDE_CONFIG_DIR: "/home/x/.claude-b", PI_CLAUDE_CODE_CONFIG_DIR: undefined });
+  });
+
+  it("treats an unreadable usage the same way", async () => {
+    const out = await resolveRequestAccount({ ULTRATERM_PROVIDER_ACCOUNT: "lent" }, "s-unknown",
+      fleet({ lentReserve: { ok: false, remaining: null, why: "no current weekly usage reading, so its owner's reserve cannot be checked" } }));
+    expect(out.overrides?.ULTRATERM_PROVIDER_ACCOUNT).toBe("primary");
+    expect(out.notice).toMatch(/no current weekly usage reading/);
+  });
+
+  it("stays on the new account for the rest of the session without asking to leave it again", async () => {
+    const calls: Call[] = [];
+    const router = fleet({ lentReserve: { ok: false, why: "x" }, calls });
+    await resolveRequestAccount({ ULTRATERM_PROVIDER_ACCOUNT: "lent" }, "s-sticky", router);
+    calls.length = 0;
+    const again = await resolveRequestAccount({ ULTRATERM_PROVIDER_ACCOUNT: "lent" }, "s-sticky", router);
+    expect(again.overrides?.ULTRATERM_PROVIDER_ACCOUNT).toBe("primary");
+    expect(again.notice).toBeUndefined();
+    expect(calls.some((c) => c.args[0] === "select")).toBe(false);
+    forgetSessionAccount("s-sticky");
+  });
+
+  it("skips a selected account whose own reserve is also reached, then names every cause when none is left", async () => {
+    let picks = 0;
+    const router: RouterCall = async (args) => {
+      if (args[0] === "status") return { providers: { claude: { accounts: [
+        { id: "lent", label: "Claude (Lent)", reserve: { ok: false, why: "keeps 35%" } },
+        { ...own, label: "Claude 1", reserve: { ok: false, why: "keeps 10% for another owner" } } ] } } };
+      picks++;
+      return picks === 1 ? { ok: true, account: own }
+        : { ok: false, error: "no Claude account can take a launch now (Claude 2: cooling down); queued, not failed" };
+    };
+    const error = await resolveRequestAccount({ ULTRATERM_PROVIDER_ACCOUNT: "lent" }, "s-none", router).catch((e) => e);
+    expect(error).toBeInstanceOf(AccountReserveError);
+    expect(error.message).toMatch(/Claude \(Lent\) keeps 35%/);
+    expect(error.message).toMatch(/Claude 1 keeps 10% for another owner/);
+    expect(error.message).toMatch(/Claude 2: cooling down/);
+    expect(error.message).toMatch(/quota exceeded/);
+  });
+
+  it("does nothing for sessions without a named account, and fails closed when the router cannot answer", async () => {
+    expect((await resolveRequestAccount({}, "s-none2", fleet({ lentReserve: { ok: false } }))).overrides).toBeUndefined();
+    const broken: RouterCall = async () => { throw new Error("router timed out"); };
+    await expect(resolveRequestAccount({ ULTRATERM_PROVIDER_ACCOUNT: "lent" }, "s-broken", broken)).rejects.toThrow(/could not be checked for lent/);
+  });
+});

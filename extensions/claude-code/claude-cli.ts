@@ -12,7 +12,7 @@ import { capCacheBreakpoints, MAX_CACHE_BREAKPOINTS } from "./cache-control.ts";
 import { ClaudeWaitLimitError, transportTimeout, waitForOperation } from "./wait.ts";
 import { TurnRelay } from "./turn-relay.ts";
 import { usageCreditsAllowed, usageCreditsChargeError, type RateLimitInfo } from "./billing.ts";
-import { assertAccountReserve, reportRateLimit } from "./account-reserve.ts";
+import { assertAccountReserve, forgetSessionAccount, reportRateLimit, resolveRequestAccount } from "./account-reserve.ts";
 import { envFlagEnabled } from "./env.ts";
 import type { DiscoveredClaudeModel } from "./model-catalog.ts";
 import type {
@@ -1437,10 +1437,21 @@ export function cachedClaudeProcessCount(): number {
 }
 
 registerSessionResourceCleanup((sessionId) => {
+  forgetSessionAccount(sessionId);
   void closeClaudeProcesses(sessionId);
 });
 
-export async function runClaudeRequest(input: RunClaudeInput): Promise<RunClaudeOutput> {
+export async function runClaudeRequest(request: RunClaudeInput): Promise<RunClaudeOutput> {
+  request.signal?.throwIfAborted();
+  // A lent account at its owner's floor (or with unreadable usage) never stalls the session: it moves to the router's
+  // next eligible Claude account and says so in one line. A different account is a different process fingerprint,
+  // so the warm process is replaced and history replays from Pi's own transcript.
+  const account = await resolveRequestAccount({ ...process.env, ...request.env }, request.sessionId);
+  const input = account.overrides ? { ...request, env: { ...request.env, ...account.overrides } } : request;
+  if (account.notice) {
+    if (diagnosticReporter) diagnosticReporter(`[claude-code] ${account.notice}`);
+    else process.emitWarning(account.notice, "ClaudeAccountReserve");
+  }
   input.signal?.throwIfAborted();
   const plan = launchPlan(input);
   // Acquisition (lock, auth, relay startup) is a non-streaming wait. Its deadline

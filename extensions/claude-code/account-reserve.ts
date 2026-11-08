@@ -53,9 +53,9 @@ export function reservedAccountId(env: Env): string | undefined {
 }
 
 export class AccountReserveError extends Error {
-  constructor(label: string, why: string) {
+  constructor(label: string, why: string, tail = "Its owner keeps this share, so no further request is sent on it (quota exceeded for this session). Switch this session to another Claude account or wait for the reset.") {
     // "quota exceeded" keeps Pi's retry classifier from retrying it (a reserve is not a transient throttle).
-    super(`Claude account reserve: ${label} ${why}. Its owner keeps this share, so no further request is sent on it (quota exceeded for this session). Switch this session to another Claude account or wait for the reset.`);
+    super(`Claude account reserve: ${label} ${why}. ${tail}`);
     this.name = "AccountReserveError";
   }
 }
@@ -114,4 +114,97 @@ export async function reportRateLimit(env: Env, info: RateLimitInfo | undefined,
   } catch (error) {
     return `usage reading for ${id} was not recorded: ${error instanceof Error ? error.message : String(error)}`;
   }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// A session never stalls on a refused reserve: it moves to the next Claude account the router would pick.
+// The operator's rule: a lent plan is a spill; at its floor (or when its usage is unreadable) work goes back to
+// the own plans automatically. The session stops only when no Claude account is eligible, naming every cause.
+// ---------------------------------------------------------------------------------------------------------------
+
+export type AccountOverrides = Record<string, string | undefined>;
+export interface ResolvedAccount {
+  /** Environment keys to layer over the request's environment (undefined deletes a key). Absent: stay as launched. */
+  overrides?: AccountOverrides;
+  /** One-line, user-visible notice, set only on the request that moved the session. */
+  notice?: string;
+}
+
+const NO_ACCOUNT_TAIL = "No further request is sent (quota exceeded for this session). Wait for a reset or sign in another Claude account.";
+const MAX_MOVES = 4;
+const sessionAccounts = new Map<string, AccountOverrides>();
+
+/** Forget the account a session moved to (the session ended); without an id, every session's. */
+export function forgetSessionAccount(sessionId?: string): void {
+  if (sessionId === undefined) sessionAccounts.clear();
+  else sessionAccounts.delete(sessionId);
+}
+
+interface Verdict { ok: boolean; label: string; why: string }
+
+async function reserveVerdict(id: string, call: RouterCall): Promise<Verdict> {
+  let status: any;
+  try {
+    status = await call(["status"]);
+  } catch (error) {
+    throw new Error(`Claude account reserve could not be checked for ${id}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const accounts = status?.providers?.claude?.accounts;
+  const account = Array.isArray(accounts) ? accounts.find((a: any) => a?.id === id) : undefined;
+  const label = typeof account?.label === "string" && account.label ? account.label : id;
+  const reserve = account?.reserve;
+  if (!account || !reserve || typeof reserve !== "object" || reserve.ok === true) return { ok: true, label, why: "" };
+  return { ok: false, label, why: typeof reserve.why === "string" && reserve.why ? reserve.why : "is at its owner's reserve" };
+}
+
+function overridesFor(account: any): AccountOverrides | undefined {
+  if (!account || typeof account.id !== "string" || !ACCOUNT_RE.test(account.id)) return undefined;
+  const launch = account.launchEnv && typeof account.launchEnv === "object" ? account.launchEnv : {};
+  const folder = launch.set && typeof launch.set === "object" ? launch.set.CLAUDE_CONFIG_DIR : undefined;
+  if (folder !== undefined && (typeof folder !== "string" || !folder.startsWith("/"))) return undefined;
+  // PI_CLAUDE_CODE_CONFIG_DIR would otherwise win over CLAUDE_CONFIG_DIR and keep the session on the refused folder.
+  return { ULTRATERM_PROVIDER_ACCOUNT: account.id, CLAUDE_CONFIG_DIR: folder, PI_CLAUDE_CODE_CONFIG_DIR: undefined };
+}
+
+/**
+ * The account this request runs on. A reserved account that is at its floor (or whose usage cannot be read) hands the
+ * session to the router's next eligible Claude account; the choice sticks for the session. Throws AccountReserveError
+ * naming every cause only when no Claude account is eligible.
+ */
+export async function resolveRequestAccount(env: Env, sessionId: string | undefined,
+  call: RouterCall | undefined = defaultRouter(env)): Promise<ResolvedAccount> {
+  let overrides = sessionId ? sessionAccounts.get(sessionId) : undefined;
+  let current: Env = overrides ? { ...env, ...overrides } : env;
+  let id = reservedAccountId(current);
+  if (!id || !call) return { overrides };
+  const causes: string[] = [];
+  const excluded: string[] = [];
+  let firstCause: string | undefined;
+  for (let move = 0; move <= MAX_MOVES; move++) {
+    const verdict = await reserveVerdict(id, call);
+    if (verdict.ok) {
+      if (!firstCause) return { overrides };
+      if (sessionId && overrides) sessionAccounts.set(sessionId, overrides);
+      return { overrides, notice: `${firstCause}; this session continues on ${verdict.label}.` };
+    }
+    firstCause ??= `${verdict.label} ${verdict.why}`;
+    causes.push(`${verdict.label} ${verdict.why}`);
+    excluded.push(id);
+    let picked: any;
+    try {
+      picked = await call(["select", "--provider", "claude", "--exclude", excluded.join(",")]);
+    } catch (error) {
+      causes.push(`the router could not pick another account: ${error instanceof Error ? error.message : String(error)}`);
+      break;
+    }
+    const next = picked?.ok === true ? overridesFor(picked.account) : undefined;
+    if (!next || excluded.includes(next.ULTRATERM_PROVIDER_ACCOUNT!)) {
+      causes.push(typeof picked?.error === "string" && picked.error ? picked.error : "the router offered no other Claude account");
+      break;
+    }
+    overrides = { ...overrides, ...next };
+    current = { ...env, ...overrides };
+    id = next.ULTRATERM_PROVIDER_ACCOUNT!;
+  }
+  throw new AccountReserveError("No Claude account is eligible:", causes.join("; "), NO_ACCOUNT_TAIL);
 }

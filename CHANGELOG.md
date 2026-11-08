@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.23.15 (2026-11-08)
+
+- **A session no longer stalls on a lent Claude plan's reserve.** When the router refuses the session's Claude account
+  (the owner's floor reached, or no current usage reading to check it), the request moves to the next Claude account the
+  router selects (`select --exclude`), prints one line naming the cause and the new account, and carries on; the choice
+  holds for the rest of the session. The session stops only when no Claude account is eligible, and the error then names
+  every cause. 2026-11-08: eight interactive sessions stopped at the floor of the lent plan while both own plans had room.
+
 ## 0.23.14 (2026-11-08)
 
 - **The finish guard catches an ending that announces the rest of the work.** A reply ending "**Next:** I'll add …",
