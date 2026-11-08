@@ -404,7 +404,8 @@ The parent may choose either execution mode:
   unmetered tier launches without a router read); when all of them are out the wave
   runs on the configured `claudeFallbackTier` (ordinary, or substantial for
   mayEdit+allowBash leaves, high/xhigh effort and reviewers), pinned on the
-  least-used Claude account the router shows eligible, and needs an expert
+  eligible Claude account the router is draining first, else the least-used
+  one it shows eligible, and needs an expert
   review. Busy or unknown providers are not exhausted.
   Explicit routes are never rerouted; an exhausted explicit route and a wave with
   no launchable route are refused synchronously, naming every cause. See

@@ -257,7 +257,8 @@ resolves the configured chain:
   official Claude Code subscription CLI (medium effort, or the requested high/xhigh) with no parent re-dispatch: `ordinary` for plain leaves,
   `substantial` for a leaf that may both edit and run a shell, a requested high/xhigh effort, or
   a reviewer. The choice reads only declared capabilities, never task text. The worker is pinned
-  on a router-eligible Claude account (least-used window, then fewest leases). The run records
+  on a router-eligible Claude account (one the router marks `spill.draining` first, then least-used
+  window, then fewest leases). The run records
   `independence: "requires-opus"` (historical value: it needs an expert verification) and a
   `fallbackReason` naming the tier and each cause. The paid `claude-code-api` route is never a
   fallback.

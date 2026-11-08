@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.23.12 (2026-11-07)
+
+- **Holding Backspace clears the input again.** A held Backspace that arrives as a batch of DEL bytes, or as key
+  presses without repeat flags (UltraTerm's terminal sends these), never added up to a hold, so it deleted one
+  character at a time. Both now count, and after 1.5 s the whole input clears. Taps still delete one character.
+- **A lent Claude plan with spare allowance runs first.** When the account router marks a Claude account
+  `spill.draining` (UltraTerm router 1.0.31), the Claude fallback tier pins workers on it before the least-used one.
+
 ## 0.23.11 (2026-11-06)
 
 A local model server can no longer outlive its supervisor.
