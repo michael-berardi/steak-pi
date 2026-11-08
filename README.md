@@ -401,3 +401,7 @@ people find it.
 ### Hold Backspace to clear the input
 
 Holding Backspace for more than 1.5 seconds clears the entire input editor, without interrupting a running turn. To disable this default-on behavior, set `"holdDeleteClearsInput": false` in `~/.pi/agent/steak-pi.json` (or `steak-pi.json` under `PI_CODING_AGENT_DIR`); restart the session after changing it.
+
+---
+
+Part of [Pareto Cybernetics](https://paretocybernetics.com/projects/steak-pi/): free, private, open-source tools for working with AI agents.
