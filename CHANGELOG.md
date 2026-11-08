@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.23.16 (2026-11-08)
+
+- **A background run's completion is no longer lost when the host drops its queued steer.** A completion sent while the
+  parent was busy waited for a receipt that never came if the operator interrupted or submitted first (Escape, a cleared
+  queue, an aborted tool call), so it was never delivered and the bar showed "USAP delivery unconfirmed". At the next
+  boundary where the steer must have landed or been dropped (the agent settling, a session adopting the runtime), a completion with no receipt is sent again, once, and may wake the parent; receipts
+  already observed still prevent duplicates. 2026-11-08: run-f40a1335 finished during a `sleep` the operator's next
+  message aborted.
+
 ## 0.23.15 (2026-11-08)
 
 - **A session no longer stalls on a lent Claude plan's reserve.** When the router refuses the session's Claude account

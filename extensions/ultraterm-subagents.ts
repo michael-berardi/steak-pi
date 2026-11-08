@@ -1694,6 +1694,20 @@ export function createUltratermSubagentsExtension(
       current.deliveryRetry.unref?.();
     };
 
+    /** At a boundary where a queued steer must have landed or been dropped (agent_settled, session adopt; not turn_end:
+     * the host's hasPendingMessages() does not count an extension steer in the agent queue), a completion still awaiting a receipt was dropped by the host (Escape, clearQueue, an aborted tool
+     * call; 2026-11-08 run-f40a1335). Forget it so the next flush re-sends it and may wake the parent again; observed
+     * receipts are honored first, so nothing is delivered twice. */
+    const reclaimLostSteers = (current: SessionRuntime): void => {
+      if (!current.awaitingReceipt.size) return;
+      const observed = observedCompletionIds(current.statusContext) ?? new Set<string>();
+      for (const id of [...current.awaitingReceipt]) {
+        if (observed.has(id)) continue;
+        current.awaitingReceipt.delete(id);
+        current.wakeAttempted.delete(id);
+      }
+    };
+
     /** Busy completions steer into the current turn. Idle background completions
      * request at most one new turn per flush; receipts prevent repeat delivery. */
     const flushCompletions = (current: SessionRuntime): void => {
@@ -1786,6 +1800,7 @@ export function createUltratermSubagentsExtension(
       if (runtime && !runtime.closed && ownsContext(runtime, ctx)) {
         runtime.statusContext = ctx;
         setStatus(runtime, ctx);
+        reclaimLostSteers(runtime);
         flushCompletions(runtime);
         return;
       }
@@ -1850,6 +1865,7 @@ export function createUltratermSubagentsExtension(
       runtime.statusContext = ctx;
       runtime.agentIdle = true;
       runtime.deliveryRetries = 0;
+      reclaimLostSteers(runtime);
       flushCompletions(runtime);
     });
 

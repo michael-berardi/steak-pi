@@ -1138,7 +1138,8 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
     await flush();
     expect(h.messages).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(300);
-    await h.handlers.get("agent_settled")!({}, h.ctx);
+    h.ctx.hasPendingMessages = () => true;  // the host still holds the queued steer: the receipt is only delayed
+    await h.handlers.get("turn_end")!({}, h.ctx);
     expect(h.messages).toHaveLength(1);
     receipts.push({ type: "custom_message", ...h.messages[0].message });
     await vi.advanceTimersByTimeAsync(100);
@@ -1165,6 +1166,29 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
     await h.handlers.get("session_shutdown")!({}, h.ctx);
   });
 
+  it("a steer the host dropped is re-sent once at agent_settled and clears the unconfirmed status (2026-11-08)", async () => {
+    vi.useFakeTimers();
+    const receipts: any[] = [];
+    const h = harness(() => async () => ({ state: "done", output: "ready", turns: 1, usage: emptyUsage() }));
+    h.ctx.sessionManager = { ...h.ctx.sessionManager, getEntries: () => receipts };
+    h.ctx.isIdle = () => false;  // busy parent: the completion goes out as a steer
+    await h.tools.get("ultraterm_subagents").execute("call", { goal: "dropped", background: true, tasks: [{ label: "one", task: "one" }] }, undefined, undefined, h.ctx);
+    await flush();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(h.messages).toHaveLength(1);  // the host then drops the queued steer (abort / clearQueue): no receipt ever lands
+    h.ctx.isIdle = () => true;
+    await h.handlers.get("agent_settled")!({}, h.ctx);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(h.messages).toHaveLength(2);  // re-sent exactly once
+    receipts.push({ type: "custom_message", ...h.messages[1].message });
+    await h.handlers.get("agent_settled")!({}, h.ctx);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(h.messages).toHaveLength(2);
+    expect(h.statuses.at(-1)).toBeUndefined();
+    expect(vi.getTimerCount()).toBe(0);
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+
   it("bounds unconfirmed receipt checks and surfaces the retained result", async () => {
     vi.useFakeTimers();
     const h = harness(() => async () => ({ state: "done", output: "ready", turns: 1, usage: emptyUsage() }));
@@ -1175,8 +1199,8 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
     expect(h.messages).toHaveLength(1);
     expect(vi.getTimerCount()).toBe(0);
     expect(h.statuses.some((text) => text?.includes("delivery unconfirmed"))).toBe(true);
-    await h.handlers.get("agent_settled")!({}, h.ctx);
-    expect(h.messages).toHaveLength(1);
+    await h.handlers.get("agent_settled")!({}, h.ctx);  // settled with no receipt: the host dropped the steer, so it is re-sent
+    expect(h.messages).toHaveLength(2);
     await h.handlers.get("session_shutdown")!({}, h.ctx);
     expect(vi.getTimerCount()).toBe(0);
   });
