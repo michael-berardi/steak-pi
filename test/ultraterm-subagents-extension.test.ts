@@ -1189,6 +1189,32 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
     await h.handlers.get("session_shutdown")!({}, h.ctx);
   });
 
+  it("a steer queued in the agent after agent_end is not re-sent at the agent_settled that precedes its run (0.23.18)", async () => {
+    vi.useFakeTimers();
+    const receipts: any[] = [];
+    const h = harness(() => async () => ({ state: "done", output: "ready", turns: 1, usage: emptyUsage() }));
+    h.ctx.sessionManager = { ...h.ctx.sessionManager, getEntries: () => receipts };
+    await h.handlers.get("session_start")!({}, h.ctx);
+    await h.handlers.get("agent_start")!({}, h.ctx);
+    h.ctx.isIdle = () => false;
+    await h.handlers.get("agent_end")!({}, h.ctx);  // the loop already drained its queue: a steer sent now waits for a fresh run
+    await h.tools.get("ultraterm_subagents").execute("call", { goal: "late", background: true, tasks: [{ label: "one", task: "one" }] }, undefined, undefined, h.ctx);
+    await flush();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(h.messages).toHaveLength(1);
+    h.ctx.isIdle = () => true;
+    await h.handlers.get("agent_settled")!({}, h.ctx);  // still queued in the agent, no receipt yet: reclaiming would deliver it twice
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(h.messages).toHaveLength(1);
+    await h.handlers.get("agent_start")!({}, h.ctx);  // the queued steer starts the next run and lands
+    receipts.push({ type: "custom_message", ...h.messages[0].message });
+    await h.handlers.get("agent_end")!({}, h.ctx);
+    await h.handlers.get("agent_settled")!({}, h.ctx);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(h.messages).toHaveLength(1);
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+
   it("bounds unconfirmed receipt checks and surfaces the retained result", async () => {
     vi.useFakeTimers();
     const h = harness(() => async () => ({ state: "done", output: "ready", turns: 1, usage: emptyUsage() }));

@@ -8,6 +8,7 @@ import {
   closeClaudeProcesses,
   discoverClaudeModels,
   getClaudeStatus,
+  processEnvironment,
   LOGIN_HINT,
   resetClaudeStatusCache,
   rewriteInitialRequest,
@@ -462,4 +463,23 @@ test("Claude Code's own loggedIn false is still a logout", async () => {
     assert.equal(status.loggedIn, false);
     assert.equal(status.detail, LOGIN_HINT);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("an account move's env overrides, including explicit undefined, leave the refused config folder", () => {
+  const saved = { c: process.env.CLAUDE_CONFIG_DIR, p: process.env.PI_CLAUDE_CODE_CONFIG_DIR };
+  try {
+    process.env.CLAUDE_CONFIG_DIR = "/home/x/.claude-refused";
+    process.env.PI_CLAUDE_CODE_CONFIG_DIR = "/home/x/.claude-refused";
+    const moved = processEnvironment({ CLAUDE_CONFIG_DIR: "/home/x/.claude-b", PI_CLAUDE_CODE_CONFIG_DIR: undefined }, {});
+    assert.equal(moved.CLAUDE_CONFIG_DIR, "/home/x/.claude-b");
+    assert.equal(moved.PI_CLAUDE_CODE_CONFIG_DIR, undefined);
+    // A move to the primary default folder clears both variables instead of inheriting them from the process.
+    const primary = processEnvironment({ CLAUDE_CONFIG_DIR: undefined, PI_CLAUDE_CODE_CONFIG_DIR: undefined }, {});
+    assert.equal(primary.CLAUDE_CONFIG_DIR, undefined);
+    assert.equal(primary.PI_CLAUDE_CODE_CONFIG_DIR, undefined);
+  } finally {
+    for (const [key, value] of [["CLAUDE_CONFIG_DIR", saved.c], ["PI_CLAUDE_CODE_CONFIG_DIR", saved.p]] as const) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
 });

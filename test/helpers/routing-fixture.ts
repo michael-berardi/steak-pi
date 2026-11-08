@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 // Synthetic routing fixture values for tests. Steak Pi no longer ships these choices: they
 // are the operator fixture in test/fixtures/routing.json and paid-routes.json (wired by
 // vitest.config.ts), re-exported here under the names the former built-ins had so the
@@ -11,8 +12,8 @@ import { configuredWorkerProfiles } from "../../src/subagents/model-selection.ts
 
 type Model = NonNullable<ExtensionContext["model"]>;
 
-export const ROUTING_FIXTURE_PATH = new URL("../fixtures/routing.json", import.meta.url).pathname;
-export const PAID_ROUTES_FIXTURE_PATH = new URL("../fixtures/paid-routes.json", import.meta.url).pathname;
+export const ROUTING_FIXTURE_PATH = fileURLToPath(new URL("../fixtures/routing.json", import.meta.url));
+export const PAID_ROUTES_FIXTURE_PATH = fileURLToPath(new URL("../fixtures/paid-routes.json", import.meta.url));
 export const routingFixture = (): Record<string, unknown> => JSON.parse(readFileSync(ROUTING_FIXTURE_PATH, "utf8"));
 
 export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";

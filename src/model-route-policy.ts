@@ -51,6 +51,8 @@ export interface ChainFallbackOptions {
   chain: readonly WorkerRouteStep[];
   requireImages?: boolean;
   approvePaidRoute?: PaidApproval;
+  /** A step this run may never hop to (a noClaude project's Claude tier). Applied on every hop. */
+  skipRoute?: (step: WorkerRouteStep) => boolean;
   registry: ChainRegistry;
   /** `cause` is the error text of the route that was left, bounded by the caller. */
   onFallback?: (from: WorkerRouteStep, to: Model, cause?: string) => void;
@@ -538,6 +540,7 @@ export function nextChainRoute(registry: ChainRegistry, chain: readonly WorkerRo
   if (start < 0) return undefined;
   const approve = options.approvePaidRoute ?? AUTOMATIC_CHAIN_APPROVAL;
   for (const step of chain.slice(start + 1)) {
+    if (options.skipRoute?.(step)) continue;
     const model = eligibleChainRoute(registry, step, options.requireImages === true, approve);
     if (model) return model;
   }
@@ -590,7 +593,8 @@ export function withPreOutputChainFallback(
             const failed: WorkerRouteStep = { provider: event.error.provider ?? current.provider, id: event.error.model ?? current.id };
             attempted.add(`${failed.provider}/${failed.id}`);
             const candidate = nextChainRoute(fallback.registry, fallback.chain, failed,
-              { requireImages: fallback.requireImages, approvePaidRoute: fallback.approvePaidRoute });
+              { requireImages: fallback.requireImages, approvePaidRoute: fallback.approvePaidRoute,
+                ...(fallback.skipRoute ? { skipRoute: fallback.skipRoute } : {}) });
             const stream = candidate && !attempted.has(`${candidate.provider}/${candidate.id}`) ? invoke(candidate) : undefined;
             if (candidate && stream) {
               hop = { model: candidate, stream, cause: event.error.errorMessage ?? "" };

@@ -798,6 +798,10 @@ interface SessionRuntime {
   /** Background completions awaiting one coalesced delivery. */
   completionBuffer: Array<{ runId: string; text: string }>;
   awaitingReceipt: Set<string>;
+  /** True between agent_end and the next agent_start: the agent loop has drained its queue, so a steer sent now stays queued in the agent. */
+  runEnded: boolean;
+  /** Steers sent after agent_end. Still queued in the agent (the host exposes no view of that queue), they must not be reclaimed. */
+  lateSteers: Set<string>;
   /** Terminal hub observations and native receipts suppress future delivery. */
   acknowledgedCompletions: Set<string>;
   /** A rejected trigger is never attempted again for the same completion. */
@@ -1634,6 +1638,8 @@ export function createUltratermSubagentsExtension(
         closed: false,
         completionBuffer: [],
         awaitingReceipt: new Set(),
+        runEnded: false,
+        lateSteers: new Set(),
         acknowledgedCompletions: new Set(),
         wakeAttempted: new Set(),
         // Captured per native session; batch hosts can opt out before startup.
@@ -1742,7 +1748,7 @@ export function createUltratermSubagentsExtension(
       if (!current.awaitingReceipt.size) return;
       const observed = observedCompletionIds(current.statusContext) ?? new Set<string>();
       for (const id of [...current.awaitingReceipt]) {
-        if (observed.has(id)) continue;
+        if (observed.has(id) || current.lateSteers.has(id)) continue;
         current.awaitingReceipt.delete(id);
         current.wakeAttempted.delete(id);
       }
@@ -1815,7 +1821,11 @@ export function createUltratermSubagentsExtension(
               catch { retryDelivery(current); return; }
             }
           }
-          for (const item of batch) if (!current.acknowledgedCompletions.has(item.runId)) current.awaitingReceipt.add(item.runId);
+          for (const item of batch) {
+            if (current.acknowledgedCompletions.has(item.runId)) continue;
+            current.awaitingReceipt.add(item.runId);
+            if (current.runEnded) current.lateSteers.add(item.runId);
+          }
           // Do not manufacture a receipt for hosts that queue submissions.
           acknowledge(observedCompletionIds(current.statusContext) ?? new Set());
         }
@@ -1911,7 +1921,11 @@ export function createUltratermSubagentsExtension(
     });
 
     pi.on("agent_start", async (_event, ctx) => {
-      if (runtime && ownsContext(runtime, ctx)) { runtime.statusContext = ctx; runtime.agentIdle = false; runtime.wakePending = false; }
+      if (runtime && ownsContext(runtime, ctx)) { runtime.statusContext = ctx; runtime.agentIdle = false; runtime.wakePending = false; runtime.runEnded = false; runtime.lateSteers.clear(); }
+    });
+
+    pi.on("agent_end", async (_event, ctx) => {
+      if (runtime && ownsContext(runtime, ctx)) runtime.runEnded = true;
     });
 
     // A steer queued while the parent was busy lands at a step boundary: confirm its receipt there instead of waiting for the

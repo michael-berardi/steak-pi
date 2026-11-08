@@ -493,6 +493,8 @@ function chainRuntime(options: {
   scripts: Record<string, (model: Model) => RouteEvent[]>;
   chain: readonly WorkerRouteStep[];
   approve?: (model: Model) => boolean;
+  /** Extra fallback options (the project policy's skipRoute / approval from workerChainFallback). */
+  extra?: { approvePaidRoute?: (model: Model) => boolean; skipRoute?: (step: WorkerRouteStep) => boolean };
 }) {
   const native = new Map<string, Provider>();
   const calls = new Map<string, ReturnType<typeof vi.fn>>();
@@ -525,7 +527,8 @@ function chainRuntime(options: {
   const installed = createRegistryGuard(options.approve ?? (() => false), {
     chain: options.chain,
     ...(options.chain === DEFAULT_MULTIMODAL_WORKER_CHAIN ? { requireImages: true } : {}),
-    approvePaidRoute: options.approve ?? (() => false),
+    approvePaidRoute: options.extra?.approvePaidRoute ?? options.approve ?? (() => false),
+    ...(options.extra?.skipRoute ? { skipRoute: options.extra.skipRoute } : {}),
     registry: registry as never,
     onFallback: (from, to) => fallbacks.push({ from, to }),
   });
@@ -799,5 +802,54 @@ describe("synthetic: per-profile Token Plan chain heads (0.8.1)", () => {
     // A Pro-served run recorded on the Flash chain is not a step of it: no hop.
     expect(workerChainFallback({ source: "chain", images: false, chainRoutes: ["xiaomi/mimo-v2.6-flash", "openai-codex/gpt-6.1-terra"] }, proModel)).toBeUndefined();
     expect(workerChainFallback({ source: "override", images: false }, proModel)).toBeUndefined();
+  });
+});
+
+describe("project policy carried into every mid-run hop (0.23.18)", () => {
+  const goModel = chainModels.goPrimary;
+  const terra = chainModels.sol;
+  const openRouter = chainModels.openRouter;
+  const claude = { ...chainModels.sol, provider: "anthropic", id: "claude-opus-5-5", name: "Claude Opus 5.5", api: "anthropic-messages", baseUrl: "https://api.anthropic.com" } as Model;
+  const failing = (model: Model) => [routeStart(model), routeFail(model, "503 service unavailable")];
+  const ok = (model: Model) => [routeStart(model), ...routeText(model, "served"), routeDone(model)];
+
+  it("a planOnly dispatch never hops from a failed plan route to the paid OpenRouter step", async () => {
+    const policy = { planOnly: "planOnlyProjects entry" };
+    const fallback = workerChainFallback({ source: "chain", images: false }, goModel as never, undefined, policy)!;
+    // The hop's approval is the policy's refusal, not the shared automatic grant, and it denies the paid step outright.
+    expect(fallback.approvePaidRoute).not.toBe(workerChainFallback({ source: "chain", images: false }, goModel as never)!.approvePaidRoute);
+    expect(fallback.approvePaidRoute!(openRouter as never)).toBe(false);
+    const runtime = chainRuntime({
+      models: [goModel, terra, openRouter],
+      scripts: { "opencode-go": failing, "openai-codex": failing, openrouter: ok },
+      chain: fallback.chain, approve: () => true, extra: { approvePaidRoute: fallback.approvePaidRoute as never },
+    });
+    const events = await drain(runtime.registry.getProvider("opencode-go")!.streamSimple(goModel, emptyContext(), { sessionId: "plan-only" } as never));
+    expect(runtime.calls.get("openrouter")!.mock.calls).toHaveLength(0);
+    expect(runtime.fallbacks.map((h) => h.to.provider)).toEqual(["openai-codex"]);
+    expect(events.at(-1)?.type).toBe("error");
+    // Control: with the paid step approved (an operator grant, no planOnly policy) the same run does reach it.
+    const open = { ...workerChainFallback({ source: "chain", images: false }, goModel as never)!, approvePaidRoute: () => true };
+    const unrestricted = chainRuntime({
+      models: [goModel, terra, openRouter],
+      scripts: { "opencode-go": failing, "openai-codex": failing, openrouter: ok },
+      chain: open.chain, approve: () => true, extra: { approvePaidRoute: open.approvePaidRoute as never },
+    });
+    await drain(unrestricted.registry.getProvider("opencode-go")!.streamSimple(goModel, emptyContext(), { sessionId: "open" } as never));
+    expect(unrestricted.calls.get("openrouter")!.mock.calls).toHaveLength(1);
+  });
+
+  it("a noClaude dispatch never hops onto a Claude route", async () => {
+    const base = workerChainFallback({ source: "chain", images: false }, goModel as never, undefined, { noClaude: "noClaudeProjects entry" })!;
+    expect(base.skipRoute?.({ provider: "anthropic", id: "claude-opus-5-5" })).toBe(true);
+    expect(base.skipRoute?.({ provider: "opencode-go", id: "deepseek-v4.1-flash" })).toBe(false);
+    const chain = [GO_STEP, { provider: "anthropic", id: "claude-opus-5-5" }];
+    const run = async (extra: { skipRoute?: (step: WorkerRouteStep) => boolean }) => {
+      const runtime = chainRuntime({ models: [goModel, claude], scripts: { "opencode-go": failing, anthropic: ok }, chain, approve: () => true, extra });
+      await drain(runtime.registry.getProvider("opencode-go")!.streamSimple(goModel, emptyContext(), { sessionId: "no-claude" } as never));
+      return runtime.calls.get("anthropic")!.mock.calls.length;
+    };
+    expect(await run({ skipRoute: base.skipRoute as never })).toBe(0);
+    expect(await run({})).toBe(1);
   });
 });

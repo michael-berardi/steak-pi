@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.23.18 (2026-11-08)
+
+- **A mid-run hop obeys the project policy.** The pre-output fallback hop of a chain worker used the shared automatic
+  paid-route grant, so a planOnly project's worker that failed on a plan route before its first output could hop onto
+  the paid OpenRouter step. The dispatch's resolved policy now travels into every hop: a planOnly run never hops onto a
+  paid route and a noClaude run never hops onto a Claude route.
+- **A steer queued after the agent's last turn is not delivered twice.** The lost-steer reclaim at `agent_settled`
+  skips a completion steered after `agent_end`: the host exposes no view of the agent's queue, and such a steer is
+  still queued and starts the next run. The reclaim still re-sends a steer sent during a run that never landed.
+- Tested, not changed: a session moved to another Claude account leaves the refused config folder (explicit
+  `CLAUDE_CONFIG_DIR` / `PI_CLAUDE_CODE_CONFIG_DIR` `undefined` overrides reach the launch environment).
+
 ## 0.23.17 (2026-11-08)
 
 - **A parent can no longer aim at a dead route.** The implicit route now applies the operator's coordinator policy

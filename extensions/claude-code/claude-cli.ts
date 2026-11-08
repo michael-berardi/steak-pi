@@ -542,7 +542,7 @@ function conflictingEnvironment(env: Record<string, string>): string[] {
   return conflicts;
 }
 
-function processEnvironment(
+export function processEnvironment(
   input: Record<string, string | undefined> | undefined,
   extraBody: Record<string, unknown>,
 ): Record<string, string> {

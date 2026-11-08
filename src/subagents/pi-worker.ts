@@ -1,6 +1,7 @@
 import { isCatalogExtraRoute, registerCatalogExtras } from "../catalog-extras.ts";
 import { routingConfigOrEmpty } from "../routing-config.ts";
-import { CODEX_QUOTA, isQuotaTierRoute, quotaTiers } from "./provider-quota.ts";
+import { resolveProjectPolicy, type ProjectPolicy } from "./project-policy.ts";
+import { CLAUDE_QUOTA, CODEX_QUOTA, isQuotaTierRoute, quotaTiers } from "./provider-quota.ts";
 import {
   GO_ACCOUNT_LEASE_RENEW_INTERVAL_MS,
   GO_ACCOUNT_LEASE_TTL_SECONDS,
@@ -907,6 +908,10 @@ function relaySteeringText(envelope: Parameters<NonNullable<Parameters<RelayBrok
   ].join("\n");
 }
 
+/** A chain step on Claude: the claude-code provider, the Anthropic provider, or a route the operator put in the Claude quota tier. */
+const isClaudeStep = (step: WorkerRouteStep): boolean => step.provider === "claude-code" || step.provider === "anthropic"
+  || /^claude[-_]/i.test(step.id) || isQuotaTierRoute(`${step.provider}/${step.id}`, CLAUDE_QUOTA);
+
 /** FINAL automatic chains are the only order a pre-output runtime hop may follow,
  * and only a selection the executor froze *because* it is an automatic chain step
  * (`source: "chain"`) may hop. An explicit `model`/`profile` choice, a
@@ -918,7 +923,7 @@ function relaySteeringText(envelope: Parameters<NonNullable<Parameters<RelayBrok
  * (the operator's `expertReview`) by the default reviewer chain: a failed expert
  * review is reported honestly, never silently downgraded to a weaker model. */
 export function workerChainFallback(selection: Pick<ModelSelection, "source" | "images" | "chainRoutes" | "taskClass"> | undefined,
-  model: PiModel, onFallback?: ChainFallbackInput["onFallback"]): ChainFallbackInput | undefined {
+  model: PiModel, onFallback?: ChainFallbackInput["onFallback"], policy: ProjectPolicy = {}): ChainFallbackInput | undefined {
   if (selection?.source !== "chain") return undefined;
   const images = selection.images === true;
   // A run a task class steered hops along that class's ranked chain (the best remaining route first), and only
@@ -932,7 +937,10 @@ export function workerChainFallback(selection: Pick<ModelSelection, "source" | "
     requireImages: images,
     // The same exact-route allowlist grant the dispatch boundary used; re-read on
     // every hop so a revoked entry stops spending mid-run.
-    approvePaidRoute: AUTOMATIC_CHAIN_APPROVAL,
+    // A planOnly project never hops onto a paid route and a noClaude project never onto Claude: the same
+    // policy the dispatch applied, carried into every mid-run hop.
+    approvePaidRoute: policy.planOnly !== undefined ? () => false : AUTOMATIC_CHAIN_APPROVAL,
+    ...(policy.noClaude !== undefined ? { skipRoute: isClaudeStep } : {}),
     ...(onFallback ? { onFallback } : {}),
   };
 }
@@ -1127,7 +1135,8 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
         await accountCommand(["bind", "--lease", account.lease, "--session", task.id]);
         signal.throwIfAborted();
       }
-      const chain = account ? undefined : workerChainFallback(run.selection, runtime.model, chainFallback);
+      const chain = account ? undefined : workerChainFallback(run.selection, runtime.model, chainFallback,
+        resolveProjectPolicy(run.cwd, task.ownedPaths ?? []));
       const sdk = options.sessionFactory ? undefined : await initialize(loadPiSdk());
       signal.throwIfAborted();
       const nativeManagers = sdk ?? managers;
