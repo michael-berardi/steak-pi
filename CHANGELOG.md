@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.23.13 (2026-11-08)
+
+- **`steak-pi routing check [file]`.** Validates a `routing.json` with the exact parser every Pi turn uses, and names the
+  bad key. A write that fails it would stop every pane on its next turn (2026-11-08: task-class notes past 400 characters).
+
 ## 0.23.12 (2026-11-07)
 
 - **Holding Backspace clears the input again.** A held Backspace that arrives as a batch of DEL bytes, or as key

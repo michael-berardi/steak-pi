@@ -302,6 +302,13 @@ cmd_usap_api() {
   exec node "$PKG_ROOT/scripts/usap-claude-api.ts" "$@"
 }
 
+cmd_routing() {
+  command -v node >/dev/null 2>&1 || die "node not found on PATH."
+  [ "${1:-}" = check ] || die "usage: steak-pi routing check [routing.json]"
+  shift
+  exec node --no-warnings "$PKG_ROOT/src/routing-check.ts" "$@"
+}
+
 cmd_local() {
   command -v node >/dev/null 2>&1 || die "node not found on PATH."
   exec node --no-warnings "$PKG_ROOT/src/local/main.ts" "$@"
@@ -316,9 +323,10 @@ case "${1:-help}" in
   run) shift; cmd_run "$@";;
   usap-api) shift; cmd_usap_api "$@";;
   local) shift; cmd_local "$@";;
+  routing) shift; cmd_routing "$@";;
   env) run_env; say "NODE_COMPILE_CACHE=$NODE_COMPILE_CACHE"; say "MALLOC_ARENA_MAX=$MALLOC_ARENA_MAX"; say "NODE_OPTIONS=$NODE_OPTIONS";;
   help|--help|-h|*)
-    say "usage: steak-pi <install|update|status|version|remove|run|usap-api|local|finish-guard-hook|env>"
+    say "usage: steak-pi <install|update|status|version|remove|run|usap-api|local|routing|finish-guard-hook|env>"
     say "  install   add Steak Pi to the pi coding agent (or re-point at this copy)"
     say "  update    install the latest release (--check only reports whether one is available)"
     say "  status    show installed versions and management mode"
@@ -327,6 +335,7 @@ case "${1:-help}" in
     say "  run       launch pi with Steak Pi's Node runtime defaults (args pass through)"
     say "  usap-api  run explicit Claude API USAP waves: admit | dispatch <wave.json> | resume <run-id>"
     say "  local     slot in a local GGUF model: add <gguf|owner/repo:quant> | start | stop | status | ensure <id> | release <id>"
+    say "  routing   check [file]: validate routing.json exactly as every Pi turn does (run it before saving an edit)"
     say "  finish-guard-hook  Claude Code Stop hook: block a stop while requested work is open (reads hook JSON on stdin)"
     say "  env       print the runtime defaults 'run' would apply"
     [ -n "${1:-}" ] && [ "$1" != "help" ] && die "unknown command '$1'"
