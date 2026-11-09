@@ -16,6 +16,11 @@ export interface DiscoveredClaudeModel {
   supportsAdaptiveThinking?: boolean;
   supportsFastMode?: boolean;
   supportsAutoMode?: boolean;
+  /** Context window the CLI serves for this row. A shipped row states it when Pi's built-in
+   * Anthropic metadata has no entry for the id yet, so the model registers with its real window. */
+  contextWindow?: number;
+  /** Output-token ceiling for the same reason. */
+  maxTokens?: number;
 }
 
 // Pi exposes providers/all to extensions, but not individual generated model files.
@@ -26,7 +31,7 @@ const NATIVE_ROUTE_BY_ID = new Map<string, string>();
 const NATIVE_TOOL_CHANGES_BY_ID = new Map<string, boolean>();
 const ADAPTIVE_THINKING_BY_ID = new Map<string, boolean>();
 
-const FALLBACK_DISCOVERY: DiscoveredClaudeModel[] = [
+export const FALLBACK_DISCOVERY: DiscoveredClaudeModel[] = [
   {
     value: "default",
     resolvedModel: "claude-opus-5-5[1m]",
@@ -50,14 +55,18 @@ const FALLBACK_DISCOVERY: DiscoveredClaudeModel[] = [
     supportsAutoMode: true,
   },
   {
-    value: "claude-fable-5-1[1m]",
-    resolvedModel: "claude-fable-5-1",
+    value: "claude-fable-5-2[1m]",
+    resolvedModel: "claude-fable-5-2",
     displayName: "Fable",
-    description: "Fable 5.1 · Most capable for the hardest and longest-running tasks",
+    description: "Fable 5.2 · Most capable for the hardest and longest-running tasks",
     supportsEffort: true,
     supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
     supportsAdaptiveThinking: true,
     supportsAutoMode: true,
+    // Pi's built-in Anthropic metadata has no Fable 5.2 entry yet: the row states the window and
+    // output budget the CLI serves, so the model registers with 1M context rather than a default.
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
   },
   {
     value: "sonnet",
@@ -82,7 +91,7 @@ const ALIASES: Record<string, string> = {
   haiku: "claude-haiku-5-5",
   "claude-haiku-4-5": "claude-haiku-4-5-20251001",
   opus: "claude-opus-5-5",
-  fable: "claude-fable-5-1",
+  fable: "claude-fable-5-2",
 };
 
 function withoutContextSuffix(model: string): string {
@@ -109,8 +118,8 @@ function fallbackModel(info: DiscoveredClaudeModel, id: string): ClaudeCodeModel
     ...(thinkingLevelMap ? { thinkingLevelMap } : {}),
     input: ["text", "image"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: /\b1M context\b/iu.test(info.description) ? 1_000_000 : 200_000,
-    maxTokens: 64_000,
+    contextWindow: info.contextWindow ?? (/\b1M context\b/iu.test(info.description) ? 1_000_000 : 200_000),
+    maxTokens: info.maxTokens ?? 64_000,
   };
 }
 
@@ -144,6 +153,14 @@ export function modelFromDiscovery(info: DiscoveredClaudeModel): ClaudeCodeModel
 }
 
 export const CLAUDE_CODE_MODELS: ClaudeCodeModel[] = FALLBACK_DISCOVERY.map(modelFromDiscovery);
+
+/** Whether the provider lists this exact model id: a shipped catalog row, or an id the CLI reported
+ * live (each discovery registers through {@link modelFromDiscovery}). No alias or fuzzy match. */
+export function isClaudeCodeCatalogModel(model: string): boolean {
+  const id = withoutContextSuffix(model);
+  if (!id || id === "default") return false;
+  return CLAUDE_CODE_MODELS.some((known) => known.id === id) || NATIVE_ROUTE_BY_ID.has(id);
+}
 
 export function nativeModel(model: string): string {
   const direct = NATIVE_ROUTE_BY_ID.get(model);

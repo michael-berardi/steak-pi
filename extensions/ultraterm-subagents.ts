@@ -17,8 +17,8 @@ import { SubagentCoordinator, CoordinatorWaitTimeoutError } from "../src/subagen
 import { normalizeDispatch, SubagentPolicyError } from "../src/subagents/policy.ts";
 import { assertKnownClaudeAccount, resolveClaudeAccount } from "../src/subagents/claude-account.ts";
 import { assertActiveModelSelector } from "../src/retired-model-selection.ts";
-import { loadWorkerProfiles, resolveWorkerSelection, resolveClaudeCodeSelection, assertClaudeCodeImageAdmission, claudeCodeModelOf, claudeCodeModelName, claudeCodeRouteOfProfile, claudeFallbackTier, defaultClaudeCodeRoute, isClaudeCodeEffort, resolveClaudeCodeEffort, CLAUDE_CODE_EFFORTS, CLAUDE_CODE_ROUTES, type ClaudeFallbackTier, type WorkerProfile } from "../src/subagents/model-selection.ts";
-import { admitClaudeApiRoute, anyClaudeRouteModelOf, claudeApiConcurrency, claudeApiModelOf, CLAUDE_API_ROUTES, formatClaudeApiReceipt, isClaudeApiRoute, resolveClaudeApiSelection, stampClaudeApiRun } from "../src/subagents/claude-api-route.ts";
+import { loadWorkerProfiles, resolveWorkerSelection, resolveClaudeCodeSelection, assertClaudeCodeImageAdmission, admitClaudeCodeRoute, claudeCodeModelName, claudeCodeRouteModel, claudeCodeRouteOfProfile, claudeFallbackTier, defaultClaudeCodeRoute, isClaudeCodeEffort, resolveClaudeCodeEffort, CLAUDE_CODE_EFFORTS, CLAUDE_CODE_ROUTES, type ClaudeFallbackTier, type WorkerProfile } from "../src/subagents/model-selection.ts";
+import { admitClaudeApiRoute, claudeApiConcurrency, claudeApiModelOf, CLAUDE_API_ROUTES, formatClaudeApiReceipt, isClaudeApiRoute, resolveClaudeApiSelection, stampClaudeApiRun } from "../src/subagents/claude-api-route.ts";
 import { AUTOMATIC_CHAIN_APPROVAL, NoChainRouteError, defaultWorkerChain, isDefaultChainExhausted, onlyWhenSkipReason, type ChainOptions, type TaskClassStep, type TaskClassWalk, type WorkerRouteStep } from "../src/model-route-policy.ts";
 import { analyzeWaveClasses, applyInferredTaskClasses, configuredTaskClass, ignoredTaskClass, resolveTaskClassWalk, type WaveTaskClass } from "../src/subagents/task-class.ts";
 import { RouteEvidenceStore, routeEvidencePath, recordSettledTask } from "../src/subagents/route-evidence.ts";
@@ -1038,8 +1038,9 @@ export function reviewFallbackReceipt(run: RunRecord, directory?: string): strin
 }
 
 const tierNameOf = (route: string): string => {
-  const model = claudeCodeModelOf(route);
-  return model ? claudeCodeModelName(model) : route;
+  // A route the catalog or an operator profile serves carries a readable name too (no release-time table).
+  const model = claudeCodeRouteModel(route);
+  return model === undefined ? route : claudeCodeModelName(model);
 };
 
 export function renderRunResult(run: RunRecord, limit = MAX_TOOL_CONTENT): string {
@@ -1143,6 +1144,8 @@ export function defaultWorkerRunner(
   claudeSpawn?: ClaudeSpawn,
   accountCommand?: AccountCommand,
   sessionFactory?: PiWorkerSessionFactory,
+  /** Durable admission for a `claude-code/<model>` run (pins, catalog and the operator's profiles). */
+  claudeAdmit?: (route: string | undefined) => string | undefined,
 ): WorkerRunner {
   let piRunner: Promise<WorkerRunner> | undefined;
   let claudeRunner: Promise<WorkerRunner> | undefined;
@@ -1154,7 +1157,7 @@ export function defaultWorkerRunner(
           if (typeof factory !== "function") {
             throw new Error("claude-worker module does not export createClaudeWorkerRunner");
           }
-          return factory({ relay, ...(claudeSpawn ? { spawn: claudeSpawn } : {}), accountCommand });
+          return factory({ relay, ...(claudeSpawn ? { spawn: claudeSpawn } : {}), accountCommand, ...(claudeAdmit ? { admit: claudeAdmit } : {}) });
         });
       const runner = await claudeRunner.catch((error) => { claudeRunner = undefined; throw error; });
       const result = await runner(context);
@@ -1214,6 +1217,17 @@ export function createUltratermSubagentsExtension(
   return function ultratermSubagentsExtension(pi: ExtensionAPI): void {
     let runtime: SessionRuntime | undefined;
     setSubagentCountReader(() => runtime && !runtime.closed ? runtime.coordinator.activeRuns().length : 0);
+    // A claude-code/<model> route is admitted from three sources, never a hard-coded model list: the
+    // adapter's pinned routes, the Claude Code model catalog (shipped plus ids the CLI reports live) and
+    // an operator-registered worker/launch profile that names it. Loaded lazily so a bad manifest fails
+    // only where a route is decided.
+    const claudeProfiles = () => dependencies.profiles ?? loadWorkerProfiles();
+    const claudeAdmission = (model: string | undefined) => admitClaudeCodeRoute(model, claudeProfiles());
+    /** The model id behind a route the durable admission serves, or undefined for a route it refuses. */
+    const claudeAdmittedModel = (route: string | undefined): string | undefined => {
+      const admission = claudeAdmission(route);
+      return admission !== undefined && "model" in admission ? admission.model : undefined;
+    };
     let clearedStatusUi: ExtensionContext["ui"] | undefined;
     // Replacements share leases with any late-disposing prior initialization.
     // Session-wide ceiling comes from usap-caps.json; each run stays capped at
@@ -1564,7 +1578,7 @@ export function createUltratermSubagentsExtension(
       let created!: SessionRuntime;
       // The profile `ensure` hook wraps whichever runner serves the run, so Pi and claude-code workers get it alike.
       const runner = withProfileEnsure(dependencies.createRunner?.(pi, relay)
-        ?? defaultWorkerRunner(relay, workerRuntimes, dependencies.claudeSpawn, dependencies.accountCommand),
+        ?? defaultWorkerRunner(relay, workerRuntimes, dependencies.claudeSpawn, dependencies.accountCommand, undefined, claudeAdmittedModel),
       dependencies.ensureExec ? { exec: dependencies.ensureExec } : {});
       const coordinator = new SubagentCoordinator(runner, {
         scheduler,
@@ -1965,7 +1979,7 @@ export function createUltratermSubagentsExtension(
       // A profile that is a claude-code/<model> route (steak-pi/haiku-5-5, steak-pi/sonnet-5-5, ...) is that
       // subscription route: resolve it before any native selection, which cannot serve it.
       if (requested.profile !== undefined && requested.model === undefined) {
-        const claude = claudeCodeRouteOfProfile(requested.profile, dependencies.profiles ?? loadWorkerProfiles());
+        const claude = claudeCodeRouteOfProfile(requested.profile, claudeProfiles());
         if (claude && "refused" in claude) throw new Error(claude.refused);
         // A profile id is not a subscription selector for claudeAccount, except the harness-qualified steak-pi/<short> form.
         if (claude && requested.claudeAccount !== undefined && !requested.profile.startsWith("steak-pi/")) {
@@ -1978,7 +1992,9 @@ export function createUltratermSubagentsExtension(
       // standard or spend expert quota on routine implementation leaves.
       if (requested.claudeAccount !== undefined) {
         assertKnownClaudeAccount(requested.claudeAccount);
-        if (requested.profile !== undefined || (requested.harness !== undefined && requested.harness !== "claude-code") || (requested.harness !== "claude-code" && !CLAUDE_CODE_ROUTES.includes(requested.model ?? "")) || (requested.model !== undefined && !CLAUDE_CODE_ROUTES.includes(requested.model))) {
+        const routeAdmission = claudeAdmission(requested.model);
+        if (requested.profile !== undefined || (requested.harness !== undefined && requested.harness !== "claude-code")
+          || (requested.model !== undefined ? (routeAdmission === undefined || "refused" in routeAdmission) : requested.harness !== "claude-code")) {
           throw new Error("claudeAccount requires an explicit Claude subscription harness or exact model; Pi, API and profile routes are refused");
         }
       }
@@ -1992,8 +2008,11 @@ export function createUltratermSubagentsExtension(
       // waves select the operator's implicit review CLI route (`implicitReview.route`)
       // automatically. Without one they resolve the native reviewer chain like any role default.
       const reviewRoute = implicitReviewRoute();
-      if (implicitRoute && allReviewers && reviewRoute !== undefined && claudeCodeModelOf(reviewRoute) === undefined) {
-        throw new Error(`~/.config/ultraterm/routing.json implicitReview.route: ${reviewRoute} is not a claude-code adapter route (${CLAUDE_CODE_ROUTES.join(", ")}); no fallback was selected.`);
+      if (implicitRoute && allReviewers && reviewRoute !== undefined) {
+        const reviewAdmission = claudeAdmission(reviewRoute);
+        if (reviewAdmission === undefined || "refused" in reviewAdmission) {
+          throw new Error(`~/.config/ultraterm/routing.json implicitReview.route: ${reviewRoute} is not a claude-code adapter route (${reviewAdmission !== undefined && "refused" in reviewAdmission ? reviewAdmission.refused : "not a claude-code/… route"}); no fallback was selected.`);
+        }
       }
       const opusReviewDefault = implicitRoute && allReviewers && reviewRoute !== undefined;
       // A fallback may change the harness only for permission-free reviewers.
@@ -2072,7 +2091,9 @@ export function createUltratermSubagentsExtension(
         ...requested,
         ...(tierAccount ? { claudeAccount: tierAccount.id } : {}),
         ...(claudeUnavailable ? { harness: "pi" as const, model: fallbackRoute, thinking: "high" as const, thinkingReason: "Automatic expert text review fallback after proven Claude unavailability." } : {}),
-        ...((!claudeUnavailable && opusReviewDefault || claudeWorkerTier || (requested.harness === undefined && (CLAUDE_CODE_ROUTES.includes(requested.model ?? "") || CLAUDE_API_ROUTES.includes(requested.model ?? "")))) ? { harness: "claude-code" as const } : {}),
+        // A model naming either Claude adapter route selects that harness, so an unserved claude-code/<model>
+        // route reaches the admission gate (which names every source) instead of the native registry.
+        ...((!claudeUnavailable && opusReviewDefault || claudeWorkerTier || (requested.harness === undefined && (claudeCodeRouteModel(requested.model) !== undefined || CLAUDE_API_ROUTES.includes(requested.model ?? "")))) ? { harness: "claude-code" as const } : {}),
       };
       // A Claude Code run takes the dispatch's own effort and medium when it names none; low, max and
       // an unexplained high/xhigh are refused here, before any approval, checkpoint or worker exists.
@@ -2105,22 +2126,34 @@ export function createUltratermSubagentsExtension(
       // CLI route is explicit and fixed, and the native Pi registry is never
       // consulted for it (it cannot resolve, and must not appear to).
       const foreignHarness = params.harness === "claude-code";
-      if (foreignHarness && ((params.model !== undefined && !CLAUDE_CODE_ROUTES.includes(params.model) && !CLAUDE_API_ROUTES.includes(params.model)) || params.profile !== undefined)) {
+      // A named route is admitted from its three sources (never a hard-coded list): the pinned routes,
+      // the provider catalog and an operator profile. The refusal names all three.
+      if (foreignHarness && params.profile !== undefined) {
         throw new Error(`USAP harness claude-code runs only ${CLAUDE_CODE_ROUTES.join(" or ")} (subscription), or the explicitly approved ${CLAUDE_API_ROUTES.join(" or ")}; other model/profile selectors are refused.`);
+      }
+      if (foreignHarness && params.model !== undefined && !CLAUDE_API_ROUTES.includes(params.model)) {
+        const admission = claudeAdmission(params.model);
+        if (admission === undefined || "refused" in admission) {
+          throw new Error(admission !== undefined && "refused" in admission ? admission.refused
+            : `USAP harness claude-code runs only ${CLAUDE_CODE_ROUTES.join(" or ")} (subscription), or the explicitly approved ${CLAUDE_API_ROUTES.join(" or ")}; other model/profile selectors are refused.`);
+        }
       }
       // The operator's claudeCodeDefaults pick the Claude model a defaulted wave runs; an implicit
       // review wave runs implicitReview.route. The automatic quota tier names its own route.
       // The API route is never a default: only an exact, explicit model names it.
       const claudeRoute = foreignHarness ? params.model ?? (claudeTier ? claudeTier.route : opusReviewDefault ? reviewRoute! : defaultClaudeCodeRoute(params.tasks)) : undefined;
-      const claudeModel = anyClaudeRouteModelOf(claudeRoute);
       const apiRoute = foreignHarness && isClaudeApiRoute(claudeRoute);
+      const claudeModel = apiRoute ? claudeApiModelOf(claudeRoute) : claudeAdmittedModel(claudeRoute);
+      if (foreignHarness && !apiRoute && claudeModel === undefined) {
+        throw new Error(`USAP harness claude-code could not admit ${claudeRoute ?? "the configured Claude Code default"}; no run was started and no fallback was selected.`);
+      }
       // Operator approval, settings contract and budget are checked before any
       // checkpoint, relay peer or worker exists; the runner re-checks at every launch.
       const apiAdmission = apiRoute
         ? admitClaudeApiRoute({ route: claudeRoute, taskCount: params.tasks.length, roles: params.tasks.map((task) => task.role ?? "worker"), requireImages: params.requireImages === true }, dependencies.now ? { now: dependencies.now } : {})
         : undefined;
       if (apiRoute) params.concurrency = claudeApiConcurrency(params.concurrency, params.tasks.length);
-      if (foreignHarness && params.requireImages === true && !apiRoute) assertClaudeCodeImageAdmission(claudeRoute);
+      if (foreignHarness && params.requireImages === true && !apiRoute) assertClaudeCodeImageAdmission(claudeRoute, claudeAdmittedModel);
       const piResolved = foreignHarness
         ? undefined
         : nativeResolved ?? await resolveNativeSelection(ctx, params, dependencies);
@@ -2149,7 +2182,7 @@ export function createUltratermSubagentsExtension(
           reviewFallbackRuntime = { model: sol.model, thinkingLevel: sol.thinkingLevel };
         } catch { /* Claude may still succeed; an unavailable fallback is not a route substitute. */ }
       }
-      const resolvedSelection = piResolved ? piResolved.selection : apiRoute ? resolveClaudeApiSelection(claudeModel!) : resolveClaudeCodeSelection(claudeModel);
+      const resolvedSelection = piResolved ? piResolved.selection : apiRoute ? resolveClaudeApiSelection(claudeModel!) : resolveClaudeCodeSelection(claudeModel!);
       const resolvedThinking = piResolved ? String(piResolved.thinkingLevel) : claudeEffort!;
       const model = foreignHarness ? claudeRoute! : `${piResolved!.model.provider}/${piResolved!.model.id}`;
       const thinking = resolvedThinking;
@@ -2348,7 +2381,7 @@ export function createUltratermSubagentsExtension(
         "The operator's routing.json decides the default worker chain, the expert reviewer and which routes need a bounded expert verification (verificationGates); a worker on a gated route is told which reviewer route to request through the parent. Read-only and report-only work need no automatic gate.",
         "taskClass (per task) names an operator-configured class from routing.json taskClasses so an implicit text worker wave runs the route the operator measured best for that class; omit it when unsure. Give every task of a wave the same class (or none), dispatch different classes as separate waves, and when the dispatch note says the class requires a test gate, run that gate before accepting the work.",
         "model or profile picks an explicit authenticated route (mutually exclusive, overrides roles). A model family the operator pinned to one subscription route (subscriptionRouteChecks modelPattern) runs only there. Routine text work stays on the configured automatic chain; do not pick the configured expert reviewer for routine work. requireImages=true for visual critics or render inspection.",
-        "harness claude-code (or an exact claude-code/<model> route, the Haiku, Sonnet and Opus subscription routes alike, also by a profile that names one) runs the official CLI on its pinned models at medium effort by default (high/xhigh only when thinking asks for it with a thinkingReason; any other level is refused); with no model named it runs the operator's claudeCodeDefaults. When no step of the configured chain can launch (not authenticated, not configured, not approved in ~/.pi/agent/paid-routes.json, or every account cooling down / at a 100% window per the account router; busy or unknown is NOT exhaustion), an implicit routine wave (an image wave walks multimodalWorkerChain first, with the same checks, and every Claude model reads staged images) runs on the configured claudeFallbackTier with no re-dispatch: ordinary for plain leaves, substantial when any leaf may edit AND run a shell or high/xhigh thinking is requested (the tier and why are named in the dispatch note and receipts); verify that work with an expert review. That fallback never uses the paid claude-code-api route, never passes a proven-ineligible Claude account, and if no route can launch the call is refused synchronously naming every cause. A spent plan the router cannot see, and a gateway's 402 / insufficient credits or no-endpoints-found refusal, only arrive at the request, so an implicit wave whose worker is refused on a provider usage limit before any output falls through to the next tier by itself within the same call (each tier once; the refused run stays failed; the receipt names it; both causes are named if the next tier also cannot launch); auth, route and spawn failures and a bare 429 still fail synchronously. An explicit route whose provider is exhausted is refused with the router cause, not rerouted. mayEdit+ownedPaths are CLI-enforced; allowBash is unsandboxed except read-only reviewers get no shell, even when requested. Stage git evidence for review. requireImages=true admits native Read-image of files staged under cwd, not inline attachments. Explicit routes never fall back; an implicit text review may use the configured implicitReview.fallback only on proven Claude quota/auth unavailability before output. Hub send/redirect steers running Claude workers through stream-json stdin; replies use the same run-local inbox. Native Pi resume is unavailable on this harness. An exact claude-code-api/<model> route runs this same headless CLI on approved Claude API credits: explicit only, never a default or fallback, admitted per dispatch and launch by the operator's task-scoped approval record with hard per-session budget ceilings, and a failure never falls back to the subscription or any other route. Promotional API credits cover headless runs only, never interactive Claude Code.",
+        "harness claude-code (or an exact claude-code/<model> route, the Haiku, Sonnet, Opus and Fable subscription routes alike, also by a profile that names one; Fable 5.2 is explicit-only, never a default, implicit review or quota tier) runs the official CLI on its pinned models at medium effort by default (high/xhigh only when thinking asks for it with a thinkingReason; any other level is refused); with no model named it runs the operator's claudeCodeDefaults. When no step of the configured chain can launch (not authenticated, not configured, not approved in ~/.pi/agent/paid-routes.json, or every account cooling down / at a 100% window per the account router; busy or unknown is NOT exhaustion), an implicit routine wave (an image wave walks multimodalWorkerChain first, with the same checks, and every Claude model reads staged images) runs on the configured claudeFallbackTier with no re-dispatch: ordinary for plain leaves, substantial when any leaf may edit AND run a shell or high/xhigh thinking is requested (the tier and why are named in the dispatch note and receipts); verify that work with an expert review. That fallback never uses the paid claude-code-api route, never passes a proven-ineligible Claude account, and if no route can launch the call is refused synchronously naming every cause. A spent plan the router cannot see, and a gateway's 402 / insufficient credits or no-endpoints-found refusal, only arrive at the request, so an implicit wave whose worker is refused on a provider usage limit before any output falls through to the next tier by itself within the same call (each tier once; the refused run stays failed; the receipt names it; both causes are named if the next tier also cannot launch); auth, route and spawn failures and a bare 429 still fail synchronously. An explicit route whose provider is exhausted is refused with the router cause, not rerouted. mayEdit+ownedPaths are CLI-enforced; allowBash is unsandboxed except read-only reviewers get no shell, even when requested. Stage git evidence for review. requireImages=true admits native Read-image of files staged under cwd, not inline attachments. Explicit routes never fall back; an implicit text review may use the configured implicitReview.fallback only on proven Claude quota/auth unavailability before output. Hub send/redirect steers running Claude workers through stream-json stdin; replies use the same run-local inbox. Native Pi resume is unavailable on this harness. An exact claude-code-api/<model> route runs this same headless CLI on approved Claude API credits: explicit only, never a default or fallback, admitted per dispatch and launch by the operator's task-scoped approval record with hard per-session budget ceilings, and a failure never falls back to the subscription or any other route. Promotional API credits cover headless runs only, never interactive Claude Code.",
         "Background only when the parent can integrate while children run, then one bounded ultraterm_hub wait. Never start a background run merely to wait immediately. A background dispatch holds up to ~25 s for each launched worker to produce its first model output: `Started` means no launched worker has died yet, and a worker that fails before it (router refusal, auth, route, spawn, a first request that errors) makes the call throw with that cause and cancels its siblings (a provider quota or usage-limit refusal on an implicit wave instead re-runs the same tasks on the next tier before `Started`).",
         "For read-only tasks omit ownedPaths and state the read scope in task text; mayEdit requires ownedPaths. allowBash bypasses ownedPaths — grant only when operator-level shell access is necessary.",
       ],
@@ -2541,7 +2574,7 @@ export function createUltratermSubagentsExtension(
           const resumeApi = claudeResume && isClaudeApiRoute(snapshot.model);
           const resumeSelection = resolved ? resolved.selection
             : resumeApi ? resolveClaudeApiSelection(claudeApiModelOf(snapshot.model)!)
-            : resolveClaudeCodeSelection(claudeCodeModelOf(snapshot.model));
+            : resolveClaudeCodeSelection(claudeAdmittedModel(snapshot.model)!);
           // Same subscription route as the original, or no resume: a changed or
           // paid route is refused before the one resume is spent.
           const originalRoute = snapshot.selection ? `${snapshot.selection.provider}/${snapshot.selection.modelId}` : snapshot.model;

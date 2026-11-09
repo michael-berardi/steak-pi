@@ -9,7 +9,7 @@ import { NoChainRouteError, assertModelRoute, assertSubscriptionRequest, selectC
 import { routingConfig, routingConfigOrEmpty, routingConfigPath } from "../routing-config.ts";
 import type { DispatchInput, ModelSelection, SubagentTaskInput } from "./types.ts";
 import { activeTemporaryWorkerRoute, assertTemporaryFreeRequest, isTemporaryFreeModel, PREFERRED_FREE_PROFILE } from "../temporary-free-route.ts";
-import { claudeCodeRouteOfProfile } from "./claude-code-models.ts";
+import { CLAUDE_CODE_ROUTES, admitClaudeCodeRoute, claudeCodeModelName, claudeCodeRouteModel, claudeCodeRouteOfProfile, claudeCodeServableModel } from "./claude-code-models.ts";
 export { retiredRouteError } from "../retired-model-selection.ts";
 
 type Model = NonNullable<ExtensionContext["model"]>;
@@ -157,17 +157,37 @@ function nearestProfileIds(id: string, ids: readonly string[], limit = 5): strin
     .sort((a, b) => a.score - b.score || a.candidate.localeCompare(b.candidate)).slice(0, limit).map((item) => item.candidate);
 }
 
-export { CLAUDE_CODE_OPUS_MODEL, CLAUDE_CODE_SONNET_MODEL, CLAUDE_CODE_HAIKU_MODEL, CLAUDE_CODE_MODEL, CLAUDE_CODE_EFFORTS, CLAUDE_CODE_DEFAULT_EFFORT,
-  CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_SONNET_ROUTE, CLAUDE_CODE_HAIKU_ROUTE, CLAUDE_CODE_ROUTE, CLAUDE_CODE_ROUTES,
-  claudeCodeModelOf, claudeCodeModelName, claudeCodeRouteOfProfile, claudeFallbackTier, defaultClaudeCodeRoute, resolveClaudeCodeSelection,
+export { CLAUDE_CODE_OPUS_MODEL, CLAUDE_CODE_SONNET_MODEL, CLAUDE_CODE_HAIKU_MODEL, CLAUDE_CODE_FABLE_MODEL, CLAUDE_CODE_MODEL, CLAUDE_CODE_EFFORTS, CLAUDE_CODE_DEFAULT_EFFORT,
+  CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_SONNET_ROUTE, CLAUDE_CODE_HAIKU_ROUTE, CLAUDE_CODE_FABLE_ROUTE, CLAUDE_CODE_ROUTE, CLAUDE_CODE_ROUTES,
+  claudeCodeModelOf, claudeCodeModelName, claudeCodeRouteModel, claudeCodeRouteOfProfile, claudeCodeRouteRefusal, claudeCodeServableModel,
+  admitClaudeCodeRoute, claudeFallbackTier, defaultClaudeCodeRoute, resolveClaudeCodeSelection,
   ClaudeCodeEffortError, isClaudeCodeEffort, resolveClaudeCodeEffort,
-  assertClaudeCodeImageAdmission, type ClaudeCodeEffort, type ClaudeCodeModel, type ClaudeCodeFallbackRoute, type ClaudeFallbackTier } from "./claude-code-models.ts";
+  assertClaudeCodeImageAdmission, type ClaudeCodeEffort, type ClaudeCodeModel, type ClaudeCodeFallbackRoute, type ClaudeFallbackTier,
+  type ClaudeCodeRouteAdmission, type ClaudeCodeRouteProfile, type ClaudeCodeRouteSource } from "./claude-code-models.ts";
 
 function route(model: Model): string { return `${model.provider}/${model.id}`; }
-function findModel(key: string, registry: Registry): Model {
+
+/**
+ * The native Pi registry serves Pi providers only. A `claude-code/<model>` route is a subscription
+ * route the Claude Code adapter serves, so it is admitted from its three sources before any registry
+ * lookup and refused with that admission's own words: the old hard-coded list of pinned ids could
+ * mislabel a served route as registry-unavailable. A route that is admitted here still cannot run on
+ * this selector; the caller must let the claude-code harness serve it.
+ */
+function assertNotClaudeSubscriptionRoute(key: string, profiles: readonly WorkerProfile[]): void {
+  if (claudeCodeRouteModel(key) === undefined) return;
+  const admission = admitClaudeCodeRoute(key, profiles);
+  if (admission === undefined) return; // Not reachable: the shape check above owns the route.
+  if ("refused" in admission) throw new Error(admission.refused);
+  const name = claudeCodeModelName(admission.model);
+  throw new Error(`USAP model ${key} is the ${name} Claude Code subscription route; name harness claude-code (or omit the harness) so the claude-code adapter serves it. The native Pi registry cannot serve it, so no run was started and no fallback was selected.`);
+}
+
+function findModel(key: string, registry: Registry, profiles: readonly WorkerProfile[] = []): Model {
   assertActiveModelSelector(key);
   const slash = key.indexOf("/");
   if (slash < 1 || slash === key.length - 1) throw new Error("USAP model must use the exact provider/model form.");
+  assertNotClaudeSubscriptionRoute(key, profiles);
   const model = registry.find(key.slice(0, slash), key.slice(slash + 1));
   if (model) assertActiveModelIdentity(model);
   if (!model || route(model) !== key) throw new Error(`USAP model ${key} is unavailable. Choose an exact model from the authenticated registry; no fallback was selected.`);
@@ -311,7 +331,7 @@ export function resolveWorkerSelection(
   const key = automatic ? undefined : profile?.model ?? chosen?.model;
   const model = classHit ? classHit.model : automatic
     ? selectChainedWorkerModel(registry, chain, { ...options, requireImages: input.requireImages === true })
-    : key ? findModel(key, registry)
+    : key ? findModel(key, registry, profiles)
     : selectWorkerModel(parent, input.tasks.map((task) => task.role), registry, options);
   assertSubscriptionRequest(model, registry.isUsingOAuth(model));
   // Selection is not dispatch: lazy official proof is fetched at the call boundary.

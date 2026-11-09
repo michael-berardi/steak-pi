@@ -2,7 +2,8 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { CLAUDE_CODE_HAIKU_ROUTE, CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_ROUTES, CLAUDE_CODE_SONNET_ROUTE, assertClaudeCodeImageAdmission, claudeCodeModelName, claudeCodeModelOf, claudeCodeRouteOfProfile, claudeFallbackTier, loadWorkerProfiles, loadRoleDefaults, resolveClaudeCodeSelection, resolveWorkerSelection, RETIRED_ROUTE, retiredRouteError } from "../src/subagents/model-selection.ts";
+import { CLAUDE_CODE_FABLE_ROUTE, CLAUDE_CODE_HAIKU_ROUTE, CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_ROUTES, CLAUDE_CODE_SONNET_ROUTE, admitClaudeCodeRoute, assertClaudeCodeImageAdmission, claudeCodeModelName, claudeCodeModelOf, claudeCodeRouteOfProfile, claudeFallbackTier, defaultClaudeCodeRoute, loadWorkerProfiles, loadRoleDefaults, resolveClaudeCodeSelection, resolveWorkerSelection, RETIRED_ROUTE, retiredRouteError } from "../src/subagents/model-selection.ts";
+import { setRoutingConfigOverride } from "../src/routing-config.ts";
 import { NoChainRouteError, type ChainOptions } from "../src/model-route-policy.ts";
 import type { QuotaSnapshot } from "../src/subagents/provider-quota.ts";
 import type { DispatchInput, SubagentTaskInput } from "../src/subagents/types.ts";
@@ -390,9 +391,12 @@ describe("synthetic: P-0579 claude-code staged native Read-image admission (synt
   });
   it("keeps Pi image admission fail-closed and unable to address a claude-code route", () => {
     const r = registry();
-    for (const route of [CLAUDE_CODE_SONNET_ROUTE, CLAUDE_CODE_OPUS_ROUTE]) {
-      expect(() => choose(astra, { model: route, requireImages: true }, r)).toThrow(/unavailable.*no fallback was selected/);
+    for (const route of [CLAUDE_CODE_SONNET_ROUTE, CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_FABLE_ROUTE]) {
+      // The native selector never serves a subscription route: it names the harness instead of the registry miss.
+      expect(() => choose(astra, { model: route, requireImages: true }, r)).toThrow(/Claude Code subscription route/);
+      expect(() => choose(astra, { model: route, requireImages: true }, r)).toThrow(/no fallback was selected/);
     }
+    expect(r.find).not.toHaveBeenCalled();
     // Text-only Pi routes still refuse images and nothing substitutes another model.
     const text = { ...sol, input: ["text"] } as Model;
     expect(() => choose(astra, { model: "openai-codex/gpt-6.1-terra", requireImages: true }, registry([text]))).toThrow(/image input/);
@@ -449,11 +453,11 @@ describe("synthetic: automatic quota fallback tier (cheapest capable Claude mode
       expect(tier!.reason).toMatch(why);
     }
   });
-  it("admits Haiku as an explicit subscription route and for image review, keeping Fable and older models refused", () => {
+  it("admits Haiku as an explicit subscription route and for image review, keeping older models refused", () => {
     expect(CLAUDE_CODE_HAIKU_ROUTE).toBe("claude-code/claude-haiku-5-5");
     expect(claudeCodeModelOf(CLAUDE_CODE_HAIKU_ROUTE)).toBe("claude-haiku-5-5");
     expect(claudeCodeModelName("claude-haiku-5-5")).toBe("Haiku 5.5");
-    expect(CLAUDE_CODE_ROUTES).toEqual([CLAUDE_CODE_HAIKU_ROUTE, CLAUDE_CODE_SONNET_ROUTE, CLAUDE_CODE_OPUS_ROUTE]);
+    expect(CLAUDE_CODE_ROUTES).toEqual([CLAUDE_CODE_HAIKU_ROUTE, CLAUDE_CODE_SONNET_ROUTE, CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_FABLE_ROUTE]);
     expect(assertClaudeCodeImageAdmission(CLAUDE_CODE_HAIKU_ROUTE)).toBe("claude-haiku-5-5");
     expect(resolveClaudeCodeSelection("claude-haiku-5-5")).toMatchObject({ provider: "claude-code", modelId: "claude-haiku-5-5", images: true });
     for (const refused of ["claude-code/claude-fable-5-1", "claude-code/claude-haiku-4-5", "claude-code/claude-sonnet-4-5"]) {
@@ -462,6 +466,100 @@ describe("synthetic: automatic quota fallback tier (cheapest capable Claude mode
     for (const near of ["claude-code/claude-haiku-5", "claude-code/haiku", "claude-code-api/claude-haiku-5-5", "anthropic/claude-haiku-5-5"]) {
       expect(claudeCodeModelOf(near)).toBeUndefined();
     }
+  });
+});
+
+describe("synthetic: the Claude Fable 5.2 pinned subscription route", () => {
+  const fable = "claude-code/claude-fable-5-2";
+  it("admits the exact Fable 5.2 route by model, profile and image review", () => {
+    expect(CLAUDE_CODE_FABLE_ROUTE).toBe(fable);
+    expect(CLAUDE_CODE_ROUTES).toContain(fable);
+    expect(claudeCodeModelOf(fable)).toBe("claude-fable-5-2");
+    expect(claudeCodeModelName("claude-fable-5-2")).toBe("Fable 5.2");
+    expect(resolveClaudeCodeSelection("claude-fable-5-2")).toEqual({ provider: "claude-code", modelId: "claude-fable-5-2", source: "override", harness: "claude-code", images: true, tools: true });
+    expect(assertClaudeCodeImageAdmission(fable)).toBe("claude-fable-5-2");
+    expect(claudeCodeRouteOfProfile("steak-pi/fable-5-2", BUILTIN_WORKER_PROFILES)).toEqual({ route: fable });
+    // Exact only: no prefix, fuzzy, context-suffixed or older Fable spelling is admitted.
+    for (const near of ["claude-code/claude-fable-5", "claude-code/fable-5-2", "anthropic/claude-fable-5-2",
+      "claude-code/claude-fable-5-2[1m]", "claude-code-api/claude-fable-5-2"]) {
+      expect(claudeCodeModelOf(near)).toBeUndefined();
+    }
+  });
+  it("replaces Fable 5.1: the older spelling is not a pinned route and is refused", () => {
+    const retired = "claude-code/claude-fable-5-1";
+    expect(CLAUDE_CODE_ROUTES).not.toContain(retired);
+    expect(claudeCodeModelOf(retired)).toBeUndefined();
+    expect(() => assertClaudeCodeImageAdmission(retired)).toThrow(/admits only/);
+    expect(admitClaudeCodeRoute(retired, BUILTIN_WORKER_PROFILES)).toHaveProperty("refused");
+  });
+  it("is configured as an implicit review route, a Claude Code default or a quota tier exactly like Opus", () => {
+    const ordinary: SubagentTaskInput[] = [{ label: "leaf", task: "work" }];
+    const review: SubagentTaskInput[] = [{ label: "review", task: "review", role: "reviewer" }];
+    try {
+      setRoutingConfigOverride({ claudeFallbackTier: { ordinary: fable, substantial: CLAUDE_CODE_SONNET_ROUTE } });
+      expect(claudeFallbackTier({ tasks: ordinary })).toMatchObject({ route: fable, model: "claude-fable-5-2" });
+      expect(claudeFallbackTier({ tasks: review })).toMatchObject({ route: CLAUDE_CODE_SONNET_ROUTE });
+      setRoutingConfigOverride({ claudeCodeDefaults: { worker: fable, reviewer: CLAUDE_CODE_OPUS_ROUTE } });
+      expect(defaultClaudeCodeRoute([{ role: "worker" }])).toBe(fable);
+      expect(defaultClaudeCodeRoute([{ role: "reviewer" }])).toBe(CLAUDE_CODE_OPUS_ROUTE);
+    } finally {
+      setRoutingConfigOverride(undefined);
+    }
+  });
+});
+
+describe("synthetic: durable Claude Code route admission", () => {
+  const unknownRoute = "claude-code/claude-test-9-9";
+  const profileProfiles = [...BUILTIN_WORKER_PROFILES, { id: "steak-pi/claude-test-9-9", model: unknownRoute }];
+  it("admits a pinned route, a catalog id and a route an operator profile names", () => {
+    expect(admitClaudeCodeRoute(CLAUDE_CODE_OPUS_ROUTE, BUILTIN_WORKER_PROFILES)).toMatchObject({ model: "claude-opus-5-5", source: "pinned" });
+    // Fable 5.2 is a pinned route with exactly the Opus treatment.
+    expect(admitClaudeCodeRoute(CLAUDE_CODE_FABLE_ROUTE, BUILTIN_WORKER_PROFILES)).toMatchObject({ model: "claude-fable-5-2", source: "pinned" });
+    // A shipped catalog id behind no pinned spelling is admitted from the provider catalog.
+    expect(admitClaudeCodeRoute("claude-code/claude-opus-5-5", [])).toMatchObject({ model: "claude-opus-5-5", source: "pinned" });
+    expect(admitClaudeCodeRoute("claude-code/claude-sonnet-5-5", [])).toMatchObject({ model: "claude-sonnet-5-5", source: "pinned" });
+    expect(admitClaudeCodeRoute(unknownRoute, BUILTIN_WORKER_PROFILES)).toHaveProperty("refused");
+    expect(admitClaudeCodeRoute(unknownRoute, profileProfiles)).toMatchObject({ model: "claude-test-9-9", source: "profile" });
+    // A harness profile the host passes in may name the route in its args instead of its model.
+    expect(admitClaudeCodeRoute(unknownRoute, [{ id: "claude/worker", args: ["--model", unknownRoute] }])).toMatchObject({ model: "claude-test-9-9", source: "profile" });
+    expect(claudeCodeRouteOfProfile("steak-pi/claude-test-9-9", profileProfiles)).toEqual({ route: unknownRoute });
+    // The gate owns only `claude-code/…` routes: Pi and API routes are somebody else's business.
+    expect(admitClaudeCodeRoute("openai-codex/gpt-6.1-terra", profileProfiles)).toBeUndefined();
+    expect(admitClaudeCodeRoute("claude-code-api/claude-opus-5-5", profileProfiles)).toBeUndefined();
+  });
+  it("admission is the source of the model id, so an operator-registered id keeps its route", () => {
+    const admission = admitClaudeCodeRoute(unknownRoute, profileProfiles);
+    expect(admission).toEqual({ model: "claude-test-9-9", source: "profile" });
+    expect(resolveClaudeCodeSelection((admission as { model: string }).model)).toMatchObject({ provider: "claude-code", modelId: "claude-test-9-9", source: "override", harness: "claude-code", images: true });
+  });
+  it("keeps a retired selector refused before admission, even for a pinned route", () => {
+    const r = registry();
+    try {
+      setRoutingConfigOverride({ retiredModelPatterns: [{ pattern: "^claude-code/claude-fable-5-2$", message: "{route} was retired by the operator; no fallback was selected." }] });
+      expect(RETIRED_ROUTE.test(CLAUDE_CODE_FABLE_ROUTE)).toBe(true);
+      expect(() => choose(astra, { model: CLAUDE_CODE_FABLE_ROUTE }, r)).toThrow(retiredRouteError(CLAUDE_CODE_FABLE_ROUTE));
+      expect(r.find).not.toHaveBeenCalled();
+    } finally { setRoutingConfigOverride(undefined); }
+  });
+  it("names every source it checked when it refuses a route", () => {
+    const admission = admitClaudeCodeRoute(unknownRoute, BUILTIN_WORKER_PROFILES);
+    expect(admission).toHaveProperty("refused");
+    const text = (admission as { refused: string }).refused;
+    expect(text).toContain("runs only");
+    for (const source of [CLAUDE_CODE_HAIKU_ROUTE, CLAUDE_CODE_SONNET_ROUTE, CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_FABLE_ROUTE, "model catalog", "profile"]) {
+      expect(text).toContain(source);
+    }
+    expect(text).toContain(unknownRoute);
+  });
+  it("derives a product name for an id the pinned list does not spell", () => {
+    expect(claudeCodeModelName("claude-test-9-9")).toBe("Test 9.9");
+    expect(claudeCodeModelName("claude-opus-6")).toBe("Opus 6");
+    expect(claudeCodeModelName("claude-fable-5-2")).toBe("Fable 5.2");
+    expect(claudeCodeModelName("claude-opus-5-5")).toBe("Opus 5.5");
+    expect(claudeCodeModelName("claude-sonnet-5-5")).toBe("Sonnet 5.5");
+    expect(claudeCodeModelName("claude-haiku-5-5")).toBe("Haiku 5.5");
+    // An id it cannot read is reported as itself, never guessed.
+    expect(claudeCodeModelName("weird-route")).toBe("weird-route");
   });
 });
 
@@ -556,8 +654,9 @@ describe("synthetic: profile ids that name a Claude Code route, and honest profi
     expect(claudeCodeRouteOfProfile("haiku-5-5", [])).toEqual({ route: "claude-code/claude-haiku-5-5" });
     expect(claudeCodeRouteOfProfile("steak-pi/haiku-5-5", [])).toEqual({ route: "claude-code/claude-haiku-5-5" });
   });
-  it("refuses a claude-code profile that is not a runnable route, naming the routes to use", () => {
-    expect(claudeCodeRouteOfProfile("steak-pi/fable-5-1", profiles)).toEqual({ refused: expect.stringMatching(/claude-code\/claude-fable-5-1.*use one of claude-code\/claude-haiku-5-5, claude-code\/claude-sonnet-5-5, claude-code\/claude-opus-5-5/) });
+  it("runs a claude-code route an operator profile names, though no built-in list knows the model", () => {
+    // A registered profile is the admission: a new Claude model works without a release.
+    expect(claudeCodeRouteOfProfile("steak-pi/fable-5-1", profiles)).toEqual({ route: "claude-code/claude-fable-5-1" });
   });
   it("the native selector names the route to use when handed a claude-code profile directly", () => {
     expect(() => choose(sol, { profile: "steak-pi/haiku-5-5" }, registry(), [{ id: "steak-pi/haiku-5-5", model: "claude-code/claude-haiku-5-5" }] as never))

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.23.20 (2026-11-09)
+
+- **Fable 5.2 replaces Fable 5.1 in the Claude Code model catalog.** The catalog row and the `fable` alias now name
+  Fable 5.2, registered with its 1M context window, so selecting it no longer prints "Model not found for provider
+  claude-code. Using custom model id".
+- **A registered profile's model can no longer be refused by USAP.** A `claude-code/<model>` route is admitted from
+  three sources instead of a list fixed at release time: the pinned routes, the Claude Code model catalog (the shipped
+  rows plus every id the CLI reports live) and any operator worker or launch profile that names it. A new Claude model
+  therefore dispatches without a Steak Pi release. A route none of the three serves is refused naming all three.
+- **A worker cut off by "Connection error." resumes its session.** The provider SDK's plain connection error was not
+  classed as a network drop, so a brief outage failed every running worker at once instead of resuming them after a
+  short wait (up to two resumes, as for other network drops).
+
 ## 0.23.19 (2026-11-08)
 
 - **A slow account router no longer ends a Claude session.** The per-request owner-reserve check killed

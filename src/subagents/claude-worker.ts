@@ -51,7 +51,7 @@ import { CLAUDE_SESSION_ID, removeClaudeWorkerSession } from "./claude-session.t
 import type { ChildProcess } from "node:child_process";
 import { OUTPUT_LIMIT, addUsage, emptyUsage, harnessOf, sanitizeUsage, type RunRecord, type TaskRecord,
   type ClaudeSubscriptionReceipt, type ClaudeApiReceipt, type UsageTotals, type WorkerProgress, type WorkerResult, type WorkerRunner } from "./types.ts";
-import { CLAUDE_CODE_DEFAULT_EFFORT, CLAUDE_CODE_EFFORTS, CLAUDE_CODE_MODEL, CLAUDE_CODE_ROUTE, ClaudeCodeEffortError, claudeCodeModelName, claudeCodeModelOf, isClaudeCodeEffort, type ClaudeCodeEffort, type ClaudeCodeModel } from "./model-selection.ts";
+import { CLAUDE_CODE_DEFAULT_EFFORT, CLAUDE_CODE_EFFORTS, CLAUDE_CODE_MODEL, CLAUDE_CODE_ROUTE, ClaudeCodeEffortError, claudeCodeModelName, claudeCodeRouteModel, claudeCodeRouteRefusal, claudeCodeServableModel, isClaudeCodeEffort, type ClaudeCodeEffort, type ClaudeCodeModel } from "./model-selection.ts";
 import { truncatePiWorkerOutput, WORKER_CHECK_SCOPE, workerFinalReportInstructions, workerImplementationGate, workerTestGate } from "./pi-worker.ts";
 import { workerJournal } from "./coordinator.ts";
 import { turnBudgetPromptLine } from "./turn-budget.ts";
@@ -573,6 +573,10 @@ export interface ClaudeWorkerRunnerOptions {
   /** Test seam for the per-turn owner-reserve check; production asks the UltraTerm account router. */
   reserveRouter?: RouterCall;
   env?: NodeJS.ProcessEnv;
+  /** Durable admission for a `claude-code/<model>` run: pins, the provider catalog (shipped rows plus
+   * ids the CLI reported live) and, when the caller has them, operator profiles. Defaults to pins and
+   * catalog, so a resume or a direct runner call never falls back to a hard-coded model list. */
+  admit?: (route: string | undefined) => ClaudeCodeModel | undefined;
 }
 
 interface RunState {
@@ -685,9 +689,13 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     // (`claude-code/<model>`) and the explicit, separately approved API route
     // (`claude-code-api/<model>`). Neither ever resolves to the other.
     const apiModel = claudeApiModelOf(run.model);
-    const pinnedModel = claudeCodeModelOf(run.model) ?? apiModel;
+    // The subscription route is admitted from its three sources, never a hard-coded list: a pinned route,
+    // a model the provider catalog serves, or a route an operator profile names (the caller's `admit`).
+    const admit = options.admit ?? claudeCodeServableModel;
+    const pinnedModel = apiModel ?? admit(run.model);
     if (pinnedModel === undefined) {
-      return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "Claude Code requires the configured Claude Code route" };
+      const refusal = claudeCodeRouteModel(run.model) === undefined ? "Claude Code requires the configured Claude Code route" : claudeCodeRouteRefusal(run.model);
+      return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: refusal };
     }
     // The run's recorded effort is the CLI effort, on a resume as much as on a fresh launch.
     const effort = run.thinkingLevel;

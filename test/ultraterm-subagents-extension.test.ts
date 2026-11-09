@@ -3,6 +3,7 @@ import { RetiredModelSelectionError } from "../src/retired-model-selection.ts";
 import { CheckpointStore } from "../src/subagents/checkpoints.ts";
 import { normalizeDispatch } from "../src/subagents/policy.ts";
 import { claudeCodeModelOf, resolveClaudeCodeSelection, retiredRouteError } from "../src/subagents/model-selection.ts";
+import { setRoutingConfigOverride } from "../src/routing-config.ts";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { GO_ACCOUNT_ROUTER_TIMEOUT_MS, isolatedCodexAgentDir, isolatedAgentPaths } from "../src/subagents/provider-accounts.ts";
@@ -2537,7 +2538,7 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
       } finally { await shutdown(h); }
     });
 
-    it("admits an explicit Haiku subscription route (model or profile) and still refuses Fable", async () => {
+    it("admits an explicit Haiku subscription route (model or profile) and still refuses the retired Fable 5.1", async () => {
       const runner = done();
       const { h } = quotaHarness(status({ codex: solOut }), runner);
       try {
@@ -2549,6 +2550,74 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
         await expect(dispatch(h, { harness: "claude-code", model: "claude-code/claude-fable-5-1", tasks: plain })).rejects.toThrow(/runs only/);
         await expect(dispatch(h, { profile: "steak-pi/fable-5-1", tasks: plain })).rejects.toThrow(/unavailable: not found|does not run/);
         expect(runner).toHaveBeenCalledTimes(3);
+      } finally { await shutdown(h); }
+    });
+
+    it("resolves the dispatch that used to be refused: model claude-code/claude-fable-5-2 with no harness", async () => {
+      const runner = done();
+      const { h } = quotaHarness(status({ codex: solOut, go: goOut, claude: claudeUp }), runner);
+      try {
+        // The live refusal: "USAP model claude-code/claude-fable-5-2 is unavailable. Choose an exact model
+        // from the authenticated registry". The route now selects the claude-code harness itself.
+        const result = await dispatch(h, { model: "claude-code/claude-fable-5-2", tasks: plain });
+        expect(result.details.run).toMatchObject({ model: "claude-code/claude-fable-5-2", harness: "claude-code", thinkingLevel: "medium" });
+        expect(result.details.run.selection).toMatchObject({ provider: "claude-code", modelId: "claude-fable-5-2", source: "override" });
+        expect(runner).toHaveBeenCalledTimes(1);
+      } finally { await shutdown(h); }
+    });
+
+    it("admits Fable 5.2 by harness, exact model or profile and never picks it implicitly", async () => {
+      const runner = done();
+      const { h } = quotaHarness(status({ codex: solOut, go: goOut, claude: claudeUp }), runner);
+      try {
+        for (const route of [{ harness: "claude-code", model: "claude-code/claude-fable-5-2" }, { model: "claude-code/claude-fable-5-2" }, { profile: "steak-pi/fable-5-2" }]) {
+          const result = await dispatch(h, { ...route, tasks: plain });
+          expect(result.details.run).toMatchObject({ model: "claude-code/claude-fable-5-2", harness: "claude-code", thinkingLevel: "medium" });
+        }
+        expect(runner).toHaveBeenCalledTimes(3);
+        // The operator's configured implicit chain still decides an implicit wave; nothing new is preferred.
+        const implicit = await dispatch(h, { tasks: plain });
+        expect(implicit.details.run.model).toBe("claude-code/claude-haiku-5-5");
+      } finally { await shutdown(h); }
+    });
+
+    it("validates Fable 5.2 as the operator's implicitReview.route exactly like Opus", async () => {
+      const runner = done();
+      const { h } = quotaHarness(status({ codex: solUp, go: goUp, claude: claudeUp }), runner);
+      try {
+        setRoutingConfigOverride({ implicitReview: { route: "claude-code/claude-fable-5-2" } });
+        const result = await dispatch(h, { tasks: [{ label: "review", task: "Review the change", role: "reviewer" }] });
+        expect(result.details.run).toMatchObject({ model: "claude-code/claude-fable-5-2", harness: "claude-code", thinkingLevel: "medium" });
+        expect(result.details.run.selection.automaticReview).toBe(true);
+        expect(runner).toHaveBeenCalledTimes(1);
+      } finally {
+        setRoutingConfigOverride(undefined);
+        await shutdown(h);
+      }
+    });
+
+    it("admits a claude-code route only an operator profile names, naming it from the id", async () => {
+      const runner = done();
+      const profiles = [...BUILTIN_WORKER_PROFILES, { id: "steak-pi/claude-test-9-9", model: "claude-code/claude-test-9-9" }];
+      const { h } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeUp }), runner, { profiles: profiles as never });
+      try {
+        for (const route of [{ model: "claude-code/claude-test-9-9" }, { profile: "steak-pi/claude-test-9-9" }]) {
+          const result = await dispatch(h, { ...route, tasks: plain });
+          expect(result.details.run).toMatchObject({ model: "claude-code/claude-test-9-9", harness: "claude-code", thinkingLevel: "medium" });
+        }
+        expect(runner).toHaveBeenCalledTimes(2);
+      } finally { await shutdown(h); }
+    });
+
+    it("refuses a claude-code route no source serves, naming every source it checked", async () => {
+      const runner = done();
+      const { h } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeUp }), runner);
+      try {
+        const message = await dispatch(h, { model: "claude-code/claude-nowhere-1-1", tasks: plain }).then(() => "", (error: Error) => error.message);
+        expect(message).toMatch(/runs only/);
+        for (const source of ["claude-code/claude-haiku-5-5", "claude-code/claude-fable-5-2", "model catalog", "profile"]) expect(message).toContain(source);
+        expect(message).toContain("claude-code/claude-nowhere-1-1");
+        expect(runner).not.toHaveBeenCalled();
       } finally { await shutdown(h); }
     });
 

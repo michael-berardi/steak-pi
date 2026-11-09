@@ -6,6 +6,7 @@
  * fallback tier runs is operator configuration (`claudeCodeDefaults`,
  * `implicitReview`, `claudeFallbackTier` in routing.json).
  */
+import { isClaudeCodeCatalogModel } from "../../extensions/claude-code/model-catalog.ts";
 import type { DispatchInput, ModelSelection, SubagentTaskInput } from "./types.ts";
 import { missingConfigKey, routingConfig, RoutingConfigError } from "../routing-config.ts";
 
@@ -20,6 +21,10 @@ export const CLAUDE_CODE_SONNET_MODEL = "claude-sonnet-5-5" as const;
  * chain includes it as a worker tier), with the same effort, account, quota and image rules.
  * It is still never a default: only an operator-configured tier or an exact name selects it. */
 export const CLAUDE_CODE_HAIKU_MODEL = "claude-haiku-5-5" as const;
+/** The current Fable is an explicit subscription route with the same effort, account, quota and image
+ * rules as Sonnet and Opus. It is admitted only when a dispatch names it exactly (model or profile):
+ * it is never a default, an implicit review route or a quota tier. */
+export const CLAUDE_CODE_FABLE_MODEL = "claude-fable-5-2" as const;
 /** The largest pinned model, kept under its historical name for callers. */
 export const CLAUDE_CODE_MODEL = CLAUDE_CODE_OPUS_MODEL;
 /** Reasoning efforts a claude-code run may carry; anything else is refused by name. */
@@ -30,11 +35,70 @@ export const CLAUDE_CODE_DEFAULT_EFFORT: ClaudeCodeEffort = "medium";
 export const CLAUDE_CODE_OPUS_ROUTE = `claude-code/${CLAUDE_CODE_OPUS_MODEL}` as const;
 export const CLAUDE_CODE_SONNET_ROUTE = `claude-code/${CLAUDE_CODE_SONNET_MODEL}` as const;
 export const CLAUDE_CODE_HAIKU_ROUTE = `claude-code/${CLAUDE_CODE_HAIKU_MODEL}` as const;
+export const CLAUDE_CODE_FABLE_ROUTE = `claude-code/${CLAUDE_CODE_FABLE_MODEL}` as const;
 export const CLAUDE_CODE_ROUTE = CLAUDE_CODE_OPUS_ROUTE;
-export type ClaudeCodeModel = typeof CLAUDE_CODE_OPUS_MODEL | typeof CLAUDE_CODE_SONNET_MODEL | typeof CLAUDE_CODE_HAIKU_MODEL;
-/** Routes a caller may name explicitly. Fable and older models are not listed and stay refused. */
-export const CLAUDE_CODE_ROUTES: readonly string[] = [CLAUDE_CODE_HAIKU_ROUTE, CLAUDE_CODE_SONNET_ROUTE, CLAUDE_CODE_OPUS_ROUTE];
-export type ClaudeCodeFallbackRoute = typeof CLAUDE_CODE_HAIKU_ROUTE | typeof CLAUDE_CODE_SONNET_ROUTE | typeof CLAUDE_CODE_OPUS_ROUTE;
+/** The model id a claude-code route carries. Routes beyond the pinned list are admitted from the
+ * provider catalog or an operator profile, so this is any model id, not only the pinned spellings. */
+export type ClaudeCodeModel = string;
+/** The subscription routes this adapter pins by name. Any other `claude-code/<model>` route is
+ * admitted only when the provider catalog or an operator profile serves it. */
+export const CLAUDE_CODE_ROUTES: readonly string[] = [CLAUDE_CODE_HAIKU_ROUTE, CLAUDE_CODE_SONNET_ROUTE, CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_FABLE_ROUTE];
+export type ClaudeCodeFallbackRoute = typeof CLAUDE_CODE_HAIKU_ROUTE | typeof CLAUDE_CODE_SONNET_ROUTE | typeof CLAUDE_CODE_OPUS_ROUTE | typeof CLAUDE_CODE_FABLE_ROUTE;
+
+/** The model id of an exact `claude-code/<model>` route, or undefined for anything else (Pi routes,
+ * the API adapter's `claude-code-api/…` routes, an empty or nested model path). Shape only: this
+ * says which harness owns the route, not that the model is served. */
+export function claudeCodeRouteModel(route: string | undefined): string | undefined {
+  const prefix = "claude-code/";
+  if (route === undefined || !route.startsWith(prefix)) return undefined;
+  const model = route.slice(prefix.length);
+  return model.length === 0 || model.includes("/") ? undefined : model;
+}
+
+/** A harness/worker profile recorded in the operator's catalog, in the only two shapes that can name
+ * a route: its head `model`, or the `--model` value in its launch `args`. */
+export interface ClaudeCodeRouteProfile { id?: string; model?: string; args?: readonly string[] }
+
+/** Which of its three sources admitted a route: the adapter's built-in pins, the provider's own model
+ * catalog (shipped rows plus ids the CLI reported live), or an operator-registered profile. */
+export type ClaudeCodeRouteSource = "pinned" | "catalog" | "profile";
+
+/** An admitted `claude-code/<model>` route with its source, or the reason none admitted it. */
+export type ClaudeCodeRouteAdmission = { model: ClaudeCodeModel; source: ClaudeCodeRouteSource } | { refused: string };
+
+/** The model id behind a route the Claude Code provider can serve without consulting an operator
+ * profile: a pinned adapter route, or any id in the provider's model catalog. Undefined for every
+ * other route, including a `claude-code/<model>` route only a profile names. */
+export function claudeCodeServableModel(route: string | undefined): string | undefined {
+  const model = claudeCodeRouteModel(route);
+  if (model === undefined) return undefined;
+  return claudeCodeModelOf(route) ?? (isClaudeCodeCatalogModel(model) ? model : undefined);
+}
+
+/** The refusal a `claude-code/<model>` route earns, naming the three sources it was checked against. */
+export function claudeCodeRouteRefusal(route: string): string {
+  return `USAP harness claude-code runs only ${CLAUDE_CODE_ROUTES.join(" or ")} (the built-in pinned routes), a model the Claude Code model catalog serves (the shipped list plus every id the CLI reports live), or a route an operator worker profile names; ${route} is none of those, so no run was started and no fallback was selected.`;
+}
+
+/**
+ * Durable admission for a `claude-code/<model>` route. A route is admitted from three sources, never
+ * from a release-time model list: the adapter's built-in pinned routes, the Claude Code provider's own
+ * catalog (the shipped rows plus every id the CLI reported live), or an operator-registered worker /
+ * launch profile that names it (its head `model` or its `--model` arg). A new Claude model therefore
+ * works without a Steak Pi release. Undefined means the route is not a `claude-code/…` route at all
+ * (a Pi route, or the API adapter's `claude-code-api/…` route), which this gate does not own; a
+ * retired selector is refused by `assertActiveModelSelector` before any admission. Nothing here
+ * selects a route by itself.
+ */
+export function admitClaudeCodeRoute(route: string | undefined, profiles: readonly ClaudeCodeRouteProfile[] = []): ClaudeCodeRouteAdmission | undefined {
+  const model = claudeCodeRouteModel(route);
+  if (model === undefined) return undefined;
+  if (CLAUDE_CODE_ROUTES.includes(route!)) return { model, source: "pinned" };
+  if (claudeCodeServableModel(route) !== undefined) return { model, source: "catalog" };
+  const named = profiles.some((profile) => profile.model === route || (profile.args ?? []).some((arg) => arg === route || arg === `--model=${route}`));
+  if (named) return { model, source: "profile" };
+  return { refused: claudeCodeRouteRefusal(route!) };
+}
 
 /** A claude-code effort outside medium/high/xhigh, or high/xhigh asked for without a reason. */
 export class ClaudeCodeEffortError extends Error {
@@ -68,12 +132,24 @@ export function claudeCodeModelOf(route: string | undefined): ClaudeCodeModel | 
   if (route === CLAUDE_CODE_OPUS_ROUTE) return CLAUDE_CODE_OPUS_MODEL;
   if (route === CLAUDE_CODE_SONNET_ROUTE) return CLAUDE_CODE_SONNET_MODEL;
   if (route === CLAUDE_CODE_HAIKU_ROUTE) return CLAUDE_CODE_HAIKU_MODEL;
+  if (route === CLAUDE_CODE_FABLE_ROUTE) return CLAUDE_CODE_FABLE_MODEL;
   return undefined;
 }
 
-/** Product name for messages: "Opus 5.5" / "Sonnet 5.5" / "Haiku 5.5". */
+/** Product name for messages, derived from the model id so a route the catalog or an operator profile
+ * serves needs no release-time table: `claude-fable-5-2` -> "Fable 5.2", `claude-opus-6` -> "Opus 6",
+ * `claude-test-9-9` -> "Test 9.9". A trailing release date is dropped and an id it cannot read is
+ * reported as itself, never guessed at. */
 export function claudeCodeModelName(model: ClaudeCodeModel): string {
-  return model === CLAUDE_CODE_OPUS_MODEL ? "Opus 5.5" : model === CLAUDE_CODE_HAIKU_MODEL ? "Haiku 5.5" : "Sonnet 5.5";
+  const parts = model.replace(/^claude-/u, "").replace(/-\d{8}$/u, "").split("-").filter(Boolean);
+  const numeric = (part: string | undefined): boolean => part !== undefined && /^\d+$/u.test(part);
+  let version: string;
+  if (parts.length >= 3 && numeric(parts.at(-1)) && numeric(parts.at(-2))) version = `${parts.at(-2)}.${parts.at(-1)}`;
+  else if (parts.length >= 2 && numeric(parts.at(-1))) version = parts.at(-1)!;
+  else return model;
+  const family = parts.slice(0, numeric(parts.at(-2)) && parts.length >= 3 ? -2 : -1).join(" ");
+  const named = family.replace(/\b\w/gu, (letter) => letter.toUpperCase());
+  return named ? `${named} ${version}` : version;
 }
 
 export interface ClaudeFallbackTier {
@@ -84,8 +160,10 @@ export interface ClaudeFallbackTier {
 }
 
 const pinned = (route: string, key: string): { route: ClaudeCodeFallbackRoute; model: ClaudeCodeModel } => {
-  const model = claudeCodeModelOf(route);
-  if (!model) throw new RoutingConfigError(`~/.config/ultraterm/routing.json ${key}: ${route} is not a claude-code adapter route.`);
+  const model = claudeCodeServableModel(route);
+  if (model === undefined) {
+    throw new RoutingConfigError(`~/.config/ultraterm/routing.json ${key}: ${route} is not a claude-code adapter route (${CLAUDE_CODE_ROUTES.join(", ")} or a model the Claude Code model catalog serves).`);
+  }
   return { route: route as ClaudeCodeFallbackRoute, model };
 };
 
@@ -143,13 +221,17 @@ export function resolveClaudeCodeSelection(model: ClaudeCodeModel = CLAUDE_CODE_
 }
 
 /** Admission for `requireImages: true` on the claude-code harness: only an exact
- * explicit pinned route passes, and the caller keeps the route it asked for.
- * There is no fallback, default or auth change; anything that is not an exact
- * route (undefined, prefix, fuzzy, other provider) fails closed. */
-export function assertClaudeCodeImageAdmission(route: string | undefined): ClaudeCodeModel {
-  const model = claudeCodeModelOf(route);
+ * explicit route the adapter serves passes, and the caller keeps the route it
+ * asked for. `admit` is the caller's own admission (USAP passes the durable one,
+ * which also honours an operator profile); by default it is the pinned routes and
+ * the provider catalog. There is no fallback, default or auth change; anything
+ * that is not an exact served route (undefined, prefix, fuzzy, other provider)
+ * fails closed. */
+export function assertClaudeCodeImageAdmission(route: string | undefined,
+  admit: (route: string | undefined) => ClaudeCodeModel | undefined = claudeCodeServableModel): ClaudeCodeModel {
+  const model = admit(route);
   if (model === undefined) {
-    throw new Error(`USAP claude-code image review admits only ${CLAUDE_CODE_ROUTES.join(", ")} (staged image files read natively under cwd); no fallback was selected.`);
+    throw new Error(`USAP claude-code image review admits only ${CLAUDE_CODE_ROUTES.join(", ")} or another exact model the Claude Code model catalog or an operator worker profile serves (staged image files read natively under cwd); no fallback was selected.`);
   }
   return model;
 }
@@ -175,6 +257,8 @@ export function claudeCodeRouteOfProfile(id: string, profiles: readonly { id: st
   const viaName = viaProfile === undefined && loaded.length === 0 && named ? CLAUDE_CODE_ROUTES.find((route) => claudeCodeProfileName(route) === short) : undefined;
   const route = viaProfile ?? viaName;
   if (route === undefined) return undefined;
-  if (CLAUDE_CODE_ROUTES.includes(route)) return { route };
-  return { refused: `USAP profile ${id} names ${route}, which the claude-code harness does not run; use one of ${CLAUDE_CODE_ROUTES.join(", ")} (model: <route>).` };
+  // A loaded profile that names a claude-code route is itself the admission; a bare short name needs
+  // the pinned list or the provider catalog behind it.
+  if (viaProfile !== undefined ? claudeCodeRouteModel(route) !== undefined : claudeCodeServableModel(route) !== undefined) return { route };
+  return { refused: `USAP profile ${id} names ${route}, which the claude-code harness does not run; use one of ${CLAUDE_CODE_ROUTES.join(", ")} or a model the catalog serves (model: <route>).` };
 }
