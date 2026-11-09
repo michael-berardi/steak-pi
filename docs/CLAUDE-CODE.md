@@ -17,9 +17,8 @@ pi --model claude-code/claude-opus-5-5
 
 Pick any model from the **Claude Code Subscription** provider in Pi's model
 picker, or pass `--model claude-code/<id>`. Ids: `claude-fable-5-2`,
-`claude-fable-5-2`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` and
-`default`. The `fable` alias selects `claude-fable-5-2`; the older Fable stays
-selectable by its exact id.
+`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` and `default`, plus any
+id the installed CLI reports. The `fable` alias selects `claude-fable-5-2`.
 `/claude-code-status` checks that the CLI is installed and logged in.
 
 ## Billing and safety

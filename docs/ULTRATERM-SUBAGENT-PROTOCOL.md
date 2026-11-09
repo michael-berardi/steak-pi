@@ -157,8 +157,8 @@ Explicit Pi/model/profile selections still win.
 
 `harness: "claude-code"` runs the operator's `claudeCodeDefaults.worker` for
 worker and scout waves and `claudeCodeDefaults.reviewer` for all-reviewer waves;
-an explicit `model` naming one of the adapter's pinned `claude-code/<model>`
-routes wins, and with neither the dispatch fails naming the key. Each route runs
+an explicit `model` naming a `claude-code/<model>` route wins (a pinned route, a
+model in the Claude Code catalog, or one a registered profile names), and with neither the dispatch fails naming the key. Each route runs
 `claude --print` with `--model <model> --effort <level>`, and the served model is
 checked against the route. The level is the dispatch's `thinking` (`medium`, `high` or
 `xhigh`; high/xhigh need a `thinkingReason`) and `medium` when none is given; it is
