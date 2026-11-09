@@ -20,7 +20,17 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { RateLimitInfo } from "./billing.ts";
 
-const ROUTER_TIMEOUT_MS = 10_000;
+// The router promises a JSON answer within ~8s (even refusals); this is only the safety net for a loaded machine.
+const ROUTER_TIMEOUT_MS = 20_000;
+// ULTRATERM_ACCOUNT_ROUTER_TIMEOUT_MS overrides the safety net, bounded to 1000..60000 ms (tests, very slow machines).
+const ROUTER_TIMEOUT_MIN_MS = 1_000;
+const ROUTER_TIMEOUT_MAX_MS = 60_000;
+const STATUS_RETRY_PAUSE_MS = 500;
+
+function routerTimeoutMs(env: Env): number {
+  const n = Number(env.ULTRATERM_ACCOUNT_ROUTER_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? Math.min(ROUTER_TIMEOUT_MAX_MS, Math.max(ROUTER_TIMEOUT_MIN_MS, Math.round(n))) : ROUTER_TIMEOUT_MS;
+}
 const ACCOUNT_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const INFO_KEYS = ["status", "resetsAt", "rateLimitType", "overageStatus", "overageDisabledReason", "isUsingOverage", "unifiedWindows"];
 
@@ -35,15 +45,56 @@ function routerPath(env: Env): string | undefined {
 function defaultRouter(env: Env): RouterCall | undefined {
   const path = routerPath(env);
   if (!path) return undefined;
+  const timeout = routerTimeoutMs(env);
   return (args, stdin) => new Promise((resolve, reject) => {
-    const child = execFile(path, args, { timeout: ROUTER_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+    const started = Date.now();
+    const child = execFile(path, args, { timeout, killSignal: "SIGTERM", maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
       let parsed: unknown;
       try { parsed = JSON.parse(stdout); } catch { parsed = undefined; }
       if (parsed !== undefined) return resolve(parsed);
-      reject(new Error(`account router ${args[0]} failed: ${error?.message ?? (String(stderr).trim().slice(0, 200) || "no JSON output")}`));
+      const e = error as (NodeJS.ErrnoException & { killed?: boolean; signal?: string | null; code?: unknown }) | null;
+      let cause: string;
+      if (e?.killed || e?.signal) {
+        const secs = Math.round((Date.now() - started) / 100) / 10;
+        cause = e.killed && (e.signal ?? "SIGTERM") === "SIGTERM" && Date.now() - started >= timeout - 50
+          ? `timed out after ${secs}s (killed by ${e.signal ?? "SIGTERM"})`
+          : `stopped by signal ${e.signal ?? "SIGTERM"} after ${secs}s`;
+      } else if (e) {
+        cause = typeof e.code === "number" ? `exited with code ${e.code}` : `could not run (${String(e.code ?? e.message).slice(0, 100)})`;
+      } else {
+        cause = "exited without an answer";
+      }
+      const err = String(stderr ?? "").trim().slice(0, 200);
+      reject(new Error(`account router ${args[0]} ${cause}; no JSON output${err ? `; stderr: ${err}` : ""}`));
     });
     if (stdin !== undefined) child.stdin?.end(stdin);
   });
+}
+
+/**
+ * Read the router's status. It is read-only, so one failure without JSON (timeout, crash, signal) is retried once
+ * after a short pause. Writes (`ingest`, `select`) are never retried here: `select` may reserve an account.
+ */
+async function readStatus(id: string, call: RouterCall): Promise<any> {
+  // A refusal ({ok:false}, e.g. the state lock was busy) is not a reading: treating it as "no such account" would
+  // let a reserved account pass unchecked. It is retried once like a crash, then fails closed with its cause.
+  const once = async () => {
+    const status: any = await call(["status"]);
+    if (status && typeof status === "object" && status.ok === false) {
+      throw new Error(`account router status refused: ${String(status.error ?? "no cause given").slice(0, 200)}`);
+    }
+    return status;
+  };
+  try {
+    try {
+      return await once();
+    } catch {
+      await new Promise((r) => setTimeout(r, STATUS_RETRY_PAUSE_MS));
+      return await once();
+    }
+  } catch (error) {
+    throw new Error(`Claude account reserve could not be checked for ${id}: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 /** The account this session or worker spends on, when the launcher named one. */
@@ -67,12 +118,7 @@ export class AccountReserveError extends Error {
 export async function assertAccountReserve(env: Env, call: RouterCall | undefined = defaultRouter(env)): Promise<void> {
   const id = reservedAccountId(env);
   if (!id || !call) return;
-  let status: any;
-  try {
-    status = await call(["status"]);
-  } catch (error) {
-    throw new Error(`Claude account reserve could not be checked for ${id}: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  const status = await readStatus(id, call);
   const accounts = status?.providers?.claude?.accounts;
   const account = Array.isArray(accounts) ? accounts.find((a: any) => a?.id === id) : undefined;
   if (!account) return; // not a router-managed account: nothing reserved here
@@ -143,12 +189,7 @@ export function forgetSessionAccount(sessionId?: string): void {
 interface Verdict { ok: boolean; label: string; why: string }
 
 async function reserveVerdict(id: string, call: RouterCall): Promise<Verdict> {
-  let status: any;
-  try {
-    status = await call(["status"]);
-  } catch (error) {
-    throw new Error(`Claude account reserve could not be checked for ${id}: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  const status = await readStatus(id, call);
   const accounts = status?.providers?.claude?.accounts;
   const account = Array.isArray(accounts) ? accounts.find((a: any) => a?.id === id) : undefined;
   const label = typeof account?.label === "string" && account.label ? account.label : id;

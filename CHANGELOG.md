@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.23.19 (2026-11-08)
+
+- **A slow account router no longer ends a Claude session.** The per-request owner-reserve check killed
+  `ut-provider-accounts status` after 10 s, which a loaded machine could exceed (router lock wait plus its CLI probes),
+  and the turn died with "account router status failed: Command failed". The safety net is now 20 s
+  (`ULTRATERM_ACCOUNT_ROUTER_TIMEOUT_MS`, 1000..60000), the read-only status call is retried once after 500 ms, and the
+  error names the cause (timed out / signal / exit code, plus stderr). `ingest` and `select` are never retried.
+- **A router refusal is never read as "no reserve".** A status answer of `{ok:false}` (for example a busy state lock)
+  used to look like an unmanaged account and let a reserved account pass unchecked; it is now retried and then fails
+  closed with the router's own cause.
+
 ## 0.23.18 (2026-11-08)
 
 - **A mid-run hop obeys the project policy.** The pre-output fallback hop of a chain worker used the shared automatic

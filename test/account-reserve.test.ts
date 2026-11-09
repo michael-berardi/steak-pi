@@ -1,3 +1,6 @@
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { AccountReserveError, assertAccountReserve, rateLimitIngestPayload, reportRateLimit, type RouterCall } from "../extensions/claude-code/account-reserve.ts";
 import { parseClaudeStreamLine } from "../src/subagents/claude-worker.ts";
@@ -166,5 +169,80 @@ describe("a reserve refusal moves the session instead of stalling it", () => {
     expect((await resolveRequestAccount({}, "s-none2", fleet({ lentReserve: { ok: false } }))).overrides).toBeUndefined();
     const broken: RouterCall = async () => { throw new Error("router timed out"); };
     await expect(resolveRequestAccount({ ULTRATERM_PROVIDER_ACCOUNT: "lent" }, "s-broken", broken)).rejects.toThrow(/could not be checked for lent/);
+  });
+});
+
+describe("router call robustness", () => {
+  const env = { ULTRATERM_PROVIDER_ACCOUNT: "lent" };
+  const okStatus = { providers: { claude: { accounts: [{ id: "lent", reserve: { ok: true } }] } } };
+
+  it("retries a failed status read once and then succeeds", async () => {
+    let n = 0;
+    const flaky: RouterCall = async () => { if (n++ === 0) throw new Error("account router status timed out after 20s"); return okStatus; };
+    await expect(assertAccountReserve(env, flaky)).resolves.toBeUndefined();
+    expect(n).toBe(2);
+    n = 0;
+    await expect(resolveRequestAccount(env, undefined, flaky)).resolves.toEqual({ overrides: undefined });
+    expect(n).toBe(2);
+  });
+
+  it("fails closed after the single retry, naming the cause", async () => {
+    let n = 0;
+    const dead: RouterCall = async () => { n++; throw new Error("account router status timed out after 20s (killed by SIGTERM); no JSON output"); };
+    await expect(assertAccountReserve(env, dead)).rejects.toThrow(/could not be checked for lent: account router status timed out after 20s/);
+    expect(n).toBe(2);
+  });
+
+  it("treats a router refusal as unreadable, never as an unreserved account", async () => {
+    let n = 0;
+    const busy: RouterCall = async () => { n++; return { ok: false, error: "the account state lock was busy for 6s" }; };
+    await expect(assertAccountReserve(env, busy)).rejects.toThrow(/could not be checked for lent: account router status refused: the account state lock was busy/);
+    expect(n).toBe(2);
+    n = 0;
+    await expect(resolveRequestAccount(env, undefined, busy)).rejects.toThrow(/could not be checked for lent/);
+    expect(n).toBe(2);
+  });
+
+  it("never retries ingest", async () => {
+    let n = 0;
+    const dead: RouterCall = async () => { n++; throw new Error("boom"); };
+    const out = await reportRateLimit(env, info, undefined, dead);
+    expect(out).toMatch(/not recorded: boom/);
+    expect(n).toBe(1);
+  });
+
+  it("never retries select", async () => {
+    const calls: string[] = [];
+    const call: RouterCall = async (args) => {
+      calls.push(args[0]);
+      if (args[0] === "status") return { providers: { claude: { accounts: [{ id: "lent", reserve: { ok: false, why: "low" } }] } } };
+      throw new Error("select died");
+    };
+    await expect(resolveRequestAccount(env, undefined, call)).rejects.toThrow(/select died/);
+    expect(calls.filter((c) => c === "select")).toHaveLength(1);
+  });
+
+  function script(body: string): string {
+    const path = join(mkdtempSync(join(tmpdir(), "router-")), "router.sh");
+    writeFileSync(path, `#!/bin/sh\n${body}\n`);
+    chmodSync(path, 0o755);
+    return path;
+  }
+
+  it("real router: a slow but answering router succeeds", async () => {
+    const path = script(`sleep 1; echo '${JSON.stringify(okStatus)}'`);
+    await expect(assertAccountReserve({ ...env, ULTRATERM_ACCOUNT_ROUTER: path, ULTRATERM_ACCOUNT_ROUTER_TIMEOUT_MS: "5000" })).resolves.toBeUndefined();
+  });
+
+  it("real router: a killed router is reported as timed out with SIGTERM", async () => {
+    const path = script("exec sleep 30");
+    const error = await assertAccountReserve({ ...env, ULTRATERM_ACCOUNT_ROUTER: path, ULTRATERM_ACCOUNT_ROUTER_TIMEOUT_MS: "1000" }).catch((e) => e);
+    expect(String(error.message)).toMatch(/could not be checked for lent: account router status timed out after 1(\.\d)?s \(killed by SIGTERM\); no JSON output/);
+  }, 15_000);
+
+  it("real router: exit code and stderr are named", async () => {
+    const path = script("echo 'lock busy' >&2; exit 3");
+    const error = await assertAccountReserve({ ...env, ULTRATERM_ACCOUNT_ROUTER: path }).catch((e) => e);
+    expect(String(error.message)).toMatch(/account router status exited with code 3; no JSON output; stderr: lock busy/);
   });
 });
