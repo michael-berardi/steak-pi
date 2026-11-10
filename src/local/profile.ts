@@ -9,6 +9,8 @@
 import { basename } from "node:path";
 import type { GgufInfo } from "./gguf.ts";
 import { CACHE_RAM_MIB, gib, HEADROOM_BYTES, kvBytesPerToken, sizeContext, startNeedBytes } from "./hardware.ts";
+import type { LimitsConfig } from "./limits.ts";
+import { LocalError } from "./errors.ts";
 
 export const PROVIDER = "local";
 export const DEFAULT_PORT = 8089;
@@ -26,7 +28,59 @@ export interface LaunchProfile {
   kvBytesPerToken: number;
   /** Appended to the llama-server command line (after `--` on `add`). */
   extraArgs: string[];
+  /** The local route's own limits (request size, duty cycle, GPU headroom). Absent: the defaults in `limits.ts`. */
+  limits?: LimitsConfig;
+  /** Server launch settings that change GPU load. Absent: the defaults below. */
+  server?: ServerConfig;
 }
+
+/**
+ * Server settings that change how much GPU a request costs. Every one is optional and every one is overridable from
+ * the profile file; a value the profile sets explicitly is never replaced by a default.
+ */
+export interface ServerConfig {
+  /** Parallel slots. One is right for a single-GPU machine: more slots mean more concurrent GPU work, not more speed. */
+  slots?: number;
+  /** llama.cpp's logical batch size (`--batch-size`); unset means the server's own default. */
+  batchSize?: number;
+  /** llama.cpp's physical batch size (`--ubatch-size`); unset means the server's own default. */
+  ubatchSize?: number;
+  /** Draft tokens per step when speculative decoding is on (`--spec-draft-n-max`). */
+  specDraftMax?: number;
+}
+
+/**
+ * Output tokens one request may generate. A coding turn's answer is a few hundred to a few thousand tokens; at the
+ * 53 ms/token measured on a 27B model of this class, 4096 is about 3.5 minutes of generation, where the 16384 the
+ * route used to ask for was about 14.5 minutes of GPU time for output a turn rarely needs.
+ */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
+/** One parallel slot: the server serialises requests anyway, and a second slot only adds GPU work. */
+export const DEFAULT_SLOTS = 1;
+/**
+ * llama.cpp's logical batch: how many tokens one submission may cover. llama.cpp defaults to 2048, so a single prefill
+ * submission can occupy the GPU for thousands of tokens' worth of work — at the 2.1-2.9 ms/token measured for prompt
+ * evaluation on a 27B model of this class, that is 4-6 s of uninterrupted GPU time per submission, and a small
+ * desktop GPU submission queued behind it waits for all of it. A pause between requests cannot shorten a submission; a
+ * smaller batch can, because the driver gets the GPU back between submissions. 512 keeps the prompt cache useful and
+ * bounds one submission to about 1-1.5 s.
+ *
+ * UNVERIFIED LIVE: this needs a server restart to take effect, and the responsiveness measurement for it has not been
+ * run (the earlier probe round measured pauses and a QoS clamp, not batch sizes). It is a validated, overridable
+ * default, and the first thing to raise if prefill throughput matters more than the desktop's tail latency.
+ */
+export const DEFAULT_BATCH_SIZE = 512;
+/** llama.cpp's physical batch: the part of a logical batch submitted at once (llama.cpp defaults to 512). One quarter
+ * of the logical batch keeps a single physical submission near 0.4 s of GPU time at the measured prompt-eval rate. */
+export const DEFAULT_UBATCH_SIZE = 128;
+/**
+ * Draft tokens per speculative step, for a profile that turns speculative decoding on without choosing a depth itself.
+ * Draft acceptance measured on a large model with a built-in draft head: 52% in the window that motivated this change,
+ * 61% mean over the 2,142 requests in the server log. Either way a good share of the drafts is thrown away, and every draft is
+ * GPU work, so a shallower step spends less of it for most of the speed-up. A profile that sets `--spec-draft-n-max`
+ * itself keeps its own value: this default never replaces an explicit choice.
+ */
+export const DEFAULT_SPEC_DRAFT_MAX = 2;
 
 const RANKED_EFFORTS = ["low", "medium", "high", "xhigh"];
 const PI_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -92,7 +146,7 @@ export function planProfile(input: PlanInput): Plan {
   if (!size.ok) throw new PlanError(size.cause, size.detail);
   const reasoning = detectReasoning(info.chatTemplate);
   const baseUrl = `http://127.0.0.1:${input.port}/v1`;
-  const maxTokens = Math.min(16384, size.ctx / 4);
+  const maxTokens = Math.min(DEFAULT_MAX_OUTPUT_TOKENS, Math.max(1, Math.floor(size.ctx / 4)));
   const model: Record<string, unknown> = {
     id,
     name: `${info.name ?? id} (local)`,
@@ -128,14 +182,61 @@ export function planProfile(input: PlanInput): Plan {
   return { profile, model, lines };
 }
 
-/** llama-server arguments for a profile (the binary itself is found separately). */
+const badServer = (detail: string): never => { throw new LocalError("bad-server", detail); };
+const wholeNumber = (value: unknown, key: string, min: number, max: number): number =>
+  typeof value === "number" && Number.isInteger(value) && value >= min && value <= max
+    ? value
+    : badServer(`${key} must be a whole number from ${min} to ${max} (got ${JSON.stringify(value)})`);
+
+/**
+ * The server settings a profile asks for, validated. Throws `LocalError("bad-server")` naming the offending key, so a
+ * typo is refused before a server is started rather than silently ignored.
+ */
+export function resolveServer(profile: Pick<LaunchProfile, "server" | "extraArgs">): Required<ServerConfig> {
+  const config = profile.server;
+  if (config !== undefined && (typeof config !== "object" || config === null || Array.isArray(config))) badServer(`server must be an object (got ${JSON.stringify(config)})`);
+  const server = (config ?? {}) as ServerConfig;
+  const known = ["slots", "batchSize", "ubatchSize", "specDraftMax"];
+  const unknown = Object.keys(server).find((key) => !known.includes(key));
+  if (unknown !== undefined) badServer(`unknown key server.${unknown} (known: ${known.map((key) => `server.${key}`).join(", ")})`);
+  const batchSize = server.batchSize === undefined ? DEFAULT_BATCH_SIZE : wholeNumber(server.batchSize, "server.batchSize", 1, 8192);
+  const ubatchSize = server.ubatchSize === undefined ? DEFAULT_UBATCH_SIZE : wholeNumber(server.ubatchSize, "server.ubatchSize", 1, 8192);
+  if (ubatchSize > batchSize) badServer(`server.ubatchSize (${ubatchSize}) must not exceed server.batchSize (${batchSize})`);
+  return {
+    slots: server.slots === undefined ? DEFAULT_SLOTS : wholeNumber(server.slots, "server.slots", 1, 8),
+    specDraftMax: server.specDraftMax === undefined ? DEFAULT_SPEC_DRAFT_MAX : wholeNumber(server.specDraftMax, "server.specDraftMax", 1, 16),
+    batchSize, ubatchSize,
+  };
+}
+
+const hasFlag = (args: readonly string[], flag: string): boolean => args.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
+
+/**
+ * llama-server arguments for a profile (the binary itself is found separately).
+ *
+ * Three of these change how much GPU a request costs, and each is a default the profile file can override:
+ *  - `-np` (parallel slots): one, because the server serialises requests anyway and a second slot only adds GPU work;
+ *  - `--spec-draft-n-max`: two, but only when the profile turns speculative decoding on and does not choose a depth
+ *    itself (a profile that sets it keeps its own value);
+ *  - `--batch-size` / `--ubatch-size`: a bound on how long one GPU submission may be, which is what the desktop
+ *    actually waits behind. The defaults above are the untested proposal from the GPU report, shipped as overridable
+ *    defaults and marked unverified live.
+ * A flag the profile already passes in its extra arguments is never emitted twice: an explicit choice wins.
+ */
 export function serverArgs(profile: LaunchProfile): string[] {
+  const server = resolveServer(profile);
+  const extra = profile.extraArgs;
+  const specOn = hasFlag(extra, "--spec-type");
+  const specDepthSet = hasFlag(extra, "--spec-draft-n-max");
   return [
     ...(profile.source.kind === "file" ? ["-m", profile.source.path] : ["-hf", profile.source.spec]),
     "--host", "127.0.0.1", "--port", String(profile.port),
-    "-c", String(profile.ctx), "-np", "1", "-ngl", "999", "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0",
+    "-c", String(profile.ctx), "-np", String(server.slots), "-ngl", "999", "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0",
     "--jinja",
     "--cache-ram", String(CACHE_RAM_MIB), "--no-webui",
-    ...profile.extraArgs,
+    ...(hasFlag(extra, "-b") || hasFlag(extra, "--batch-size") ? [] : ["--batch-size", String(server.batchSize)]),
+    ...(hasFlag(extra, "-ub") || hasFlag(extra, "--ubatch-size") ? [] : ["--ubatch-size", String(server.ubatchSize)]),
+    ...(specOn && !specDepthSet ? ["--spec-draft-n-max", String(server.specDraftMax)] : []),
+    ...extra,
   ];
 }

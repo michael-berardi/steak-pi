@@ -1,6 +1,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ensure, pidHolder, release, systemDeps, type EnsureResult } from "../../src/local/runtime.ts";
-import { LocalError, localDir } from "../../src/local/store.ts";
+import { LocalError, localDir, readProfile } from "../../src/local/store.ts";
+import type { LaunchProfile } from "../../src/local/profile.ts";
+import { systemGpuProbe, type GpuProbe } from "../../src/local/gpu-probe.ts";
+import { checkRequest, createGovernor, estimatePromptTokens, requestedOutputTokens, resolveLimits, type Governor, type LocalLimits } from "../../src/local/limits.ts";
 
 /** The one-line cause of a refused or failed start, in the form the CLI and the USAP profile-ensure hook print. */
 export const refusalText = (error: unknown): string =>
@@ -11,7 +14,22 @@ interface Refusal { modelId: string; text: string; aborted: boolean }
 export interface LocalHookDeps {
   ensure(id: string): Promise<EnsureResult>;
   release(): Promise<unknown>;
+  /** The launch profile of a local model (read-only), for its limits. Defaults to the profile file on disk. */
+  profile?(id: string): LaunchProfile | undefined;
+  /** GPU utilisation probe. Defaults to the unprivileged `ioreg` read; injected in tests. */
+  probe?: GpuProbe;
+  now?(): number;
+  /** Sleep that resolves early when the signal aborts. */
+  sleep?(ms: number, signal?: AbortSignal): Promise<void>;
 }
+
+/** A sleep that a request's abort signal can cut short, so a wait is never a stall the operator cannot cancel. */
+const abortableSleep = (ms: number, signal?: AbortSignal): Promise<void> => new Promise((resolve) => {
+  if (signal?.aborted) { resolve(); return; }
+  const timer = setTimeout(done, ms);
+  function done() { clearTimeout(timer); signal?.removeEventListener("abort", done); resolve(); }
+  signal?.addEventListener("abort", done, { once: true });
+});
 
 /** The provider the local module writes to `models.json`; a model on it is served by an on-demand llama-server. */
 const LOCAL_PROVIDER = "local";
@@ -36,6 +54,30 @@ export function createLocalHook(deps: LocalHookDeps): (pi: ExtensionAPI) => void
       const text = refusalText(error);
       ctx.ui.notify(text, "error");
       if (ctx.hasUI === false) process.stderr.write(`${text}\n`); // print mode has no notification area
+    };
+    // A wait is never silent: it goes to the status line, and to the log when there is no UI.
+    const notice = (ctx: ExtensionContext, text: string) => {
+      ctx.ui.notify(text, "info");
+      if (ctx.hasUI === false) process.stderr.write(`${text}\n`);
+    };
+    const now = deps.now ?? (() => Date.now());
+    const sleep = deps.sleep ?? abortableSleep;
+    const probe = deps.probe ?? systemGpuProbe;
+    const profileOf = deps.profile ?? ((id: string) => readProfile(localDir(), id));
+    // The local route's own limits, per model: request size, duty-cycle pacing and the GPU headroom check.
+    let governed: { id: string; ctx: number; limits: LocalLimits; governor: Governor } | undefined;
+    let requestStartedAt: number | undefined;
+    let saidClamp = false;
+    const governorFor = (id: string, ctx: ExtensionContext) => {
+      if (governed?.id === id) return governed;
+      const profile = profileOf(id);
+      if (!profile) return undefined;
+      let limits: LocalLimits;
+      try { limits = resolveLimits(profile); }
+      catch (error) { report(ctx, error); return undefined; } // a bad limits block is named, never silently ignored
+      const governor = createGovernor({ limits, probe, now, sleep, notice: (text) => notice(ctx, text) });
+      governed = { id, ctx: profile.ctx, limits, governor };
+      return governed;
     };
     const letGo = async () => {
       if (held === undefined) return;
@@ -96,13 +138,57 @@ export function createLocalHook(deps: LocalHookDeps): (pi: ExtensionAPI) => void
       else refusal = undefined; // the model changed during the wait: this run is not the one that was refused
     });
     pi.on("message_end", async (event) => {
+      // The request that just finished: its duration sets the idle gap before the next one.
+      if (requestStartedAt !== undefined) {
+        const duration = now() - requestStartedAt;
+        requestStartedAt = undefined;
+        governed?.governor.afterRequest(duration);
+      }
       if (refusal === undefined || !refusal.aborted || event.message.role !== "assistant" || event.message.stopReason !== "aborted") return undefined;
       const text = refusal.text;
       refusal = undefined;
       return { message: { ...event.message, stopReason: "error", errorMessage: text } };
     });
+    // Every request on a local model passes here, which is where the local route's own limits apply: the output cap,
+    // the prompt cap (compacted through Pi's own path, never truncated), the duty-cycle gap after the previous request
+    // and the GPU headroom check before this one. The wait happens here, in the session, and never inside the lease
+    // lock, so `release` and `local stop` are never blocked by it.
+    pi.on("before_provider_request", async (event, ctx) => {
+      const id = localId(ctx.model);
+      if (!id) return undefined;
+      const state = governorFor(id, ctx);
+      if (!state) return undefined;
+      const payload = event.payload;
+      // A request that never reached `message_end` (an error, a dropped stream) still sets the gap for the next one.
+      if (requestStartedAt !== undefined) { state.governor.afterRequest(now() - requestStartedAt); requestStartedAt = undefined; }
+      const verdict = checkRequest(state.limits, state.ctx, { promptTokens: estimatePromptTokens(payload), outputTokens: requestedOutputTokens(payload) });
+      // A compaction request carries the whole transcript by design: it is the way out of an over-cap prompt, so it is
+      // never refused for being over the cap (that would loop: compact, refuse, compact).
+      if (verdict.kind === "compact" && !compacting) {
+        // Over the prompt cap: compact through the existing path and hold this request, naming the cause.
+        const text = `steak-pi local: REFUSED (prompt-over-cap): the prompt is about ${verdict.promptTokens} tokens and the local route sends at most ${verdict.cap} (${Math.round(state.limits.promptCapRatio * 100)}% of the ${state.ctx}-token context); compacting the session, then the next request fits`;
+        refusal = { modelId: id, text, aborted: true };
+        ctx.compact();
+        ctx.abort();
+        return undefined;
+      }
+      let replaced: unknown;
+      if (verdict.kind === "clamp-output" && payload && typeof payload === "object") {
+        const body = payload as Record<string, unknown>;
+        for (const key of ["max_tokens", "max_completion_tokens"] as const) if (typeof body[key] === "number") body[key] = verdict.to;
+        replaced = body;
+        if (!saidClamp) {
+          saidClamp = true;
+          notice(ctx, `local: output capped at ${verdict.to} tokens per request (asked for ${verdict.from}); override with limits.maxOutputTokens in the profile file`);
+        }
+      }
+      const wait = await state.governor.beforeRequest(ctx.signal);
+      if (wait.aborted) return undefined;
+      requestStartedAt = now();
+      return replaced;
+    });
     // Pi will not continue on its own: the run is over and this process no longer uses the server.
-    pi.on("agent_settled", async () => { compacting = false; refusal = undefined; await queue(letGo); });
+    pi.on("agent_settled", async () => { compacting = false; refusal = undefined; requestStartedAt = undefined; await queue(letGo); });
     // A compaction outside a run (manual /compact, or the check before a prompt) summarizes with the session model: hold the
     // server for it, then let go. When the server cannot start, the compaction is cancelled instead of sent to a dead port.
     pi.on("session_before_compact", async (_event, ctx) => {
@@ -117,7 +203,7 @@ export function createLocalHook(deps: LocalHookDeps): (pi: ExtensionAPI) => void
     const compacted = async () => { if (compacting) { compacting = false; await queue(letGo); } };
     pi.on("session_compact", compacted);
     pi.on("session_compact_failed", compacted);
-    pi.on("session_shutdown", async () => { await queue(letGo); });
+    pi.on("session_shutdown", async () => { requestStartedAt = undefined; await queue(letGo); });
   };
 }
 

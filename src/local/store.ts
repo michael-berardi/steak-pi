@@ -7,12 +7,10 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { LocalError } from "./errors.ts";
 import { ID_PATTERN, PROVIDER, type LaunchProfile } from "./profile.ts";
 
-export class LocalError extends Error {
-  readonly code: string;
-  constructor(code: string, detail: string) { super(detail); this.code = code; }
-}
+export { LocalError } from "./errors.ts";
 
 export const agentDir = (): string => process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
 export const modelsJsonPath = (): string => join(agentDir(), "models.json");

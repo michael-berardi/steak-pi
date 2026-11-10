@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.24.0 (2026-11-10)
+
+- **The local route keeps GPU headroom instead of pinning the machine.** A local model is the only route that runs on
+  this machine's own GPU, and one session driving it back-to-back pinned it at 98% for tens of seconds at a time. The
+  local route now enforces its own limits, all on by default and all overridable from the profile file's `limits` block
+  (validated: a bad or unknown key is a named `bad-limit` refusal, never a silent no-op):
+  - an **output cap** of 4096 tokens per request (the model entry's `maxTokens`; a request that still asks for more is
+    clamped and the clamp is reported once);
+  - a **prompt cap** of 75% of the server's context. An over-cap prompt is never truncated: the session is compacted
+    through Pi's own compaction path and the request is refused with `REFUSED (prompt-over-cap)`, so a local route
+    compacts earlier than a remote one;
+  - **duty-cycle pacing**: after a request finishes, the next one starts only after an idle gap derived from the
+    previous request's duration and an 85% target, capped at 10 s. The wait is shown in the status line (and the log in
+    print mode), the request's abort signal cancels it, and it never holds the lease lock, so `release` and
+    `local stop` are never blocked by it;
+  - a **GPU headroom check** at each request start: one unprivileged `ioreg` sample (about 0.01 s, no `powermetrics`,
+    which needs root). At or above 95% the start waits until utilisation has been at or below 85% for two samples, at
+    most 30 s, after which it proceeds and says so. Any other platform, a probe error or an unparsable answer means
+    unknown: the check does nothing and says why once per session. The decision is a pure function, unit-tested without
+    a GPU.
+- **Server launch defaults that change GPU load are reviewed, and only where there is evidence.** One parallel slot
+  stays (`-np 1`: the server serialises requests anyway), and `--spec-draft-n-max 2` is now the default when a profile
+  turns speculative decoding on without choosing a depth itself (measured draft acceptance is 52% in the window the GPU
+  report sampled and 61% averaged over the server log's 2,142 requests, so a good share of five drafts per step is GPU
+  work thrown away). `--batch-size 512` / `--ubatch-size 128` are now defaults
+  (`server.batchSize` / `server.ubatchSize`): a pause between requests cannot shorten one GPU submission, but a smaller
+  batch bounds it, and llama.cpp's own 2048-token logical batch is 4-6 s of uninterrupted GPU time per submission at the
+  measured prompt-eval rate. That one is **unverified live**: it needs a server restart and the responsiveness
+  measurement for batch sizes has not been run. A flag the profile passes itself is never emitted twice. A value a profile sets
+  explicitly is never replaced, and a bad `server` key is a named `bad-server` refusal.
+- **A simulation of the recorded GPU trace is part of the test suite.** The utilisation series measured on the affected
+  machine is a fixture; the tests replay it with back-to-back 105 s requests and report the share of samples at or above
+  95% before and after. With the shipped defaults that share falls from 91% to 84% (the 10 s gap cap binds); reaching
+  10% needs a duty target near 0.10 with a matching `maxGapMs`, which the same simulation shows. Live confirmation needs
+  the release installed and a re-measurement.
 ## 0.23.21 (2026-11-10)
 
 - **An implicit Claude wave is no longer refused on an account the router selected.** The router's `select` answer

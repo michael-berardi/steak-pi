@@ -64,6 +64,51 @@ cap         = 32768 by default, your --ctx if given, never above the model's nat
 - Sampling: only if the file carries `general.sampling.*` defaults are they written as `samplingParams`. Otherwise the
   server's defaults apply; add your vendor's recommended values to the entry in `models.json` yourself.
 
+## GPU headroom: the local route's own limits
+
+A local model is the only route that runs on this machine's own GPU, so it is the only one that can pin it. Three rules
+keep it from doing so, and all three are on by default for every local profile:
+
+| Rule | Default | What it does |
+|---|---|---|
+| Output cap | 4096 tokens per request | The model entry's `maxTokens`, so Pi never asks for more. A request that still asks for more is clamped to the cap and the clamp is reported once, never silently. |
+| Prompt cap | 75% of the server's context | A prompt over the cap is **not** truncated: the session is compacted through Pi's own compaction path and the request is refused with `REFUSED (prompt-over-cap)`, naming the size and the cap. A local route therefore compacts earlier than a remote one. |
+| Duty cycle | 85% target, at most 10 s of idle | After a request finishes, the next one starts only after an idle gap derived from the previous request's duration (`duration x (1/target - 1)`), capped. The wait is shown in the status line (and the log in print mode), and the request's abort signal cancels it. |
+| GPU headroom | 95% high-water, 85% low-water, 2 samples, 30 s cap | At a request start the GPU is sampled once (macOS: `ioreg -r -d 1 -w 0 -c IOAccelerator`, unprivileged, about 0.01 s; no `powermetrics`, which needs root). At or above 95% the start waits until utilisation has been at or below 85% for two samples, at most 30 s, after which it proceeds and says so. Any other platform, a probe error or an unparsable answer means *unknown*: the check does nothing and says why once per session. |
+
+The wait happens in the session, never inside the lease lock, so `release` and `local stop` are never blocked by it. The
+GPU is sampled at a request start and while a start is waiting, never per token.
+
+Override any of it in the profile file (`~/.pi/agent/local/profiles/<id>.json`); every key is validated, and a typo is a
+named refusal (`bad-limit`), not a silent no-op:
+
+```json
+{ "id": "my-model", "ctx": 32768, "port": 8089,
+  "limits": {
+    "maxOutputTokens": 2048,
+    "promptCapRatio": 0.5,
+    "duty": { "target": 0.7, "maxGapMs": 20000 },
+    "headroom": { "highWater": 90, "lowWater": 70, "confirmSamples": 3, "maxDeferMs": 10000 }
+  },
+  "server": { "slots": 1, "specDraftMax": 2, "batchSize": 512, "ubatchSize": 128 } }
+```
+
+`"duty": "off"` and `"headroom": "off"` turn a rule off. `maxGapMs` may be raised to 30 minutes for a machine that is
+meant to stay mostly idle; a duty target of 0.10 with a matching cap is what it takes to keep the GPU below 95% for
+most of a long run of large requests.
+
+Server settings that change GPU load are defaults the profile can override, and a value the profile sets explicitly is
+never replaced:
+
+| Setting | Default | Why |
+|---|---|---|
+| `-np` (parallel slots) | 1 | The server serialises requests anyway; a second slot only adds GPU work. |
+| `--spec-draft-n-max` | 2, only when the profile turns speculative decoding on and sets no depth | Measured draft acceptance is 52% in the window the GPU report sampled and 61% averaged over the server log's 2,142 requests, so a good share of five drafts per step is GPU work thrown away. |
+| `--batch-size` / `--ubatch-size` | 512 / 128 (`server.batchSize`, `server.ubatchSize`) | A pause between requests cannot shorten a GPU submission; a smaller batch can, because the driver gets the GPU back between submissions. llama.cpp's own defaults are 2048 and 512, and one 2048-token prefill submission is 4-6 s of uninterrupted GPU time at the measured prompt-eval rate. **Unverified live**: it needs a server restart and the responsiveness measurement has not been run for batch sizes. |
+
+A flag the profile already passes itself (`-b`, `--batch-size`, `-ub`, `--ubatch-size`, `--spec-draft-n-max`) is never
+emitted twice, and `server.ubatchSize` must not exceed `server.batchSize`.
+
 ## Constraints and refusals
 
 `start`, `ensure` and a session hook refuse with one line, `steak-pi local: REFUSED (<cause>): <detail>`, exit code 2,
@@ -80,6 +125,8 @@ and nothing is left running or leased:
 | `insufficient-memory` | free plus reclaimable RAM is below weights + KV cache at the profile's context + about 3 GiB of server overhead (a 12 GB model at 32768 needs about 15 GiB) |
 | `health-timeout` / `server-exited` | the server never reported healthy within 180 s, or stopped while loading (the log tail is included) |
 | `unknown-model` | no such id; the message lists the added ones |
+| `bad-limit` / `bad-server` | the profile's `limits` or `server` block has a bad or unknown key; the message names it |
+| `prompt-over-cap` | a request's prompt is over the local route's prompt cap: the session is compacted and the request is held |
 
 Memory is checked at `add` against total RAM and again at every start against what is free right now.
 

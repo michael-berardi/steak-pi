@@ -18,7 +18,8 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { availableMemory, diskUsedPercent, DISK_MAX_PERCENT, gib, startNeedBytes } from "./hardware.ts";
 import { listProfiles, LocalError, readJson, readProfile, withLock, writeAtomic } from "./store.ts";
-import { serverArgs, type LaunchProfile } from "./profile.ts";
+import { resolveServer, serverArgs, type LaunchProfile } from "./profile.ts";
+import { resolveLimits } from "./limits.ts";
 
 export const DEFAULT_GRACE_MS = 10 * 60_000;
 export const DEFAULT_HEALTH_TIMEOUT_MS = 180_000;
@@ -173,6 +174,9 @@ export async function reconcile(deps: Deps): Promise<Orphan | undefined> {
 }
 
 async function preflight(deps: Deps, profile: LaunchProfile, running: ServerRecord | undefined): Promise<{ need: number; free: number }> {
+  // A profile whose limits or server settings do not validate is refused here, by name, before anything is started.
+  resolveLimits(profile);
+  resolveServer(profile);
   if (!deps.findServerBinary()) refuse("llama-server-missing", `llama-server was not found on PATH; ${INSTALL_HINT}`);
   if (profile.source.kind === "file" && !existsSync(profile.source.path)) refuse("model-missing", `the model file is gone: ${profile.source.path}`);
   const used = deps.diskPercent(profile.source.kind === "file" ? profile.source.path : deps.dir);

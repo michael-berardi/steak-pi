@@ -15,6 +15,7 @@ import { gib, totalMemory } from "./hardware.ts";
 import { HF_SPEC, readHfHeader, resolveHf, type Fetch } from "./hf.ts";
 import { DEFAULT_PORT, idFromSource, planProfile, PlanError, type Source } from "./profile.ts";
 import { check, ensure, manualHolder, pidHolder, release, status, stop, supervise, systemDeps, type Deps } from "./runtime.ts";
+import { promptCapTokens, resolveLimits } from "./limits.ts";
 import { checkId, listProfiles, localDir, LocalError, modelsJsonPath, readProfile, upsertLocalModel, writeProfile } from "./store.ts";
 
 export interface Io { out(text: string): void; err(text: string): void }
@@ -75,7 +76,11 @@ async function add(argv: string[], options: CliOptions, io: Io): Promise<number>
   const modelsJson = options.modelsJson ?? modelsJsonPath();
   const { backup } = upsertLocalModel(modelsJson, plan.model as { id: string; baseUrl: string });
   writeProfile(dir, plan.profile);
+  const limits = resolveLimits(plan.profile);
+  const duty = limits.duty ? `${Math.round(limits.duty.target * 100)}% GPU duty cycle, at most ${Math.round(limits.duty.maxGapMs / 1000)}s of idle between requests` : "no duty-cycle pacing";
+  const headroom = limits.headroom ? `a start waits while the GPU is at or above ${limits.headroom.highWater}% (until ${limits.headroom.lowWater}% for ${limits.headroom.confirmSamples} samples, at most ${Math.round(limits.headroom.maxDeferMs / 1000)}s)` : "no GPU headroom check";
   io.out([`added local/${id}`, ...plan.lines.map((line) => `  ${line}`),
+    `  limits    ${limits.maxOutputTokens} output tokens per request, prompts up to ${promptCapTokens(limits, plan.profile.ctx)} tokens (${Math.round(limits.promptCapRatio * 100)}% of the context) before the local route compacts; ${duty}; ${headroom}. Override any of them under "limits" in the profile file`,
     `  wrote     ${modelsJson}${backup ? ` (backup ${basename(backup)})` : ""} and ${join(dir, "profiles", `${id}.json`)}`,
     `  use       pi --model local/${id}   (the server starts on demand and stops after an idle grace)`].join("\n"));
   return 0;

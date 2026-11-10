@@ -199,6 +199,6 @@ describe("local model hook", () => {
   it("is registered by the package's default export", () => {
     const events: string[] = [];
     localModels({ on: (name: string) => { events.push(name); } } as never);
-    expect(events.sort()).toEqual(["agent_settled", "agent_start", "message_end", "model_select", "session_before_compact", "session_compact", "session_compact_failed", "session_shutdown", "session_start"]);
+    expect(events.sort()).toEqual(["agent_settled", "agent_start", "before_provider_request", "message_end", "model_select", "session_before_compact", "session_compact", "session_compact_failed", "session_shutdown", "session_start"]);
   });
 });
