@@ -332,17 +332,36 @@ describe("registry-defined Claude accounts (claude-accounts.json)", () => {
     }
   });
 
-  it("refuses a registry account the router answers with no eligible field, naming that it was not confirmed", async () => {
+  it("treats the router's ok:true select for the requested id as its eligibility verdict, with no eligible field", async () => {
     const home = stage(TEAM_REGISTRY);
     const { eligible: _omitted, ...answer } = teamResponse(home).account;
     const command = vi.fn(async () => ({ ok: true, provider: "claude", account: answer }));
-    const failure = await resolveClaudeAccount("team-2", command).then(() => undefined, (error: unknown) => error);
-    expect(failure).toBeInstanceOf(ClaudeAccountEligibilityError);
-    expect((failure as Error).name).toBe("ClaudeAccountEligibilityError");
-    expect((failure as Error).message).toMatch(/"team-2" is not eligible \(the router did not report it eligible\)/);
-    // The reserved account also stays refused when only a state text is given without a verdict.
-    await expect(resolveClaudeAccount("team-2", async () => teamResponse(home, { eligible: undefined, stateText: "reserved for its owner" }))).rejects.toThrow(ClaudeAccountEligibilityError);
+    await expect(resolveClaudeAccount("team-2", command)).resolves.toEqual({
+      id: "team-2", label: "Claude (Team)", configMode: "explicit", configDir: join(home, ".claude-team-2"),
+    });
     expect(command).toHaveBeenCalledExactlyOnceWith(["select", "--provider", "claude", "--account", "team-2"]);
+  });
+
+  it("refuses a registry account the router reports queued or reserved, naming the router's reason", async () => {
+    const home = stage(TEAM_REGISTRY);
+    const { eligible: _omitted, ...answer } = teamResponse(home).account;
+    const held: Array<[Record<string, unknown>, RegExp]> = [
+      [{ queued: true }, /"team-2" is not eligible \(the router reported it queued or reserved\)/],
+      [{ reserved: true }, /"team-2" is not eligible \(the router reported it queued or reserved\)/],
+      [{ state: "queued" }, /"team-2" is not eligible \(the router reported it queued or reserved\)/],
+      [{ state: "reserved" }, /"team-2" is not eligible \(the router reported it queued or reserved\)/],
+      [{ stateText: "reserved for its owner" }, /"team-2" is not eligible \(reserved for its owner\)/],
+    ];
+    for (const [extra, reason] of held) {
+      const command = vi.fn(async () => ({ ok: true, provider: "claude", account: { ...answer, ...extra } }));
+      const failure = await resolveClaudeAccount("team-2", command).then(() => undefined, (error: unknown) => error);
+      expect(failure, JSON.stringify(extra)).toBeInstanceOf(ClaudeAccountEligibilityError);
+      expect((failure as Error).message, JSON.stringify(extra)).toMatch(reason);
+      expect((failure as Error).message).toMatch(/nothing was launched$/);
+      expect(command).toHaveBeenCalledExactlyOnceWith(["select", "--provider", "claude", "--account", "team-2"]);
+    }
+    // A state text without a verdict is still refused when it names a reservation.
+    await expect(resolveClaudeAccount("team-2", async () => teamResponse(home, { eligible: undefined, stateText: "reserved for its owner" }))).rejects.toThrow(ClaudeAccountEligibilityError);
   });
 
   it("refuses eligible:false and non-true verdicts with the router's own reason", async () => {
@@ -362,12 +381,21 @@ describe("registry-defined Claude accounts (claude-accounts.json)", () => {
     await expect(resolveClaudeAccount("b", async () => ({ ...response("b"), account: { ...response("b").account, eligible: false, stateText: "cooling down" } }))).rejects.toThrow(/"b" is not eligible \(cooling down\)/);
   });
 
-  it("still accepts an absent verdict for primary and b only", async () => {
-    stage(TEAM_REGISTRY, [".claude-b", ".claude-team-2"]);
+  it("accepts an absent verdict for primary, b and registry accounts alike when the router selects them ok:true", async () => {
+    const home = stage(TEAM_REGISTRY, [".claude-b", ".claude-team-2"]);
     for (const id of ["primary", "b"] as const) {
       const { eligible: _omitted, ...account } = response(id).account;
       await expect(resolveClaudeAccount(id, async () => ({ ok: true, provider: "claude", account })), id).resolves.toMatchObject({ id });
     }
+    const { eligible: _omitted, ...team } = teamResponse(home).account;
+    await expect(resolveClaudeAccount("team-2", async () => ({ ok: true, provider: "claude", account: team }))).resolves.toMatchObject({ id: "team-2" });
+  });
+
+  it("still refuses a non-ok or mismatched select answer for a registry account", async () => {
+    const home = stage(TEAM_REGISTRY);
+    const { eligible: _omitted, ...team } = teamResponse(home).account;
+    await refuses({ ok: false, provider: "claude", account: team }, "team-2");
+    await refuses({ ok: true, provider: "claude", account: { ...team, id: "team-3" } }, "team-2");
   });
 
   it("refuses a registry entry whose folder another account already claims, by name", async () => {

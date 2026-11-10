@@ -261,7 +261,7 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
     });
 
     it.each([
-      { name: "no eligible field", override: { eligible: undefined }, reason: /not eligible \(the router did not report it eligible\)/ },
+      { name: "no eligible field but queued behind a lease", override: { eligible: undefined, queued: true, stateText: "queued behind a lease" }, reason: /not eligible \(queued behind a lease\)/ },
       { name: "eligible:false with its state text", override: { eligible: false, state: "reserved", stateText: "reserved for its owner" }, reason: /not eligible \(reserved for its owner\)/ },
     ])("refuses a lent, owner-reserved account when the router answers with $name, before any checkpoint or start", async ({ override, reason }) => {
       stageTeamRegistry();

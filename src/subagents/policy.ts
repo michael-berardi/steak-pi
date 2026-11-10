@@ -3,9 +3,10 @@ import { TASK_CLASS_MAX_LENGTH, TASK_CLASS_PATTERN } from "../routing-config.ts"
 import { isClaudeAccountId } from "./claude-account.ts";
 import { claudeOwnedPathRules } from "./claude-owned-paths.ts";
 import { claudeCodeModelOf } from "./model-selection.ts";
-import { lstatSync, realpathSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   DEFAULT_CONCURRENCY,
   DEFAULT_MAX_TURNS,
@@ -120,6 +121,39 @@ function normalizedCwd(cwd: string): { lexical: string; physical: string } {
   }
 }
 
+/** The overflow root TrimReaper declares (`offload.root` in its config: `$TRIMREAPER_CONFIG`, else
+ * `~/.config/trimreaper/config.json`), or undefined when none is declared or the config is unreadable. */
+function declaredOverflowRoot(): string | undefined {
+  const override = process.env.TRIMREAPER_CONFIG;
+  const configPath = override
+    ? (override.startsWith("~/") ? join(homedir(), override.slice(2)) : override)
+    : join(homedir(), ".config", "trimreaper", "config.json");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(configPath, "utf8"));
+  } catch {
+    return undefined;
+  }
+  const offload = typeof parsed === "object" && parsed !== null ? (parsed as { offload?: unknown }).offload : undefined;
+  const root = typeof offload === "object" && offload !== null ? (offload as { root?: unknown }).root : undefined;
+  return typeof root === "string" && isAbsolute(root) && !root.includes("\0") ? resolve(root) : undefined;
+}
+
+/** TrimReaper moves a folder below home to `<offload.root>/home/<same path below home>` and leaves a symlink
+ * at the original place. A symlink at `lexical` (below home) may resolve only into that declared mirror of
+ * its own relative path; any other escaping target, including another overflow folder, stays refused. */
+function isDeclaredOverflowMirror(lexical: string, physical: string, field: string): boolean {
+  const home = resolve(homedir());
+  if (!isWithin(home, lexical) || lexical === home) return false;
+  const root = declaredOverflowRoot();
+  if (root === undefined) return false;
+  try {
+    return isWithin(physicalProjection(join(root, "home", relative(home, lexical)), field), physical);
+  } catch {
+    return false;
+  }
+}
+
 function pathUnderCwd(cwd: { lexical: string; physical: string }, inputPath: unknown, field: string): {
   lexical: string;
   physical: string;
@@ -130,7 +164,9 @@ function pathUnderCwd(cwd: { lexical: string; physical: string }, inputPath: unk
   if (!isWithin(cwd.lexical, lexical)) fail(`${field} is outside cwd`);
 
   const physical = physicalProjection(lexical, field);
-  if (!isWithin(cwd.physical, physical)) fail(`${field} escapes cwd through a symlink`);
+  if (!isWithin(cwd.physical, physical) && !isDeclaredOverflowMirror(lexical, physical, field)) {
+    fail(`${field} escapes cwd through a symlink`);
+  }
   return { lexical, physical };
 }
 

@@ -18,11 +18,8 @@ const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/;
 const ACCOUNT_ID = /^(?=.{1,24}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ACCOUNT_LABEL = /^[A-Za-z0-9 ()._-]{1,24}$/;
 const REGISTRY_MAX_BYTES = 64 * 1024;
-// The two conventional accounts a router may confirm without an explicit eligibility verdict; any other
-// (registry-defined, possibly lent or owner-reserved) account must be reported `eligible: true`.
-const CONVENTIONAL_ACCOUNTS: readonly string[] = ["primary", "b"];
 
-/** The router answered for an account it did not confirm as eligible (absent verdict, or `eligible: false`). */
+/** The router refused an account: an explicit non-true eligibility verdict, or an account it reports queued or reserved. */
 export class ClaudeAccountEligibilityError extends Error {
   constructor(message: string) {
     super(message);
@@ -213,7 +210,15 @@ function ineligibleReason(account: Record<string, unknown>): string {
     const text = typeof field === "string" ? field.replace(/[\u0000-\u001f\u007f-\u009f\s]+/g, " ").trim().slice(0, 160) : "";
     if (text) return text;
   }
-  return account.eligible !== undefined ? "the router reported it ineligible" : "the router did not report it eligible";
+  if (account.eligible === false) return "the router reported it ineligible";
+  return account.eligible !== undefined ? "the router gave no usable eligibility verdict" : "the router reported it queued or reserved";
+}
+
+/** The router marks an account held back (queued behind a lease, or reserved for its owner or a lent plan). */
+function heldBack(account: Record<string, unknown>): boolean {
+  if (account.queued === true || account.reserved === true) return true;
+  if (account.state === "queued" || account.state === "reserved") return true;
+  return typeof account.stateText === "string" && /\b(?:queued|reserved)\b/i.test(account.stateText);
 }
 
 /** Read-only selection, never a reservation: no release or ambient fallback. */
@@ -230,9 +235,10 @@ export async function resolveClaudeAccount(
   const account = result.account;
   const configDir = expected.configDir ?? join(resolve(homedir()), ".claude");
   if (account.id !== id || account.label !== expected.label || account.configDir !== configDir) throw new Error(UNSAFE_SELECTION);
-  // An explicit eligible:false always refuses. Beyond the two conventional accounts the router must also say
-  // eligible:true: an owner-reserved or lent account never launches on an absent or unknown verdict.
-  if (account.eligible !== true && (account.eligible !== undefined || !CONVENTIONAL_ACCOUNTS.includes(id))) {
+  // The router's ok:true answer for exactly the requested id is its eligibility verdict: the select payload carries
+  // no `eligible` field of its own. Refuse only an explicit non-true verdict (eligible:false, or a malformed value,
+  // which fails closed) or an account the router reports queued or reserved (owner-reserved or lent accounts).
+  if ((account.eligible !== undefined && account.eligible !== true) || heldBack(account)) {
     throw new ClaudeAccountEligibilityError(`${UNSAFE_SELECTION}: Claude account "${id}" is not eligible (${ineligibleReason(account)}); nothing was launched`);
   }
   const env = account.launchEnv;

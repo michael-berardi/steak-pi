@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.23.21 (2026-11-10)
+
+- **An implicit Claude wave is no longer refused on an account the router selected.** The router's `select` answer
+  carries no `eligible` field, and the guard required one, so a wave that the router had just picked (for example a
+  lent plan at its best weekly pace) was refused with "the router did not report it eligible" while `status` showed it
+  eligible. An `ok: true` answer for exactly the requested account is now the router's eligibility verdict. The guard
+  still refuses an explicit non-true `eligible` (a malformed value fails closed), an account reported queued or
+  reserved, and every other check (launch environment, config folder, label).
+- **`ownedPaths` may sit on a TrimReaper overflow mirror.** When the reaper moves a folder below home to its declared
+  `offload.root` and leaves a symlink, a task may own that symlink: the target is accepted only inside the root's
+  `home/<same path below home>` mirror. Any other escaping symlink, including another overflow folder or the mirror of
+  a different relative path, is still refused. With no declared root, or an unreadable config, nothing is accepted.
+
 ## 0.23.20 (2026-11-09)
 
 - **Fable 5.2 replaces Fable 5.1 in the Claude Code model catalog.** The catalog row and the `fable` alias now name

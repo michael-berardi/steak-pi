@@ -306,6 +306,79 @@ describe("assertOwnedPath", () => {
   });
 });
 
+describe("TrimReaper overflow mirror in ownedPaths", () => {
+  // The reaper moves <home>/<rel> to <offload.root>/home/<rel> and leaves a symlink at <home>/<rel>.
+  function overflowFixture(): { home: string; scratch: string; overflow: string; config: string; base: string } {
+    const base = mkdtempSync(join(tmpdir(), "steak-overflow-"));
+    temporaryDirectories.push(base);
+    const home = join(base, "home");
+    const scratch = join(home, ".cache", "agent-scratch");
+    const overflow = join(base, "PortableVolume", "TrimReaper Overflow");
+    mkdirSync(join(scratch, "gpu"), { recursive: true });
+    mkdirSync(join(overflow, "home", ".cache", "agent-scratch", "gpu", "sp"), { recursive: true });
+    mkdirSync(join(overflow, "home", "other", "secret"), { recursive: true });
+    mkdirSync(join(base, "outside"), { recursive: true });
+    const config = join(base, "trimreaper.json");
+    writeFileSync(config, JSON.stringify({ offload: { root: overflow, minFreeGB: 40 } }));
+    return { home, scratch, overflow, config, base };
+  }
+
+  function withEnv<T>(env: Record<string, string>, run: () => T): T {
+    const saved = { HOME: process.env.HOME, TRIMREAPER_CONFIG: process.env.TRIMREAPER_CONFIG };
+    Object.assign(process.env, env);
+    try {
+      return run();
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }
+
+  it("allows an owned symlink that resolves into the declared overflow mirror of its own relative path", () => {
+    const { home, scratch, overflow, config } = overflowFixture();
+    symlinkSync(join(overflow, "home", ".cache", "agent-scratch", "gpu", "sp"), join(scratch, "gpu", "sp"));
+    withEnv({ HOME: home, TRIMREAPER_CONFIG: config }, () => {
+      expect(assertOwnedPath(scratch, "gpu/sp/out.txt", ["gpu/sp"], "write")).toBe(join(scratch, "gpu/sp/out.txt"));
+      expect(assertOwnedPath(scratch, "gpu/sp", ["gpu/sp"], "read")).toBe(join(scratch, "gpu/sp"));
+      const normalized = normalizeDispatch(
+        dispatch([{ label: "gpu", task: "x", mayEdit: true, ownedPaths: [join(scratch, "gpu/sp")] }]),
+        scratch,
+        "m",
+        "t",
+      );
+      expect(normalized.tasks[0]!.ownedPaths).toHaveLength(1);
+    });
+  });
+
+  it("refuses an escaping symlink that is not the declared mirror of its own relative path", () => {
+    const { home, scratch, overflow, config, base } = overflowFixture();
+    // Another overflow folder, the same mirror under a different relative path, and an ordinary outside folder.
+    symlinkSync(join(overflow, "home", "other", "secret"), join(scratch, "gpu", "bad"));
+    symlinkSync(join(overflow, "home", ".cache", "agent-scratch", "gpu", "sp"), join(scratch, "gpu", "alias"));
+    symlinkSync(join(base, "outside"), join(scratch, "gpu", "plain"));
+    withEnv({ HOME: home, TRIMREAPER_CONFIG: config }, () => {
+      for (const rel of ["gpu/bad/x", "gpu/alias/x", "gpu/plain/x"]) {
+        expect(() => assertOwnedPath(scratch, rel, [rel.split("/").slice(0, 2).join("/")], "write"), rel)
+          .toThrow(/escapes cwd through a symlink/);
+      }
+    });
+  });
+
+  it("refuses the overflow mirror when no offload root is declared or the config is unreadable", () => {
+    const { home, scratch, overflow, base } = overflowFixture();
+    symlinkSync(join(overflow, "home", ".cache", "agent-scratch", "gpu", "sp"), join(scratch, "gpu", "sp"));
+    withEnv({ HOME: home, TRIMREAPER_CONFIG: join(base, "missing.json") }, () => {
+      expect(() => assertOwnedPath(scratch, "gpu/sp/out.txt", ["gpu/sp"], "write")).toThrow(/escapes cwd through a symlink/);
+    });
+    writeFileSync(join(base, "relative.json"), JSON.stringify({ offload: { root: "relative/root" } }));
+    withEnv({ HOME: home, TRIMREAPER_CONFIG: join(base, "relative.json") }, () => {
+      expect(() => assertOwnedPath(scratch, "gpu/sp/out.txt", ["gpu/sp"], "write")).toThrow(/escapes cwd through a symlink/);
+    });
+  });
+});
+
 describe("per-task turn budget", () => {
   it("defaults to 64 turns and caps the schema ceiling at 2048", () => {
     const { cwd } = fixture();
