@@ -39,8 +39,10 @@
   were re-evaluated every ordinary turn, with 31 turns (the first request and the turns right after a compaction)
   finding nothing cached and re-evaluating 43,000-52,000 tokens. Steak Pi's two per-turn blocks — the route-availability
   line and the active todo plan's guidance — were appended to the end of the fixed prompt, in front of the whole
-  conversation; for a local model they now go after the conversation, so stable content comes first and per-turn content
-  comes last. A request without them is returned untouched, so no other route changes.
+  conversation; for a local model they now go into the last user message, after the conversation, so stable content
+  comes first and per-turn content comes last. They are not sent as a trailing system message: the local model's chat
+  template refuses any system message that is not the first. A request without them is returned untouched, so no other
+  route changes.
 - **Server launch defaults that change GPU load are reviewed, and only where there is evidence.** One parallel slot
   stays (`-np 1`: the server serialises requests anyway), and `--spec-draft-n-max 2` is now the default when a profile
   turns speculative decoding on without choosing a depth itself (measured draft acceptance is 52% in the window the GPU
