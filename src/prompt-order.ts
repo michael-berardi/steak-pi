@@ -12,6 +12,11 @@
  * conversation. Everything stable then comes first and everything that changes per turn comes last, so a change to
  * either block can no longer invalidate a single conversation token. A request without one of these blocks is returned
  * untouched, by identity, so a large-context or hosted route is byte-identical to what Pi built.
+ *
+ * The blocks are merged into the last user message, not appended as a new system message. The chat template of the
+ * local model (Swift-1.5 / Qwen3.8, read from the GGUF header) rejects any system message that is not the first one
+ * ("System message must be at the beginning."), so a trailing system message would fail every request that carried a
+ * moved block. A user message is accepted anywhere in the conversation.
  */
 
 /** The first line of each per-turn block Steak Pi appends to a session's fixed prompt. */
@@ -50,10 +55,15 @@ interface ChatMessage { role?: unknown; content?: unknown }
 interface ChatPayload { messages?: unknown }
 
 /**
- * Move the per-turn blocks of the leading system message to the end of the request.
+ * Move the per-turn blocks of the leading system message into the last user message of the request.
+ *
+ * The stable part stays as the only system message. The blocks are appended to the most recent user message, after its
+ * text, so they sit after the whole conversation's cached prefix. A request with no string-content user message to
+ * receive them is returned untouched, so the blocks stay where Pi put them (in the system message, which is accepted).
  *
  * Returns the same payload object when there is nothing to move, so a caller can tell "untouched" from "reordered" by
- * identity; otherwise a shallow copy with a reordered `messages` array.
+ * identity; otherwise a shallow copy with a reordered `messages` array. Characters are conserved: the blank line that
+ * separated a block from the stable text is removed and the same blank line is added before it in the user message.
  */
 export function movePerTurnTail<T>(payload: T): { payload: T; moved: string[] } {
   if (payload === null || typeof payload !== "object") return { payload, moved: [] };
@@ -66,10 +76,16 @@ export function movePerTurnTail<T>(payload: T): { payload: T; moved: string[] } 
   }
   const split = splitPerTurnTail(head.content);
   if (split.tail === undefined) return { payload, moved: [] };
-  const reordered: ChatMessage[] = [
-    { ...head, content: split.stable },
-    ...messages.slice(1),
-    { role: "system", content: split.tail },
-  ];
+  let target = -1;
+  for (let i = messages.length - 1; i > 0; i--) {
+    if (messages[i]?.role === "user") { target = i; break; }
+  }
+  const user = target > 0 ? messages[target] : undefined;
+  if (user === undefined || typeof user.content !== "string") return { payload, moved: [] };
+  const reordered = messages.map((message, i): ChatMessage => {
+    if (i === 0) return { ...message, content: split.stable };
+    if (i === target) return { ...message, content: `${user.content as string}${SEPARATOR}${split.tail}` };
+    return message;
+  });
   return { payload: { ...(payload as Record<string, unknown>), messages: reordered } as T, moved: [split.tail] };
 }

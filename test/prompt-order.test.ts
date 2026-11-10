@@ -34,29 +34,57 @@ describe("a per-turn block is moved behind the conversation", () => {
     expect(result.moved).toEqual([]);
   });
 
-  it("moves the block to the end of the request and keeps every character", () => {
+  it("moves the block into the last user message and keeps every character", () => {
     const head = `preamble\n<rules>\n- be concise\n</rules>\n\n${AVAILABILITY}`;
     const payload = payloadFor(head);
     const result = movePerTurnTail(payload);
     expect(result.payload).not.toBe(payload);
     const messages = result.payload.messages as Array<{ role: string; content: string }>;
-    expect(messages).toHaveLength(1 + conversation.length + 1);
+    expect(messages).toHaveLength(1 + conversation.length);
     expect(messages[0]).toEqual({ role: "system", content: "preamble\n<rules>\n- be concise\n</rules>" });
-    expect(messages.at(-1)).toEqual({ role: "system", content: AVAILABILITY });
-    expect(messages.slice(1, -1)).toEqual(conversation);
-    // Nothing was added, dropped or reworded: only the blank line that separated the block from its neighbour goes.
+    expect(messages.slice(1)).toEqual([user(`do the thing\n\n${AVAILABILITY}`), conversation[1], conversation[2]]);
+    // Nothing was added, dropped or reworded: the blank line before the block moves with it.
     const chars = (items: Array<{ content: string }>) => items.reduce((total, item) => total + item.content.length, 0);
-    expect(chars(messages) + 2 * result.moved.length).toBe(chars([system(head), ...conversation]));
+    expect(chars(messages)).toBe(chars([system(head), ...conversation]));
     expect(result.moved).toEqual([AVAILABILITY]);
     // The input payload is not mutated.
     expect((payload.messages[0] as { content: string }).content).toBe(head);
+    expect((payload.messages[1] as { content: string }).content).toBe("do the thing");
+  });
+
+  it("never leaves a system message anywhere but the start (the local chat template rejects one)", () => {
+    const payload = payloadFor(`stable\n\n${AVAILABILITY}\n\n${TODO}`);
+    const messages = movePerTurnTail(payload).payload.messages as Array<{ role: string }>;
+    expect(messages.slice(1).some((message) => message.role === "system")).toBe(false);
+  });
+
+  it("uses the most recent user message when there are several turns", () => {
+    const turns = [user("first"), { role: "assistant", content: "ok" }, user("second"), { role: "assistant", content: "done" }, { role: "toolResult", content: "t" }];
+    const payload = { model: "any", messages: [system(`stable\n\n${AVAILABILITY}`), ...turns] };
+    const messages = movePerTurnTail(payload).payload.messages as Array<{ role: string; content: string }>;
+    expect(messages[1]).toEqual(turns[0]);
+    expect(messages[3]).toEqual({ role: "user", content: `second\n\n${AVAILABILITY}` });
+    expect(messages.slice(4)).toEqual(turns.slice(3));
+  });
+
+  it("leaves the block in place when the request has no string user message to receive it", () => {
+    const head = `stable\n\n${AVAILABILITY}`;
+    for (const messages of [
+      [system(head), { role: "assistant", content: "only" }],
+      [system(head), { role: "user", content: [{ type: "text", text: "array content" }] }],
+    ]) {
+      const payload = { model: "any", messages };
+      const result = movePerTurnTail(payload);
+      expect(result.payload).toBe(payload);
+      expect(result.moved).toEqual([]);
+    }
   });
 
   it("moves the todo guidance as well, when both are present", () => {
     const payload = payloadFor(`stable\n\n${AVAILABILITY}\n\n${TODO}`);
     const messages = movePerTurnTail(payload).payload.messages as Array<{ role: string; content: string }>;
     expect(messages[0]!.content).toBe("stable");
-    expect(messages.at(-1)!.content).toBe(`${AVAILABILITY}\n\n${TODO}`);
+    expect(messages[1]!.content).toBe(`do the thing\n\n${AVAILABILITY}\n\n${TODO}`);
   });
 
   it("never guesses: a marker inside the text, twice, or not as a trailing block is left alone", () => {

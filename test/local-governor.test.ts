@@ -146,7 +146,9 @@ describe("the extension applies the local route's limits", () => {
     const result = await h.fire("before_provider_request", { payload }) as { messages: Array<{ role: string; content: string }> };
     expect(result).not.toBe(payload); // a new request body, not a mutation of Pi's payload
     expect(result.messages[0]).toEqual({ role: "system", content: "You are a coding agent.\n\n<rules>\n- Be concise\n</rules>" });
-    expect(result.messages.at(-1)).toEqual({ role: "system", content: availability });
+    // The block rides on the last user message: the local chat template rejects a system message after the first one.
+    expect(result.messages).toHaveLength(2);
+    expect(result.messages[1]).toEqual({ role: "user", content: `hi\n\n${availability}` });
     expect((payload.messages[0] as { content: string }).content).toBe(head); // the caller's payload is untouched
   });
 
