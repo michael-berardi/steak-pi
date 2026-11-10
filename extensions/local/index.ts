@@ -4,6 +4,7 @@ import { LocalError, localDir, readProfile } from "../../src/local/store.ts";
 import type { LaunchProfile } from "../../src/local/profile.ts";
 import { systemGpuProbe, type GpuProbe } from "../../src/local/gpu-probe.ts";
 import { checkRequest, createGovernor, estimatePromptTokens, requestedOutputTokens, resolveLimits, type Governor, type LocalLimits } from "../../src/local/limits.ts";
+import { movePerTurnTail } from "../../src/prompt-order.ts";
 
 /** The one-line cause of a refused or failed start, in the form the CLI and the USAP profile-ensure hook print. */
 export const refusalText = (error: unknown): string =>
@@ -158,7 +159,12 @@ export function createLocalHook(deps: LocalHookDeps): (pi: ExtensionAPI) => void
       if (!id) return undefined;
       const state = governorFor(id, ctx);
       if (!state) return undefined;
-      const payload = event.payload;
+      // Everything stable first, everything that changes per turn last. A local server reuses its prompt cache only for
+      // an identical prefix, and the per-turn blocks Steak Pi appends (route availability, todo guidance) sat at the end
+      // of the fixed prompt — in front of the whole conversation. Moving them behind the conversation is the local
+      // route's own ordering; a request without them comes back untouched, so no hosted route sees any difference.
+      const ordered = movePerTurnTail(event.payload);
+      const payload = ordered.payload;
       // A request that never reached `message_end` (an error, a dropped stream) still sets the gap for the next one.
       if (requestStartedAt !== undefined) { state.governor.afterRequest(now() - requestStartedAt); requestStartedAt = undefined; }
       const verdict = checkRequest(state.limits, state.ctx, { promptTokens: estimatePromptTokens(payload), outputTokens: requestedOutputTokens(payload) });
@@ -172,7 +178,7 @@ export function createLocalHook(deps: LocalHookDeps): (pi: ExtensionAPI) => void
         ctx.abort();
         return undefined;
       }
-      let replaced: unknown;
+      let replaced: unknown = ordered.moved.length > 0 ? payload : undefined;
       if (verdict.kind === "clamp-output" && payload && typeof payload === "object") {
         const body = payload as Record<string, unknown>;
         for (const key of ["max_tokens", "max_completion_tokens"] as const) if (typeof body[key] === "number") body[key] = verdict.to;

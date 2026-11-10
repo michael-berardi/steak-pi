@@ -138,6 +138,25 @@ describe("the extension applies the local route's limits", () => {
     expect(h.notices.map(([, text]) => text).join("\n")).toMatch(/holding the next request 10s to keep the GPU at a 85% duty cycle/);
   });
 
+  it("moves the per-turn route-availability line behind the conversation, so the prefix stays reusable", async () => {
+    const h = harness();
+    const availability = "USAP route availability: route-a: up; route-b: COOLING until Mon 03:42. Next usable route: route-a.";
+    const head = `You are a coding agent.\n\n<rules>\n- Be concise\n</rules>\n\n${availability}`;
+    const payload = { messages: [{ role: "system", content: head }, { role: "user", content: "hi" }], max_tokens: 4096 };
+    const result = await h.fire("before_provider_request", { payload }) as { messages: Array<{ role: string; content: string }> };
+    expect(result).not.toBe(payload); // a new request body, not a mutation of Pi's payload
+    expect(result.messages[0]).toEqual({ role: "system", content: "You are a coding agent.\n\n<rules>\n- Be concise\n</rules>" });
+    expect(result.messages.at(-1)).toEqual({ role: "system", content: availability });
+    expect((payload.messages[0] as { content: string }).content).toBe(head); // the caller's payload is untouched
+  });
+
+  it("leaves a request with no per-turn block exactly as it was", async () => {
+    const h = harness();
+    const payload = { messages: [{ role: "system", content: "stable prompt" }, { role: "user", content: "hi" }], max_tokens: 4096 };
+    expect(await h.fire("before_provider_request", { payload })).toBeUndefined();
+    expect(payload.messages[0]!.content).toBe("stable prompt");
+  });
+
   it("leaves a remote model alone", async () => {
     const h = harness();
     h.ctx.model = { provider: "somewhere-else", id: "model-a" };

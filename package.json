@@ -68,7 +68,8 @@
       "./extensions/ultracompress/index.ts",
       "./extensions/skill-catalog-lite/index.ts",
       "./extensions/claude-code/index.ts",
-      "./extensions/local/index.ts"
+      "./extensions/local/index.ts",
+      "./extensions/prompt-budget/index.ts"
     ],
     "themes": [
       "./themes"

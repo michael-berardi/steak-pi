@@ -1,0 +1,34 @@
+{
+  "what": "Size-only replay data of one recorded local-route session (2026-11-09, a 65,536-token local model). Counts and character sizes only: no prompt text, no transcript content, no tool output.",
+  "session": {
+    "entries": 875,
+    "compactions": 153,
+    "messages": 716,
+    "assistantTurnsWithUsage": 347,
+    "toolResults": 365,
+    "firstCompactionAtEntry": 41,
+    "compactionsAfterFirstFortyEntries": "one every 3 entries"
+  },
+  "window": 65536,
+  "fixedPromptSections": {
+    "preamble": 169,
+    "tools": 779,
+    "rules": 6128,
+    "docs": 1700,
+    "project_context": 37659,
+    "skills": 77508,
+    "cwd": 51,
+    "ultraterm-memory": 6544
+  },
+  "turns": {
+    "promptTokensP50": 48321,
+    "promptTokensP90": 51724,
+    "promptTokensMax": 54644,
+    "cacheReadTokensP50": 21017,
+    "reEvaluatedTokensP50": 20504,
+    "reEvaluatedTokensP90": 32736,
+    "reEvaluatedTokensMax": 51635,
+    "turnsWithNoCacheRead": 31
+  },
+  "keptMessageCharacters": 65800
+}

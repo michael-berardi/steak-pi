@@ -109,6 +109,73 @@ never replaced:
 A flag the profile already passes itself (`-b`, `--batch-size`, `-ub`, `--ubatch-size`, `--spec-draft-n-max`) is never
 emitted twice, and `server.ubatchSize` must not exceed `server.batchSize`.
 
+## A small context window gets a small fixed prompt
+
+Request size is the lever, not the gap between requests. Pacing removes a request for a while; it does not make one
+cheaper, and a 105 s request still occupies the GPU for 105 s. What actually removes the load is sending less: a smaller
+fixed prompt, earlier compaction, a smaller batch. The one recorded session that pinned the GPU on this machine shows the
+shape — 65,536-token route, 875 entries, **153 compactions**, every ordinary turn sending **48,321 prompt tokens**
+(p50; p90 51,724, max 54,644), of which the server had cached 21,017 and re-evaluated the rest, at 2-3 ms per
+re-evaluated token. Its fixed prompt was **130,358 characters of sections** (skills catalog 77,508, project instructions
+37,659, memory pack 6,544, rules 6,128, docs 1,700, tool list 779, preamble 169, cwd 51), plus Pi's own tool schemas.
+
+`extensions/prompt-budget` holds the fixed prompt of a route whose declared context window is below a threshold to a
+share of that window. It decides from the route's context size only — no model name, no provider — so a 200k or 1M route
+is left byte-identical (this hook returns nothing, so Pi keeps the prompt it built).
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `STEAK_PI_PROMPT_BUDGET` | on | `off` (also `0`, `false`, `no`) leaves every fixed prompt alone. |
+| `STEAK_PI_PROMPT_BUDGET_BELOW_TOKENS` | 100000 | Only a route declared below this many tokens is budgeted. |
+| `STEAK_PI_PROMPT_BUDGET_SHARE` | 0.25 | The share of that window the fixed prompt may occupy. |
+| `STEAK_PI_PROMPT_BUDGET_SKILLS_BYTES` | 8192 | Byte budget for the skills index form (the same form `skill-catalog-lite` renders). |
+| `STEAK_PI_PROMPT_BUDGET_MEMORY_BYTES` | 4096 | Byte budget the memory pack is reduced to when it has to give ground. |
+
+A refused value is a named `REFUSED (bad-prompt-budget)` line naming the key (`prompt-budget.share must be a number
+greater than 0 and at most 1`), reported once; the default runs and the report says which. The shrink order is fixed:
+
+1. the skills catalog to its index form, and, if that is not enough, to **names plus the instruction to read the
+   `SKILL.md`** at the listed location;
+2. the documentation block dropped (a small-context route does not need Pi's own docs index in its window);
+3. the memory pack at a smaller budget, halved until the prompt fits, and the pack says in the prompt that it was cut and
+   from how many bytes;
+4. **project instructions (`AGENTS.md` and siblings) are never truncated.** They carry the operator's rules. If they
+   alone exceed the budget they stay whole and the overage is reported once, with the numbers, in the status line and
+   the log.
+
+For the recorded session this brings the fixed prompt from 32,677 estimated tokens (49.9% of the window) to 15,322
+(23.4%), by the skills tier alone; the per-turn estimate with the same kept conversation falls from 49,127 to 31,772
+tokens. It does not halve a turn, and cannot: the project instructions are 9,415 tokens of the 16,384-token budget and
+are kept whole, and the kept conversation (16,450 tokens) is not a fixed-prompt section. A share of about 0.12, or a
+shorter `AGENTS.md`, is what would take a turn under half; neither is something this code should decide for the operator.
+
+### Prompt order, and what a local server can reuse
+
+`llama-server` reuses its prompt cache only for an **identical prefix**. In the recorded session the reusable prefix was
+exactly the fixed prompt: `cacheRead` was 20,451 tokens on the first fourteen turns (while the prompt grew from 27,765 to
+48,233) and 21,017 on the ordinary turns after that, so 20,504 tokens p50 (p90 32,736, max 51,635) were re-evaluated
+every turn, and 31 turns — the first request and the turns right after a compaction — found nothing cached at all and
+re-evaluated 43,000-52,000 tokens. Two of Steak Pi's own blocks change between turns and used to sit at the **end of the
+fixed prompt, in front of the whole conversation**: the route-availability line (refreshed at most once a minute, and it
+carries clock times) and the active todo plan's guidance. The local route now moves those blocks — and only those, and
+only for a local model — to the end of the request, after the conversation, so everything stable comes first and
+everything that changes per turn comes last (`src/prompt-order.ts`). A request without one of them is returned
+untouched, so no hosted route sees a difference. This cannot recover the conversation prefix the server never kept:
+that boundary sits at the first replayed message, is server-side, and no prompt ordering inside Steak Pi moves it. It
+does mean the fixed prompt — now much smaller — is what a per-turn change can no longer invalidate.
+
+### Compaction cadence
+
+Auto-compaction is Pi's, driven by the prompt cap and the context usage; this change does not add a threshold. What it
+changes is when the cap is reached. With the recorded shape — about 65,800 characters (16,450 tokens) of kept
+conversation after a compaction, a prompt cap of 49,152 tokens (75% of 65,536) and roughly 2,000-4,000 new tokens per
+turn — the fixed prompt used to consume 32,677 of the 49,152 tokens and the kept conversation another 16,450, which is
+the cap already: the next turn crosses it, so compaction fired at the first opportunity, "one compaction every 3
+entries" (one turn is an assistant entry plus its tool results). With the fixed prompt at 15,322 the same session starts
+17,380 tokens under the cap, which is four to nine turns of headroom, and only the compaction itself is followed by a
+full prompt re-evaluation. No small-context compaction setting was changed: the fixed prompt was the cause, and the
+arithmetic above is the evidence.
+
 ## Constraints and refusals
 
 `start`, `ensure` and a session hook refuse with one line, `steak-pi local: REFUSED (<cause>): <detail>`, exit code 2,

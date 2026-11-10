@@ -20,6 +20,27 @@
     most 30 s, after which it proceeds and says so. Any other platform, a probe error or an unparsable answer means
     unknown: the check does nothing and says why once per session. The decision is a pure function, unit-tested without
     a GPU.
+- **A small-context route is no longer handed a fixed prompt that eats its window.** Request size is what removes GPU
+  load: pacing only stops sending for a while, and a request that is 50,000 prompt tokens long is the same 105 s of GPU
+  whatever the gap before it. On one recorded 65,536-token local session the fixed prompt was **130,358 characters of
+  sections** (skills 77,508, project instructions 37,659, memory 6,544, rules 6,128, docs 1,700) and every ordinary turn
+  sent **48,321 prompt tokens** (p50), compacting **153 times in 875 entries**. A new extension holds the fixed prompt of
+  any route declared below 100,000 tokens to 25% of its window, shrinking in one stated order: the skills catalog to its
+  index form and then to names plus the instruction to read the skill file, the docs block away, the memory pack to a
+  smaller budget. **Project instructions are never truncated**: if they alone exceed the budget they stay whole and the
+  overage is reported once with the numbers. Thresholds and share are operator settings (`STEAK_PI_PROMPT_BUDGET_*`) and
+  a bad value is a named `bad-prompt-budget` refusal. A 200k or 1M route gets a byte-identical prompt: the decision is
+  the route's declared context size, never a model name. For the recorded session the fixed prompt falls from 32,677
+  estimated tokens (49.9% of the window) to 15,322 (23.4%) and the per-turn estimate from 49,127 to 31,772 tokens; it
+  does not halve a turn, because the project instructions (9,415 tokens, kept whole) plus the kept conversation are
+  already more than half of it, and the docs section says so with the arithmetic.
+- **The local route keeps per-turn blocks out of its reusable prefix.** `llama-server` reuses its prompt cache only for an
+  identical prefix, and the recorded session's cache hit was exactly the fixed prompt: 20,504 tokens p50 (p90 32,736)
+  were re-evaluated every ordinary turn, with 31 turns (the first request and the turns right after a compaction)
+  finding nothing cached and re-evaluating 43,000-52,000 tokens. Steak Pi's two per-turn blocks — the route-availability
+  line and the active todo plan's guidance — were appended to the end of the fixed prompt, in front of the whole
+  conversation; for a local model they now go after the conversation, so stable content comes first and per-turn content
+  comes last. A request without them is returned untouched, so no other route changes.
 - **Server launch defaults that change GPU load are reviewed, and only where there is evidence.** One parallel slot
   stays (`-np 1`: the server serialises requests anyway), and `--spec-draft-n-max 2` is now the default when a profile
   turns speculative decoding on without choosing a depth itself (measured draft acceptance is 52% in the window the GPU
