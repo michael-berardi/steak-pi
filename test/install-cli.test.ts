@@ -1,0 +1,221 @@
+// One-step installer (scripts/install.sh) tests, in the style of update-cli.test.ts: a synthetic release
+// served from a local folder (file:// base), a throwaway HOME and PI_CODING_AGENT_DIR, and test doubles for
+// pi / npm so both branches (Pi present, Pi absent) run offline. The real `npm ci` path is exercised with an
+// empty dependency set, exactly like the updater tests. Nothing touches the operator's ~/.pi or release folder.
+import { spawnSync } from "node:child_process";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { describe, expect, it } from "vitest";
+
+const CLI = resolve(import.meta.dirname, "..", "bin", "steak-pi");
+const INSTALL_SH = resolve(import.meta.dirname, "..", "scripts", "install.sh");
+const V1 = "0.98.0";
+const V2 = "0.99.0";
+const PI_PIN = "1.0.4";
+
+/** A release base folder: steak-pi.tgz (+ versioned copy) and SHA256SUMS, package/ layout like the real archive. */
+function buildBase(base: string, version: string, withPin: boolean) {
+  const stage = mkdtempSync(join(tmpdir(), "steak-install-src-"));
+  const pkg = join(stage, "package");
+  mkdirSync(join(pkg, "bin"), { recursive: true });
+  writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "steak-pi", version, private: true, bin: { "steak-pi": "bin/steak-pi" } }));
+  const root: Record<string, unknown> = { name: "steak-pi", version };
+  if (withPin) root.devDependencies = { "@earendil-works/pi-coding-agent": PI_PIN };
+  writeFileSync(join(pkg, "package-lock.json"), JSON.stringify({ name: "steak-pi", version, lockfileVersion: 3, requires: true, packages: { "": root } }));
+  writeFileSync(join(pkg, "bin", "steak-pi"), readFileSync(CLI), { mode: 0o755 });
+  mkdirSync(base, { recursive: true });
+  const tgz = join(base, "steak-pi.tgz");
+  const r = spawnSync("tar", ["-czf", tgz, "-C", stage, "package"], { encoding: "utf8" });
+  expect(r.status, r.stderr).toBe(0);
+  copyFileSync(tgz, join(base, `steak-pi-${version}.tgz`));
+  const sums = ["steak-pi.tgz", `steak-pi-${version}.tgz`]
+    .map((name) => `${createHash("sha256").update(readFileSync(join(base, name))).digest("hex")}  ${name}`)
+    .join("\n") + "\n";
+  writeFileSync(join(base, "SHA256SUMS"), sums);
+}
+
+/** Test double for the pi CLI: install/remove rewrite settings.json packages, like pi does for a local path. */
+const FAKE_PI = `#!/bin/sh
+agent="\${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+mkdir -p "$agent"
+cmd="\${1:-}"; shift || true
+case "$cmd" in
+  install|remove)
+    node -e '
+      const fs = require("fs"); const [file, cmd, target] = process.argv.slice(1);
+      let s = {}; try { s = JSON.parse(fs.readFileSync(file, "utf8")); } catch {}
+      const pkgs = Array.isArray(s.packages) ? s.packages : [];
+      s.packages = cmd === "install" ? [target] : pkgs.filter((p) => (typeof p === "string" ? p : p.source) !== target);
+      fs.writeFileSync(file, JSON.stringify(s, null, 2) + "\\n");
+    ' "$agent/settings.json" "$cmd" "\${1:-}"
+    ;;
+esac
+exit 0
+`;
+
+/** Test double for npm: records every call; ci makes node_modules; install makes a fake Pi package with a pi bin. */
+const FAKE_NPM = `#!/bin/sh
+printf '%s\\n' "$*" >> "$NPM_CALLS"
+cmd="\${1:-}"; shift || true
+case "$cmd" in
+  ci) mkdir -p node_modules; exit 0;;
+  install)
+    prefix=""; spec=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --prefix) prefix="$2"; shift 2;;
+        -*) shift;;
+        *) spec="$1"; shift;;
+      esac
+    done
+    mkdir -p "$prefix/node_modules/.bin" "$prefix/node_modules/@earendil-works/pi-coding-agent"
+    printf '{"name":"@earendil-works/pi-coding-agent","version":"%s","bin":{"pi":"dist/bundle/cli.js"}}' "\${spec##*@}" > "$prefix/node_modules/@earendil-works/pi-coding-agent/package.json"
+    cp "$FAKE_PI" "$prefix/node_modules/.bin/pi"
+    chmod 755 "$prefix/node_modules/.bin/pi"
+    exit 0;;
+esac
+exit 0
+`;
+
+const TOOLS = ["node", "npm", "curl", "wget", "tar", "shasum", "sha256sum", "awk", "sed", "grep", "mktemp", "uname",
+  "cat", "cut", "head", "tr", "dirname", "basename", "ls", "chmod", "mv", "rm", "mkdir", "ln", "cp"];
+
+function fixture(opts: { piPresent: boolean; fakeNpm: boolean; version?: string }) {
+  // realpath: macOS tmpdir is a symlink (/var -> /private/var) and the CLI pins paths with pwd -P.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "steak-install-cli-")));
+  const base = join(home, "release-base");
+  const version = opts.version ?? V1;
+  buildBase(base, version, opts.fakeNpm); // the Pi pin is only read when Pi is absent (fake npm there)
+  const tools = join(home, "tools"); mkdirSync(tools);
+  for (const tool of TOOLS) {
+    const found = spawnSync("/bin/sh", ["-c", `command -v ${tool}`], { encoding: "utf8" }).stdout.trim();
+    if (found) symlinkSync(found, join(tools, tool));
+  }
+  const fakePi = join(home, "fake-pi"); writeFileSync(fakePi, FAKE_PI, { mode: 0o755 });
+  if (opts.piPresent) symlinkSync(fakePi, join(tools, "pi"));
+  const npmCalls = join(home, "npm-calls.log");
+  if (opts.fakeNpm) writeFileSync(join(tools, "npm"), FAKE_NPM, { mode: 0o755 });
+  const agent = join(home, "agent"); mkdirSync(agent);
+  const steakHome = join(home, "steak-pi-home");
+  const bin = join(home, "bin");
+  const env = {
+    ...process.env,
+    HOME: home,
+    PATH: `${tools}:/usr/bin:/bin`, // a controlled PATH: the operator's own pi never leaks in
+    PI_CODING_AGENT_DIR: agent,
+    STEAK_PI_HOME: steakHome,
+    STEAK_PI_BIN_DIR: bin,
+    STEAK_PI_RELEASE_BASE: `file://${base}`,
+    STEAK_PI_LIBEXEC: "",
+    STEAK_PI_VERSION: "",
+    STEAK_PI_PI_VERSION: "",
+    NPM_CALLS: npmCalls,
+    FAKE_PI: fakePi,
+  };
+  return { home, base, tools, agent, steakHome, bin, env, npmCalls, version };
+}
+
+function runInstall(f: ReturnType<typeof fixture>, extra: Record<string, string> = {}) {
+  return spawnSync("/bin/sh", [INSTALL_SH], { encoding: "utf8", env: { ...f.env, ...extra }, timeout: 120000 });
+}
+
+function settings(f: ReturnType<typeof fixture>) {
+  return JSON.parse(readFileSync(join(f.agent, "settings.json"), "utf8"));
+}
+
+describe("steak-pi one-step installer (install.sh)", () => {
+  it("Pi present: installs the release layout, points Pi's settings at it, adds no pi shim", () => {
+    const f = fixture({ piPresent: true, fakeNpm: false });
+    const r = runInstall(f);
+    expect(r.status, r.stderr).toBe(0);
+    const pkg = join(f.steakHome, "releases", V1, "package");
+    expect(settings(f).packages).toEqual([pkg]);
+    expect(existsSync(join(pkg, "bin", "steak-pi"))).toBe(true);
+    expect(existsSync(join(pkg, "node_modules"))).toBe(true); // real npm ci ran
+    expect(existsSync(join(f.bin, "steak-pi"))).toBe(true);
+    expect(existsSync(join(f.bin, "pi"))).toBe(false); // pi existed: no shim
+    expect(r.stdout).toContain("Pi was already installed");
+    expect(r.stdout).toContain(`steak-pi CLI      ${V1}`); // the final status ran
+    const v = spawnSync(join(f.bin, "steak-pi"), ["version"], { encoding: "utf8", env: f.env });
+    expect(v.status, v.stderr).toBe(0);
+    expect(v.stdout).toContain(`steak-pi ${V1}`);
+  }, 120000);
+
+  it("Pi absent: installs the pinned Pi, adds the pi shim, and says Pi was installed too", () => {
+    const f = fixture({ piPresent: false, fakeNpm: true });
+    const r = runInstall(f);
+    expect(r.status, r.stderr).toBe(0);
+    const calls = readFileSync(f.npmCalls, "utf8");
+    expect(calls).toContain(`install --prefix ${join(f.steakHome, "pi")} --ignore-scripts --no-audit --no-fund --loglevel=error @earendil-works/pi-coding-agent@${PI_PIN}`);
+    expect(calls).toMatch(/^ci --ignore-scripts --no-audit --no-fund/m);
+    expect(existsSync(join(f.bin, "pi"))).toBe(true);
+    expect(settings(f).packages).toEqual([join(f.steakHome, "releases", V1, "package")]);
+    expect(r.stdout).toContain(`Pi ${PI_PIN} was installed too`);
+    // The shimmed pi works: the installer used it to pin the package.
+    const pi = spawnSync(join(f.bin, "pi"), ["install", "/tmp/other"], { encoding: "utf8", env: f.env });
+    expect(pi.status, pi.stderr).toBe(0);
+    expect(settings(f).packages).toEqual(["/tmp/other"]);
+  }, 120000);
+
+  it("Pi absent: STEAK_PI_PI_VERSION overrides the lock pin", () => {
+    const f = fixture({ piPresent: false, fakeNpm: true });
+    const r = runInstall(f, { STEAK_PI_PI_VERSION: "2.3.4" });
+    expect(r.status, r.stderr).toBe(0);
+    expect(readFileSync(f.npmCalls, "utf8")).toContain("@earendil-works/pi-coding-agent@2.3.4");
+    expect(r.stdout).toContain("Pi 2.3.4 was installed too");
+  }, 120000);
+
+  it("refuses a corrupted archive with the checksum error and installs nothing", () => {
+    const f = fixture({ piPresent: true, fakeNpm: false });
+    const tgz = join(f.base, "steak-pi.tgz");
+    const bytes = readFileSync(tgz); bytes[bytes.length - 1] ^= 0xff; writeFileSync(tgz, bytes);
+    const r = runInstall(f);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain("checksum mismatch for steak-pi.tgz; nothing was installed");
+    expect(existsSync(join(f.steakHome, "releases"))).toBe(false);
+    expect(existsSync(join(f.bin, "steak-pi"))).toBe(false);
+    expect(existsSync(join(f.agent, "settings.json"))).toBe(false);
+  }, 120000);
+
+  it("re-running upgrades in place, keeps the old release, and re-points Pi", () => {
+    const f = fixture({ piPresent: true, fakeNpm: false });
+    expect(runInstall(f).status, "first install").toBe(0);
+    buildBase(f.base, V2, false);
+    const r = runInstall(f);
+    expect(r.status, r.stderr).toBe(0);
+    expect(settings(f).packages).toEqual([join(f.steakHome, "releases", V2, "package")]);
+    expect(existsSync(join(f.steakHome, "releases", V1, "package"))).toBe(true); // retained, like the updater
+    expect(readFileSync(join(f.bin, "steak-pi"), "utf8")).toContain(join("releases", V2, "package"));
+    expect(r.stdout).toContain(`steak-pi CLI      ${V2}`);
+  }, 180000);
+
+  it("re-running the same version is idempotent", () => {
+    const f = fixture({ piPresent: true, fakeNpm: false });
+    expect(runInstall(f).status).toBe(0);
+    const r = runInstall(f);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toContain(`Steak Pi ${V1} is already unpacked`);
+    expect(settings(f).packages).toEqual([join(f.steakHome, "releases", V1, "package")]);
+  }, 180000);
+
+  it("STEAK_PI_VERSION pins the versioned archive and refuses a mismatch", () => {
+    const f = fixture({ piPresent: true, fakeNpm: false });
+    const r = runInstall(f, { STEAK_PI_VERSION: V1 });
+    expect(r.status, r.stderr).toBe(0);
+    expect(settings(f).packages).toEqual([join(f.steakHome, "releases", V1, "package")]);
+    const bad = runInstall(f, { STEAK_PI_VERSION: "9.9.9" });
+    expect(bad.status).not.toBe(0);
+    expect(bad.stderr).toContain("download failed"); // steak-pi-9.9.9.tgz is not in the base
+  }, 180000);
+
+  it("names a missing prerequisite and how to get it", () => {
+    const f = fixture({ piPresent: true, fakeNpm: false });
+    const empty = join(f.home, "empty"); mkdirSync(empty);
+    const r = spawnSync("/bin/sh", [INSTALL_SH], { encoding: "utf8", env: { ...f.env, PATH: empty }, timeout: 60000 });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain("needs curl or wget");
+    expect(existsSync(join(f.steakHome, "releases"))).toBe(false);
+  }, 60000);
+});

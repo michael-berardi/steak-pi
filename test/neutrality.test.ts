@@ -80,6 +80,7 @@ const DISTRIBUTION_FILES = [
   "CONTRIBUTING.md",
   "SECURITY.md",
   "bin/steak-pi",
+  "scripts/install.sh",
   "src/update-check.ts",
   "extensions/ultracompress/index.ts",
   "test/steak-pi-updater.test.ts",
