@@ -109,6 +109,30 @@ describe("read-only artifact roots outside the run cwd (J-3760)", () => {
     }
   });
 
+  it("still refuses symlink escapes and outside locations in the physical spelling when $HOME is a symlink", () => {
+    const base = realpathSync.native(mkdtempSync(join(tmpdir(), "j3760-home-neg-")));
+    const real = join(base, "real-home");
+    mkdirSync(join(real, ".cache", "ut-coordinator", "J-3760"), { recursive: true });
+    mkdirSync(join(real, "dev", "x"), { recursive: true });
+    const linkedHome = join(base, "home-link");
+    symlinkSync(real, linkedHome);
+    const elsewhere = join(base, "elsewhere");
+    mkdirSync(join(elsewhere, "captures"), { recursive: true });
+    // A symlinked grant folder (leaf) and a symlinked parent below the root.
+    symlinkSync(elsewhere, join(real, ".cache", "ut-coordinator", "J-3760", "captures"));
+    symlinkSync(elsewhere, join(real, ".cache", "ut-coordinator", "J-3760", "linkparent"));
+    try {
+      expect(() => normalizeReadPath(join(real, ".cache", "ut-coordinator", "J-3760", "captures"), "readPaths[0]", linkedHome))
+        .toThrow(/never a file or a symlink/);
+      expect(() => normalizeReadPath(join(real, ".cache", "ut-coordinator", "J-3760", "linkparent", "captures"), "readPaths[0]", linkedHome))
+        .toThrow(/escapes its private home through a symlink/);
+      expect(() => normalizeReadPath(join(real, "dev", "x"), "readPaths[0]", linkedHome))
+        .toThrow(/must be below one of/);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   it("refuses a file, a missing folder, a traversal and a control character", () => {
     expect(() => normalizeReadPath(join(CAPTURES(), "home-375.png"), "readPaths[0]", home)).toThrow(/real directory/);
     expect(() => normalizeReadPath(join(CAPTURES(), "missing"), "readPaths[0]", home)).toThrow(/does not exist/);
@@ -292,6 +316,30 @@ describe("reads and writes under a granted root", () => {
       ...(recorded.length > 0 ? { readPaths: recorded } : {}),
     }]);
     expect(again.tasks[0].readPaths).toEqual([CAPTURES()]);
+  });
+
+  it("keeps the recorded grant on resume when $HOME itself is a symlink", () => {
+    const base = realpathSync.native(mkdtempSync(join(tmpdir(), "j3760-home-resume-")));
+    const real = join(base, "real-home");
+    mkdirSync(join(real, ".cache", "ut-coordinator", "J-3760", "captures"), { recursive: true });
+    const linkedHome = join(base, "home-link");
+    symlinkSync(real, linkedHome);
+    const physicalCapture = join(real, ".cache", "ut-coordinator", "J-3760", "captures");
+    const input = (readPaths: string[]) => ({
+      goal: "Review the staged captures",
+      tasks: [{ label: "Review", task: "Review.", role: "reviewer", readPaths }],
+    });
+    try {
+      const first = normalizeDispatch(input(["~/.cache/ut-coordinator/J-3760/captures"]) as never,
+        cwd, "claude-code/claude-opus-5-5", "medium", 1, () => "run-1", linkedHome);
+      expect(first.tasks[0].readPaths).toEqual([physicalCapture]);
+      // Resume re-validates the recorded physical path through the same symlinked home.
+      const again = normalizeDispatch(input(first.tasks[0].readPaths!) as never,
+        cwd, "claude-code/claude-opus-5-5", "medium", 1, () => "run-1", linkedHome);
+      expect(again.tasks[0].readPaths).toEqual([physicalCapture]);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 
   it("lets a Pi child read, list, grep and find inside the granted root only", async () => {

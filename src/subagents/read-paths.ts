@@ -16,7 +16,8 @@
  *   - the named folder must be strictly below a private home (the cache root
  *     and a job home itself are never granted);
  *   - absolute, existing, a real directory: no file, no symlink leaf, and no
- *     symlink anywhere on the path (the grant binds the physical path);
+ *     symlink below the private root (the grant binds the physical path);
+ *     a symlinked $HOME or private root itself is resolved and allowed;
  *   - no `..`, control characters or overlong values.
  * The grant is read-only on both harnesses: `--add-dir` on Claude Code (the
  * tool allowlist stays Read/Grep/Glob), a read-only path check on Pi.
