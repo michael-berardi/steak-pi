@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.27.2 (2026-11-11)
+
+- **A long Claude conversation no longer fails with "history replay exceeded its wait limit" on a busy machine.** When a Claude Code process is replaced, the whole conversation is replayed into the new one. The wait limit covered the entire replay, so a long session on a loaded machine ran out of time while every message was still being accepted. Each replayed message now has its own limit: a replay that keeps moving finishes, and one that stops is still ended, with the error naming which message was not acknowledged.
+
 ## 0.27.1 (2026-11-11)
 
 Fixes from an independent review of 0.27.0, all on the new steak-dsh harness.

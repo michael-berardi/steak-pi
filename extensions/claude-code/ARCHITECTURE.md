@@ -91,8 +91,10 @@ tool execution. In particular, it:
 - `AsyncQueue.next`: idle timeout, abort and queue end all settle a waiter;
   abort takes priority over buffered events, and terminal queues ignore late
   pushes. Native stdout bytes and relayed upstream bytes reset the idle budget,
-  including SSE keepalives that do not yield model events. History replay still
-  has a wall bound even when the native process sends non-final events.
+  including SSE keepalives that do not yield model events. History replay
+  has a wall bound per frame even when the native process sends non-final
+  events: each acknowledged frame is progress, so a long conversation may take
+  longer than one budget in total, and the error names the unacknowledged frame.
 - `exitError`: stdout EOF does not imply process exit; the exit wait is bounded.
 - `ClaudeProcess.close`: a two-second grace bounds readline, exit and relay
   cleanup; inherited stdout/stderr are destroyed afterward. Aborted requests
