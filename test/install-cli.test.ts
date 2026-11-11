@@ -3,7 +3,7 @@
 // pi / npm so both branches (Pi present, Pi absent) run offline. The real `npm ci` path is exercised with an
 // empty dependency set, exactly like the updater tests. Nothing touches the operator's ~/.pi or release folder.
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -90,13 +90,17 @@ function fixture(opts: { piPresent: boolean; fakeNpm: boolean; version?: string 
   buildBase(base, version, opts.fakeNpm); // the Pi pin is only read when Pi is absent (fake npm there)
   const tools = join(home, "tools"); mkdirSync(tools);
   for (const tool of TOOLS) {
+    // Never place a symlink where a fake will be written: writeFileSync follows symlinks and would
+    // overwrite the REAL tool (this once clobbered the machine's npm-cli.js through tools/npm).
+    if (opts.fakeNpm && tool === "npm") continue;
     const found = spawnSync("/bin/sh", ["-c", `command -v ${tool}`], { encoding: "utf8" }).stdout.trim();
     if (found) symlinkSync(found, join(tools, tool));
   }
-  const fakePi = join(home, "fake-pi"); writeFileSync(fakePi, FAKE_PI, { mode: 0o755 });
+  const fakePi = join(home, "fake-pi"); writeFileSync(fakePi, FAKE_PI, { mode: 0o755, flag: "wx" });
   if (opts.piPresent) symlinkSync(fakePi, join(tools, "pi"));
   const npmCalls = join(home, "npm-calls.log");
-  if (opts.fakeNpm) writeFileSync(join(tools, "npm"), FAKE_NPM, { mode: 0o755 });
+  // flag wx: refuse to create through any existing path or symlink; the fake must be a fresh regular file.
+  if (opts.fakeNpm) writeFileSync(join(tools, "npm"), FAKE_NPM, { mode: 0o755, flag: "wx" });
   const agent = join(home, "agent"); mkdirSync(agent);
   const steakHome = join(home, "steak-pi-home");
   const bin = join(home, "bin");
@@ -114,10 +118,16 @@ function fixture(opts: { piPresent: boolean; fakeNpm: boolean; version?: string 
     NPM_CALLS: npmCalls,
     FAKE_PI: fakePi,
   };
-  return { home, base, tools, agent, steakHome, bin, env, npmCalls, version };
+  return { home, base, tools, agent, steakHome, bin, env, npmCalls, version, fakeNpm: opts.fakeNpm };
 }
 
 function runInstall(f: ReturnType<typeof fixture>, extra: Record<string, string> = {}) {
+  if (f.fakeNpm) {
+    // The fake npm must be a regular file, never a symlink to the operator's real npm.
+    const st = lstatSync(join(f.tools, "npm"));
+    expect(st.isSymbolicLink(), "tools/npm must not be a symlink").toBe(false);
+    expect(st.isFile(), "tools/npm must be a regular file").toBe(true);
+  }
   return spawnSync("/bin/sh", [INSTALL_SH], { encoding: "utf8", env: { ...f.env, ...extra }, timeout: 120000 });
 }
 
