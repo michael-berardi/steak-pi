@@ -111,6 +111,18 @@ release_root() {
   printf '%s' "$abs"
 }
 
+# A release Pi can load: every package its extensions import (the peerDependencies, which npm ci installs as dev
+# dependencies) is present in its own node_modules. Prints the missing names; returns 1 when any is missing.
+release_missing_deps() {
+  node -e '
+    const fs = require("node:fs"); const path = require("node:path"); const dir = process.argv[1];
+    let pkg; try { pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")); } catch { console.log("package.json"); process.exit(1); }
+    const names = Object.keys(pkg.peerDependencies || {});
+    const missing = names.filter((n) => !fs.existsSync(path.join(dir, "node_modules", n, "package.json")));
+    if (missing.length) { console.log(missing.join(", ")); process.exit(1); }
+  ' "$1"
+}
+
 update_release_folder() {
   root="$1"; tag="$2"; ver="${tag#v}"
   command -v git >/dev/null 2>&1 || die "git not found; needed to download $tag."
@@ -135,6 +147,16 @@ update_release_folder() {
     [ "$(pkg_version "$stage/package")" = "$ver" ] || die "downloaded package does not report version $ver"
     mkdir "$dest" && chmod 700 "$dest" && mv "$stage/package" "$dest/package" || die "cannot move $tag into $dest"
     rm -rf "$stage"; trap - EXIT INT TERM
+  fi
+  # Never point Pi at a release it cannot load (2026-11-11: 0.27.2 existed with its source but an empty node_modules, the
+  # pre-existing folder skipped the install above, settings were re-pointed and every Pi launch failed for 16 minutes).
+  # An existing release without its dependencies gets them from its own lockfile; if they are still missing, stop here.
+  if ! missing=$(release_missing_deps "$dest/package"); then
+    say "Release $ver is missing dependencies ($missing); installing them..."
+    (cd "$dest/package" && npm ci --ignore-scripts --no-audit --no-fund >/dev/null 2>&1) ||
+      die "npm ci failed in $dest/package; Pi settings were not changed and still load $pinned"
+    missing=$(release_missing_deps "$dest/package") ||
+      die "release $ver still lacks $missing after npm ci; Pi settings were not changed and still load $pinned"
   fi
   node -e '
     const fs = require("node:fs"); const [file, root, ver] = process.argv.slice(1);

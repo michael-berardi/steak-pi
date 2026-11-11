@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -78,6 +78,40 @@ describe("steak-pi update for release-folder installs", () => {
     expect(read(join(accounts, "claude", "x", "agent")).packages).toEqual([foreign]);                   // not ours: untouched
     expect(read(f.agent).packages).toEqual(["../share/steak-pi/releases/0.17.0/package"]);
     expect(existsSync(join(f.releases, "0.1.0", "package"))).toBe(true);
+  });
+
+  it("never re-points Pi at an existing release whose dependencies are missing (2026-11-11)", () => {
+    // 0.27.2 existed with its source but an empty node_modules; the update skipped the install, re-pointed settings and
+    // every Pi launch failed. A release whose peer dependencies are absent and cannot be installed must leave settings alone.
+    const f = fixture("0.16.0", "0.17.0");
+    const dest = join(f.releases, "0.17.0", "package");
+    mkdirSync(join(dest, "bin"), { recursive: true });
+    writeFileSync(join(dest, "package.json"), JSON.stringify({ name: "steak-pi", version: "0.17.0", peerDependencies: { "pi-host-fixture": "*" } }));
+    // Its lockfile does not carry the dependency, so npm ci cannot restore it.
+    writeFileSync(join(dest, "package-lock.json"), JSON.stringify({ name: "steak-pi", version: "0.17.0", lockfileVersion: 3, requires: true, packages: { "": { name: "steak-pi", version: "0.17.0" } } }));
+    const before = readFileSync(join(f.agent, "settings.json"), "utf8");
+    const r = run(f, "0.16.0", ["update"], "v0.17.0");
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/(npm ci failed in .*0\.17\.0\/package|still lacks pi-host-fixture after npm ci); Pi settings were not changed and still load 0\.16\.0/);
+    expect(readFileSync(join(f.agent, "settings.json"), "utf8")).toBe(before);
+  });
+
+  it("installs the dependencies of an existing release before re-pointing Pi at it", () => {
+    const f = fixture("0.16.0", "0.17.0");
+    const dest = join(f.releases, "0.17.0", "package");
+    mkdirSync(dest, { recursive: true });
+    // The lockfile carries the peer dependency (as npm records dev/peer installs), so npm ci restores it offline.
+    mkdirSync(join(f.home, "dep"), { recursive: true });
+    writeFileSync(join(f.home, "dep", "package.json"), JSON.stringify({ name: "pi-host-fixture", version: "1.0.0" }));
+    writeFileSync(join(dest, "package.json"), JSON.stringify({ name: "steak-pi", version: "0.17.0", peerDependencies: { "pi-host-fixture": "*" }, devDependencies: { "pi-host-fixture": "file:../../../../../dep" } }));
+    const install = spawnSync("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--offline"], { cwd: dest, encoding: "utf8" });
+    expect(install.status, install.stderr).toBe(0);
+    rmSync(join(dest, "node_modules"), { recursive: true, force: true });
+    const r = run(f, "0.16.0", ["update"], "v0.17.0");
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toContain("Release 0.17.0 is missing dependencies (pi-host-fixture); installing them...");
+    expect(existsSync(join(dest, "node_modules", "pi-host-fixture", "package.json"))).toBe(true);
+    expect(JSON.parse(readFileSync(join(f.agent, "settings.json"), "utf8")).packages).toEqual(["../share/steak-pi/releases/0.17.0/package"]);
   });
 
   it("preserves an incomplete existing destination", () => {
