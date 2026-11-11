@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.25.4 (2026-11-11)
+
+- **The footer keeps its stats inside the pane, and a flat-plan route shows plan usage instead of `$0.000`.**
+  - The status band leaves its last pane column blank. Stats that ended exactly at the pane edge could be clipped
+    there, so the cost (`$0.00…`) was cut off in narrow and half-width panes.
+  - On a flat-plan route, the cost atom reads `plan N req` (the session's request count) instead of `$0.000`.
+    The route is classified from the operator's `subscriptionRouteChecks` (non-OAuth endpoints only), with no
+    provider names in code. Metered routes keep the dollar figure.
+
 ## 0.25.3 (2026-11-11)
 
 - **A provider content-filter refusal moves the turn to the next route instead of failing the worker.** A

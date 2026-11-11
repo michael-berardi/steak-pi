@@ -37,6 +37,8 @@ export interface UsageTotals {
   cacheRead: number;
   cacheWrite: number;
   cost: number;
+  /** Assistant requests in this session; shown for flat-plan routes instead of dollars. */
+  requests?: number;
 }
 
 export interface ContextSnapshot {
@@ -55,11 +57,13 @@ export interface FooterSnapshot {
   thinking?: string;
   usage: UsageTotals;
   context?: ContextSnapshot;
+  /** The active route spends flat-plan quota (see isFlatPlanRoute), so no dollar figure applies. */
+  planRoute?: boolean;
   extensionStatuses?: readonly string[];
 }
 
 export function emptyUsage(): UsageTotals {
-  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, requests: 0 };
 }
 
 function finite(value: unknown): number {
@@ -100,6 +104,7 @@ export function collectUsage(entries: readonly unknown[]): UsageTotals {
       if (item.message?.role === "assistant" || item.message?.role === "toolResult") {
         addUsage(total, item.message.usage);
       }
+      if (item.message?.role === "assistant") total.requests = (total.requests ?? 0) + 1;
     } else if (item.type === "compaction" || item.type === "branch_summary") {
       addUsage(total, item.usage);
     }
@@ -273,6 +278,13 @@ function composerMetrics(
     const ratio = Math.round(100 * (read / scale) / (input / scale + read / scale + write / scale));
     metrics.push({ text: tight ? `c${ratio}%` : `${ratio}% cache`, paint: palette.muted });
   }
+  if (snapshot.planRoute) {
+    // Flat-plan usage spends quota, not dollars: "$0.000" would read as free.
+    const requests = Math.round(finite(snapshot.usage.requests ?? 0));
+    const plan = tight ? `plan ${requests}r` : `plan ${requests} req`;
+    metrics.push({ text: plan, paint: palette.muted });
+    return metrics;
+  }
   const cost = finite(snapshot.usage.cost);
   const dollars = cost >= (tight ? 1e4 : 1e6) || (cost > 0 && cost < 0.0005)
     ? scientific(cost, tight ? 1 : 2)
@@ -342,7 +354,10 @@ export function renderComposerBands(
   snapshot: FooterSnapshot,
   palette: SemanticPalette,
 ): string[] {
-  const safeWidth = Math.max(1, Math.floor(Number.isFinite(width) ? width : 1));
+  const requested = Math.max(1, Math.floor(Number.isFinite(width) ? width : 1));
+  // Keep the last pane column blank: the stats end one column inside the pane edge, so an
+  // edge-hugging pane cannot clip the cost. Tiny panes keep every column.
+  const safeWidth = requested >= 20 ? requested - 1 : requested;
   const identity = composerIdentity(safeWidth, snapshot, palette);
   const fullMetrics = joinSegments(composerMetrics(snapshot, palette, "full"), " · ", palette);
   const spare = safeWidth - segmentWidth(identity) - segmentWidth(fullMetrics);

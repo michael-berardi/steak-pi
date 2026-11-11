@@ -59,6 +59,12 @@ possible. Individual numbers are never sliced; an indivisible value that cannot
 fit is omitted. Long model names and status details truncate by grapheme. Zero
 usage is shown as zero; an unavailable cache ratio is not invented.
 
+The band leaves its last pane column blank, so the stats end inside the pane
+edge and an edge-hugging pane cannot clip the cost. On a flat-plan route (a
+non-OAuth `subscriptionRouteChecks` endpoint) the cost atom reads `plan N req`,
+the session's request count, instead of `$0.000`, because that usage spends plan
+quota rather than dollars. Metered routes keep the dollar figure.
+
 Native terminal captures with example data, cropped to the status band:
 
 ![Compact dark status band with all usage values](./assets/status-compact-dark.png)

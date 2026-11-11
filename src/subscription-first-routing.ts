@@ -62,6 +62,14 @@ export function isSubscriptionOrLocalRoute(model: Pick<Model, "provider" | "base
   return subscriptionRouteChecks().some((check) => (!check.oauth || oauth) && matchesSubscriptionCheck(check, model));
 }
 
+/** Flat-plan route for the footer: a configured subscription endpoint that spends plan quota
+ * rather than per-token dollars. Only non-OAuth checks count, because the footer cannot prove
+ * which auth the session uses; an unproven route keeps the metered `$` label. Local endpoints
+ * are free but are not plan quota, so they are excluded. */
+export function isFlatPlanRoute(model: Pick<Model, "provider" | "baseUrl">): boolean {
+  return subscriptionRouteChecks().some((check) => !check.oauth && matchesSubscriptionCheck(check, model));
+}
+
 /** Explicit auth headers must not silently substitute a different billing identity. */
 export function authHeadersMatch(key: string | undefined, ...sets: Array<Record<string, string | null> | undefined>): boolean {
   return sets.every(headers => Object.entries(headers ?? {}).every(([name, value]) => {

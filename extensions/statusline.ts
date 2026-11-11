@@ -30,6 +30,7 @@ import {
   type ContextSnapshot,
   type SemanticPalette,
 } from "../src/tui/render.ts";
+import { isFlatPlanRoute } from "../src/subscription-first-routing.ts";
 
 /**
  * Steak Pi companion UI.
@@ -164,7 +165,7 @@ export default function companionUiExtension(pi: ExtensionAPI): void {
           return cachedUsage;
         })(),
         context: contextSnapshot(ctx),
-
+        planRoute: ctx.model ? isFlatPlanRoute(ctx.model) : false,
       };
     };
 

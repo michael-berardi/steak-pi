@@ -117,17 +117,18 @@ describe("responsive semantic rendering", () => {
 
   it("keeps metadata ahead of a restrained, genuinely residual meter", () => {
     const stats = "◫ 20%/1M · 123k tok · 85% cache · $1.234";
-    expect(rowsAt(40)).toEqual(["◆ gpt-6.1-sol · high · ✓ complete", stats]);
+    // The last pane column stays blank, so exact fit needs one more column.
+    expect(rowsAt(41)).toEqual(["◆ gpt-6.1-sol · high · ✓ complete", stats]);
     // Extra width on the stats row goes to the meter, stats stay flush right.
     const wide = rowsAt(59);
     expect(wide[0]).toBe("◆ gpt-6.1-sol · high · ✓ complete");
     expect(wide[1]).toMatch(/^ [━─]+ ◫ 20%\/1M · 123k tok · 85% cache · \$1\.234$/);
-    expect(visibleWidth(wide[1]!)).toBe(59);
+    expect(visibleWidth(wide[1]!)).toBe(58);
     for (const width of [80, 120, 192]) {
       const output = rowsAt(width).join("\n");
       // The meter fills the free space; stats stay flush right on one row.
       expect(output.match(/[━─]/g)?.length ?? 0).toBeGreaterThanOrEqual(4);
-      expect(visibleWidth(output)).toBe(width);
+      expect(visibleWidth(output)).toBe(width - 1);
       expect(output.endsWith("$1.234")).toBe(true);
       expect(output).toContain("$1.234");
       expect(output).not.toContain("…");
@@ -138,9 +139,10 @@ describe("responsive semantic rendering", () => {
     const identity = rowsAt(59)[0]!;
     const metadata = rowsAt(59)[1]!.replace(/^ [━─]+ /, "");
     const boundary = visibleWidth(identity) + visibleWidth(metadata) + 1;
-    expect(rowsAt(boundary - 1)).toHaveLength(2);
-    expect(rowsAt(boundary)).toHaveLength(1);
+    // One blank pane column is reserved, so the single-row layout starts one column later.
+    expect(rowsAt(boundary)).toHaveLength(2);
     expect(rowsAt(boundary + 1)).toHaveLength(1);
+    expect(rowsAt(boundary + 2)).toHaveLength(1);
   });
 
   it.each([
@@ -309,7 +311,7 @@ describe("usage and width helpers", () => {
       { type: "message", message: { role: "user", usage: { input: 999 } } },
       { type: "other", usage: { input: 999 } },
     ]);
-    expect(usage).toEqual({ input: 14, output: 11, cacheRead: 20, cacheWrite: 2, cost: 0.06 });
+    expect(usage).toEqual({ input: 14, output: 11, cacheRead: 20, cacheWrite: 2, cost: 0.06, requests: 1 });
   });
 
   it("matches Pi's width oracle for complex terminal graphemes", () => {
