@@ -1,0 +1,51 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`virtual chain probe (spec 01, records outcomes; controls gate the fixture) > records the content-filter case: 400 data_inspection_failed 1`] = `
+{
+  "answeredBy": "probe-a/slot-model",
+  "errorMessage": "400 data_inspection_failed",
+  "routeCalls": [
+    {
+      "failedError": undefined,
+      "failedModel": undefined,
+      "reason": "user",
+    },
+  ],
+  "stopReason": "error",
+}
+`;
+
+exports[`virtual chain probe (spec 01, records outcomes; controls gate the fixture) > records the plan-limit case: GoUsageLimitError: usage limit reached 1`] = `
+{
+  "answeredBy": "probe-a/slot-model",
+  "errorMessage": "GoUsageLimitError: usage limit reached",
+  "routeCalls": [
+    {
+      "failedError": undefined,
+      "failedModel": undefined,
+      "reason": "user",
+    },
+  ],
+  "stopReason": "error",
+}
+`;
+
+exports[`virtual chain probe (spec 01, records outcomes; controls gate the fixture) > records the quota case: 429 subscription_quota_exceeded 1`] = `
+{
+  "answeredBy": "probe-b/slot-model",
+  "errorMessage": undefined,
+  "routeCalls": [
+    {
+      "failedError": undefined,
+      "failedModel": undefined,
+      "reason": "user",
+    },
+    {
+      "failedError": "429 subscription_quota_exceeded",
+      "failedModel": "probe-a/slot-model",
+      "reason": "retry",
+    },
+  ],
+  "stopReason": "stop",
+}
+`;
