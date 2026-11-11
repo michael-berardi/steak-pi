@@ -4,11 +4,12 @@ import { basename, join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { assertActiveModelIdentity, assertActiveModelSelector, isRetiredRoute, retiredRouteError } from "../retired-model-selection.ts";
 import type { TaskClassRanking } from "../model-route-policy.ts";
-import { NoChainRouteError, assertModelRoute, assertSubscriptionRequest, selectChainedWorkerModel, selectWorkerModel, selectWorkerThinking,
-  workerChainFor, type ChainOptions } from "../model-route-policy.ts";
-import { routingConfig, routingConfigOrEmpty, routingConfigPath } from "../routing-config.ts";
-import type { DispatchInput, ModelSelection, SubagentTaskInput } from "./types.ts";
+import { NoChainRouteError, assertModelRoute, assertSubscriptionRequest, selectChainedWorkerStep, selectWorkerModel, selectWorkerThinking,
+  workerChainFor, type ChainOptions, type WorkerRouteStep } from "../model-route-policy.ts";
+import { routingConfig, routingConfigOrEmpty, routingConfigPath, routeKey } from "../routing-config.ts";
+import type { DispatchInput, HarnessId, ModelSelection, SubagentTaskInput } from "./types.ts";
 import { activeTemporaryWorkerRoute, assertTemporaryFreeRequest, isTemporaryFreeModel, PREFERRED_FREE_PROFILE } from "../temporary-free-route.ts";
+import { isDshRoute } from "./dsh-routes.ts";
 import { CLAUDE_CODE_ROUTES, admitClaudeCodeRoute, claudeCodeModelName, claudeCodeRouteModel, claudeCodeRouteOfProfile, claudeCodeServableModel } from "./claude-code-models.ts";
 export { retiredRouteError } from "../retired-model-selection.ts";
 
@@ -187,6 +188,9 @@ function findModel(key: string, registry: Registry, profiles: readonly WorkerPro
   assertActiveModelSelector(key);
   const slash = key.indexOf("/");
   if (slash < 1 || slash === key.length - 1) throw new Error("USAP model must use the exact provider/model form.");
+  if (isDshRoute(key)) {
+    throw new Error(`USAP model ${key} is a steak-dsh harness route; name harness steak-dsh (or omit the harness) so the steak-dsh adapter serves it. The native Pi registry cannot serve it, so no run was started and no fallback was selected.`);
+  }
   assertNotClaudeSubscriptionRoute(key, profiles);
   const model = registry.find(key.slice(0, slash), key.slice(slash + 1));
   if (model) assertActiveModelIdentity(model);
@@ -216,6 +220,9 @@ export function resolveWorkerSelection(
   // fail closed here so no caller can route it through the registry by accident.
   if (input.harness === "claude-code") {
     throw new Error("USAP harness claude-code does not resolve through the native Pi registry; dispatch the explicit CLI route instead.");
+  }
+  if (input.harness === "steak-dsh") {
+    throw new Error("USAP harness steak-dsh does not resolve through the native Pi registry; dispatch the exact steak-dsh/<provider>/<model-id> route instead.");
   }
   // Capture caller intent once, before consulting task/profile/registry objects.
   const requested: WorkerSelector = { model: input.model, profile: input.profile };
@@ -274,16 +281,18 @@ export function resolveWorkerSelection(
     let rest = classUsable;
     while (rest.length > 0) {
       try {
-        const picked = selectChainedWorkerModel(registry, rest.map((entry) => entry.step), { ...options, requireImages: false });
-        const at = rest.findIndex((entry) => entry.step.provider === picked.provider && entry.step.id === picked.id);
-        launchable.push({ entry: rest[at], model: picked });
+        const picked = selectChainedWorkerStep(registry, rest.map((entry) => entry.step), { ...options, requireImages: false });
+        // Match the harness too: a class may chain both `p/m` and `steak-dsh/p/m` as two routes.
+        const at = rest.findIndex((entry) => entry.step.provider === picked.step.provider && entry.step.id === picked.step.id
+          && (entry.step.harness ?? "pi") === (picked.step.harness ?? "pi"));
+        launchable.push({ entry: rest[at], model: picked.model });
         rest = rest.slice(at + 1);
       } catch (error) {
         if (!(error instanceof NoChainRouteError)) throw error;
         break;
       }
     }
-    classRanking = launchable.length > 0 ? classWalk.rank?.(launchable.map((item) => ({ entry: item.entry.entry, route: route(item.model) }))) : undefined;
+    classRanking = launchable.length > 0 ? classWalk.rank?.(launchable.map((item) => ({ entry: item.entry.entry, route: routeKey(item.entry.step) }))) : undefined;
     const ordered = classRanking
       ? classRanking.order.flatMap((entry) => launchable.filter((item) => item.entry.entry === entry))
       : launchable;
@@ -329,10 +338,14 @@ export function resolveWorkerSelection(
   };
   const chain = automatic ? resolveChain() : [];
   const key = automatic ? undefined : profile?.model ?? chosen?.model;
-  const model = classHit ? classHit.model : automatic
-    ? selectChainedWorkerModel(registry, chain, { ...options, requireImages: input.requireImages === true })
+  const chained = automatic && !classHit ? selectChainedWorkerStep(registry, chain, { ...options, requireImages: input.requireImages === true }) : undefined;
+  const model = classHit ? classHit.model : chained ? chained.model
     : key ? findModel(key, registry, profiles)
     : selectWorkerModel(parent, input.tasks.map((task) => task.role), registry, options);
+  // The winning step's harness rides the selection: a harness-qualified class or chain step sets the
+  // run's harness, while the model stays the inner registry route.
+  const winningStep: WorkerRouteStep | undefined = classHit ? classHit.entry.step : chained?.step;
+  const harness: HarnessId = winningStep?.harness === "steak-dsh" ? "steak-dsh" : "pi";
   assertSubscriptionRequest(model, registry.isUsingOAuth(model));
   // Selection is not dispatch: lazy official proof is fetched at the call boundary.
   if (isTemporaryFreeModel(model)) assertTemporaryFreeRequest(model, undefined, undefined, false);
@@ -368,19 +381,21 @@ export function resolveWorkerSelection(
         ...(classWalk.requiresTestGate ? { requiresTestGate: true } : {}),
         ...(classWalk.note ? { note: classWalk.note } : {}),
       } } : {}),
-      // Ordered automatic routes, so a receipt shows the chain that produced the run.
-      ...(automatic ? { chainRoutes: chain.map((step) => `${step.provider}/${step.id}`) } : {}),
-      harness: "pi" as const,
+      // Ordered automatic routes, so a receipt shows the chain that produced the run (harness-qualified verbatim).
+      ...(automatic ? { chainRoutes: chain.map((step) => routeKey(step)) } : {}),
+      harness,
       images, tools: true,
     },
   };
   assertWorkerSelectionOverride(requested, result.selection);
   // The ranked routes behind the winner, resolved now: a reply that comes back empty after its one retry moves to
   // the next of these without a new dispatch. A route whose profile runs an `ensure` hook is not offered, because
-  // that hook only wraps the route the run started on.
-  if (classHit) {
+  // that hook only wraps the route the run started on. A steak-dsh winner keeps no per-task alternates (its
+  // failover is the wave-level quota fall-through), and a steak-dsh step is never a Pi alternate.
+  if (classHit && classHit.entry.step.harness !== "steak-dsh") {
     const hooked = new Set((routingConfigOrEmpty().workerProfiles ?? []).filter((candidate) => candidate.ensure !== undefined).map((candidate) => candidate.id));
     const alternates = classHit.ordered.slice(1).flatMap((item): ClassAlternate[] => {
+      if (item.entry.step.harness === "steak-dsh") return [];
       if (item.entry.profile !== undefined && hooked.has(item.entry.profile)) return [];
       try {
         const level = selectWorkerThinking(item.model, profiles.find((candidate) => candidate.id === item.entry.profile)?.thinking ?? inheritedThinking, input.thinking, input.thinkingReason);

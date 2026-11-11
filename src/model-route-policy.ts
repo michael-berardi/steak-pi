@@ -9,6 +9,7 @@ import { curatedPickerModels, sharedPickerModels } from "./model-visibility.ts";
 import { eligibleGoFallback, withOpenCodeGoRouting } from "./opencode-go-routing.ts";
 import { assertActiveModelIdentity, isRetiredModelSelector } from "./retired-model-selection.ts";
 import { missingConfigKey, routingConfig, routingConfigOrEmpty, RoutingConfigError, type ExpertReviewConfig, type SubscriptionRouteCheck } from "./routing-config.ts";
+import { DSH_NOT_INSTALLED, resolveDshExecutable } from "./subagents/dsh-routes.ts";
 import type { QuotaSnapshot } from "./subagents/provider-quota.ts";
 import { authHeadersMatch, gatedMeteredStream, isSubscriptionOrLocalRoute, matchesSubscriptionCheck, subscriptionRouteChecks, SUBSCRIPTION_FIRST_ERROR } from "./subscription-first-routing.ts";
 
@@ -353,7 +354,7 @@ export interface OnlyWhenCondition {
     behindPaceAbove: number;
   };
 }
-export interface WorkerRouteStep { provider: string; id: string; onlyWhen?: OnlyWhenCondition }
+export interface WorkerRouteStep { provider: string; id: string; onlyWhen?: OnlyWhenCondition; harness?: "steak-dsh" }
 
 /** The operator's automatic text worker chain (`textWorkerChain`); empty when none is configured. */
 export const textWorkerChain = (): readonly WorkerRouteStep[] => routingConfig().textWorkerChain ?? [];
@@ -501,7 +502,9 @@ export type ChainOptions = {
  * flag, and it is re-read on every call so revocation takes effect immediately. */
 export const AUTOMATIC_CHAIN_APPROVAL: PaidApproval = createAllowlistApproval();
 
-/** Exact, authenticated, capability-matching, spendable chain route. */
+/** Exact, authenticated, capability-matching, spendable chain route. A harness-qualified
+ * `steak-dsh` step additionally needs an API-key login (never OAuth-only) and a resolved
+ * steak-dsh executable; its inner route passes every check a Pi-native step passes. */
 function eligibleChainRoute(registry: ChainRegistry, step: WorkerRouteStep, requireImages: boolean, approve: PaidApproval): Model | undefined {
   const model = registry.find(step.provider, step.id);
   // Exact route identity only: a fake/collapsed registry must not satisfy a step.
@@ -510,6 +513,13 @@ function eligibleChainRoute(registry: ChainRegistry, step: WorkerRouteStep, requ
   if (!capable) return undefined;
   if (typeof registry.getProvider(model.provider)?.streamSimple !== "function") return undefined;
   if (!registry.hasConfiguredAuth(model)) return undefined;
+  if (step.harness === "steak-dsh") {
+    // The DSH CLI reads a static API key from the child environment; an OAuth-only login
+    // cannot be refreshed there, and the harness must be installed to launch at all.
+    if (requireImages) return undefined;
+    if (registry.isUsingOAuth(model)) return undefined;
+    if (resolveDshExecutable() === undefined) return undefined;
+  }
   // The expert keeps its configured exact identity. Localhost is normally a permitted
   // no-spend route, but a local model labelled with the expert's route
   // must not impersonate the expert or inherit any paid-route approval.
@@ -691,18 +701,46 @@ function evaluateOnlyWhen(condition: OnlyWhenCondition, options: ChainOptions): 
   return onlyWhenSkipReason(condition, options) === undefined;
 }
 
-/** One authenticated chain route or a fail-closed error. Reviewed paid
+/** One authenticated chain route or a fail-closed error, with the step that served it (a
+ * harness-qualified step carries its harness, so the run can freeze the right runner). Reviewed paid
  * steps need the operator's exact allowlist grant (re-read per selection); an
  * unreviewed metered endpoint never enters an automatic chain. */
-export function selectChainedWorkerModel(registry: ChainRegistry, chain: readonly WorkerRouteStep[], options: ChainOptions = {}): Model {
+export function selectChainedWorkerStep(registry: ChainRegistry, chain: readonly WorkerRouteStep[], options: ChainOptions = {}): { model: Model; step: WorkerRouteStep } {
   const approve = options.approvePaidRoute ?? AUTOMATIC_CHAIN_APPROVAL;
   for (const step of chain) {
     if (step.onlyWhen && !evaluateOnlyWhen(step.onlyWhen, options)) continue;
     if (options.skipRoute?.(step)) continue;
     const model = eligibleChainRoute(registry, step, options.requireImages === true, approve);
-    if (model) return model;
+    if (model) return { model, step };
   }
   throw new NoChainRouteError(options.requireImages === true, chain);
+}
+
+/** One authenticated chain route or a fail-closed error (the step-agnostic form). */
+export function selectChainedWorkerModel(registry: ChainRegistry, chain: readonly WorkerRouteStep[], options: ChainOptions = {}): Model {
+  return selectChainedWorkerStep(registry, chain, options).model;
+}
+
+/** The named reason a harness-qualified steak-dsh step cannot launch, or undefined when it can.
+ * Mirrors {@link admitDshRoute}'s gates in the synchronous chain-walk vocabulary, so a dispatch
+ * note names the inner route and the cause instead of a generic "not launchable". */
+export function dshStepBlockReason(registry: ChainRegistry, step: WorkerRouteStep, options: ChainOptions = {}): string | undefined {
+  if (step.harness !== "steak-dsh") return undefined;
+  const inner = `${step.provider}/${step.id}`;
+  const model = registry.find(step.provider, step.id);
+  if (!model || model.provider !== step.provider || model.id !== step.id) return `the Pi model registry does not know the inner model ${inner}`;
+  if (model.input?.includes("text") !== true) return `the inner model ${inner} does not advertise text input`;
+  if (typeof registry.getProvider(model.provider)?.streamSimple !== "function") return `the inner model ${inner} has no native streaming adapter`;
+  if (!registry.hasConfiguredAuth(model)) return `the inner model ${inner} is not authenticated in this session`;
+  if (registry.isUsingOAuth(model)) return `the inner model ${inner} is served by an OAuth-only login; the steak-dsh harness needs an API key`;
+  const catalog = registry.getAll?.() ?? registry.getAvailable();
+  if (!catalog.some((candidate) => candidate.provider === model.provider && candidate.id === model.id)) return `the inner model ${inner} is not in the dispatch catalog`;
+  if (!isSubscriptionOrLocalRoute(model, false)) {
+    const approve = options.approvePaidRoute ?? AUTOMATIC_CHAIN_APPROVAL;
+    if (!findPaidRoute(model) || !approve(model)) return `the inner model ${inner} is a paid route that is not approved in ~/.pi/agent/paid-routes.json`;
+  }
+  if (resolveDshExecutable() === undefined) return DSH_NOT_INSTALLED;
+  return undefined;
 }
 
 /** Runs retain one explicit model for accurate telemetry; mixed/review runs stay frontier.

@@ -35,6 +35,10 @@ export const paidRoutesConfigPath = (): string =>
 
 export class RoutingConfigError extends Error { override name = "RoutingConfigError"; }
 
+/** The steak-dsh harness route prefix (`steak-dsh/<provider>/<model-id>`). The one grammar constant
+ * the config parser and the steak-dsh adapter (src/subagents/dsh-routes.ts) share. */
+export const DSH_ROUTE_PREFIX = "steak-dsh/";
+
 /** A task class is a lowercase slug the operator chooses; Steak Pi ships none. */
 export const TASK_CLASS_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const TASK_CLASS_MAX_LENGTH = 48;
@@ -53,7 +57,7 @@ export interface OnlyWhenCondition {
   provider: string;
   everyAccount: { remainingBelow: number; behindPaceAbove: number };
 }
-export interface RouteStep { provider: string; id: string; onlyWhen?: OnlyWhenCondition }
+export interface RouteStep { provider: string; id: string; onlyWhen?: OnlyWhenCondition; harness?: "steak-dsh" }
 type Thinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 export interface RouteSelector { model?: string; profile?: string }
 
@@ -271,8 +275,18 @@ export function parseRoute(value: unknown, key = "route"): RouteStep {
   }
   return fail(key, `expected "provider/model" or { provider, id, onlyWhen }`);
 }
-export const routeKey = (step: RouteStep): string => `${step.provider}/${step.id}`;
-const routes = (value: unknown, key: string): RouteStep[] => array(value, key).map((entry, index) => parseRoute(entry, `${key}[${index}]`));
+/** A worker-chain route: an exact `provider/model`, or a harness-qualified `steak-dsh/<provider>/<model-id>`
+ * whose inner route is a `provider/model` the Pi registry serves. The step keeps the inner provider/id and
+ * carries `harness: "steak-dsh"`, so quota, onlyWhen and policy checks apply to the inner route. */
+export function parseWorkerRoute(value: unknown, key = "route"): RouteStep {
+  if (typeof value === "string" && value.startsWith(DSH_ROUTE_PREFIX)) {
+    const inner = parseRoute(value.slice(DSH_ROUTE_PREFIX.length), key);
+    return { ...inner, harness: "steak-dsh" };
+  }
+  return parseRoute(value, key);
+}
+export const routeKey = (step: RouteStep): string => `${step.harness === "steak-dsh" ? DSH_ROUTE_PREFIX : ""}${step.provider}/${step.id}`;
+const routes = (value: unknown, key: string): RouteStep[] => array(value, key).map((entry, index) => parseWorkerRoute(entry, `${key}[${index}]`));
 const thinking = (value: unknown, key: string): Thinking | undefined => {
   if (value === undefined) return undefined;
   if (!["off", "minimal", "low", "medium", "high", "xhigh"].includes(value as string)) return fail(key, "expected a Pi thinking level");
@@ -394,8 +408,14 @@ function parseTaskClasses(value: unknown): Record<string, TaskClassConfig> {
     }
     const chain = array(entry.chain, `${key}.chain`).map((step, index) => {
       const route = text(step, `${key}.chain[${index}]`);
+      // A harness-qualified steak-dsh entry must name a well-formed inner provider/model route;
+      // whether the registry knows that model is checked by `routing check` and at dispatch.
+      if (route.startsWith(DSH_ROUTE_PREFIX)) {
+        parseRoute(route.slice(DSH_ROUTE_PREFIX.length), `${key}.chain[${index}] (inner route of ${JSON.stringify(route)})`);
+        return route;
+      }
       const slash = route.indexOf("/");
-      if (slash < 1 || slash === route.length - 1) return fail(`${key}.chain[${index}]`, `${JSON.stringify(route)} must be a worker profile id (harness/profile) or an exact provider/model route`);
+      if (slash < 1 || slash === route.length - 1) return fail(`${key}.chain[${index}]`, `${JSON.stringify(route)} must be a worker profile id (harness/profile), an exact provider/model route, or steak-dsh/<provider>/<model-id>`);
       return route;
     });
     if (chain.length < 1 || chain.length > MAX_TASK_CLASS_CHAIN) return fail(`${key}.chain`, `expected 1 to ${MAX_TASK_CLASS_CHAIN} steps`);

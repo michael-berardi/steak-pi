@@ -7,7 +7,7 @@ import { isContentFilterRefusal } from "../src/content-filter-refusal.ts";
 import { noClaudeCause, planOnlyCause, resolveProjectPolicy, type ProjectPolicy } from "../src/subagents/project-policy.ts";
 import { AVAILABILITY_TTL_MS, computeAvailability } from "../src/subagents/route-availability.ts";
 import { canFallbackReview, implicitReviewFallbackRoute, implicitReviewRoute, isReadOnlyReviewWave, recordReviewFallback } from "../src/subagents/reviewer-fallback.ts";
-import { parseRoute, routeLabel, routingConfigOrEmpty, TASK_CLASS_MAX_LENGTH } from "../src/routing-config.ts";
+import { parseRoute, routeLabel, routingConfigOrEmpty, DSH_ROUTE_PREFIX, TASK_CLASS_MAX_LENGTH } from "../src/routing-config.ts";
 import { statSync } from "node:fs";
 import { PersistenceHealth } from "../src/subagents/persistence-health.ts";
 import { deferredToolsEnabled, setToolActive } from "../src/deferred-tools.ts";
@@ -20,7 +20,8 @@ import { assertKnownClaudeAccount, resolveClaudeAccount } from "../src/subagents
 import { assertActiveModelSelector } from "../src/retired-model-selection.ts";
 import { loadWorkerProfiles, resolveWorkerSelection, resolveClaudeCodeSelection, assertClaudeCodeImageAdmission, admitClaudeCodeRoute, claudeCodeModelName, claudeCodeRouteModel, claudeCodeRouteOfProfile, claudeFallbackTier, defaultClaudeCodeRoute, isClaudeCodeEffort, resolveClaudeCodeEffort, CLAUDE_CODE_EFFORTS, CLAUDE_CODE_ROUTES, type ClaudeFallbackTier, type WorkerProfile } from "../src/subagents/model-selection.ts";
 import { admitClaudeApiRoute, claudeApiConcurrency, claudeApiModelOf, CLAUDE_API_ROUTES, formatClaudeApiReceipt, isClaudeApiRoute, resolveClaudeApiSelection, stampClaudeApiRun } from "../src/subagents/claude-api-route.ts";
-import { AUTOMATIC_CHAIN_APPROVAL, NoChainRouteError, defaultWorkerChain, isDefaultChainExhausted, onlyWhenSkipReason, type ChainOptions, type TaskClassStep, type TaskClassWalk, type WorkerRouteStep } from "../src/model-route-policy.ts";
+import { AUTOMATIC_CHAIN_APPROVAL, NoChainRouteError, defaultWorkerChain, dshStepBlockReason, isDefaultChainExhausted, onlyWhenSkipReason, type ChainOptions, type TaskClassStep, type TaskClassWalk, type WorkerRouteStep } from "../src/model-route-policy.ts";
+import { admitDshRoute, dshEffortOf, dshRouteModel, dshRouteOf, dshRouteShapeRefusal, resolveDshEffort } from "../src/subagents/dsh-routes.ts";
 import { analyzeWaveClasses, applyInferredTaskClasses, configuredTaskClass, ignoredTaskClass, resolveTaskClassWalk, type WaveTaskClass } from "../src/subagents/task-class.ts";
 import { RouteEvidenceStore, routeEvidencePath, recordSettledTask } from "../src/subagents/route-evidence.ts";
 import { classReport, describeDecision, formatClassReport, settingsOf, type Rng } from "../src/subagents/route-ranking.ts";
@@ -36,9 +37,11 @@ import { canonicalSessionFile, CheckpointStore, diagnoseRun, isInProcessCheckpoi
 import { renderSubagentCall, renderSubagentResult, renderSubagentLive } from "../src/subagents/render.ts";
 import type { PiWorkerRuntime, PiWorkerRunnerOptions, PiWorkerSessionFactory } from "../src/subagents/pi-worker.ts";
 import type { ClaudeSpawn, ClaudeWorkerRunnerOptions } from "../src/subagents/claude-worker.ts";
+import type { DshSpawn, DshWorkerRunnerOptions, DshWorkerRuntime } from "../src/subagents/dsh-worker.ts";
 import {
   addUsage,
   USAP_VERSION,
+  HARNESS_IDS,
   MAX_CONCURRENCY,
   MAX_TASKS,
   MAX_TIMEOUT_MS,
@@ -49,6 +52,7 @@ import {
   harnessOf,
   type DispatchInput,
   type HarnessId,
+  type ModelSelection,
   type PartialReason,
   type RunRecord,
   type TaskClassSelection,
@@ -135,7 +139,7 @@ export const ultratermSubagentsSchema = Type.Object({
   model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Exact authenticated provider/model for all tasks; mutually exclusive with profile." })),
   claudeAccount: Type.Optional(Type.String({ pattern: "^[a-z0-9]+(-[a-z0-9]+)*$", minLength: 1, maxLength: 24, description: "Claude subscription account id from claude-accounts.json, e.g. primary, b, team-2. Task-scoped. Requires a Claude subscription route; unknown, unavailable, Pi and API selections fail closed. Never changes defaults or enables credits." })),
   profile: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Native harness/profile route (e.g. steak-pi/profile-name); mutually exclusive with model. Operator-retired routes are rejected." })),
-  harness: Type.Optional(Type.Unsafe<"pi" | "claude-code">({ type: "string", enum: ["pi", "claude-code"], description: "Execution harness. pi (default) is the native runner; claude-code is the official headless Claude CLI on the operator's claudeCodeDefaults model unless model names one of its pinned routes, at medium effort unless thinking asks for high/xhigh with a thinkingReason; workers, scouts and reviewers alike, with CLI-enforced ownedPaths; no Bash for read-only reviewers. Image review reads staged files under cwd with native Read." })),
+  harness: Type.Optional(Type.Unsafe<HarnessId>({ type: "string", enum: [...HARNESS_IDS], description: "Execution harness. pi (default) is the native runner; claude-code is the official headless Claude CLI on the operator's claudeCodeDefaults model unless model names one of its pinned routes, at medium effort unless thinking asks for high/xhigh with a thinkingReason; workers, scouts and reviewers alike, with CLI-enforced ownedPaths; no Bash for read-only reviewers. Image review reads staged files under cwd with native Read. steak-dsh is the DSH headless CLI with the Steak DSH bundle on an exact steak-dsh/<provider>/<model-id> registry route (model may also be the inner provider/model with this harness); CLI-enforced ownedPaths, no shell unless allowBash, no relay steering or resume." })),
   requireImages: Type.Optional(Type.Boolean({ description: "Require advertised image input; no silent fallback. Claude Code uses native Read on staged image files under cwd or a read-only artifact root declared with readPaths, not inline attachments." })),
   constraints: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4_000 }), { maxItems: 64 })),
   contract: Type.Optional(Type.String({ minLength: 1, maxLength: 8_000 })),
@@ -316,6 +320,9 @@ export interface UltratermSubagentsDependencies {
   /** Test seam injected into the default claude-code runner; production spawns
    * the real official CLI once per task. Never used for harness "pi" runs. */
   claudeSpawn?: ClaudeSpawn;
+  /** Test seam injected into the default steak-dsh runner; production spawns the
+   * real steak-dsh CLI once per task. Never used for harness "pi" runs. */
+  dshSpawn?: DshSpawn;
   accountCommand?: AccountCommand;
   /** Test seam: the operator project policy file (default ~/.ultraterm/coordinator/policy.json, or ULTRATERM_COORDINATOR_POLICY). */
   projectPolicyPath?: string;
@@ -459,10 +466,12 @@ function spentProviders(fallThroughs: readonly QuotaFallThrough[]): ReadonlySet<
   return new Set(chain.slice(0, furthest + 1));
 }
 
-/** Router-gated providers a run launched on. */
+/** Router-gated providers a run launched on. A steak-dsh run is gated on its INNER route's provider. */
 function reachedProviders(run: RunRecord): QuotaProvider[] {
-  const slash = run.model.indexOf("/");
-  const provider = slash > 0 ? quotaProviderOf({ provider: run.model.slice(0, slash), id: run.model.slice(slash + 1) }) : undefined;
+  const inner = dshRouteModel(run.model);
+  const route = inner ? `${inner.provider}/${inner.id}` : run.model;
+  const slash = route.indexOf("/");
+  const provider = slash > 0 ? quotaProviderOf({ provider: route.slice(0, slash), id: route.slice(slash + 1) }) : undefined;
   return provider ? [provider] : [];
 }
 
@@ -641,6 +650,7 @@ async function resolveImplicitWorkerRoute(
   /** Why a class step did not serve the wave, in the words of a receipt. */
   const classStepCause = (entry: TaskClassStep): string =>
     entry.blocked ?? (quota ? tierBlock(quota, entry.step) : heldBlock(entry.step))
+      ?? dshStepBlockReason(ctx.modelRegistry, entry.step, automaticChainOptions(dependencies))
       ?? "not launchable in this session (not authenticated, not in the dispatch catalog, or a reviewed paid route that is not approved in ~/.pi/agent/paid-routes.json)";
   const classStepName = (entry: TaskClassStep): string => entry.profile ? entry.entry : routeStepLabel(entry.step);
   /** The receipt for the wave's class: which step served it, or why none did. */
@@ -1227,6 +1237,10 @@ interface ClaudeWorkerModule {
   createClaudeWorkerRunner: (options: ClaudeWorkerRunnerOptions) => WorkerRunner;
 }
 
+interface DshWorkerModule {
+  createDshWorkerRunner: (options: DshWorkerRunnerOptions) => WorkerRunner;
+}
+
 /** Lazy so fake-runner registration and tests never initialize child resources.
  * One coordinator-facing runner; each run branches on its harness to the native
  * Pi lifecycle or the headless claude-code CLI lifecycle. Neither branch is an
@@ -1240,10 +1254,33 @@ export function defaultWorkerRunner(
   sessionFactory?: PiWorkerSessionFactory,
   /** Durable admission for a `claude-code/<model>` run (pins, catalog and the operator's profiles). */
   claudeAdmit?: (route: string | undefined) => string | undefined,
+  dshSpawn?: DshSpawn,
 ): WorkerRunner {
   let piRunner: Promise<WorkerRunner> | undefined;
   let claudeRunner: Promise<WorkerRunner> | undefined;
+  let dshRunner: Promise<WorkerRunner> | undefined;
   return async (context) => {
+    if (harnessOf(context.run.harness) === "steak-dsh") {
+      dshRunner ??= import(resolveStagedModule("src/subagents/dsh-worker.ts").url)
+        .then((module) => {
+          const factory = (module as unknown as Partial<DshWorkerModule>).createDshWorkerRunner;
+          if (typeof factory !== "function") {
+            throw new Error("dsh-worker module does not export createDshWorkerRunner");
+          }
+          return factory({
+            ...(dshSpawn ? { spawn: dshSpawn } : {}),
+            resolveRuntime: (runId) => {
+              const resolved = workerRuntimes.get(runId) as DshWorkerRuntime | undefined;
+              if (!resolved?.dsh) throw new Error(`No frozen steak-dsh worker runtime for ${runId}`);
+              return resolved;
+            },
+          });
+        });
+      const runner = await dshRunner.catch((error) => { dshRunner = undefined; throw error; });
+      // Relay steering is unsupported on this harness: the hub refuses send/redirect for its runs,
+      // and the runner never binds a relay peer. No review fallback applies either.
+      return runner(context);
+    }
     if (harnessOf(context.run.harness) === "claude-code") {
       claudeRunner ??= import(resolveStagedModule("src/subagents/claude-worker.ts").url)
         .then((module) => {
@@ -1719,7 +1756,7 @@ export function createUltratermSubagentsExtension(
       let created!: SessionRuntime;
       // The profile `ensure` hook wraps whichever runner serves the run, so Pi and claude-code workers get it alike.
       const runner = withProfileEnsure(dependencies.createRunner?.(pi, relay)
-        ?? defaultWorkerRunner(relay, workerRuntimes, dependencies.claudeSpawn, dependencies.accountCommand, undefined, claudeAdmittedModel),
+        ?? defaultWorkerRunner(relay, workerRuntimes, dependencies.claudeSpawn, dependencies.accountCommand, undefined, claudeAdmittedModel, dependencies.dshSpawn),
       dependencies.ensureExec ? { exec: dependencies.ensureExec } : {});
       const coordinator = new SubagentCoordinator(runner, {
         scheduler,
@@ -2160,6 +2197,24 @@ export function createUltratermSubagentsExtension(
         }
         if (claude) requested = { ...requested, profile: undefined, model: claude.route };
       }
+      // A steak-dsh route selects that harness before any native selection: an explicit
+      // `harness: "steak-dsh"` with an inner `provider/model`, or an exact
+      // `steak-dsh/<provider>/<model-id>` model. Explicit routes never fall back.
+      if (requested.harness === "steak-dsh" || (requested.harness === undefined && requested.model !== undefined && requested.model.startsWith(DSH_ROUTE_PREFIX))) {
+        if (requested.profile !== undefined) {
+          throw new Error("USAP harness steak-dsh runs only an exact steak-dsh/<provider>/<model-id> route; profile selectors are refused, and no fallback was selected.");
+        }
+        if (requested.model === undefined) {
+          throw new Error("USAP harness steak-dsh requires model <provider>/<model-id> (or steak-dsh/<provider>/<model-id>); no default steak-dsh route is configured, so no run was started and no fallback was selected.");
+        }
+        let inner = dshRouteModel(requested.model);
+        if (inner === undefined) {
+          if (requested.model.startsWith(DSH_ROUTE_PREFIX)) throw new Error(dshRouteShapeRefusal(requested.model));
+          try { inner = parseRoute(requested.model, "model"); }
+          catch { throw new Error(dshRouteShapeRefusal(requested.model)); }
+        }
+        requested = { ...requested, harness: "steak-dsh", model: dshRouteOf(inner) };
+      }
       const startupWindowMs = dependencies.startupWindowMs ?? DEFAULT_STARTUP_WINDOW_MS;
       // Do not let a mixed implicit wave silently bypass the configured review
       // standard or spend expert quota on routine implementation leaves.
@@ -2303,6 +2358,8 @@ export function createUltratermSubagentsExtension(
       // A Claude Code run takes the dispatch's own effort and medium when it names none; low, max and
       // an unexplained high/xhigh are refused here, before any approval, checkpoint or worker exists.
       const claudeEffort = params.harness === "claude-code" ? resolveClaudeCodeEffort(params.thinking, params.thinkingReason) : undefined;
+      const dshHarness = params.harness === "steak-dsh";
+      const dshEffort = dshHarness ? resolveDshEffort(params.thinking, params.thinkingReason) : undefined;
       const current = ensureRuntime(ctx);
       // Never launch a run this session could not recover from its durable store.
       assertDurableForNewWork(current);
@@ -2335,6 +2392,22 @@ export function createUltratermSubagentsExtension(
       // CLI route is explicit and fixed, and the native Pi registry is never
       // consulted for it (it cannot resolve, and must not appear to).
       const foreignHarness = params.harness === "claude-code";
+      // steak-dsh admission: the inner registry model must pass the SAME policy checks a Pi-native
+      // route passes, plus the harness gates (API-key login, resolved executable). Named refusals only.
+      let dshModel: NonNullable<ExtensionContext["model"]> | undefined;
+      if (dshHarness) {
+        if (params.requireImages === true) {
+          throw new Error("USAP harness steak-dsh does not support image input; dispatch an image wave on Pi or claude-code. No fallback was selected.");
+        }
+        const dshPolicy = projectPolicyOf(ctx, requested, dependencies);
+        const approve = dshPolicy.planOnly !== undefined ? () => false : (dependencies.approvePaidRoute ?? AUTOMATIC_CHAIN_APPROVAL);
+        dshModel = await admitDshRoute(params.model, ctx.modelRegistry, { approvePaidRoute: approve, env: dependencies.env ?? process.env });
+        const innerStep = { provider: dshModel.provider, id: dshModel.id };
+        const cause = quotaProviderOf(innerStep) === undefined ? undefined : routeQuotaBlock(await readQuota(), innerStep);
+        if (cause !== undefined) {
+          throw new Error(`USAP explicit route ${params.model} cannot launch: ${cause}. Explicit routes are never rerouted, so no worker was started and no fallback was selected; wait for the window to return or choose another route yourself.`);
+        }
+      }
       // A named route is admitted from its three sources (never a hard-coded list): the pinned routes,
       // the provider catalog and an operator profile. The refusal names all three.
       if (foreignHarness && params.profile !== undefined) {
@@ -2363,7 +2436,7 @@ export function createUltratermSubagentsExtension(
         : undefined;
       if (apiRoute) params.concurrency = claudeApiConcurrency(params.concurrency, params.tasks.length);
       if (foreignHarness && params.requireImages === true && !apiRoute) assertClaudeCodeImageAdmission(claudeRoute, claudeAdmittedModel);
-      const piResolved = foreignHarness
+      const piResolved = foreignHarness || dshHarness
         ? undefined
         : nativeResolved ?? await resolveNativeSelection(ctx, params, dependencies);
       if (piResolved && !implicitRoute) {
@@ -2397,12 +2470,28 @@ export function createUltratermSubagentsExtension(
           reviewFallbackRuntime = { model: sol.model, thinkingLevel: sol.thinkingLevel };
         } catch { /* Claude may still succeed; an unavailable fallback is not a route substitute. */ }
       }
-      const resolvedSelection = piResolved ? piResolved.selection : apiRoute ? resolveClaudeApiSelection(claudeModel!) : resolveClaudeCodeSelection(claudeModel!);
-      const resolvedThinking = piResolved ? String(piResolved.thinkingLevel) : claudeEffort!;
-      const model = foreignHarness ? claudeRoute! : `${piResolved!.model.provider}/${piResolved!.model.id}`;
+      // A class-ranked winner may be a harness-qualified steak-dsh step: the run's harness comes from
+      // the step, its model string stays the verbatim route, and its effort maps the resolved thinking.
+      const classedDsh = piResolved?.selection.harness === "steak-dsh";
+      const dshSelection: ModelSelection | undefined = dshHarness && dshModel
+        ? { provider: dshModel.provider, modelId: dshModel.id, source: "override" as const, harness: "steak-dsh" as const, images: false, tools: true }
+        : undefined;
+      const resolvedSelection = piResolved ? piResolved.selection : dshSelection ?? (apiRoute ? resolveClaudeApiSelection(claudeModel!) : resolveClaudeCodeSelection(claudeModel!));
+      const resolvedThinking = piResolved
+        ? (classedDsh ? dshEffortOf(String(piResolved.thinkingLevel)) : String(piResolved.thinkingLevel))
+        : dshHarness ? dshEffort! : claudeEffort!;
+      const model = dshHarness ? params.model!
+        : foreignHarness ? claudeRoute!
+        : classedDsh ? dshRouteOf({ provider: piResolved!.model.provider, id: piResolved!.model.id })
+        : `${piResolved!.model.provider}/${piResolved!.model.id}`;
       const thinking = resolvedThinking;
+      // The dispatch note names the harness whenever it is not Pi.
+      const harnessNote = (dshHarness || classedDsh)
+        ? `Harness note: this wave runs on the steak-dsh harness (the DSH headless CLI) on ${model}; relay steering (hub send/redirect) and resume are unsupported on this harness in v1.\n`
+        : "";
       const input: DispatchInput = {
         ...params,
+        ...(classedDsh ? { harness: "steak-dsh" as const } : {}),
         tasks: params.tasks,
         background: params.background ?? false,
       };
@@ -2473,8 +2562,22 @@ export function createUltratermSubagentsExtension(
       // Never launch a supposedly durable run whose initial checkpoint failed.
       saveCheckpoint(current, run, true, "initial", true);
       // Foreign-harness runs have no frozen Pi runtime: their runner branches on
-      // run.harness and never consults the Pi registry or the relay workers.
-      if (!foreignHarness) {
+      // run.harness and never consults the Pi registry or the relay workers. A steak-dsh run freezes
+      // its inner registry model plus Pi's own auth resolution instead (the runner re-checks at launch).
+      if (dshHarness || classedDsh) {
+        const dshRegistry = dshHarness ? ctx.modelRegistry : piResolved!.registry;
+        const innerModel = dshHarness ? dshModel! : piResolved!.model;
+        current.workerRuntimes.set(run.id, Object.freeze({
+          model: Object.freeze({ ...innerModel }),
+          thinkingLevel: thinking as PiWorkerRuntime["thinkingLevel"],
+          dsh: Object.freeze({
+            ...(typeof dshRegistry.getApiKeyAndHeaders === "function"
+              ? { resolveAuth: (model: NonNullable<ExtensionContext["model"]>) => dshRegistry.getApiKeyAndHeaders!(model) }
+              : {}),
+            isUsingOAuth: (model: NonNullable<ExtensionContext["model"]>) => dshRegistry.isUsingOAuth(model),
+          }),
+        }) as PiWorkerRuntime);
+      } else if (!foreignHarness) {
         current.workerRuntimes.set(run.id, Object.freeze({
           model: Object.freeze({ ...(piResolved!.model) }),
           thinkingLevel: piResolved!.thinkingLevel,
@@ -2585,7 +2688,7 @@ export function createUltratermSubagentsExtension(
         return {
           content: [{
             type: "text" as const,
-            text: `${persistenceNote}${routeNote}Started USAP run ${run.id} · ${model} · ${resolvedSelection.source}${resolvedSelection.profile ? ` · ${resolvedSelection.profile}` : ""}: ${run.tasks.map((task) => task.id).join(", ")}\nDispatch summary: ${JSON.stringify(dispatchDetails(snapshot, persistence).summary)}`,
+            text: `${persistenceNote}${harnessNote}${routeNote}Started USAP run ${run.id} · ${model} · ${resolvedSelection.source}${resolvedSelection.profile ? ` · ${resolvedSelection.profile}` : ""}: ${run.tasks.map((task) => task.id).join(", ")}\nDispatch summary: ${JSON.stringify(dispatchDetails(snapshot, persistence).summary)}`,
           }],
           details: dispatchDetails(snapshot, persistence),
         };
@@ -2599,7 +2702,7 @@ export function createUltratermSubagentsExtension(
         assertOwner(current, ctx);
         binding.usageClaimed = true;
         return {
-          content: [{ type: "text" as const, text: `${persistenceNote}${routeNote}Dispatch summary: ${JSON.stringify(dispatchDetails(settled, persistence).summary)}\n${renderRunResult(settled)}\n${reviewFallbackReceipt(settled, current.store?.directory)}` }],
+          content: [{ type: "text" as const, text: `${persistenceNote}${harnessNote}${routeNote}Dispatch summary: ${JSON.stringify(dispatchDetails(settled, persistence).summary)}\n${renderRunResult(settled)}\n${reviewFallbackReceipt(settled, current.store?.directory)}` }],
           details: dispatchDetails(settled, persistence),
           // Nested worker usage belongs only here, never under details/results.
           usage: usageCopy(settled.usage),
@@ -2612,7 +2715,7 @@ export function createUltratermSubagentsExtension(
     pi.registerTool({
       name: "ultraterm_subagents",
       label: "UltraTerm Subagents",
-      description: "Dispatch 1-8 bounded tasks through Pi or the official headless Claude Code CLI. Implicit routine waves run the operator's configured worker chain (textWorkerChain / multimodalWorkerChain in ~/.config/ultraterm/routing.json), then the configured Claude subscription tier (claudeFallbackTier); implicit all-reviewer waves run the configured implicitReview route. With nothing configured an implicit wave fails with the config key to set, while explicit model/profile/harness routes always work. The router's quota is checked first: a configured tier whose every account is cooling down or at 100% is skipped. Explicit routes win and are never rerouted; an explicit route in an exhausted provider is refused with the router's cause. A task may declare a taskClass the operator configured in routing.json: an implicit text worker wave then walks that class's chain first (same launch, quota, paid-route and onlyWhen checks), then the normal route; one run uses one route and a class steers only a wave whose every task carries it (within its slots and scope), an unknown class is ignored with a note, and the receipt names the class and why its route was or was not chosen. A worker that fails before its first model output fails this call itself, background or not, except that an implicit wave refused on a provider quota or usage limit (402 / insufficient credits / no endpoints found, a usage-limit error, a cooling-down router refusal) re-runs the same tasks once on the next configured tier inside this call, before Started. Each turn carries a one-line route availability notice (up, or COOLING until a time, HELD BACK, or NOT ALLOWED by project policy, plus the next usable route): omit model, profile and harness and let the router choose; never pin a COOLING, HELD BACK or NOT ALLOWED route. Foreground default; ownedPaths grants guarded writes on either harness; readPaths grants a read-only artifact root outside the run cwd to a read-only task; allowBash is unsandboxed shell except Claude read-only reviewers get no Bash. Claude image review uses native Read on staged files under cwd or a declared readPaths root.",
+      description: "Dispatch 1-8 bounded tasks through Pi, the official headless Claude Code CLI, or the steak-dsh harness (the DSH headless CLI on an exact steak-dsh/<provider>/<model-id> route). Implicit routine waves run the operator's configured worker chain (textWorkerChain / multimodalWorkerChain in ~/.config/ultraterm/routing.json), then the configured Claude subscription tier (claudeFallbackTier); implicit all-reviewer waves run the configured implicitReview route. With nothing configured an implicit wave fails with the config key to set, while explicit model/profile/harness routes always work. The router's quota is checked first: a configured tier whose every account is cooling down or at 100% is skipped. Explicit routes win and are never rerouted; an explicit route in an exhausted provider is refused with the router's cause. A task may declare a taskClass the operator configured in routing.json: an implicit text worker wave then walks that class's chain first (same launch, quota, paid-route and onlyWhen checks), then the normal route; one run uses one route and a class steers only a wave whose every task carries it (within its slots and scope), an unknown class is ignored with a note, and the receipt names the class and why its route was or was not chosen. A worker that fails before its first model output fails this call itself, background or not, except that an implicit wave refused on a provider quota or usage limit (402 / insufficient credits / no endpoints found, a usage-limit error, a cooling-down router refusal) re-runs the same tasks once on the next configured tier inside this call, before Started. Each turn carries a one-line route availability notice (up, or COOLING until a time, HELD BACK, or NOT ALLOWED by project policy, plus the next usable route): omit model, profile and harness and let the router choose; never pin a COOLING, HELD BACK or NOT ALLOWED route. Foreground default; ownedPaths grants guarded writes on either harness; readPaths grants a read-only artifact root outside the run cwd to a read-only task; allowBash is unsandboxed shell except Claude read-only reviewers get no Bash. Claude image review uses native Read on staged files under cwd or a declared readPaths root.",
       promptSnippet: "Dispatch bounded independent child tasks with explicit permissions and path ownership",
       promptGuidelines: [
         "Fan out by default: independent leaves (disjoint files, modules, screens, angles) dispatch in ONE parallel wave — width defaults to min(8, task count); provider ceilings come from the operator's usap-caps.json.",
@@ -2760,6 +2863,9 @@ export function createUltratermSubagentsExtension(
           assertActiveModelSelector(snapshot.selection?.modelId);
           assertActiveModelSelector(snapshot.selection?.profile);
           if (snapshot.state === "running") throw new Error("Run is still active; resume would duplicate work");
+          if (harnessOf(snapshot.harness) === "steak-dsh") {
+            throw new Error("Resume refused: harness steak-dsh keeps no resumable worker session in v1; inspect the retained partial work and dispatch a new task.");
+          }
           if (checkpoint?.resumedAs) throw new Error(`Already resumed as ${checkpoint.resumedAs}; a task is resumed at most once, so inspect that run instead`);
           if (checkpoint?.pendingResume) throw new Error("Resume reservation interrupted; reload the host to recover it before retrying");
           // A retained lease or a duplicate in-process owner must refuse loudly
@@ -2955,6 +3061,9 @@ export function createUltratermSubagentsExtension(
         }
 
         if (params.action === "send" || params.action === "redirect") {
+          if (harnessOf(snapshot.harness) === "steak-dsh") {
+            throw new Error("USAP harness steak-dsh does not support relay steering (hub send/redirect): the DSH headless CLI has no running-worker input channel in v1. Put coordination needs in the leaf's task text, or read them from its final report.");
+          }
           const to = requireString(params.to, "to").trim();
           const body = requireString(params.body, "body");
           const relay = binding.parent.send({

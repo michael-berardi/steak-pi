@@ -342,8 +342,9 @@ and releases it in `finally`. Spent plans are reported to the router as
 lowercase slug the operator chose (letters, digits and single hyphens, at most 48 characters); Steak Pi ships
 none. A class has an ordered `chain`, an optional `requiresTestGate` and an optional `note`:
 
-- A **chain step** is either a worker profile id (`harness/profile`, from `workerProfiles` or a harness manifest) or
-  an exact `provider/model` route. A step that is exactly a profile id is that profile's model, with its
+- A **chain step** is either a worker profile id (`harness/profile`, from `workerProfiles` or a harness manifest),
+  an exact `provider/model` route, or a harness-qualified `steak-dsh/<provider>/<model-id>` route (see
+  [Steak DSH harness](#steak-dsh-harness)). A step that is exactly a profile id is that profile's model, with its
   `thinking` and its `ensure` hook; any other step is an exact route. A route that needs a server behind it
   must therefore be named through a profile, which is where the hook lives.
 - A step is judged exactly like a `textWorkerChain` step: authenticated, present in the dispatch catalog, a native
@@ -501,6 +502,75 @@ A hook slower than the dispatch's startup window (at most 30 seconds) is still w
 arrives after the window is an ordinary failed worker with its named cause rather than a synchronous
 fall-through. A runtime hop to another chain route never runs a hook for that route: name a route that needs one
 through a class step or a profile.
+
+## Steak DSH harness
+
+`steak-dsh` is the third USAP execution harness (beside `pi` and `claude-code`): the DSH headless CLI with the
+Steak DSH bundle applied, run once per leaf as a detached child process. It is not a Pi stream adapter: the
+leaf runs on the external CLI, while the same coordinator, hub, capacity limiter, checkpoint store and telemetry
+surface serve it. Steak Pi ships no model, provider or price for it: every identity comes from the registry and
+the operator's routing.json.
+
+**Route grammar.** `steak-dsh/<provider>/<model-id>`; the model id may itself contain slashes (split at the first
+inner slash). The inner `<provider>/<model-id>` must be a model the Pi model registry already knows, the same
+registry a Pi-native route uses, and it passes the SAME policy checks: retired patterns, pinned subscription
+families (`subscriptionRouteChecks`), reviewed paid-route approval, configured authentication, and the quota
+preflight / `onlyWhen` conditions of the inner route. Two harness-specific gates apply on top: the provider must
+hold an API key the CLI can use (an OAuth-only login is refused with a named error, because the harness cannot refresh
+OAuth tokens), and the `steak-dsh` executable must resolve (`STEAK_DSH_BIN`, else `steak-dsh` on PATH). Every
+refusal names the inner route; nothing falls back.
+
+**Explicit dispatch.** `harness: "steak-dsh"` with `model: "<provider>/<model-id>"`, or an exact
+`model: "steak-dsh/<provider>/<model-id>"` with no harness field. There is no default steak-dsh route: a dispatch
+without a model is refused naming the form. Explicit routes never fall back; `profile`, `claudeAccount` and
+`requireImages` are refused on this harness. The effort is the dispatch's `thinking` (`medium`, `high`, `xhigh`;
+high/xhigh need a `thinkingReason`), default `medium`.
+
+**Class chains and the evidence router.** A `taskClasses.<name>.chain` entry or a `textWorkerChain` entry may be
+`steak-dsh/<provider>/<model-id>`. The walk yields a harness-qualified step whose launch checks are the inner
+route's checks plus the executable resolution; when the ranked winner is such a step, the run's harness is set
+from it. A class whose chain holds both `provider-a/model-a` and `steak-dsh/provider-a/model-a` ranks them as two
+routes on the same recorded evidence: evidence rows record the route string verbatim, priors keyed by that string
+work, and `ultraterm_hub routes` shows it beside the native entry. `steak-pi routing check` accepts these entries
+and validates the inner model against the registry offline (an unknown inner model is a named error).
+
+**Permissions and the key.** A `mayEdit` leaf runs with `--permission workspace-write` and one `--owned-path` per
+owned path (the CLI's owned-paths plugin denies writes elsewhere); a read-only leaf runs with
+`--permission read-only`; `--no-shell` is passed unless the task grants `allowBash`. The harness sandbox confines
+writes to the run cwd, so an owned path outside it is also granted through its nearest existing directory
+(`--add-dir`); the owned-path rule still limits the edit tools to the exact owned paths. Reads are not confined on
+this harness, as on a native Pi worker, so declared `readPaths` are validated and named in the prompt but need no
+grant. With `allowBash` the shell can write anywhere the sandbox allows, as on every harness. The inner model's API key is resolved through Pi's own auth resolution and
+passed ONLY in the child environment under the fixed name `STEAK_DSH_ROUTE_KEY` (`--key-env STEAK_DSH_ROUTE_KEY`);
+it never appears in argv, prompts, logs or the run record, and the child environment is an explicit allowlist.
+
+**Accounting and failure kinds.** The runner parses the CLI's NDJSON stream with a bounded frame buffer (a
+malformed frame fails closed, named), sums `step_end` usage into the run's usage totals, and prices it from the
+registry model's own cost table (zero when the table is zero). `maxTurns` is enforced by counting `step_start`
+events (a budget stop kills the child and is named). Abort kills the whole process group with the same
+SIGTERM→SIGKILL grace as the claude-code runner. A 429 / quota / insufficient-credits refusal is reported as the
+same provider-quota failure kind the Pi runner reports, so an implicit wave falls through to its next configured
+tier; exit 78 is named as "steak-dsh harness not installed" with the install hint; any other failure names the
+last stderr line.
+
+**Adding it to a class.** Put the harness-qualified route in the class chain beside the native one and give it a
+prior from your own measurements; the router then ranks both on live outcomes:
+
+```json
+"taskClasses": {
+  "quick-edit": {
+    "chain": ["provider-a/model-a", "steak-dsh/provider-a/model-a"],
+    "priors": { "steak-dsh/provider-a/model-a": { "pass": 0.9, "n": 10, "costUsd": 0.001, "seconds": 20 } }
+  }
+}
+```
+
+Measure before you add it: a harness is not better on every model. Compare the two routes on your own tasks first
+(for example with ParetoBench) and let the recorded evidence decide after that.
+
+**Limits (v1).** No relay steering (`ultraterm_hub send`/`redirect` are refused with a named error), no resume
+(the harness keeps no resumable worker session), and no image input. The dispatch note and receipt name the
+harness whenever it is not Pi.
 
 ## Provider guard
 

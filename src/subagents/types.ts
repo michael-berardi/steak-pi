@@ -16,8 +16,11 @@ export interface LaunchQueue {
 export const USAP_VERSION = "1.3" as const;
 /** Execution harness that serves a run's leaves. `"pi"` is the native default;
  * `"claude-code"` is the official headless Claude CLI runner (read,
- * write and shell leaves; writes are scoped by CLI permission rules). The field is omitted on records that never left the Pi default. */
-export const HARNESS_IDS = ["pi", "claude-code"] as const;
+ * write and shell leaves; writes are scoped by CLI permission rules);
+ * `"steak-dsh"` is the DSH headless CLI with the Steak DSH bundle on an exact
+ * `steak-dsh/<provider>/<model-id>` registry route (writes scoped by CLI owned-path
+ * rules; no relay steering or resume in v1). The field is omitted on records that never left the Pi default. */
+export const HARNESS_IDS = ["pi", "claude-code", "steak-dsh"] as const;
 export type HarnessId = (typeof HARNESS_IDS)[number];
 /** Never infer durability or capability from an absent field: absent means Pi. */
 export function harnessOf(value: HarnessId | undefined): HarnessId {

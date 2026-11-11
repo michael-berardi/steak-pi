@@ -127,7 +127,8 @@ describe("shipped files are provider-neutral", () => {
     const rel = shipped.map((path) => relative(root, path));
     expect(rel.length).toBeGreaterThan(100);
     for (const known of ["README.md", "bin/steak-pi", "src/model-route-policy.ts", "src/routing-config.ts",
-      "extensions/ultraterm-subagents.ts", "docs/MODEL-ROUTING.md", "skills/ultraterm-subagent-protocol/SKILL.md"]) {
+      "extensions/ultraterm-subagents.ts", "docs/MODEL-ROUTING.md", "skills/ultraterm-subagent-protocol/SKILL.md",
+      "src/subagents/dsh-routes.ts", "src/subagents/dsh-worker.ts"]) {
       expect(rel).toContain(known);
     }
     // The patterns really match what they guard against, and every allowlisted adapter catalog

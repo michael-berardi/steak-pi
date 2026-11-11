@@ -149,7 +149,7 @@ Class (optional): an operator-named task class (`taskClass`), see "Task classes"
 ### Harness selection (1.3)
 
 USAP uses one coordinator, hub, capacity limiter, checkpoint store and telemetry
-surface for both Pi workers and the official headless Claude Code CLI. An absent
+surface for Pi workers, the official headless Claude Code CLI, and the steak-dsh harness (the DSH headless CLI with the Steak DSH bundle). An absent
 `harness` means Pi except for an all-reviewer wave with no explicit route when
 the operator configured `implicitReview.route`: that wave runs the configured
 Claude Code route on a router-eligible account at medium effort (high/xhigh only when the dispatch asks with a reason). The [automatic text-review exception](./MODEL-ROUTING.md#implicit-review) alone permits `implicitReview.fallback` evidence when Claude is proven unavailable; it is not expert approval.
@@ -171,6 +171,37 @@ existing first-party Claude subscription login. API-key/provider override
 environment variables are not inherited, and there is no fallback to another
 model, route, or billing arrangement. Quota exhaustion is a failed task due to
 quota, not permission to buy credits or an expert approval.
+
+### Steak DSH harness
+
+`harness: "steak-dsh"` runs a leaf on the DSH headless CLI with the Steak DSH bundle, as one detached child
+process per leaf under the same coordinator, checkpoint and telemetry lifecycle. The route grammar is
+`steak-dsh/<provider>/<model-id>` (the model id may contain slashes); the inner `<provider>/<model-id>` must be a
+model the Pi registry already knows and passes the same policy checks a Pi-native route passes (retired patterns,
+pinned families, paid-route approval, authentication, quota). An OAuth-only provider is refused with a named
+error (the CLI needs an API key it can read from the environment), and the `steak-dsh` executable must resolve
+(`STEAK_DSH_BIN`, else PATH). Dispatch either `harness: "steak-dsh"` with an inner `model: "<provider>/<model-id>"`
+or an exact `model: "steak-dsh/<provider>/<model-id>"`; there is no default route, and explicit routes never fall
+back.
+
+A `taskClasses.<name>.chain` entry (or a `textWorkerChain` entry) may be `steak-dsh/<provider>/<model-id>`: the
+evidence router ranks it beside native routes on the same recorded evidence, evidence rows and priors use the
+route string verbatim, and the ranked winner sets the run's harness. `steak-pi routing check` validates the inner
+model. See [Model routing — Steak DSH harness](./MODEL-ROUTING.md#steak-dsh-harness).
+
+Permissions map to the CLI: `mayEdit` + `ownedPaths` become `--permission workspace-write` with one
+`--owned-path` per owned path (writes elsewhere are denied by the CLI), a read-only leaf becomes
+`--permission read-only`, and `--no-shell` is passed unless `allowBash` is granted; `readPaths` become read-only
+`--add-dir` roots. The model's API key is resolved through Pi's own auth resolution and passed only in the child
+environment under `STEAK_DSH_ROUTE_KEY` — never in argv, logs or the run record. Usage is summed from the CLI's
+NDJSON `step_end` events and priced from the registry model's own cost table; `maxTurns` counts `step_start`
+events; abort kills the whole process group.
+
+Limits (v1): relay steering (`ultraterm_hub send`/`redirect`) and resume are refused with named errors, and
+`requireImages`, `profile` and `claudeAccount` are not supported on this harness. A 429 / quota / insufficient-credits
+refusal is the same provider-quota failure kind the Pi runner reports, so an implicit wave falls through to its
+next configured tier; exit 78 is named as "steak-dsh harness not installed". The dispatch note and receipt name
+the harness whenever it is not Pi.
 
 ### Task-scoped Claude subscription account
 

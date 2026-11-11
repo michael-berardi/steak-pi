@@ -14,7 +14,8 @@
  * one wave are refused, because they ask for different routes.
  */
 import { isRetiredRoute } from "../retired-model-selection.ts";
-import { routeKey, routingConfigOrEmpty, TASK_CLASS_MAX_LENGTH, TASK_CLASS_PATTERN, type TaskClassConfig, type TaskClassRule } from "../routing-config.ts";
+import { DSH_ROUTE_PREFIX, routeKey, routingConfigOrEmpty, TASK_CLASS_MAX_LENGTH, TASK_CLASS_PATTERN, type TaskClassConfig, type TaskClassRule } from "../routing-config.ts";
+import { dshRouteModel, dshRouteShapeRefusal } from "./dsh-routes.ts";
 import type { TaskClassRanking, TaskClassStep, TaskClassWalk } from "../model-route-policy.ts";
 import type { WorkerProfile } from "./model-selection.ts";
 import type { RouteEvidenceStore } from "./route-evidence.ts";
@@ -129,7 +130,8 @@ function rankClass(name: string, config: TaskClassConfig, deps: ClassRankingDeps
 }
 
 /** Resolve a class chain against the profiles in scope. An entry that is exactly a profile id is that
- * profile's model (and carries its thinking and `ensure`); any other entry is an exact `provider/model`.
+ * profile's model (and carries its thinking and `ensure`); a `steak-dsh/<provider>/<model-id>` entry is a
+ * harness-qualified step on the inner registry route; any other entry is an exact `provider/model`.
  * Each step gets the `onlyWhen` the operator attached to its route with `routeConditions`. With `ranking`,
  * the steps that can launch are ranked on the store's evidence; without it the chain order stands. */
 export function resolveTaskClassWalk(name: string, config: TaskClassConfig, profiles: readonly WorkerProfile[], ranking?: ClassRankingDeps): TaskClassWalk {
@@ -137,6 +139,24 @@ export function resolveTaskClassWalk(name: string, config: TaskClassConfig, prof
   const steps = config.chain.map((entry): TaskClassStep => {
     const profile = profiles.find((candidate) => candidate.id === entry);
     const route = profile ? profile.model : entry;
+    // A harness-qualified steak-dsh entry (directly, or through a profile that names one): the step
+    // keeps the inner provider/id and carries the harness, so evidence records the entry verbatim
+    // while quota, onlyWhen and policy checks apply to the inner route.
+    if (route.startsWith(DSH_ROUTE_PREFIX)) {
+      const inner = dshRouteModel(route);
+      if (inner === undefined) {
+        return { entry, step: { provider: route, id: "" }, ...(profile ? { profile: profile.id } : {}), blocked: dshRouteShapeRefusal(route) };
+      }
+      const innerRoute = `${inner.provider}/${inner.id}`;
+      const step = { provider: inner.provider, id: inner.id, harness: "steak-dsh" as const };
+      const onlyWhen = conditions?.[route] ?? conditions?.[innerRoute];
+      return {
+        entry,
+        step: onlyWhen ? { ...step, onlyWhen } : step,
+        ...(profile ? { profile: profile.id } : {}),
+        ...(isRetiredRoute(route) || isRetiredRoute(innerRoute) || isRetiredRoute(entry) ? { blocked: "retired by the operator" } : {}),
+      };
+    }
     const slash = route.indexOf("/");
     if (slash < 1 || slash === route.length - 1) {
       return { entry, step: { provider: route, id: "" }, ...(profile ? { profile: profile.id } : {}), blocked: `profile ${entry} does not name a provider/model route` };

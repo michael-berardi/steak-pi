@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.27.0 (2026-11-11)
+
+- **Steak DSH is a third USAP harness.** A leaf can run on the DSH headless CLI with the Steak DSH bundle: dispatch with `harness: "steak-dsh"` and `model: "<provider>/<model-id>"`, or with the exact route `steak-dsh/<provider>/<model-id>`. The inner model must be one Pi already knows and passes the same checks as the native route (retired patterns, paid-route approval, plan-only projects, quota), plus two of its own: an API-key login (OAuth-only logins are refused by name) and an installed `steak-dsh`. Nothing falls back.
+- **The evidence router can choose the harness.** A `taskClasses` chain or `textWorkerChain` entry may be `steak-dsh/<provider>/<model-id>`. It is ranked beside the native route on the same recorded outcomes, and the winner sets the run's harness. `steak-pi routing check` validates these entries. Add one only after measuring it on your own tasks: no route is added by default.
+- **Ownership, effort and accounting on that harness.** `ownedPaths` become `--owned-path` rules, read-only leaves run read-only, and the shell is off unless `allowBash`. The effort follows the model's own thinking-level map. The key travels only in the child environment. Usage is summed from the harness's own events and priced from the model's cost table. Hub send, redirect and resume are refused by name on this harness.
+
 ## 0.26.0 (2026-11-11)
 
 - **One model choice that follows your worker chain in interactive slots (opt-in).** Add `interactiveChainModel` to `routing.json` and pick that model in `/model`: each request goes to the first available step of your worker chain, and a quota, plan-limit or content-filter refusal moves to the next step before any output, the same way workers do. The footer shows which model answered, and cost stays attributed to that model. Without the key nothing changes. Setup: docs/MODEL-ROUTING.md.
