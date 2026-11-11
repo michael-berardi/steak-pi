@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.25.7 (2026-11-11)
+
+- **A reload no longer breaks running subagents.** After `/reload`, the reloaded session takes over its own live USAP runs and their checkpoint store, instead of showing "USAP checkpoints memory-only: already owned by a live host in this process". With no runs in flight the store is released cleanly.
+- **`/steak-update` never interrupts a response.** The reload waits until the agent is idle; if a new response starts first, it runs at the next idle instead of being dropped.
+- **Content-filter refusals continue on the next route.** In an implicit wave, a provider's content-filter refusal (HTTP 400 `data_inspection_failed`) moves the worker to the next configured route even after it has produced output, with its transcript intact. Explicit routes still never reroute; the error now names the filter and says how to rerun elsewhere.
+- **Spent quota sent as HTTP 429 is treated as quota.** A body with `insufficient_quota` or "Allocated quota exceeded" moves to the next tier instead of being retried as a rate limit.
+
 ## 0.25.6 (2026-11-11)
 
 - **A `readPaths` reviewer can read the operator spelling of a symlinked private root.** The grant records the
