@@ -191,8 +191,11 @@ model. See [Model routing — Steak DSH harness](./MODEL-ROUTING.md#steak-dsh-ha
 
 Permissions map to the CLI: `mayEdit` + `ownedPaths` become `--permission workspace-write` with one
 `--owned-path` per owned path (writes elsewhere are denied by the CLI), a read-only leaf becomes
-`--permission read-only`, and `--no-shell` is passed unless `allowBash` is granted; `readPaths` become read-only
-`--add-dir` roots. The model's API key is resolved through Pi's own auth resolution and passed only in the child
+`--permission read-only`, and `--no-shell` is passed unless `allowBash` is granted. This harness does not confine
+reads, so `readPaths` are validated and named in the prompt but need no grant. Its `--add-dir` grants write access
+and is used only for an owned path outside the run cwd, and only for that directory or its immediate parent: a
+grant that would be the home directory, a directory above it, or one close to the filesystem root is refused. The
+model's API key is resolved through Pi's own auth resolution and passed only in the child
 environment under `STEAK_DSH_ROUTE_KEY` — never in argv, logs or the run record. Usage is summed from the CLI's
 NDJSON `step_end` events and priced from the registry model's own cost table; `maxTurns` counts `step_start`
 events; abort kills the whole process group.

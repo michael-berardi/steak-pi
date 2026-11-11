@@ -167,6 +167,17 @@ describe("explicit steak-dsh dispatch", () => {
         .rejects.toThrow(/does not support image input/);
       await expect(t.dispatch({ model: "steak-dsh/alpha-p", tasks: [leaf()] }))
         .rejects.toThrow(/steak-dsh\/<provider>\/<model-id>/);
+      await expect(t.dispatch({ harness: "steak-dsh", model: A, claudeAccount: "team-2", tasks: [leaf()] }))
+        .rejects.toThrow(/claudeAccount selects a Claude subscription account and does not apply to harness steak-dsh/);
+    } finally { await t.close(); }
+  });
+  it("refuses a model whose API the CLI cannot serve, naming the API", async () => {
+    configure(); fakeBin();
+    const odd = { ...alpha, api: "other-generative-api" } as unknown as Model;
+    const t = build({ models: [odd, beta] });
+    try {
+      await expect(t.dispatch({ harness: "steak-dsh", model: A, tasks: [leaf()] }))
+        .rejects.toThrow(/uses the API "other-generative-api"/);
     } finally { await t.close(); }
   });
   it("refuses an OAuth-only inner provider with a named error", async () => {

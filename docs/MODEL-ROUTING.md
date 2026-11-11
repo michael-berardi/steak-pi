@@ -537,8 +537,10 @@ and validates the inner model against the registry offline (an unknown inner mod
 **Permissions and the key.** A `mayEdit` leaf runs with `--permission workspace-write` and one `--owned-path` per
 owned path (the CLI's owned-paths plugin denies writes elsewhere); a read-only leaf runs with
 `--permission read-only`; `--no-shell` is passed unless the task grants `allowBash`. The harness sandbox confines
-writes to the run cwd, so an owned path outside it is also granted through its nearest existing directory
-(`--add-dir`); the owned-path rule still limits the edit tools to the exact owned paths. Reads are not confined on
+writes to the run cwd, so an owned path outside it is also granted to the sandbox (`--add-dir`): the owned
+directory itself, or the immediate parent of an owned file, and nothing wider. A path whose parent does not exist
+yet is refused, and so is a grant that would be the home directory, a directory above it, or one close to the
+filesystem root. The owned-path rule still limits the edit tools to the exact owned paths. Reads are not confined on
 this harness, as on a native Pi worker, so declared `readPaths` are validated and named in the prompt but need no
 grant. With `allowBash` the shell can write anywhere the sandbox allows, as on every harness. The inner model's API key is resolved through Pi's own auth resolution and
 passed ONLY in the child environment under the fixed name `STEAK_DSH_ROUTE_KEY` (`--key-env STEAK_DSH_ROUTE_KEY`);

@@ -33,6 +33,7 @@ import { spawn as nodeSpawn, execFileSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 import { dirname, resolve as resolvePath, sep } from "node:path";
+import { homedir } from "node:os";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ClaudeSpawn, ClaudeSpawnHandle } from "./claude-worker.ts";
 import type { PiWorkerRuntime } from "./pi-worker.ts";
@@ -99,25 +100,30 @@ export interface DshWorkerPermissions {
  * argument, so task text can never be parsed as CLI flags. The key is named by --key-env only. */
 /**
  * The extra writable roots a leaf needs. The harness sandbox confines writes to the run cwd, so an owned path
- * outside it is refused by the sandbox before the owned-path rule is ever asked (found on a live run). Each such
- * path is granted through its nearest existing directory; the owned-path rule still limits the edit tools to the
- * exact owned paths inside it. The filesystem root is never granted.
+ * outside it is refused by the sandbox before the owned-path rule is ever asked (found on a live run). The grant
+ * is kept as narrow as the sandbox allows: the owned path itself when it is an existing directory, otherwise its
+ * immediate parent when that exists. Nothing wider is ever granted: a path whose parent does not exist yet is
+ * refused by name, and so is a grant that would be the home directory, a directory above it, or a directory
+ * fewer than three levels below the filesystem root. With allowBash the shell can write anywhere inside a
+ * granted root, which is why the root must never be broad.
  */
-export function dshWritableRoots(ownedPaths: readonly string[], cwd: string | undefined): string[] {
+export function dshWritableRoots(ownedPaths: readonly string[], cwd: string | undefined, home: string = homedir()): string[] {
   const real = (path: string): string => { try { return realpathSync(path); } catch { return resolvePath(path); } };
+  const isDir = (path: string): boolean => { try { return statSync(path).isDirectory(); } catch { return false; } };
   const base = cwd === undefined ? undefined : real(cwd);
+  const realHome = real(home);
+  const inside = (path: string, root: string): boolean => path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
   const roots: string[] = [];
   for (const owned of ownedPaths) {
-    let dir = resolvePath(owned);
-    for (;;) {
-      try { if (statSync(dir).isDirectory()) break; } catch { /* not there yet: try the parent */ }
-      const parent = dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
-    }
-    dir = real(dir);
-    if (base !== undefined && (dir === base || dir.startsWith(base + sep))) continue;
-    if (dirname(dir) === dir) throw new Error(`steak-dsh owned path ${JSON.stringify(owned.slice(0, 120))} has no existing directory below the filesystem root to grant`);
+    const target = resolvePath(owned);
+    const named = JSON.stringify(owned.slice(0, 120));
+    let dir: string;
+    if (isDir(target)) dir = real(target);
+    else if (isDir(dirname(target))) dir = real(dirname(target));
+    else throw new Error(`steak-dsh owned path ${named} is outside the run cwd and its parent directory does not exist; create the directory first so the write grant can stay that narrow`);
+    if (base !== undefined && inside(dir, base)) continue;
+    if (inside(realHome, dir)) throw new Error(`steak-dsh owned path ${named} would need write access to ${dir}, which is the home directory or above it; own a directory below it instead`);
+    if (dir.split(sep).filter(Boolean).length < 3) throw new Error(`steak-dsh owned path ${named} would need write access to ${dir}, which is too close to the filesystem root to grant`);
     if (!roots.includes(dir)) roots.push(dir);
   }
   return roots;
@@ -275,7 +281,7 @@ export function dshUsage(raw: unknown, cost: DshModel["cost"] | undefined): Usag
 /** The provider-quota wording a steak-dsh refusal arrives with: 429/402, spent credits, an exhausted
  * quota or usage limit, a rate limit. The rendered cause carries "quota limit reached", the same
  * provider-quota failure kind the Pi runner reports, so an implicit wave falls through to its next tier. */
-const DSH_QUOTA_WORDING = /\b429\b|\b402\b|insufficient[_ ](?:credits|quota)|requires more credits|quota[_ -]?(?:exhausted|exceeded|reached)|usage[_ ]limit|rate.?limit|too many requests|credit balance (?:is )?too low/i;
+const DSH_QUOTA_WORDING = /\b(?:HTTP|status(?: code)?|error(?: code)?|code)\W{0,3}(?:402|429)\b|\b(?:402|429)\b\W{0,3}(?:payment required|too many requests)|insufficient[_ ](?:credits|quota)|requires more credits|quota[_ -]?(?:exhausted|exceeded|reached)|usage[_ ]limit (?:reached|exceeded)|rate[_ -]?limit(?:ed)? (?:exceeded|reached|error)|rate_limit_(?:exceeded|error)|too many requests|credit balance (?:is )?too low/i;
 
 /** Bounded, control-character-free diagnostic text; the route key is always redacted. */
 function diagnostic(text: string, key: string | undefined, limit = 400): string {
@@ -351,6 +357,17 @@ export function buildDshWorkerPrompt(run: RunRecord, task: TaskRecord): string {
 export type DshSpawn = ClaudeSpawn;
 export type DshSpawnHandle = ClaudeSpawnHandle;
 
+/** Process groups of running steak-dsh children, stopped when the host process exits. */
+const LIVE_GROUPS = new Set<number>();
+let exitSweepInstalled = false;
+function installExitSweep(): void {
+  if (exitSweepInstalled) return;
+  exitSweepInstalled = true;
+  process.on("exit", () => {
+    for (const pid of LIVE_GROUPS) { try { process.kill(-pid, "SIGKILL"); } catch { /* already gone */ } }
+  });
+}
+
 export function defaultDshSpawn(executable: string): DshSpawn {
   return ({ command, args, env, cwd }) => {
     const child: ChildProcess = nodeSpawn(command ?? executable, args, { cwd, env, detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"] });
@@ -364,6 +381,13 @@ export function defaultDshSpawn(executable: string): DshSpawn {
       catch { return ""; }
     };
     const launchedIdentity = process.platform === "win32" ? "" : identity();
+    // A worker never outlives its host: when this process exits, its process group is stopped.
+    if (child.pid && process.platform !== "win32") {
+      const pid = child.pid;
+      LIVE_GROUPS.add(pid);
+      child.on("close", () => { LIVE_GROUPS.delete(pid); });
+      installExitSweep();
+    }
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
     return {
@@ -375,9 +399,16 @@ export function defaultDshSpawn(executable: string): DshSpawn {
       writeStdin(text) { child.stdin?.write(text); },
       endStdin() { child.stdin?.end(); },
       kill(signal) {
-        if (process.platform === "win32") return child.kill(signal as NodeJS.Signals | undefined);
-        if (!launchedIdentity || identity() !== launchedIdentity || !child.pid) return false;
-        try { process.kill(-child.pid, (signal ?? "SIGTERM") as NodeJS.Signals); return true; }
+        const sig = (signal ?? "SIGTERM") as NodeJS.Signals;
+        if (process.platform === "win32" || !child.pid) return child.kill(sig);
+        const exited = child.exitCode !== null || child.signalCode !== null;
+        // No identity could be captured at launch (ps failed): the child handle is still ours, so signal it
+        // directly instead of leaving a running worker that nothing can stop.
+        if (!launchedIdentity) return exited ? false : child.kill(sig);
+        // While the leader runs, the pid must still be the process we started. After it exits, its process
+        // group id cannot be reused while a member is alive, so a leftover member is still ours to stop.
+        if (!exited && identity() !== launchedIdentity) return false;
+        try { process.kill(-child.pid, sig); return true; }
         catch { return false; }
       },
     };
@@ -452,10 +483,13 @@ export function classifyDshWorkerState(input: {
   spawnError?: Error;
   stderrLine?: string;
   key?: string;
+  /** True when `state.failure` was already set at the moment the abort arrived. */
+  failedBeforeAbort?: boolean;
 }): Pick<WorkerResult, "state" | "error"> {
   const { signal, state, maxTurns, exitCode, exitSignal, spawnError } = input;
   if (spawnError !== undefined) return { state: "failed", error: `steak-dsh CLI could not start: ${spawnError.message}` };
-  if (state.failure !== undefined) return { state: "failed", error: state.failure };
+  // A failure recorded before the abort stands; anything the dying child printed after it does not.
+  if (state.failure !== undefined && (!signal.aborted || input.failedBeforeAbort === true)) return { state: "failed", error: state.failure };
   if (isTimeoutSignal(signal)) return { state: "timed_out", error: errorText(signal.reason ?? "Run deadline exceeded") };
   if (signal.aborted) return { state: "aborted", error: errorText(signal.reason ?? "Task aborted") };
   if (state.turnLimitReached) {
@@ -574,7 +608,8 @@ export function createDshWorkerRunner(options: DshWorkerRunnerOptions): WorkerRu
         killTimer.unref?.();
       }
     };
-    const onAbort = () => killOnce(true);
+    let failedBeforeAbort = false;
+    const onAbort = () => { failedBeforeAbort = state.failure !== undefined; killOnce(true); };
     child.onExit((code, sig) => {
       if (!ownsProcess()) return;
       closed = true;
@@ -686,8 +721,9 @@ export function createDshWorkerRunner(options: DshWorkerRunnerOptions): WorkerRu
           state.finalText = event.text;
           terminalFinal = true;
           if (event.reasonKind !== "completed") {
-            const cause = dshQuotaCause(event.text, key);
-            state.failure ??= cause ?? `steak-dsh task failed: final reason kind ${JSON.stringify(event.reasonKind.slice(0, 60))} is not completed`;
+            // The final text is the model's own words (a report may well say "rate limit"): it is never read as a
+            // provider refusal. Quota is recognised only from the CLI's error events and its stderr.
+            state.failure ??= `steak-dsh task failed: final reason kind ${JSON.stringify(event.reasonKind.slice(0, 60))} is not completed`;
           }
           onProgress({ state: "running", usage: sanitizeUsage(state.usage) });
         }
@@ -724,7 +760,7 @@ export function createDshWorkerRunner(options: DshWorkerRunnerOptions): WorkerRu
     if (!closed) state.failure ??= "steak-dsh process exit could not be verified; cleanup lease retained";
     const stderrLine = lastStderrLine(stderrTail, key);
     const classification = classifyDshWorkerState({ signal, state, maxTurns, exitCode, exitSignal,
-      ...(spawnError !== undefined ? { spawnError } : {}), ...(stderrLine !== undefined ? { stderrLine } : {}), key });
+      ...(spawnError !== undefined ? { spawnError } : {}), ...(stderrLine !== undefined ? { stderrLine } : {}), key, failedBeforeAbort });
     const rawOutput = (state.finalText ?? "").trim() || state.outputParts.join("");
     const bounded = truncatePiWorkerOutput(redactKey(rawOutput, key));
     return {

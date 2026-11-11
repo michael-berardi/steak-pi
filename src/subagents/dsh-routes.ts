@@ -94,6 +94,22 @@ export function resolveDshExecutable(env: NodeJS.ProcessEnv = process.env): stri
   return undefined;
 }
 
+/** Why this registry model cannot run on the steak-dsh CLI at all, or undefined when it can. The same check
+ * guards explicit dispatch, the chain walk and the launch, so a step that could never start is skipped
+ * before it is ranked instead of failing the wave after it wins. */
+export function dshModelShapeBlock(model: { provider: string; id: string; api?: unknown; baseUrl?: unknown; contextWindow?: unknown }): string | undefined {
+  const route = `${model.provider}/${model.id}`;
+  if (typeof model.api !== "string" || !(DSH_APIS as readonly string[]).includes(model.api)) {
+    return `the inner model ${route} uses the API ${JSON.stringify(String(model.api ?? "none").slice(0, 40))}, and the steak-dsh harness supports ${DSH_APIS.join(", ")}`;
+  }
+  let url: URL | undefined;
+  try { url = new URL(String(model.baseUrl ?? "")); } catch { url = undefined; }
+  if (url === undefined || (url.protocol !== "https:" && url.protocol !== "http:")) return `the inner model ${route} has no http(s) base URL the steak-dsh harness can call`;
+  if (url.username !== "" || url.password !== "") return `the inner model ${route} has credentials in its base URL; the steak-dsh harness passes the URL on a command line and refuses it`;
+  if (!Number.isSafeInteger(model.contextWindow) || (model.contextWindow as number) <= 0) return `the inner model ${route} declares no context window`;
+  return undefined;
+}
+
 export function isDshEffort(value: unknown): value is DshEffort {
   return typeof value === "string" && (DSH_EFFORTS as readonly string[]).includes(value);
 }
@@ -161,6 +177,8 @@ export async function admitDshRoute(route: string | undefined, registry: DshRegi
   if (model.input?.includes("text") !== true) {
     throw new Error(dshRouteRefusal(full, `the inner model ${innerRoute} does not advertise text input`));
   }
+  const shape = dshModelShapeBlock(model);
+  if (shape !== undefined) throw new Error(dshRouteRefusal(full, shape));
   // The same policy asserts a Pi-native selection passes (pinned families, retired identities).
   const { assertModelRoute, assertSubscriptionRequest } = await import("../model-route-policy.ts");
   try {

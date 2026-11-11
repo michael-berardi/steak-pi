@@ -150,3 +150,15 @@ describe("admitDshRoute", () => {
     expect(isQuotaLaunchFailure(result.error!)).toBe(true);
   });
 });
+
+describe("a model the CLI cannot run is refused before it is ranked", () => {
+  it("names the unsupported API, a missing base URL, credentials in the URL and a missing context window", async () => {
+    const { dshModelShapeBlock } = await import("../src/subagents/dsh-routes.ts");
+    const ok = { provider: "p", id: "m", api: "openai-completions", baseUrl: "https://gw.example/v1", contextWindow: 1000 };
+    expect(dshModelShapeBlock(ok)).toBeUndefined();
+    expect(dshModelShapeBlock({ ...ok, api: "other-generative-api" })).toMatch(/uses the API/);
+    expect(dshModelShapeBlock({ ...ok, baseUrl: undefined })).toMatch(/no http\(s\) base URL/);
+    expect(dshModelShapeBlock({ ...ok, baseUrl: "https://user:pw@gw.example/v1" })).toMatch(/credentials in its base URL/);
+    expect(dshModelShapeBlock({ ...ok, contextWindow: 0 })).toMatch(/no context window/);
+  });
+});

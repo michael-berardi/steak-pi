@@ -8,7 +8,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   createDshWorkerRunner, dshUsage, dshWorkerArgs, dshWorkerEnv, parseDshStreamLine,
-  type DshSpawnHandle, type DshWorkerRunnerOptions, dshEffortArgs, dshWritableRoots } from "../src/subagents/dsh-worker.ts";
+  type DshSpawnHandle, type DshWorkerRunnerOptions, dshEffortArgs, dshWritableRoots, classifyDshWorkerState } from "../src/subagents/dsh-worker.ts";
 import { DSH_KEY_ENV } from "../src/subagents/dsh-routes.ts";
 import { workerJournal } from "../src/subagents/coordinator.ts";
 import { isQuotaLaunchFailure } from "../src/subagents/provider-quota.ts";
@@ -389,7 +389,7 @@ describe("steak-dsh effort follows the registry model's own thinking-level map",
 });
 
 describe("steak-dsh grants the sandbox only what an owned path outside the run cwd needs", () => {
-  it("grants nothing for owned paths inside the cwd, and the nearest existing directory for one outside", async () => {
+  it("grants nothing inside the cwd, the owned directory itself, or the immediate parent of an owned file", async () => {
     const { mkdtempSync, mkdirSync, realpathSync, rmSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
@@ -398,15 +398,51 @@ describe("steak-dsh grants the sandbox only what an owned path outside the run c
       const cwd = join(root, "cwd");
       const other = join(root, "other");
       mkdirSync(join(cwd, "src"), { recursive: true });
-      mkdirSync(other);
-      expect(dshWritableRoots([join(cwd, "src"), join(cwd, "new", "file.ts")], cwd)).toEqual([]);
-      expect(dshWritableRoots([join(other, "deep", "new.txt"), join(other, "b.txt")], cwd)).toEqual([other]);
+      mkdirSync(join(other, "sub"), { recursive: true });
+      expect(dshWritableRoots([join(cwd, "src"), join(cwd, "new.ts")], cwd)).toEqual([]);
+      expect(dshWritableRoots([join(other, "sub")], cwd)).toEqual([join(other, "sub")]);
+      expect(dshWritableRoots([join(other, "b.txt"), join(other, "c.txt")], cwd)).toEqual([other]);
       const args = dshWorkerArgs(testModel, { mayEdit: true, ownedPaths: [join(other, "x.txt")] }, "medium", cwd);
       expect(args.slice(args.indexOf("--add-dir"), args.indexOf("--add-dir") + 2)).toEqual(["--add-dir", other]);
       expect(dshWorkerArgs(testModel, { mayEdit: true, ownedPaths: [join(cwd, "src")] }, "medium", cwd)).not.toContain("--add-dir");
+      // The grant never widens: a missing parent is refused instead of walking up to whatever exists.
+      expect(() => dshWritableRoots([join(other, "deep", "er", "new.txt")], cwd)).toThrow(/parent directory does not exist/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("refuses a grant that would be the home directory, above it, or near the filesystem root", async () => {
+    const { mkdtempSync, mkdirSync, realpathSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "dsh-home-")));
+    try {
+      const home = join(root, "users", "me");
+      mkdirSync(join(home, "proj"), { recursive: true });
+      const cwd = join(home, "proj");
+      expect(() => dshWritableRoots([join(home, "new-proj")], cwd, home)).toThrow(/home directory or above it/);
+      expect(() => dshWritableRoots([join(root, "users", "x.txt")], cwd, home)).toThrow(/home directory or above it/);
+      expect(() => dshWritableRoots(["/etc/hosts"], cwd, home)).toThrow(/too close to the filesystem root/);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("never grants write access for read-only artifact roots", () => {
     expect(dshWorkerArgs(testModel, {}, "medium", "/tmp")).not.toContain("--add-dir");
+  });
+});
+
+describe("review regressions", () => {
+  it("does not read ordinary text as a provider quota refusal", () => {
+    const base = { signal: new AbortController().signal, maxTurns: 10, exitCode: 1, exitSignal: null,
+      state: { outputParts: [], outputLength: 0, toolErrors: 0, toolSuccesses: 0, turns: 1, turnLimitReached: false, usage: {} as never, sawFinal: false } };
+    for (const line of ["AssertionError: test failed at line 402", "added rate limiting to the client", "expected 429 items, got 3"]) {
+      expect(classifyDshWorkerState({ ...base, stderrLine: line } as never).error, line).not.toMatch(/quota limit reached/);
+    }
+    for (const line of ["HTTP 429 Too Many Requests", "error code: 402 insufficient credits", "status 429", "rate_limit_exceeded"]) {
+      expect(classifyDshWorkerState({ ...base, stderrLine: line } as never).error, line).toMatch(/quota limit reached/);
+    }
+  });
+  it("reports a timeout as a timeout even when the dying child printed an error", () => {
+    const timeout = AbortSignal.abort(Object.assign(new Error("deadline"), { name: "TimeoutError" }));
+    const state = { outputParts: [], outputLength: 0, toolErrors: 0, toolSuccesses: 0, turns: 1, turnLimitReached: false, usage: {} as never, sawFinal: false, failure: "steak-dsh reported an error: interrupted" };
+    expect(classifyDshWorkerState({ signal: timeout, state, maxTurns: 10, exitCode: null, exitSignal: "SIGTERM" } as never).state).toBe("timed_out");
+    expect(classifyDshWorkerState({ signal: timeout, state, maxTurns: 10, exitCode: null, exitSignal: "SIGTERM", failedBeforeAbort: true } as never).state).toBe("failed");
   });
 });

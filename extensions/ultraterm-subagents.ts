@@ -2204,6 +2204,9 @@ export function createUltratermSubagentsExtension(
         if (requested.profile !== undefined) {
           throw new Error("USAP harness steak-dsh runs only an exact steak-dsh/<provider>/<model-id> route; profile selectors are refused, and no fallback was selected.");
         }
+        if (requested.claudeAccount !== undefined) {
+          throw new Error("claudeAccount selects a Claude subscription account and does not apply to harness steak-dsh, which runs on an API key; no run was started and no fallback was selected.");
+        }
         if (requested.model === undefined) {
           throw new Error("USAP harness steak-dsh requires model <provider>/<model-id> (or steak-dsh/<provider>/<model-id>); no default steak-dsh route is configured, so no run was started and no fallback was selected.");
         }
@@ -2402,6 +2405,10 @@ export function createUltratermSubagentsExtension(
         const dshPolicy = projectPolicyOf(ctx, requested, dependencies);
         const approve = dshPolicy.planOnly !== undefined ? () => false : (dependencies.approvePaidRoute ?? AUTOMATIC_CHAIN_APPROVAL);
         dshModel = await admitDshRoute(params.model, ctx.modelRegistry, { approvePaidRoute: approve, env: dependencies.env ?? process.env });
+        // A project that may not use Claude may not reach it through this harness either.
+        if (dshPolicy.noClaude !== undefined && (dshModel.provider === "claude-code" || dshModel.provider === "anthropic" || /^claude[-_]/i.test(dshModel.id) || /(^|\/)claude[-_]/i.test(dshModel.id))) {
+          throw new Error(`USAP explicit route ${params.model} cannot launch: ${noClaudeCause(dshPolicy)}. No worker was started and no fallback was selected.`);
+        }
         const innerStep = { provider: dshModel.provider, id: dshModel.id };
         const cause = quotaProviderOf(innerStep) === undefined ? undefined : routeQuotaBlock(await readQuota(), innerStep);
         if (cause !== undefined) {

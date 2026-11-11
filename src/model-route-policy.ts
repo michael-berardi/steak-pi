@@ -9,7 +9,7 @@ import { curatedPickerModels, sharedPickerModels } from "./model-visibility.ts";
 import { eligibleGoFallback, withOpenCodeGoRouting } from "./opencode-go-routing.ts";
 import { assertActiveModelIdentity, isRetiredModelSelector } from "./retired-model-selection.ts";
 import { missingConfigKey, routingConfig, routingConfigOrEmpty, RoutingConfigError, type ExpertReviewConfig, type SubscriptionRouteCheck } from "./routing-config.ts";
-import { DSH_NOT_INSTALLED, resolveDshExecutable } from "./subagents/dsh-routes.ts";
+import { DSH_NOT_INSTALLED, dshModelShapeBlock, resolveDshExecutable } from "./subagents/dsh-routes.ts";
 import type { QuotaSnapshot } from "./subagents/provider-quota.ts";
 import { authHeadersMatch, gatedMeteredStream, isSubscriptionOrLocalRoute, matchesSubscriptionCheck, subscriptionRouteChecks, SUBSCRIPTION_FIRST_ERROR } from "./subscription-first-routing.ts";
 
@@ -518,6 +518,7 @@ function eligibleChainRoute(registry: ChainRegistry, step: WorkerRouteStep, requ
     // cannot be refreshed there, and the harness must be installed to launch at all.
     if (requireImages) return undefined;
     if (registry.isUsingOAuth(model)) return undefined;
+    if (dshModelShapeBlock(model) !== undefined) return undefined;
     if (resolveDshExecutable() === undefined) return undefined;
   }
   // The expert keeps its configured exact identity. Localhost is normally a permitted
@@ -730,6 +731,8 @@ export function dshStepBlockReason(registry: ChainRegistry, step: WorkerRouteSte
   const model = registry.find(step.provider, step.id);
   if (!model || model.provider !== step.provider || model.id !== step.id) return `the Pi model registry does not know the inner model ${inner}`;
   if (model.input?.includes("text") !== true) return `the inner model ${inner} does not advertise text input`;
+  const shape = dshModelShapeBlock(model);
+  if (shape !== undefined) return shape;
   if (typeof registry.getProvider(model.provider)?.streamSimple !== "function") return `the inner model ${inner} has no native streaming adapter`;
   if (!registry.hasConfiguredAuth(model)) return `the inner model ${inner} is not authenticated in this session`;
   if (registry.isUsingOAuth(model)) return `the inner model ${inner} is served by an OAuth-only login; the steak-dsh harness needs an API key`;

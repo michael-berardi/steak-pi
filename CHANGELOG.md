@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.27.1 (2026-11-11)
+
+Fixes from an independent review of 0.27.0, all on the new steak-dsh harness.
+
+- **The sandbox write grant stays narrow.** An owned path outside the run directory is granted only as that directory or the immediate parent of an owned file. A grant that would be the home directory, a directory above it, or one close to the filesystem root is refused by name, and so is a path whose parent does not exist yet. 0.27.0 walked up to the nearest existing directory, which could be the home directory.
+- **Ordinary text is no longer read as a quota refusal.** A report that mentions "rate limit", or a line number 402 or 429, could move a wave to the next tier and run it again. Quota is now recognised only from the harness's error events and error output, with HTTP context required for bare numbers.
+- **A project that may not use Claude cannot reach it through this harness**, and `claudeAccount` is refused on it by name.
+- **A model the harness cannot run is skipped before it is ranked** (unsupported API, no base URL, credentials in the URL, no context window), so a class chain moves on instead of failing the wave.
+- **Workers are always stopped.** A leftover process in the worker's group is killed after its leader exits, a worker whose identity could not be read is still signalled, and no worker outlives the host process. A timeout is reported as a timeout even when the dying worker printed an error.
+- Docs: `readPaths` need no grant on this harness, and its `--add-dir` grants write access.
+
 ## 0.27.0 (2026-11-11)
 
 - **Steak DSH is a third USAP harness.** A leaf can run on the DSH headless CLI with the Steak DSH bundle: dispatch with `harness: "steak-dsh"` and `model: "<provider>/<model-id>"`, or with the exact route `steak-dsh/<provider>/<model-id>`. The inner model must be one Pi already knows and passes the same checks as the native route (retired patterns, paid-route approval, plan-only projects, quota), plus two of its own: an API-key login (OAuth-only logins are refused by name) and an installed `steak-dsh`. Nothing falls back.
