@@ -20,7 +20,12 @@
  *     a symlinked $HOME or private root itself is resolved and allowed;
  *   - no `..`, control characters or overlong values.
  * The grant is read-only on both harnesses: `--add-dir` on Claude Code (the
- * tool allowlist stays Read/Grep/Glob), a read-only path check on Pi.
+ * tool allowlist stays Read/Grep/Glob), a read-only path check on Pi. The
+ * Claude CLI compares requested paths against `--add-dir` entries without
+ * resolving symlinks, so every operator spelling of the granted physical root
+ * (a symlinked $HOME or private root) is granted too, each re-resolved to the
+ * same physical directory at launch; a spelling that points elsewhere is
+ * dropped, never granted.
  */
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -158,9 +163,11 @@ export function readUnderDeclaredRoots(readPaths: readonly string[], candidate: 
  * Prompt lines for a granted artifact root: a heading plus one bullet per path,
  * or nothing when the leaf has no grant. Shared by both harnesses so the
  * reviewer is told exactly what it may read and that it is never writable.
+ * Every operator spelling of a physical root is listed, because a reviewer
+ * given the operator spelling must know it is readable too.
  */
-export function readPathPromptLines(readPaths: readonly string[] | undefined, heading: string): string[] {
-  const paths = readPaths ?? [];
+export function readPathPromptLines(readPaths: readonly string[] | undefined, heading: string, home: string = homedir()): string[] {
+  const paths = [...new Set((readPaths ?? []).flatMap((value) => readPathSpellings(value, home)))];
   return paths.length === 0 ? [] : [heading, ...paths.map((value) => `- ${value}`)];
 }
 
@@ -186,4 +193,38 @@ export function verifyGrantedReadPath(path: string, field: string): string {
   }
   if (physical !== path) refuse(field, "no longer resolves to the validated directory");
   return physical;
+}
+
+/**
+ * Every spelling of a validated physical grant that resolves to the same
+ * directory: the physical path first, then the operator spelling under each
+ * private root whose resolved location matches (a symlinked $HOME or private
+ * root, e.g. ~/.cache/ut-coordinator linked to ut-overseer). The Claude CLI
+ * compares requested paths against --add-dir entries without resolving
+ * symlinks, so a reviewer told to read the operator spelling needs that
+ * spelling granted too. Each candidate is re-resolved here and dropped unless
+ * it still equals the recorded physical root; this never widens the grant.
+ */
+export function readPathSpellings(physical: string, home: string = homedir()): string[] {
+  const spellings = [physical];
+  for (const root of READ_PATH_ROOTS) {
+    const operatorRoot = join(home, root);
+    let physicalRoot: string;
+    try {
+      physicalRoot = realpathSync.native(operatorRoot);
+    } catch {
+      continue;
+    }
+    if (!isBelow(physicalRoot, physical)) continue;
+    const segments = relative(physicalRoot, physical).split(sep).filter((value) => value.length > 0);
+    const spelling = join(operatorRoot, ...segments);
+    if (spellings.includes(spelling)) continue;
+    try {
+      if (realpathSync.native(spelling) !== physical) continue;
+    } catch {
+      continue;
+    }
+    spellings.push(spelling);
+  }
+  return spellings;
 }

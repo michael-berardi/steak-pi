@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.25.6 (2026-11-11)
+
+- **A `readPaths` reviewer can read the operator spelling of a symlinked private root.** The grant records the
+  physical path, but the Claude CLI compares requested paths against `--add-dir` entries without resolving symlinks,
+  so on a machine where `~/.cache/ut-coordinator` links to `ut-overseer` a reviewer told to read the coordinator
+  spelling was refused even with the grant. Every operator spelling of the physical root is now passed as `--add-dir`
+  too (and listed in the prompt), each re-resolved at launch and dropped unless it still equals the recorded physical
+  root. Found by the live image-read acceptance on the installed build; covered by new regression tests.
+
 ## 0.25.5 (2026-11-11)
 
 - **A resumed run keeps its `readPaths` grant even when `$HOME` is a symlink.** Dispatch records the physical

@@ -43,7 +43,7 @@ import type { RelayBroker } from "./relay.ts";
 import { ClaudeRelay, CLAUDE_RELAY_PROMPT, claudeUserMessage, stripClaudeRelayLines } from "./claude-relay.ts";
 import { claudeOwnedPathRules } from "./claude-owned-paths.ts";
 import { claudeReviewReadDirs } from "./claude-review-read.ts";
-import { readPathPromptLines, verifyGrantedReadPath } from "./read-paths.ts";
+import { readPathPromptLines, readPathSpellings, verifyGrantedReadPath } from "./read-paths.ts";
 export { claudeOwnedPathRules } from "./claude-owned-paths.ts";
 import { randomUUID, createHash } from "node:crypto";
 import { applyClaudeAccountEnv, resolveClaudeAccount, type ClaudeAccountId } from "./claude-account.ts";
@@ -200,7 +200,10 @@ export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPer
   // those are validated there and re-checked here; the tool allowlist never widens.
   const readDirs = [...new Set([
     ...claudeReviewReadDirs({ role: permissions.role, mayEdit: permissions.mayEdit, task: permissions.task ?? "" }, permissions.home),
-    ...declaredReadPaths,
+    // Every operator spelling of the physical grant is added too: the CLI does
+    // not resolve symlinks in requested paths, and each spelling is re-resolved
+    // to the same physical root (dropped if it now points elsewhere).
+    ...declaredReadPaths.flatMap((path) => readPathSpellings(path, permissions.home)),
   ])];
   const args = [
     "--print",

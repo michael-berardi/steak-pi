@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { claudeApiWorkerArgs, claudeWorkerArgs } from "../src/subagents/claude-worker.ts";
 import { parseWaveSpec } from "../src/subagents/claude-api-cli.ts";
 import { normalizeDispatch, SubagentPolicyError } from "../src/subagents/policy.ts";
-import { normalizeReadPath, readUnderDeclaredRoots } from "../src/subagents/read-paths.ts";
+import { normalizeReadPath, readPathPromptLines, readPathSpellings, readUnderDeclaredRoots } from "../src/subagents/read-paths.ts";
 import { assertOwnedPath } from "../src/subagents/policy.ts";
 import { buildPiWorkerSystemPrompt, createGuardedPiWorkerTools } from "../src/subagents/pi-worker.ts";
 import { type RunRecord, type TaskRecord, emptyUsage } from "../src/subagents/types.ts";
@@ -133,6 +133,27 @@ describe("read-only artifact roots outside the run cwd (J-3760)", () => {
     }
   });
 
+  it("lists every operator spelling of a physical grant, and only the physical path without symlinks", () => {
+    expect(readPathSpellings(CAPTURES(), home)).toEqual([CAPTURES()]);
+    const base = realpathSync.native(mkdtempSync(join(tmpdir(), "j3760-spellings-")));
+    const h = join(base, "home");
+    mkdirSync(join(h, ".cache", "ut-overseer", "J-3760", "captures"), { recursive: true });
+    symlinkSync(join(h, ".cache", "ut-overseer"), join(h, ".cache", "ut-coordinator"));
+    const physical = join(h, ".cache", "ut-overseer", "J-3760", "captures");
+    const operator = join(h, ".cache", "ut-coordinator", "J-3760", "captures");
+    try {
+      expect(readPathSpellings(physical, h)).toEqual([physical, operator]);
+      expect(readPathPromptLines([physical], "Roots:", h)).toEqual(["Roots:", `- ${physical}`, `- ${operator}`]);
+      // A spelling whose symlink now points elsewhere is dropped, never granted.
+      rmSync(join(h, ".cache", "ut-coordinator"));
+      mkdirSync(join(base, "elsewhere"), { recursive: true });
+      symlinkSync(join(base, "elsewhere"), join(h, ".cache", "ut-coordinator"));
+      expect(readPathSpellings(physical, h)).toEqual([physical]);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   it("refuses a file, a missing folder, a traversal and a control character", () => {
     expect(() => normalizeReadPath(join(CAPTURES(), "home-375.png"), "readPaths[0]", home)).toThrow(/real directory/);
     expect(() => normalizeReadPath(join(CAPTURES(), "missing"), "readPaths[0]", home)).toThrow(/does not exist/);
@@ -222,6 +243,37 @@ describe("Claude Code reviewer argv", () => {
     expect(args[args.indexOf("--permission-mode") + 1]).toBe("dontAsk");
     expect(args.join(" ")).toMatch(/--restricted/);
     expect(args.join(" ")).not.toMatch(/Bash|Write|NotebookEdit|Edit\(|dangerously/);
+  });
+
+  it("grants the operator spelling too when a private root is a symlink, and drops it when the target changes", () => {
+    const base = realpathSync.native(mkdtempSync(join(tmpdir(), "j3760-argv-spelling-")));
+    const h = join(base, "home");
+    mkdirSync(join(h, ".cache", "ut-overseer", "J-3760", "captures"), { recursive: true });
+    symlinkSync(join(h, ".cache", "ut-overseer"), join(h, ".cache", "ut-coordinator"));
+    const physical = join(h, ".cache", "ut-overseer", "J-3760", "captures");
+    const operator = join(h, ".cache", "ut-coordinator", "J-3760", "captures");
+    writeFileSync(join(physical, "shot.png"), "synthetic png bytes");
+    try {
+      const granted = normalizeReadPath(operator, "readPaths[0]", h);
+      expect(granted).toBe(physical);
+      const args = claudeWorkerArgs(8, { ...reviewer([granted]), home: h });
+      const index = args.indexOf("--add-dir");
+      expect(args.slice(index + 1, index + 3)).toEqual([physical, operator]);
+      expect(args[args.indexOf("--tools") + 1]).toBe("Read,Grep,Glob");
+      expect(args.join(" ")).toMatch(/--restricted/);
+      // The Pi per-read check accepts the operator spelling too (realpath resolution).
+      expect(readUnderDeclaredRoots([granted], join(operator, "shot.png"))).toBe(join(physical, "shot.png"));
+      // Swap the root symlink: the stale operator spelling must no longer be granted.
+      rmSync(join(h, ".cache", "ut-coordinator"));
+      mkdirSync(join(base, "elsewhere"), { recursive: true });
+      symlinkSync(join(base, "elsewhere"), join(h, ".cache", "ut-coordinator"));
+      const args2 = claudeWorkerArgs(8, { ...reviewer([granted]), home: h });
+      const i2 = args2.indexOf("--add-dir");
+      expect(args2[i2 + 1]).toBe(physical);
+      expect(args2[i2 + 2]).not.toBe(operator);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 
   it("grants nothing when the leaf declares no read path", () => {

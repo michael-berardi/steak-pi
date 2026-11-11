@@ -338,7 +338,12 @@ validated at dispatch, before the wave is checkpointed or a worker exists:
 
 The grant is read-only on both harnesses. `claude-code` passes each path as
 `--add-dir` while `--tools` stays `Read,Grep,Glob` and `--permission-mode`
-stays `dontAsk`, so there is no write tool and no write allow rule. The
+stays `dontAsk`, so there is no write tool and no write allow rule. The CLI
+compares requested paths against `--add-dir` entries without resolving
+symlinks, so every operator spelling of the granted physical root (a symlinked
+`$HOME` or private-home root) is passed as `--add-dir` too; each spelling is
+re-resolved at launch and dropped unless it still equals the recorded physical
+root, so this never widens the grant. The
 explicit API route forbids `--add-dir`, so a `readPaths` leaf on it is refused
 at dispatch (and again by the wave-spec parser), before any checkpoint. Every
 launch re-checks the folder: a grant whose directory was replaced by a symlink
