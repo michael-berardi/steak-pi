@@ -24,6 +24,8 @@
 
 /** Named diagnostic: allowBash was requested for a read-only reviewer and withheld. */
 export const CLAUDE_REVIEW_SHELL_SUPPRESSED = "claude-review-shell-suppressed";
+/** Named refusal at dispatch: allowBash was requested for a read-only reviewer on the claude-code harness. No run starts. */
+export const CLAUDE_REVIEW_SHELL_REFUSED = "claude-review-shell-refused";
 /** Named failure: final CLI arguments for a read-only reviewer carry a shell or wider tool. */
 export const CLAUDE_REVIEW_SHELL_ARGS_REJECTED = "claude-review-shell-args-rejected";
 

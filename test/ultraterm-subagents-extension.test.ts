@@ -2279,6 +2279,33 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
       } finally { await shutdown(h); }
     });
 
+    it("refuses a read-only reviewer that requests a shell on claude-code at dispatch, before any run starts", async () => {
+      const runner = done();
+      const { h, accountCommand } = quotaHarness(status({ codex: solUp, go: goUp, claude: claudeUp }), runner);
+      try {
+        const reviewer = { tasks: [{ label: "audit", task: "Review the staged diff", role: "reviewer", allowBash: true }] };
+        await expect(dispatch(h, { ...reviewer, harness: "claude-code", model: "claude-code/claude-sonnet-5-5" }))
+          .rejects.toThrow(/^claude-review-shell-refused: allowBash was requested for read-only reviewer "audit"/);
+        await expect(dispatch(h, { ...reviewer, harness: "claude-code", model: "claude-code/claude-sonnet-5-5", background: true }))
+          .rejects.toThrow(/claude-review-shell-refused/);
+        // Refused before admission, checkpoint or worker: no runner call and no route resolution.
+        expect(runner).not.toHaveBeenCalled();
+        expect(accountCommand).not.toHaveBeenCalled();
+      } finally { await shutdown(h); }
+    });
+
+    it("still dispatches the same reviewer without allowBash, and a shell-granted worker", async () => {
+      const runner = done();
+      const { h } = quotaHarness(status({ codex: solUp, go: goUp, claude: claudeUp }), runner);
+      try {
+        const result = await dispatch(h, { tasks: [{ label: "audit", task: "Review the staged diff", role: "reviewer" }], harness: "claude-code", model: "claude-code/claude-sonnet-5-5" });
+        expect(result.details.run).toMatchObject({ harness: "claude-code", model: "claude-code/claude-sonnet-5-5" });
+        const worker = await dispatch(h, { tasks: [{ label: "build", task: "Implement and test", role: "worker", mayEdit: true, ownedPaths: ["src/x.ts"], allowBash: true }], harness: "claude-code", model: "claude-code/claude-sonnet-5-5" });
+        expect(worker.details.run.harness).toBe("claude-code");
+        expect(runner).toHaveBeenCalledTimes(2);
+      } finally { await shutdown(h); }
+    });
+
     it.each([
       ["a plain read/scout leaf", { tasks: plain }, "claude-code/claude-haiku-5-5", /^Haiku 5\.5: ordinary leaves/, "medium"],
       ["a worker leaf that edits without a shell", { tasks: [{ label: "doc", task: "Edit the doc", role: "worker", mayEdit: true, ownedPaths: ["docs/x.md"] }] }, "claude-code/claude-haiku-5-5", /ordinary leaves/, "medium"],

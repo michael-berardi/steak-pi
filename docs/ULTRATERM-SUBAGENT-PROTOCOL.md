@@ -412,9 +412,13 @@ explicitly selected Pi runs remain unchanged.
 
 **Reviewer shell denial.** A Claude leaf with role `reviewer` and no `mayEdit`
 never receives Bash, even if `allowBash: true` or task text requests a shell.
-The CLI argv enforces Read/Grep/Glob only. Setting `allowBash: true` produces the
-named `claude-review-shell-suppressed` diagnostic in the prompt and final
-output. The parent runs git (diff, status, log) and test commands itself and
+The CLI argv enforces Read/Grep/Glob only. On an explicitly named `claude-code`
+route (`harness: "claude-code"`, a `claude-code/<model>` model or a claude-code-api
+route), `allowBash: true` on such a reviewer is refused at dispatch with the named
+`claude-review-shell-refused` error: no run, checkpoint or worker starts and no
+fallback is selected. On an implicit wave the shell is withheld in the run and
+the named `claude-review-shell-suppressed` diagnostic appears in the prompt and
+final output. The parent runs git (diff, status, log) and test commands itself and
 stages the output as task text or files under cwd before dispatch; the reviewer
 reads them with Read/Grep/Glob. A reviewer needing Bash gets more staged
 evidence, not a shell grant.

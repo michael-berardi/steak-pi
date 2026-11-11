@@ -52,7 +52,9 @@ Code wave (`harness: "claude-code"`) runs the model named in `model` or the
 operator's `claudeCodeDefaults`. Claude workers get `mayEdit` + `ownedPaths`
 (enforced by CLI `Edit(...)` allow rules under `dontAsk`). `allowBash` is
 unsandboxed, but read-only Claude reviewers never receive Bash, even when
-requested; parents stage git evidence for Read/Grep/Glob. `requireImages: true`
+requested: an explicit `claude-code` dispatch that requests it is refused at
+dispatch (`claude-review-shell-refused`); an implicit wave withholds it in the run.
+Parents stage git evidence for Read/Grep/Glob. `requireImages: true`
 admits native Read-image of files staged under cwd, not inline attachments. Hub
 send/redirect steers the existing Claude process through stream-json stdin;
 replies use the run-local hub inbox. Native Pi-session resume remains

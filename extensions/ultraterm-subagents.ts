@@ -6,6 +6,7 @@ import { claudeLoginBlock, claudeQuotaBlock, CODEX_QUOTA, isMeteredQuota, isQuot
 import { isContentFilterRefusal } from "../src/content-filter-refusal.ts";
 import { noClaudeCause, planOnlyCause, resolveProjectPolicy, type ProjectPolicy } from "../src/subagents/project-policy.ts";
 import { AVAILABILITY_TTL_MS, computeAvailability } from "../src/subagents/route-availability.ts";
+import { CLAUDE_REVIEW_SHELL_REFUSED, isClaudeReadOnlyReview } from "../src/subagents/claude-review-permissions.ts";
 import { canFallbackReview, implicitReviewFallbackRoute, implicitReviewRoute, isReadOnlyReviewWave, recordReviewFallback } from "../src/subagents/reviewer-fallback.ts";
 import { parseRoute, routeLabel, routingConfigOrEmpty, DSH_ROUTE_PREFIX, TASK_CLASS_MAX_LENGTH } from "../src/routing-config.ts";
 import { statSync } from "node:fs";
@@ -2451,6 +2452,13 @@ export function createUltratermSubagentsExtension(
       const claudeRoute = foreignHarness ? params.model ?? (claudeTier ? claudeTier.route : opusReviewDefault ? reviewRoute! : defaultClaudeCodeRoute(params.tasks)) : undefined;
       const apiRoute = foreignHarness && isClaudeApiRoute(claudeRoute);
       const claudeModel = apiRoute ? claudeApiModelOf(claudeRoute) : claudeAdmittedModel(claudeRoute);
+      // A read-only reviewer never gets a shell on Claude. Refuse a requested shell here, at dispatch, so the parent
+      // sees the refusal before any checkpoint or worker exists (the run-time withhold alone is silent to the parent).
+      const namedClaude = requested.harness === "claude-code" || claudeCodeRouteModel(requested.model) !== undefined || CLAUDE_API_ROUTES.includes(requested.model ?? "");
+      if (foreignHarness && namedClaude && params.tasks.some((task) => isClaudeReadOnlyReview(task) && task.allowBash === true)) {
+        const labels = params.tasks.filter((task) => isClaudeReadOnlyReview(task) && task.allowBash === true).map((task) => JSON.stringify(task.label)).join(", ");
+        throw new Error(`${CLAUDE_REVIEW_SHELL_REFUSED}: allowBash was requested for read-only reviewer ${labels} on the claude-code harness. Read-only reviewers get Read, Grep and Glob only, so no run was started and no fallback was selected. Stage git evidence in the task text or under the run cwd, or drop allowBash from the reviewer.`);
+      }
       if (foreignHarness && !apiRoute && claudeModel === undefined) {
         throw new Error(`USAP harness claude-code could not admit ${claudeRoute ?? "the configured Claude Code default"}; no run was started and no fallback was selected.`);
       }

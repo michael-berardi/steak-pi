@@ -148,3 +148,18 @@ describe("claude read-only reviewer argv guard (synthetic)", () => {
     expect(() => assertClaudeReviewArgsShellFree(reviewer, fixed)).not.toThrow();
   });
 });
+
+describe("claude read-only reviewer dispatch refusal (synthetic)", () => {
+  it("names the refusal constant and keeps it distinct from the run-time suppression", async () => {
+    const { CLAUDE_REVIEW_SHELL_REFUSED } = await import("../src/subagents/claude-review-permissions.ts");
+    expect(CLAUDE_REVIEW_SHELL_REFUSED).toBe("claude-review-shell-refused");
+    expect(CLAUDE_REVIEW_SHELL_REFUSED).not.toBe(CLAUDE_REVIEW_SHELL_SUPPRESSED);
+  });
+
+  it("flags exactly the read-only reviewers that request a shell", () => {
+    expect(isClaudeReadOnlyReview({ role: "reviewer", mayEdit: false, allowBash: true })).toBe(true);
+    expect(isClaudeReadOnlyReview({ role: " Reviewer ", allowBash: true })).toBe(true);
+    expect(isClaudeReadOnlyReview({ role: "reviewer", mayEdit: true, allowBash: true })).toBe(false);
+    expect(isClaudeReadOnlyReview({ role: "worker", mayEdit: false, allowBash: true })).toBe(false);
+  });
+});

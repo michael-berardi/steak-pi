@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **A read-only reviewer's shell request is refused at dispatch.** An explicit `claude-code` dispatch (a
+  `claude-code/<model>` route or `harness: "claude-code"`) that gives a read-only reviewer `allowBash: true` now fails
+  with the named `claude-review-shell-refused` error before any run, checkpoint or worker starts, instead of silently
+  withholding the shell inside the run. Implicit waves keep the in-run withhold with its named diagnostic.
+
 ## 0.29.0 (2026-11-12)
 
 Steak Pi is one package that adapts; there is no mode to choose.
