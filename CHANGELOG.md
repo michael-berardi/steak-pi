@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **One-step installers.** The GitHub release now offers `install.sh` (macOS and Linux) and `install.ps1` (Windows), plus the package archive and `SHA256SUMS`. One command downloads the release, checks its SHA-256 before installing, unpacks it into the release-folder layout `steak-pi update` maintains, points Pi at it, adds the `steak-pi` command, and finishes with `steak-pi status`. It uses the Node 22.19+ and `pi` already on the machine, or fetches the official Node and installs the pinned Pi into the Steak Pi folder when they are missing (a `pi` shim is added only when none existed). Re-running upgrades in place. No sudo, no shell-profile edits.
+- `scripts/build-release.sh` builds the release assets deterministically and also emits a version-less `steak-pi.tgz` and `SHA256SUMS`, so `releases/latest/download` works without knowing the version. The existing versioned archive and `.sha256` names are kept.
+- Installer tests (`test/install-cli.test.ts`) cover both branches (Pi present, Pi absent), upgrade, idempotence, version pinning, checksum refusal and missing prerequisites, each in a throwaway HOME.
+
 ## 0.27.3 (2026-11-11)
 
 - **`steak-pi update` never points Pi at a release it cannot load.** A release folder that already existed was used as is, so a copy of 0.27.2 with its source but an empty `node_modules` became the release Pi loads, and every Pi launch then failed with "Cannot find module @earendil-works/pi-coding-agent". Before Pi settings change, the update now checks that every package the extensions import is installed in that release. Missing ones are installed from the release's own lockfile; if they are still missing, the update stops with the cause and Pi keeps loading the release it had.

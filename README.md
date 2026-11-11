@@ -26,6 +26,37 @@ Current release: **0.25.6**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak 
 
 ## Install
 
+One step on macOS and Linux:
+
+```sh
+curl -fsSL https://github.com/michael-berardi/steak-pi/releases/latest/download/install.sh | sh
+```
+
+One step on Windows (PowerShell):
+
+```powershell
+irm https://github.com/michael-berardi/steak-pi/releases/latest/download/install.ps1 | iex
+```
+
+The installer downloads the latest release archive, verifies its SHA-256 before
+installing anything, and unpacks it into `~/.local/share/steak-pi/releases/<version>/package`
+(on Windows `%LOCALAPPDATA%\steak-pi`), the same layout `steak-pi update` maintains.
+It then runs `steak-pi install` so Pi's settings point at that folder, puts a
+`steak-pi` command in `~/.local/bin` (on Windows it adds its own bin folder to your
+user PATH), and finishes with `steak-pi status`.
+
+It brings what is missing: if Node.js 22.19 or newer is not on PATH it fetches the
+official Node build into the Steak Pi folder, and if the `pi` CLI is not on PATH it
+installs the pinned Pi version there too and adds a `pi` shim (only when none
+existed). It never uses sudo and never edits your shell profile; when the bin
+directory is not on PATH it prints the one line to add. Re-run the same command to
+upgrade. To remove it, run `steak-pi remove` (drops the Pi-side package), then delete
+the Steak Pi folder and the `steak-pi` (and, if it added one, `pi`) shim.
+Overrides: `STEAK_PI_HOME`, `STEAK_PI_BIN_DIR`, `STEAK_PI_VERSION` (pin a version),
+`STEAK_PI_PI_VERSION` (Pi version to install when pi is absent).
+
+Or install manually with the Pi CLI:
+
 ```sh
 pi install git:github.com/michael-berardi/steak-pi@v0.25.6
 ```
