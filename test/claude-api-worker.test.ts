@@ -140,7 +140,7 @@ describe("API argv and environment", () => {
       ANTHROPIC_CUSTOM_HEADERS: CANARY_HEADER, CLAUDE_CODE_OAUTH_TOKEN: CANARY_KEY, CLAUDE_CODE_USE_BEDROCK: "1", CLAUDE_CONFIG_DIR: "/elsewhere",
       AWS_SECRET_ACCESS_KEY: CANARY_KEY, USAP_CLAUDE_API_CONFIG: "/x",
     });
-    expect(Object.keys(env).sort()).toEqual(["HOME", "PATH"]);
+    expect(Object.keys(env).sort()).toEqual(["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "HOME", "PATH"]);
   });
 });
 

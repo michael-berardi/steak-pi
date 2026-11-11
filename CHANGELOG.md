@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.24.1 (2026-11-10)
+
+- **A Claude Code worker that has to wait no longer kills itself.** Two USAP workers waiting on a deploy window and a
+  cron firing scheduled a background wake-up and ended their turn; the CLI woke them after their final result, which the
+  runner correctly refuses ("emitted model output after its final result"), so both runs failed. Workers now run with the
+  CLI's background tasks turned off, and the worker prompt says to wait in the foreground with a bounded loop.
+
 ## 0.24.0 (2026-11-10)
 
 - **The local route keeps GPU headroom instead of pinning the machine.** A local model is the only route that runs on

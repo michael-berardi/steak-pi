@@ -107,12 +107,23 @@ export const CLAUDE_CODE_PRESERVED_ENV = new Set([
   "http_proxy", "https_proxy", "no_proxy",
 ]);
 
+/**
+ * Fixed settings every headless worker runs with. A leaf is one bounded turn sequence that ends with its final result:
+ * a background task or timer would wake the CLI after that result, which the runner must treat as a failure ("emitted
+ * model output after its final result"). On 2026-11-10 two workers that had to wait on a deploy window and a cron firing
+ * scheduled such a wake-up and were killed. With background tasks off, a wait is a foreground command the leaf watches.
+ */
+export const CLAUDE_CODE_WORKER_ENV: Readonly<Record<string, string>> = Object.freeze({
+  CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
+});
+
 export function claudeWorkerEnv(base: NodeJS.ProcessEnv = process.env, subscription = false): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(base)) {
     if (value === undefined || !CLAUDE_CODE_PRESERVED_ENV.has(key)) continue;
     env[key] = value;
   }
+  Object.assign(env, CLAUDE_CODE_WORKER_ENV);
   if (subscription) {
     const selected = applyClaudeAccountEnv(base);
     if (selected.CLAUDE_CONFIG_DIR !== undefined) env.CLAUDE_CONFIG_DIR = selected.CLAUDE_CONFIG_DIR;
@@ -347,6 +358,7 @@ export function buildClaudeWorkerPrompt(run: RunRecord, task: TaskRecord, relay 
     ...workerImplementationGate(run, task),
     ...workerTestGate(run, task),
     "Stop promptly with a concise report; long-horizon work must be split by the parent, not extended here.",
+    "Your run ends with your final report: nothing can wake you afterwards. When the leaf must wait (a deploy window, a scheduled run, a build), wait in the foreground with a bounded shell loop that sleeps and re-checks; never end your turn or schedule a background task to resume later.",
     turnBudgetPromptLine(Math.max(1, Math.min(run.maxTurns, 2048))),
     "",
     "## Shared run contract",

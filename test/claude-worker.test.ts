@@ -12,6 +12,7 @@ import {
   claudeUsage,
   claudeWorkerArgs,
   claudeWorkerEnv,
+  CLAUDE_CODE_WORKER_ENV,
   CLAUDE_CODE_ALLOWED_TOOLS,
   CLAUDE_CODE_MODEL,
   CLAUDE_CODE_ROUTE,
@@ -310,15 +311,26 @@ describe("claude-code worker CLI surface", () => {
     // Explicit env allowlist: OAuth credentials ride HOME; billing overrides die.
     expect(env.PATH).toBeDefined();
     expect(env.HOME).toBeDefined();
-    expect(Object.keys(env).some((key) => key.startsWith("ANTHROPIC_") || key.startsWith("CLAUDE"))).toBe(false);
+    expect(Object.keys(env).some((key) => key.startsWith("ANTHROPIC_") || (key.startsWith("CLAUDE") && !(key in CLAUDE_CODE_WORKER_ENV)))).toBe(false);
   });
 
   it("claudeWorkerEnv strips every ANTHROPIC_/CLAUDE* override without mutating its input", () => {
     const base = { PATH: "/usr/bin", HOME: "/home/op", ANTHROPIC_API_KEY: "sk-leak",
       ANTHROPIC_BASE_URL: "https://evil.example", CLAUDE_CODE_USE_BEDROCK: "1", WEATHER: "rain" };
     const env = claudeWorkerEnv(base);
-    expect(env).toEqual({ PATH: "/usr/bin", HOME: "/home/op" });
+    expect(env).toEqual({ PATH: "/usr/bin", HOME: "/home/op", ...CLAUDE_CODE_WORKER_ENV });
     expect(base.ANTHROPIC_API_KEY).toBe("sk-leak");
+  });
+});
+
+describe("headless worker settings", () => {
+  it("the worker prompt says how to wait: in the foreground, never by ending the turn", () => {
+    expect(buildClaudeWorkerPrompt(run(), task())).toMatch(/wait in the foreground with a bounded shell loop/);
+  });
+
+  it("a worker can never schedule a background wake-up after its final result", () => {
+    expect(claudeWorkerEnv({ PATH: "/bin", HOME: "/h" }).CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe("1");
+    expect(claudeWorkerEnv({ PATH: "/bin", HOME: "/h", CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "0" }).CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe("1");
   });
 });
 
@@ -963,7 +975,7 @@ describe("claude-code task-scoped subscription accounts (synthetic)", () => {
     expect(subscriptionAuthStatus).toHaveBeenCalledTimes(1);
     expect(subscriptionAuthStatus.mock.calls[0][0]).toBe(calls[0].env);
     expect(calls[0].env).toEqual({ PATH: base.PATH, HOME: base.HOME, LANG: base.LANG,
-      ULTRATERM_PROVIDER_ACCOUNT: id, ...(id === "b" ? { CLAUDE_CONFIG_DIR: bDir } : {}) });
+      ULTRATERM_PROVIDER_ACCOUNT: id, ...(id === "b" ? { CLAUDE_CONFIG_DIR: bDir } : {}), ...CLAUDE_CODE_WORKER_ENV });
     expect(calls[0].env).not.toBe(base);
     expect(base.CLAUDE_CONFIG_DIR).toBe(bDir);
     expect(base.ULTRATERM_PROVIDER_ACCOUNT).toBe("b");
@@ -1100,7 +1112,7 @@ describe("claude-code task-scoped subscription accounts (synthetic)", () => {
       expect(accountCommand.mock.calls).toEqual([[ ["select", "--provider", "claude", "--account", "team-2"] ]]);
       expect(calls).toHaveLength(1);
       expect(subscriptionAuthStatus.mock.calls[0][0]).toBe(calls[0].env);
-      expect(calls[0].env).toEqual({ PATH: base.PATH, HOME: home, ULTRATERM_PROVIDER_ACCOUNT: "team-2", CLAUDE_CONFIG_DIR: teamDir });
+      expect(calls[0].env).toEqual({ PATH: base.PATH, HOME: home, ULTRATERM_PROVIDER_ACCOUNT: "team-2", CLAUDE_CONFIG_DIR: teamDir, ...CLAUDE_CODE_WORKER_ENV });
       expect(result.subscriptionReceipt).toEqual({
         kind: "claude-subscription", account: "team-2", configMode: "explicit", configDir: teamDir, identityHash,
         subscriptionType: "max", attested: { preflight: true, init: true },
