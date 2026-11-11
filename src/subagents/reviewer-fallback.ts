@@ -15,8 +15,10 @@ export function isReadOnlyReviewWave(tasks: readonly { role?: string; mayEdit?: 
 
 export function canFallbackReview(run: RunRecord, result: WorkerResult, signal: AbortSignal): boolean {
   const route = implicitReviewRoute();
+  // The account the review pinned is not an operator choice: an automatically picked one (the router's best
+  // eligible account) still lets the review fall back, exactly like a launch that pins nothing (J-3759).
   return route !== undefined && implicitReviewFallbackRoute() !== undefined &&
-    run.claudeAccount === undefined && run.selection?.automaticReview === true && run.model === route &&
+    (run.claudeAccount === undefined || run.selection?.accountAutomatic === true) && run.selection?.automaticReview === true && run.model === route &&
     run.selection.reviewRequiresImages !== true && isReadOnlyReviewWave(run.tasks) &&
     !signal.aborted && !result.cleanup && result.state === "failed" &&
     (result.reviewFallbackReason === "quota" || result.reviewFallbackReason === "auth");

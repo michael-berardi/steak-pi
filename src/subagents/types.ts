@@ -208,6 +208,9 @@ export interface ModelSelection {
   chainRoutes?: string[];
   automaticReview?: boolean;
   reviewRequiresImages?: boolean;
+  /** The Claude account was picked automatically from the router's snapshot (never an operator choice), so the
+   * automatic review fallback still applies to this run. */
+  accountAutomatic?: boolean;
   /** `requires-opus` (historical receipt value): a Claude fallback-tier worker run (after the configured
    * worker chain ran out of quota), whose work needs an explicit expert verification. */
   independence?: "requires-opus";

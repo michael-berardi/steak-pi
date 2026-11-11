@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { claudeQuotaBlock, isQuotaLaunchFailure, pickClaudeAccount, providerUsageLimit, quotaProviderOf, readProviderQuota, reportsSpentPlan, routeQuotaBlock } from "../src/subagents/provider-quota.ts";
+import { claudeLoginAccount, claudeLoginBlock, claudeQuotaBlock, isQuotaLaunchFailure, pickClaudeAccount, providerUsageLimit, quotaProviderOf, readProviderQuota, reportsSpentPlan, routeQuotaBlock } from "../src/subagents/provider-quota.ts";
 
 // Shapes mirror a live router `status` answer: every field below is one the router itself emits, and
 // nothing here is credential-bearing.
@@ -189,6 +189,43 @@ describe("picking the Claude account an automatic fallback worker is pinned on",
   });
 });
 
+describe("the Claude login an unpinned launch runs on", () => {
+  const home = "/tmp/claude-login-home";
+  const account = (id: string, label: string, configDir: string, extra: Record<string, unknown> = {}) => ({ ...eligible(id, label), configDir, ...extra });
+  const primary = (extra: Record<string, unknown> = {}) => ({ ...coolingDown("primary", "Claude 1"), configDir: `${home}/.claude`, launchEnv: { unset: ["CLAUDE_CONFIG_DIR"] }, ...extra });
+  const registry = (...accounts: Array<Record<string, unknown>>) => status({ claude: accounts });
+
+  it("maps CLAUDE_CONFIG_DIR to the account whose folder it is, and no folder to the default login", async () => {
+    const quota = await read(registry(primary(), account("b", "Claude 2", `${home}/.claude-b`)));
+    expect(claudeLoginAccount(quota, {}, home)?.id).toBe("primary");
+    expect(claudeLoginAccount(quota, { CLAUDE_CONFIG_DIR: `${home}/.claude-b` }, home)?.id).toBe("b");
+    // A trailing slash is the same folder; an empty variable is the default login.
+    expect(claudeLoginAccount(quota, { CLAUDE_CONFIG_DIR: `${home}/.claude-b/` }, home)?.id).toBe("b");
+    expect(claudeLoginAccount(quota, { CLAUDE_CONFIG_DIR: "" }, home)?.id).toBe("primary");
+  });
+
+  it("proves nothing about a login the router cannot map, an unreadable router, or a provider it does not list", async () => {
+    const quota = await read(registry(primary(), account("b", "Claude 2", `${home}/.claude-b`)));
+    expect(claudeLoginAccount(quota, { CLAUDE_CONFIG_DIR: "/tmp/claude-login-home/unregistered" }, home)).toBeUndefined();
+    expect(claudeLoginBlock(quota, { CLAUDE_CONFIG_DIR: "/tmp/claude-login-home/unregistered" }, home)).toBeUndefined();
+    const unreadable = await readProviderQuota((async () => { throw new Error("spawn ut-provider-accounts ENOENT"); }) as never, NOW * 1000);
+    expect(claudeLoginAccount(unreadable, {}, home)).toBeUndefined();
+    expect(claudeLoginBlock(await read(status({ codex: [eligible("primary", "GPT 1")] })), {}, home)).toBeUndefined();
+  });
+
+  it("names the spent login with the router's own cause, and stays silent for an eligible or busy one", async () => {
+    const spent = await read(registry(primary(), account("b", "Claude 2", `${home}/.claude-b`)));
+    const block = claudeLoginBlock(spent, {}, home);
+    expect(block?.account.id).toBe("primary");
+    expect(block?.cause).toBe("Claude 1 (the Claude login an unpinned route uses): cooling down until Mon 02:59");
+    const healthy = await read(registry(account("primary", "Claude 1", `${home}/.claude`, { eligible: true, launchEnv: { unset: ["CLAUDE_CONFIG_DIR"] } })));
+    expect(claudeLoginBlock(healthy, {}, home)).toBeUndefined();
+    // Busy is ineligible, not spent: it is not evidence the login cannot launch.
+    const busyRow = { configured: true, eligible: false, id: "primary", label: "Claude 1", configDir: `${home}/.claude`, launchEnv: { unset: ["CLAUDE_CONFIG_DIR"] }, ineligibleReason: "all slots busy", windows: [] };
+    expect(claudeLoginBlock(await read(registry(busyRow)), {}, home)).toBeUndefined();
+  });
+});
+
 describe("provider usage-limit wording", () => {
   it.each([
     ['429: {"type":"GoUsageLimitError","message":"Go usage limit exceeded"}', "Go usage limit exceeded"],
@@ -198,6 +235,8 @@ describe("provider usage-limit wording", () => {
     ["subscription_quota_exceeded", "subscription_quota_exceeded"],
     // The exact sentence Pi turns every Codex usage_limit_reached / 429 into.
     ["You have hit your ChatGPT usage limit (pro plan). Try again in ~120 min.", "ChatGPT usage limit reached"],
+    // The Claude Code CLI's own pre-output refusal, in this adapter's fixed wording (J-3759: it matched nothing).
+    ["Claude CLI synthetic error: quota limit reached; resets 1pm (America/Buenos_Aires); check Claude usage and retry the same route only after reset; synthetic frame is not a model response or approval", "quota limit reached"],
   ])("recognises plan exhaustion in %s", (text, label) => {
     expect(providerUsageLimit(text)).toBe(label);
     expect(isQuotaLaunchFailure(text)).toBe(true);

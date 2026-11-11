@@ -13,6 +13,15 @@ export interface AvailabilityStep {
   cause?: string;
   /** Epoch seconds the step returns, when the router said. */
   returnsAt?: number;
+  /** Bounded caveat on a step that IS up: what a launch on it must avoid. */
+  note?: string;
+}
+
+/** The CLI login an UNPINNED Claude launch would use, when the router proves it cannot launch. */
+export interface AvailabilityLogin {
+  label: string;
+  cause: string;
+  returnsAt?: number;
 }
 
 export interface Availability {
@@ -35,6 +44,9 @@ export interface AvailabilityInput {
   policy: ProjectPolicy;
   /** True for a step on a paid metered route (never offered to a planOnly project). */
   isPaid?: (step: WorkerRouteStep) => boolean;
+  /** Set when the router proves the parent's own Claude login spent: the Claude tier is still up for a
+   * launch that pins an eligible account, but an unpinned claude-code route would be refused on it. */
+  login?: AvailabilityLogin;
 }
 
 /** One state per chain step, then the Claude tier: up, cooling until a time, or out by project policy. */
@@ -58,7 +70,13 @@ export function computeAvailability(input: AvailabilityInput): Availability {
     else {
       const block = snapshot.known ? claudeQuotaBlock(snapshot) : undefined;
       const returnsAt = snapshot.providers.claude?.earliestReturn;
-      steps.push(block === undefined ? { label, state: "up" } : { label, state: "cooling", cause: block, ...(returnsAt !== undefined ? { returnsAt } : {}) });
+      // The tier is up while one account can take a pinned launch. Say plainly that the parent's own login is
+      // spent, so a route that pins nothing is refused instead of dying at the CLI (J-3759).
+      const note = input.login === undefined ? undefined
+        : `this session's Claude login ${input.login.label} is COOLING${input.login.returnsAt !== undefined ? ` until ${clock(input.login.returnsAt)}` : ""}, so an unpinned claude-code route is refused`;
+      steps.push(block === undefined
+        ? { label, state: "up", ...(note !== undefined ? { note } : {}) }
+        : { label, state: "cooling", cause: block, ...(returnsAt !== undefined ? { returnsAt } : {}) });
     }
   }
   const next = steps.find((step) => step.state === "up")?.label;
@@ -67,7 +85,7 @@ export function computeAvailability(input: AvailabilityInput): Availability {
 
 function renderAvailability(steps: readonly AvailabilityStep[], next: string | undefined, known: boolean): string {
   if (steps.length === 0) return "";
-  const parts = steps.map((step) => step.state === "up" ? `${step.label}: up`
+  const parts = steps.map((step) => step.state === "up" ? `${step.label}: up${step.note !== undefined ? ` (${step.note})` : ""}`
     : step.state === "held" ? `${step.label}: HELD BACK (${step.cause})`
     : step.state === "cooling" ? `${step.label}: COOLING${step.returnsAt !== undefined ? ` until ${clock(step.returnsAt)}` : ""}`
     : `${step.label}: NOT ALLOWED (project policy)`);

@@ -2,7 +2,7 @@ import { setSubagentCountReader, subagentActivityChanged } from "../src/tui/suba
 import { resolveStagedModule } from "../src/subagents/staged-runtime.ts";
 import { registryForSolSelection, type CreateIsolatedModelRuntime } from "../src/subagents/codex-selection.ts";
 import { GO_ACCOUNT_ROUTER_TIMEOUT_MS, type AccountCommand } from "../src/subagents/provider-accounts.ts";
-import { claudeQuotaBlock, CODEX_QUOTA, isMeteredQuota, isQuotaLaunchFailure, pickClaudeAccount, rankClaudeAccounts, quotaChain, quotaProviderOf, readProviderQuota, routeQuotaBlock, type ClaudeAccountPick, type QuotaProvider, type QuotaSnapshot } from "../src/subagents/provider-quota.ts";
+import { claudeLoginBlock, claudeQuotaBlock, CODEX_QUOTA, isMeteredQuota, isQuotaLaunchFailure, pickClaudeAccount, rankClaudeAccounts, quotaChain, quotaProviderOf, readProviderQuota, routeQuotaBlock, type ClaudeAccountPick, type QuotaProvider, type QuotaSnapshot } from "../src/subagents/provider-quota.ts";
 import { noClaudeCause, planOnlyCause, resolveProjectPolicy, type ProjectPolicy } from "../src/subagents/project-policy.ts";
 import { AVAILABILITY_TTL_MS, computeAvailability } from "../src/subagents/route-availability.ts";
 import { canFallbackReview, implicitReviewFallbackRoute, implicitReviewRoute, isReadOnlyReviewWave, recordReviewFallback } from "../src/subagents/reviewer-fallback.ts";
@@ -326,6 +326,9 @@ export interface UltratermSubagentsDependencies {
   rng?: Rng;
   /** Bounded startup window (default {@link DEFAULT_STARTUP_WINDOW_MS}); 0 disables the wait. */
   startupWindowMs?: number;
+  /** Test seam: the environment an unpinned Claude launch inherits (`CLAUDE_CONFIG_DIR` decides which login
+   * it runs on). Defaults to `process.env`; production never passes it. */
+  env?: NodeJS.ProcessEnv;
   createModelRuntime?: CreateIsolatedModelRuntime;
   now?: () => number;
   idFactory?: () => string;
@@ -436,8 +439,12 @@ interface QuotaFallThrough {
   providers: readonly QuotaProvider[];
   /** Bounded, named cause of each worker that failed. */
   cause: string;
-  /** `ensure`: the route's profile `ensure` hook refused the launch. The route itself, not a quota tier, is held out. */
-  kind?: "ensure";
+  /** `ensure`: the route's profile `ensure` hook refused the launch. The route itself, not a quota tier, is held out.
+   * `review`: an implicit review wave was refused on the Claude review route before any output; the same review
+   * tasks run once on the configured `implicitReview.fallback` instead. */
+  kind?: "ensure" | "review";
+  /** `review` only: whether the CLI refused on a spent plan or on authentication, so the receipt says which. */
+  reviewReason?: "quota" | "auth";
 }
 
 /** Routes whose profile `ensure` hook refused a launch in this walk: never retried, whatever else is true. */
@@ -475,11 +482,36 @@ function quotaFallThroughProviders(seen: RunRecord | undefined, failures: readon
   return providers.length > 0 ? providers : undefined;
 }
 
+/** The documented review-fallback cause of one pre-output refusal text, or undefined when it is not one. */
+function reviewRefusalKind(text: string): "quota" | "auth" | undefined {
+  // The Claude CLI's own pre-output refusal arrives as this adapter's synthetic cause (claude-worker.ts
+  // syntheticClaudeCause): "quota limit reached; resets 1pm (...)", "rate limit reached", "authentication failed".
+  if (isQuotaLaunchFailure(text) || /quota limit reached|rate limit reached|usage limit|quota (?:exceeded|exhausted)/i.test(text)) return "quota";
+  if (/authentication (?:failed|preflight failed|error)|auth status|subscription login|not logged in|logged out|signed out/i.test(text)) return "auth";
+  return undefined;
+}
+
+/**
+ * The review-fallback cause of a whole implicit review wave that died before any output, or undefined when
+ * the wave is not one the configured `implicitReview.fallback` may take: every launched worker must have
+ * failed pre-output on the same kind of refusal (quota or auth), and no worker anywhere may have produced
+ * output or finished, since re-running a review would repeat work.
+ */
+function reviewFallThroughReason(seen: RunRecord | undefined, failures: readonly TaskRecord[]): "quota" | "auth" | undefined {
+  if (!seen || seen.tasks.some((task) => task.outputStarted === true || task.state === "done")) return undefined;
+  if (failures.length === 0) return undefined;
+  const kinds = failures.map((task) => reviewRefusalKind(launchFailureText(task)));
+  if (kinds.some((kind) => kind === undefined)) return undefined;
+  return kinds.every((kind) => kind === "auth") ? "auth" : "quota";
+}
+
 /** What the dispatch tells a parent about the tiers that were refused before it, in the words of a receipt. */
 const fallThroughSummary = (fallThroughs: readonly QuotaFallThrough[]): string =>
   fallThroughs.map((item) => item.kind === "ensure"
     ? `run ${item.runId} · ${item.route} was refused by its profile ensure hook before any worker started (${item.cause})`
-    : `run ${item.runId} · ${item.route} was refused on a provider usage limit before any worker produced output (${item.cause})`).join("; ");
+    : item.kind === "review"
+      ? `run ${item.runId} · ${item.route} was refused ${item.reviewReason === "auth" ? "on authentication" : "on the Claude usage limit"} before any worker produced output (${item.cause})`
+      : `run ${item.runId} · ${item.route} was refused on a provider usage limit before any worker produced output (${item.cause})`).join("; ");
 /** The dispatch-note line for a declared task class (absent when no task declared one). */
 function taskClassNote(receipt: TaskClassSelection | undefined, wave: WaveTaskClass): string {
   if (!receipt) return "";
@@ -494,7 +526,8 @@ function taskClassNote(receipt: TaskClassSelection | undefined, wave: WaveTaskCl
 /** The words of a receipt for why the wave moved on: a usage limit, an ensure refusal, or both. */
 const fallThroughCause = (fallThroughs: readonly QuotaFallThrough[]): string =>
   fallThroughs.every((item) => item.kind === "ensure") ? "a profile ensure refusal before any worker started"
-    : fallThroughs.some((item) => item.kind === "ensure") ? "a usage-limit or ensure refusal before any output" : "a usage-limit refusal before any output";
+    : fallThroughs.some((item) => item.kind === "ensure") ? "a usage-limit or ensure refusal before any output"
+    : fallThroughs.some((item) => item.kind === "review") ? "a Claude review refusal before any output" : "a usage-limit refusal before any output";
 
 interface ImplicitWorkerRoute {
   /** The Pi selection the wave launches on; absent when it moves to the Claude tier. */
@@ -510,6 +543,25 @@ interface ImplicitWorkerRoute {
   claudeAccount?: NonNullable<ClaudeAccountPick["account"]>;
   /** How the wave's declared task class steered the route (absent when none steered it). */
   taskClass?: TaskClassSelection;
+}
+
+/**
+ * The Claude account an automatic Claude launch pins: the best account the router's snapshot reports
+ * eligible, walking them best-first and keeping the first one its own `select` accepts now. `select` is the
+ * launch authority and can refuse an account its `status` row lists as eligible (a lent plan's reserve
+ * floor, a snapshot that is a moment stale), so an ineligible account is never picked while another can
+ * launch. Every automatic Claude launch pins the account it runs on: without a pin the CLI runs on the
+ * parent's own login, which the same snapshot may show at 100% while another account is eligible (J-3759).
+ */
+async function pickLaunchAccount(snapshot: QuotaSnapshot, command?: AccountCommand): Promise<ClaudeAccountPick> {
+  const listed = pickClaudeAccount(snapshot);
+  if (listed.account === undefined) return listed;
+  const refused: string[] = [];
+  for (const candidate of rankClaudeAccounts(snapshot)) {
+    try { await resolveClaudeAccount(candidate.id, command); return { account: candidate }; }
+    catch (error) { refused.push(`${candidate.label}: ${boundedReason(error instanceof Error ? error.message : String(error), 160)}`); }
+  }
+  return { cause: `the router would not select any Claude account now (${refused.join("; ")})` };
 }
 
 /**
@@ -665,17 +717,7 @@ async function resolveImplicitWorkerRoute(
   // The router's `select` is the authority at launch and can refuse an account its `status` row lists as eligible
   // (a lent plan's reserve floor, a stale snapshot). Walk the eligible accounts best-first and keep the first one
   // `select` accepts now, so an ineligible account is never picked while another one can launch.
-  const pick: ClaudeAccountPick = await (async () => {
-    if (claudeBlock !== undefined) return {};
-    const listed = pickClaudeAccount(quota!);
-    if (listed.account === undefined) return listed;
-    const refused: string[] = [];
-    for (const candidate of rankClaudeAccounts(quota!)) {
-      try { await resolveClaudeAccount(candidate.id, dependencies.accountCommand); return { account: candidate }; }
-      catch (error) { refused.push(`${candidate.label}: ${boundedReason(error instanceof Error ? error.message : String(error), 160)}`); }
-    }
-    return { cause: `the router would not select any Claude account now (${refused.join("; ")})` };
-  })();
+  const pick: ClaudeAccountPick = claudeBlock !== undefined ? {} : await pickLaunchAccount(quota!, dependencies.accountCommand);
   const accountBlock = claudeBlock ?? pick.cause;
   if (accountBlock !== undefined || effortBlock !== undefined) {
     throw new Error(`USAP implicit routing found no route that can launch this wave (${[...causes,
@@ -1879,7 +1921,12 @@ export function createUltratermSubagentsExtension(
           if (chain.length > 0 || tier !== undefined) {
             const snapshot = await readProviderQuota(dependencies.accountCommand, now);
             const policy = resolveProjectPolicy(ctx.cwd, [], dependencies.projectPolicyPath !== undefined ? { policyPath: dependencies.projectPolicyPath } : {});
-            line = computeAvailability({ snapshot, chain, ...(tier !== undefined ? { claudeTier: tier } : {}), policy, isPaid: paidStepPredicate(ctx) }).line;
+            // The tier being up means a PINNED launch can take an eligible account. An unpinned claude-code route
+            // runs on this session's own login, so the line names it when the router proves that login spent (J-3759).
+            const loginAccount = claudeLoginBlock(snapshot, dependencies.env ?? process.env);
+            const login = loginAccount === undefined ? undefined : { label: loginAccount.account.label, cause: loginAccount.cause,
+              ...(loginAccount.account.resetAt !== undefined ? { returnsAt: loginAccount.account.resetAt } : {}) };
+            line = computeAvailability({ snapshot, chain, ...(tier !== undefined ? { claudeTier: tier } : {}), policy, isPaid: paidStepPredicate(ctx), ...(login !== undefined ? { login } : {}) }).line;
           }
           availabilityCache = { at: now, key, line };
         }
@@ -2027,19 +2074,44 @@ export function createUltratermSubagentsExtension(
       const fallbackStep = reviewFallbackStep();
       const fallbackRoute = fallbackStep ? routeOfStep(fallbackStep) : undefined;
       const readOnlyReviewFallback = opusReviewDefault && fallbackStep !== undefined && isReadOnlyReviewWave(requested.tasks);
+      // The configured review fallback is required for a wave this call is already retrying: the first attempt was
+      // the Claude review route, refused before any output.
+      const reviewFallThrough = fallThroughs.find((item) => item.kind === "review");
+      if (reviewFallThrough !== undefined && (fallbackRoute === undefined || !readOnlyReviewFallback || requested.requireImages === true)) {
+        throw new Error(`USAP implicit review fallback cannot run: ${reviewFallThrough.cause}. The configured implicitReview.fallback serves only read-only text review waves (${fallbackRoute ?? "no implicitReview.fallback is configured"}); name a review route explicitly.`);
+      }
       // One router `status` read per dispatch, taken only where a route decision needs it. An
       // unreadable router is "unknown" and never proves exhaustion.
       let quotaRead: Promise<QuotaSnapshot> | undefined;
       const readQuota = (): Promise<QuotaSnapshot> => quotaRead ??= readProviderQuota(dependencies.accountCommand, dependencies.now?.());
-      const reviewQuota = readOnlyReviewFallback && requested.requireImages !== true ? await readQuota() : undefined;
+      // A permission-free review asks the router: that is the wave the configured fallback may take, so its launch
+      // evidence decides whether Claude is available at all, and it pins the account it runs on. A privileged review
+      // keeps exactly its old route (the fallback would bypass its exact path admission and shell denial).
+      const reviewReadOnly = isReadOnlyReviewWave(requested.tasks);
+      const reviewQuota = opusReviewDefault && reviewFallThrough === undefined && reviewReadOnly ? await readQuota() : undefined;
       // A noClaude project's implicit review never runs on the Claude review route: it takes the configured review
       // fallback when it can, and otherwise refuses once, before anything starts.
       const reviewPolicy = opusReviewDefault ? projectPolicyOf(ctx, requested, dependencies) : {};
       if (reviewPolicy.noClaude !== undefined && reviewQuota === undefined) {
         throw new Error(`USAP implicit review cannot run: Claude review route ${reviewRoute}: ${noClaudeCause(reviewPolicy)}${fallbackStep === undefined ? " | no implicitReview.fallback is configured" : " | the review fallback serves only read-only text reviews"}. No review was started and no fallback was selected; name a review route explicitly.`);
       }
-      const claudeBlock = reviewPolicy.noClaude !== undefined ? noClaudeCause(reviewPolicy) : reviewQuota ? claudeQuotaBlock(reviewQuota) : undefined;
+      const claudeTierBlock = reviewPolicy.noClaude !== undefined ? noClaudeCause(reviewPolicy) : reviewQuota ? claudeQuotaBlock(reviewQuota) : undefined;
+      // The review route pins an eligible account, exactly like an implicit worker wave's Claude tier: without a
+      // pin the CLI runs on the parent's own login, which the same snapshot may show at 100% while another account
+      // is eligible, so the tier read "up" and the launch still died (J-3759).
+      const reviewPick = reviewQuota !== undefined && reviewPolicy.noClaude === undefined && claudeTierBlock === undefined
+        ? await pickLaunchAccount(reviewQuota, dependencies.accountCommand) : undefined;
+      // No account could be pinned. Only a login the router PROVES spent makes Claude unavailable for a text
+      // review; an unknown or busy account proves nothing and stays a launch-time question. An image review keeps
+      // its old path (the fallback never serves images), so the same evidence cannot move it.
+      const reviewTextFallback = readOnlyReviewFallback && requested.requireImages !== true;
+      const reviewLogin = reviewTextFallback && reviewQuota !== undefined && claudeTierBlock === undefined && reviewPick?.account === undefined
+        ? claudeLoginBlock(reviewQuota, dependencies.env ?? process.env) : undefined;
+      const claudeBlock = reviewTextFallback ? claudeTierBlock ?? reviewLogin?.cause : undefined;
       const claudeUnavailable = claudeBlock !== undefined;
+      const claudeUnavailableReason: "no-eligible-claude" | "quota" = claudeTierBlock === undefined && reviewLogin !== undefined ? "quota" : "no-eligible-claude";
+      // A wave whose Claude review route already refused before any output runs its configured fallback here.
+      const forcedReviewFallback = reviewFallThrough !== undefined;
       if (!ctx.model) throw new Error("ultraterm_subagents requires a resolved current model");
       if (claudeUnavailable) {
         // The review fallback may launch on a reserved router account: refuse now, naming both
@@ -2093,13 +2165,20 @@ export function createUltratermSubagentsExtension(
           : `task class ${waveClasses.declared.join(", ")} is not configured in ~/.config/ultraterm/routing.json taskClasses, so the normal route ran`);
       }
       const claudeWorkerTier = claudeTier !== undefined;
+      // The Claude account this launch pins: the worker tier's pick, or the review route's (never the parent's own login).
+      const pickedAccount = tierAccount ?? reviewPick?.account;
+      // An implicit review wave whose Claude route was refused before output runs the same tasks on the
+      // configured fallback within this same call, instead of failing the wave with one cause.
+      const reviewFallbackActive = claudeUnavailable || forcedReviewFallback;
       const params: UltratermSubagentsParams = {
         ...requested,
-        ...(tierAccount ? { claudeAccount: tierAccount.id } : {}),
-        ...(claudeUnavailable ? { harness: "pi" as const, model: fallbackRoute, thinking: "high" as const, thinkingReason: "Automatic expert text review fallback after proven Claude unavailability." } : {}),
+        ...(pickedAccount ? { claudeAccount: pickedAccount.id } : {}),
+        ...(reviewFallbackActive ? { harness: "pi" as const, model: fallbackRoute, thinking: "high" as const, thinkingReason: forcedReviewFallback
+          ? "Automatic expert text review fallback after the Claude review route was refused before any output."
+          : "Automatic expert text review fallback after proven Claude unavailability." } : {}),
         // A model naming either Claude adapter route selects that harness, so an unserved claude-code/<model>
         // route reaches the admission gate (which names every source) instead of the native registry.
-        ...((!claudeUnavailable && opusReviewDefault || claudeWorkerTier || (requested.harness === undefined && (claudeCodeRouteModel(requested.model) !== undefined || CLAUDE_API_ROUTES.includes(requested.model ?? "")))) ? { harness: "claude-code" as const } : {}),
+        ...((!reviewFallbackActive && opusReviewDefault || claudeWorkerTier || (requested.harness === undefined && (claudeCodeRouteModel(requested.model) !== undefined || CLAUDE_API_ROUTES.includes(requested.model ?? "")))) ? { harness: "claude-code" as const } : {}),
       };
       // A Claude Code run takes the dispatch's own effort and medium when it names none; low, max and
       // an unexplained high/xhigh are refused here, before any approval, checkpoint or worker exists.
@@ -2114,14 +2193,18 @@ export function createUltratermSubagentsExtension(
       // The review fallback may launch on a reserved router account too: when the router proves every
       // such account unavailable it is not installed (a Claude quota/auth failure would only trade one
       // refusal for another after `Started`), and the dispatch says so.
-      const reviewFallbackBlock = reviewQuota && !claudeUnavailable ? routeQuotaBlock(reviewQuota, fallbackStep!) : undefined;
+      const reviewFallbackBlock = reviewTextFallback && reviewQuota && !claudeUnavailable ? routeQuotaBlock(reviewQuota, fallbackStep!) : undefined;
       const reviewFallbackSkipNote = reviewFallbackBlock !== undefined
         ? `Review note: the ${routeStepLabel(fallbackStep!)} review fallback is unavailable (${reviewFallbackBlock}); a Claude quota or auth failure ends this review without falling back.\n` : "";
+      // The wave this call is retrying says so, and names why the first attempt died: a parent reading only the
+      // result needs both causes, not just the second route's.
+      const reviewFallThroughNote = forcedReviewFallback
+        ? `Review fallback: the Claude review route ${reviewFallThrough!.route} was refused ${reviewFallThrough!.reviewReason === "auth" ? "on authentication" : "on the Claude usage limit"} before any output; the same review tasks run on the configured implicitReview.fallback ${fallbackRoute} inside this same call, with no parent re-dispatch.\n` : "";
       const tierName = claudeTier ? claudeCodeModelName(claudeTier.model) : "";
       const fallThroughReason = fallThroughs.length > 0 ? `automatic fall-through after ${fallThroughCause(fallThroughs)}; ` : "";
       const fallThroughNote = fallThroughs.length > 0
         ? `Fall-through: ${fallThroughSummary(fallThroughs)}. The same tasks were re-run here on the next tier, with no parent re-dispatch.\n` : "";
-      const routeNote = fallThroughNote + taskClassNote(taskClassReceipt, waveClasses) + (claudeTier
+      const routeNote = fallThroughNote + reviewFallThroughNote + taskClassNote(taskClassReceipt, waveClasses) + (claudeTier
         ? `Route note: none of ${tierTried.map(routeStepLabel).join(", ")} could launch (${quotaCauses.join(" | ")}), so this implicit wave runs ${claudeTier.route} at ${claudeEffort} effort (subscription) on the ${tierName} tier: ${claudeTier.reason}. `
           + `Claude account: ${tierAccount ? `${tierAccount.label} (an eligible account in the router snapshot, the least used)` : "the parent's own Claude login (the router listed no Claude account to pin)"}. `
           + `${tierName} work needs verification: review it with an expert reviewer wave${reviewRoute ? ` (all-reviewer waves default to model ${reviewRoute})` : ""}.\n`
@@ -2175,13 +2258,19 @@ export function createUltratermSubagentsExtension(
       if (foreignHarness && !apiRoute && !implicitRoute && claudeTier === undefined && params.claudeAccount === undefined) {
         // An explicit Claude subscription route is held to the same rule as a native one: never rerouted, but never launched
         // into a subscription the router has proven exhausted or ineligible. (A pinned claudeAccount is the operator's choice.)
-        const cause = claudeQuotaBlock(await readQuota());
+        // A route that pins nothing runs on THIS session's own Claude login, so that login is the account the router must
+        // prove launchable: the whole-tier verdict once said "up" because another account was eligible while the login
+        // itself was at 100%, and the dispatch died at the CLI with one cause (J-3759).
+        const snapshot = await readQuota();
+        const tierCause = claudeQuotaBlock(snapshot);
+        const loginCause = tierCause === undefined ? claudeLoginBlock(snapshot, dependencies.env ?? process.env)?.cause : undefined;
+        const cause = tierCause ?? loginCause;
         if (cause !== undefined) {
-          throw new Error(`USAP explicit route ${claudeRoute} cannot launch: ${cause}. Explicit routes are never rerouted, so no worker was started and no fallback was selected; wait for the window to return or choose another route yourself.`);
+          throw new Error(`USAP explicit route ${claudeRoute} cannot launch: ${cause}. Explicit routes are never rerouted, so no worker was started and no fallback was selected; wait for the window to return, pin an eligible claudeAccount, or choose another route yourself.`);
         }
       }
       let reviewFallbackRuntime: PiWorkerRuntime | undefined;
-      if (readOnlyReviewFallback && !claudeUnavailable && requested.requireImages !== true && reviewFallbackBlock === undefined) {
+      if (readOnlyReviewFallback && !reviewFallbackActive && requested.requireImages !== true && reviewFallbackBlock === undefined) {
         try {
           const sol = await resolveNativeSelection(ctx,
             { ...requested, harness: "pi", model: fallbackRoute, profile: undefined, thinking: "high", thinkingReason: "Automatic expert text review fallback after proven Claude unavailability." }, dependencies);
@@ -2225,13 +2314,13 @@ export function createUltratermSubagentsExtension(
         };
       }
 
-      // A tier account the pick walk already had the router's `select` accept moments ago is not asked twice.
-      if (run.claudeAccount !== undefined && !(tierAccount !== undefined && tierAccount.id === run.claudeAccount)) {
+      // An account the pick walk already had the router's `select` accept moments ago is not asked twice.
+      if (run.claudeAccount !== undefined && !(pickedAccount !== undefined && pickedAccount.id === run.claudeAccount)) {
         try { await resolveClaudeAccount(run.claudeAccount, dependencies.accountCommand); }
         catch (error) {
-          // The tier account came from the router snapshot a moment ago: if the router now refuses it, say which and why.
-          if (!tierAccount) throw error;
-          throw new Error(`USAP implicit routing picked ${tierAccount.label} for the ${tierName} tier, but the router would not select it now (${boundedReason(error instanceof Error ? error.message : String(error), 200)}). ${fallThroughs.length > 0
+          // The account came from the router snapshot a moment ago: if the router now refuses it, say which and why.
+          if (!pickedAccount) throw error;
+          throw new Error(`USAP implicit routing picked ${pickedAccount.label} for the ${claudeTier ? `${tierName} tier` : "review route"}, but the router would not select it now (${boundedReason(error instanceof Error ? error.message : String(error), 200)}). ${fallThroughs.filter((item) => item.kind !== "review").length > 0
             ? `No further worker was started after the earlier tier was refused (${fallThroughSummary(fallThroughs)}); retry or name a route explicitly.`
             : "No worker was started and no fallback was selected; retry or name a route explicitly."}`);
         }
@@ -2246,9 +2335,11 @@ export function createUltratermSubagentsExtension(
         ...(!claudeTier && quotaCauses.length > 0 ? { fallbackReason: boundedReason(`${fallThroughReason}${quotaCauses.join(" | ")}`, FALLBACK_REASON_LIMIT) } : {}),
         // No route was requested for an implicit review wave: a fallback review chosen only because no Claude
         // account was eligible is an automatic fallback, never an operator-requested override.
-        ...(opusReviewDefault ? { source: claudeUnavailable ? "automatic-review-fallback" as const : "automatic-review" as const, automaticReview: true, reviewRequiresImages: requested.requireImages === true } : {}),
+        ...(opusReviewDefault ? { source: reviewFallbackActive ? "automatic-review-fallback" as const : "automatic-review" as const, automaticReview: true, reviewRequiresImages: requested.requireImages === true,
+          ...(reviewPick?.account !== undefined ? { accountAutomatic: true as const } : {}) } : {}),
         ...(taskClassReceipt ? { taskClass: taskClassReceipt } : {}) };
-      if (claudeUnavailable) for (const task of run.tasks) recordReviewFallback(task, "no-eligible-claude");
+      if (reviewFallbackActive) for (const task of run.tasks) recordReviewFallback(task, forcedReviewFallback
+        ? reviewFallThrough!.reviewReason ?? "quota" : claudeUnavailableReason);
       if (reviewFallbackRuntime) current.workerRuntimes.set(`${run.id}:review-fallback`, Object.freeze(reviewFallbackRuntime));
       run.ownerSessionId = current.ownerSessionId;
       run.ownerSessionFile = current.ownerSessionFile;
@@ -2337,10 +2428,33 @@ export function createUltratermSubagentsExtension(
           && !(final ?? startedRun)?.tasks.some((task) => task.outputStarted === true || task.state === "done")
           && startupFailures.every((task) => isEnsureRefusal(task.error));
         if (refusedByEnsure) return { fallThrough: { runId: run.id, route: model, providers: [], cause: boundedReason(failureText, 240), kind: "ensure" as const } satisfies QuotaFallThrough };
+        // An implicit review wave whose Claude review route died before any output takes its configured read-only
+        // fallback inside this same call: the documented path for proven Claude quota/auth unavailability before
+        // output, whether the dispatch-time snapshot foresaw it or not (J-3759: the snapshot said the tier was up,
+        // the CLI refused, and the review simply failed with one cause).
+        const reviewRefusal = !reviewFallbackActive && readOnlyReviewFallback && !claudeUnavailable && requested.requireImages !== true
+          && stillRunning.length === 0 && !signal?.aborted && fallThroughs.length < MAX_QUOTA_FALL_THROUGHS
+          ? reviewFallThroughReason(final ?? startedRun, startupFailures) : undefined;
+        if (reviewRefusal !== undefined) {
+          // Ask the router NOW, not at dispatch time: a CLI can refuse a plan the snapshot still showed as launchable.
+          const fresh = await readProviderQuota(dependencies.accountCommand, dependencies.now?.());
+          const fallbackBlockNow = fallbackStep === undefined ? "no implicitReview.fallback is configured" : routeQuotaBlock(fresh, fallbackStep);
+          if (fallbackBlockNow === undefined) {
+            return { fallThrough: { runId: run.id, route: model, providers: [], cause: boundedReason(failureText, 240), kind: "review" as const, reviewReason: reviewRefusal } satisfies QuotaFallThrough };
+          }
+          throw new Error(`USAP implicit review failed before any worker produced model output (run ${run.id} · ${model}): ${failureText}. The same review tasks were not re-run on the configured review fallback (${fallbackStep !== undefined ? routeStepLabel(fallbackStep) : "implicitReview.fallback"}): ${fallbackBlockNow}. ${aftermath} No further fallback applies, so the review fails with both causes named.`);
+        }
+        // A review wave that may not use the fallback says why, so a single-cause failure is never a mystery.
+        const reviewFallbackNotUsed = opusReviewDefault && !claudeUnavailable && !reviewFallbackActive && fallbackStep !== undefined
+          ? requested.requireImages === true
+            ? " The configured review fallback serves only read-only text review waves, never an image review."
+            : readOnlyReviewFallback ? ""
+            : " The configured review fallback serves only read-only text reviews (no write, shell or owned paths), so this privileged review never moves to it."
+          : "";
         // A usage limit on a route that has no quota tier cannot fall through: say which config key would let it.
         const ungated = quotaRouted && !claudeWorkerTier && startupFailures.every((task) => isQuotaLaunchFailure(launchFailureText(task))) && reachedProviders(final ?? startedRun ?? run).length === 0
           ? ` Note: ${model} is in no providerQuotaFallback tier of ~/.config/ultraterm/routing.json, so this usage limit cannot fall through; add its provider there to let an implicit wave move on.` : "";
-        throw new Error(`USAP dispatch failed before any worker produced model output (run ${run.id} · ${model}): ${failureText}.${ungated} ${aftermath} ${fallThroughs.length > 0
+        throw new Error(`USAP dispatch failed before any worker produced model output (run ${run.id} · ${model}): ${failureText}.${ungated}${reviewFallbackNotUsed} ${aftermath} ${fallThroughs.length > 0
           ? `This was the automatic fall-through after ${fallThroughSummary(fallThroughs)}: no further fall-through applies, so the dispatch fails with both causes.`
           : "No fallback was selected."}`);
       }

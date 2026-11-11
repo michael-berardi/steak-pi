@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { isClaudeAccountId, type ClaudeAccountId } from "./claude-account.ts";
 import { providerAccountCommand, type AccountCommand } from "./provider-accounts.ts";
 import { routingConfigOrEmpty, type QuotaTierConfig } from "../routing-config.ts";
@@ -45,6 +47,11 @@ export interface QuotaAccount {
   draining?: boolean;
   /** The router's usage windows for this account (for example `seven_day`). */
   windows?: ReadonlyArray<{ name?: string; usedPercent?: number; resetAt?: number }>;
+  /** The account's config folder as the router reported it (`~/.claude`, `~/.claude-b`, ...). Used to map
+   * the CLI's own login, which runs from one folder, to the account row that describes it. */
+  configDir?: string;
+  /** True when this account IS the CLI's default login: the router's launch env unsets CLAUDE_CONFIG_DIR. */
+  defaultLogin?: boolean;
   /** Why the router (or the usage evidence) says this account cannot launch; empty when it can. */
   why: string;
 }
@@ -131,6 +138,8 @@ function evaluateProvider(provider: QuotaProvider, block: unknown, now: number):
       resetAt: finite(w.resetAt),
     })) : undefined;
     const spill = record(account.spill) ? account.spill : undefined;
+    const launch = record(account.launchEnv) ? account.launchEnv : undefined;
+    const unset = Array.isArray(launch?.unset) ? launch.unset.filter((key): key is string => typeof key === "string") : [];
     return {
       id: printable(account.id, `account ${index + 1}`, 40),
       label: printable(account.label, printable(account.id, `account ${index + 1}`, 40), 40),
@@ -142,6 +151,9 @@ function evaluateProvider(provider: QuotaProvider, block: unknown, now: number):
       why: printable(account.stateText, printable(account.ineligibleReason, "ineligible")),
       resetAt: finite(account.resetAt),
       windows,
+      configDir: typeof account.configDir === "string" && account.configDir.length <= 1024 ? account.configDir : undefined,
+      // The default login is the folder the CLI uses when nothing names one: the router says so by unsetting it.
+      defaultLogin: unset.includes("CLAUDE_CONFIG_DIR"),
       // The spill signal is trusted only when the router says exactly `draining: true`; any
       // other shape (absent, null, non-boolean) is treated as not draining.
       draining: spill?.draining === true,
@@ -158,6 +170,7 @@ function evaluateProvider(provider: QuotaProvider, block: unknown, now: number):
     id: row.id, label: row.label, ...(row.eligible !== undefined ? { eligible: row.eligible } : {}),
     ...(row.usedPercent !== undefined ? { usedPercent: row.usedPercent } : {}), ...(row.leases !== undefined ? { leases: row.leases } : {}),
     ...(row.resetAt !== undefined ? { resetAt: row.resetAt } : {}), ...(row.windows !== undefined ? { windows: row.windows } : {}),
+    ...(row.configDir !== undefined ? { configDir: row.configDir } : {}), ...(row.defaultLogin ? { defaultLogin: true } : {}),
     ...(row.draining ? { draining: true } : {}),
     exhausted: row.evidence !== undefined,
     why: row.eligible === true ? "" : row.evidence?.detail ?? (row.eligible === false ? row.why : "the router did not report it eligible"),
@@ -193,6 +206,10 @@ const USAGE_LIMIT_WORDING: ReadonlyArray<readonly [RegExp, string]> = [
   [/subscription_quota_exceeded/i, "subscription_quota_exceeded"],
   [/GoUsageLimitError|Go usage limit exceeded/i, "Go usage limit exceeded"],
   [/usage[_ ]limit[_ ](?:has[_ ]been[_ ])?(?:reached|exceeded)/i, "usage limit reached"],
+  // The Claude Code CLI's own pre-output refusal, as this adapter renders it (claude-worker
+  // syntheticClaudeCause): "quota limit reached; resets 1pm (America/Buenos_Aires); check Claude usage".
+  // Without it a spent Claude plan was never classified as a quota cause (J-3759).
+  [/quota limit reached/i, "quota limit reached"],
   // Pi rewrites every Codex usage_limit_reached / 429 into this sentence before a worker sees it
   // (pi-coding-agent openai-codex-responses), so it is the wording a real subscription refusal arrives with.
   [/hit your ChatGPT usage limit/i, "ChatGPT usage limit reached"],
@@ -259,6 +276,48 @@ export function routeQuotaBlock(snapshot: QuotaSnapshot, step: { provider: strin
 export function claudeQuotaBlock(snapshot: QuotaSnapshot): string | undefined {
   const quota = snapshot.providers.claude;
   return quota && !quota.unconfigured && (quota.exhausted || quota.ineligible) ? quota.cause : undefined;
+}
+
+/**
+ * The account a Claude launch WITHOUT a pinned account actually runs on: the CLI's own login. The CLI
+ * chooses it by config folder - `CLAUDE_CONFIG_DIR` when the session sets one, the default `~/.claude`
+ * folder (the variable unset) otherwise - so a route that pins nothing is gated on THAT account, never
+ * on "some account of this provider is eligible". Undefined when the router cannot map the folder to a
+ * configured account: an unregistered or unreadable login proves nothing about any account.
+ */
+export function claudeLoginAccount(
+  snapshot: QuotaSnapshot,
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = homedir(),
+): QuotaAccount | undefined {
+  if (!snapshot.known) return undefined;
+  const quota = snapshot.providers.claude;
+  if (!quota || quota.unconfigured || quota.rows.length === 0) return undefined;
+  const configured = typeof env.CLAUDE_CONFIG_DIR === "string" ? env.CLAUDE_CONFIG_DIR.trim() : "";
+  if (configured === "") return quota.rows.find((row) => row.defaultLogin === true) ?? folderRow(quota.rows, join(home, ".claude"));
+  return folderRow(quota.rows, configured);
+}
+
+function folderRow(rows: readonly QuotaAccount[], folder: string): QuotaAccount | undefined {
+  const wanted = folder.replace(/\/+$/, "");
+  return wanted.length === 0 ? undefined : rows.find((row) => row.configDir !== undefined && row.configDir.replace(/\/+$/, "") === wanted);
+}
+
+/**
+ * Why a Claude launch that pins no account cannot run on the login it would use, or undefined when that
+ * login is proven launchable or the router cannot name it (unknown and unregistered are never exhaustion).
+ * The router already holds this evidence, so a spent login is refused here with the account named, instead
+ * of launching into the CLI's own refusal (J-3759: the per-turn line said the tier was up because another
+ * account was eligible, while the parent's own login was at 100%).
+ */
+export function claudeLoginBlock(
+  snapshot: QuotaSnapshot,
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = homedir(),
+): { account: QuotaAccount; cause: string } | undefined {
+  const account = claudeLoginAccount(snapshot, env, home);
+  if (account === undefined || account.exhausted !== true) return undefined;
+  return { account, cause: `${account.label} (the Claude login an unpinned route uses): ${account.why}` };
 }
 
 export interface ClaudeAccountPick {

@@ -2422,6 +2422,45 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
       } finally { await shutdown(h); }
     });
 
+    describe("synthetic: the implicit review route runs on an account it can actually launch", () => {
+      const loginRow = (extra: Record<string, unknown> = {}) => ({ ...usable("primary", "Claude 1"),
+        configDir: join(homedir(), ".claude"), launchEnv: { unset: ["CLAUDE_CONFIG_DIR"] }, ...extra });
+      const secondRow = (extra: Record<string, unknown> = {}) => ({ ...usable("b", "Claude 2"),
+        configDir: join(homedir(), ".claude-b"), ...extra });
+      const review = [{ label: "review", task: "Review the diff", role: "reviewer" }];
+
+      it("pins an eligible account instead of this session's own spent login, so the review never reaches the CLI's refusal", async () => {
+        // The incident: both own logins at 100%, a lent account eligible. The tier read "up" (correctly, for a pinned
+        // launch), but the review used the parent's login and the CLI refused it with "quota limit reached".
+        const spent = loginRow({ ...cooling("primary", "Claude 1"), launchEnv: { unset: ["CLAUDE_CONFIG_DIR"] } });
+        const runner = done();
+        const { h, selected } = quotaHarness(status({ codex: solUp, go: goUp, claude: [spent, secondRow({ usedPercent: 21 })] }), runner, { env: {} });
+        try {
+          const result = await dispatch(h, { tasks: review });
+          expect(runner.mock.calls[0][0].run).toMatchObject({ harness: "claude-code", model: OPUS_ROUTE, claudeAccount: "b" });
+          expect(selected).toEqual(["b"]);
+          expect(result.details.run.selection).toMatchObject({ source: "automatic-review", automaticReview: true, accountAutomatic: true });
+          expect(result.details.run.tasks[0].reviewFallback).toBeUndefined();
+        } finally { await shutdown(h); }
+      });
+
+      it("moves the review to its configured fallback when no account can be pinned and this session's login is spent", async () => {
+        const spent = loginRow({ ...cooling("primary", "Claude 1"), launchEnv: { unset: ["CLAUDE_CONFIG_DIR"] } });
+        // Busy is ineligible but NOT spent, so the tier verdict alone proves nothing; the login evidence is what counts.
+        const busyRow = { configured: true, id: "b", label: "Claude 2", configDir: join(homedir(), ".claude-b"), ineligibleReason: "all slots busy", windows: [] };
+        const runner = done();
+        const { h } = quotaHarness(status({ codex: solUp, go: goUp, claude: [spent, busyRow] }), runner, { env: {} });
+        try {
+          const result = await dispatch(h, { tasks: review });
+          expect(result.details.run).toMatchObject({ model: SOL_ROUTE, state: "done" });
+          expect(result.details.run.selection.source).toBe("automatic-review-fallback");
+          // The launch that really ran carries the receipt: which route refused, and why the review moved.
+          expect(runner.mock.calls[0][0].run.tasks[0].reviewFallback).toEqual({ from: OPUS_ROUTE, to: SOL_ROUTE, reason: "quota" });
+          expect(runner.mock.calls.map(([context]) => context.run.model)).toEqual([SOL_ROUTE]);
+        } finally { await shutdown(h); }
+      });
+    });
+
     describe("synthetic: operator project policy and route availability", () => {
       const projectOf = (h: ReturnType<typeof harness>) => basename(h.ctx.cwd).toLowerCase();
       const withPolicy = (answer: unknown, runner: ReturnType<typeof done>, policy: Record<string, unknown>, extra: readonly unknown[] = [], overrides: Partial<UltratermSubagentsDependencies> = {}) => {
@@ -2480,6 +2519,19 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
         try {
           await expect(dispatch(h, { tasks: plain })).rejects.toThrow(/Claude is not allowed for this project \(policy noClaudeProjects: policy file is not valid JSON\)/);
           expect(runner).not.toHaveBeenCalled();
+        } finally { await shutdown(h); }
+      });
+
+      it("says the Claude tier is up but names this session's spent login, so an unpinned claude-code route is not a surprise", async () => {
+        const runner = done();
+        const spent = { ...cooling("primary", "Claude 1"), configDir: join(homedir(), ".claude"), launchEnv: { unset: ["CLAUDE_CONFIG_DIR"] } };
+        const lent = { ...usable("b", "Claude 2"), usedPercent: 21, configDir: join(homedir(), ".claude-b") };
+        const { h } = withPolicy(status({ codex: solUp, go: goUp, claude: [spent, lent] }), runner, {}, [], { env: {} });
+        try {
+          const text = ((await h.handlers.get("before_agent_start")!({ systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string }).systemPrompt;
+          expect(text).toMatch(/Claude subscription tier \(claude-code\/claude-haiku-5-5\): up \(this session's Claude login Claude 1 is COOLING until \w{3} \d\d:\d\d, so an unpinned claude-code route is refused\)/);
+          // The tier is still offered as usable: an implicit wave pins an eligible account.
+          expect(text).toMatch(/Next usable route: /);
         } finally { await shutdown(h); }
       });
 
@@ -3445,14 +3497,65 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
         } finally { await shutdown(h); }
       });
 
-      it("an implicit reviewer wave refused on Claude's quota keeps its exact route and never falls through to Go, Terra or Haiku", async () => {
+      // J-3759: a pre-output quota refusal on the implicit review route is exactly the documented case for
+      // implicitReview.fallback, so the same review tasks run on it inside this one tool call.
+      it("an implicit read-only reviewer wave refused on Claude's quota re-runs the same review on the configured fallback", async () => {
         const runner = routed({ [OPUS_ROUTE]: CLAUDE_LIMIT });
         const { h } = quotaHarness(status({ codex: solUp, go: goUp, claude: claudeUp }), runner, open);
         try {
+          const result = await dispatch(h, { tasks: [{ label: "review", task: "Review the diff", role: "reviewer" }] });
+          // Exactly two launches from ONE tool call: the Claude review route (refused), then implicitReview.fallback.
+          expect(runner.mock.calls.map(([context]) => context.run.model)).toEqual([OPUS_ROUTE, SOL_ROUTE]);
+          expect(result.details.run).toMatchObject({ model: SOL_ROUTE, state: "done" });
+          expect(result.details.run.harness ?? "pi").toBe("pi");
+          expect(result.details.run.selection).toMatchObject({ provider: "openai-codex", modelId: "gpt-6.1-terra",
+            source: "automatic-review-fallback", automaticReview: true });
+          expect(runner.mock.calls[1][0].run.tasks[0].reviewFallback).toEqual({ from: OPUS_ROUTE, to: SOL_ROUTE, reason: "quota" });
+          // The refused first run stays failed with its own cause and is never resumed or replayed.
+          const first = await recordOf(h, "run-fixed-1");
+          expect(first).toMatchObject({ state: "failed", model: OPUS_ROUTE });
+          expect(String(first.tasks[0].error)).toContain("quota limit reached");
+          // The result names both the refusal and the route the review moved to.
+          expect(result.content[0].text).toContain("Review fallback: the Claude review route claude-code/claude-opus-5-5 was refused on the Claude usage limit before any output");
+          expect(result.content[0].text).toMatch(/was refused on the Claude usage limit before any worker produced output \(\[review\] quota limit reached/);
+        } finally { await shutdown(h); }
+      });
+
+      it("names both causes when the configured review fallback is unavailable too", async () => {
+        const runner = routed({ [OPUS_ROUTE]: CLAUDE_LIMIT });
+        const { h } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeUp }), runner, open);
+        try {
           const message = await messageOf(dispatch(h, { tasks: [{ label: "review", task: "Review the diff", role: "reviewer" }] }));
-          expect(message).toMatch(/^USAP dispatch failed before any worker produced model output \(run run-fixed-1 · claude-code\/claude-opus-5-5\): \[review\] quota limit reached/);
-          expect(message).toMatch(/No fallback was selected\.$/);
+          expect(message).toMatch(/^USAP implicit review failed before any worker produced model output \(run run-fixed-1 · claude-code\/claude-opus-5-5\): \[review\] quota limit reached/);
+          expect(message).toMatch(/were not re-run on the configured review fallback \(GPT-6\.1 Terra\): every GPT account is unavailable/);
           expect(runner).toHaveBeenCalledTimes(1);
+        } finally { await shutdown(h); }
+      });
+
+      it("a privileged reviewer never moves to the Pi review fallback: it keeps its exact Claude route", async () => {
+        const runner = routed({ [OPUS_ROUTE]: CLAUDE_LIMIT });
+        const { h } = quotaHarness(status({ codex: solUp, go: goUp, claude: claudeUp }), runner, open);
+        try {
+          const message = await messageOf(dispatch(h, { tasks: [{ label: "review", task: "Review and patch", role: "reviewer", mayEdit: true, ownedPaths: ["src/x.ts"] }] }));
+          expect(message).toMatch(/^USAP dispatch failed before any worker produced model output \(run run-fixed-1 · claude-code\/claude-opus-5-5\)/);
+          expect(message).toContain("The configured review fallback serves only read-only text reviews");
+          expect(runner).toHaveBeenCalledTimes(1);
+        } finally { await shutdown(h); }
+      });
+
+      it("refuses an explicit claude-code route on this session's spent login instead of launching into the CLI's refusal", async () => {
+        // Both plans' own logins are spent while a lent account is eligible: the tier verdict says "up", but an
+        // explicit route that pins nobody runs on this session's login, which the CLI would refuse (J-3759).
+        const spentLogin = { ...cooling("primary", "Claude 1"), configDir: join(homedir(), ".claude"), launchEnv: { unset: ["CLAUDE_CONFIG_DIR"] } };
+        const lent = { ...usable("b", "Claude 2"), usedPercent: 21, configDir: join(homedir(), ".claude-b") };
+        const runner = routed({});
+        const { h, selected } = quotaHarness(status({ codex: solUp, go: goUp, claude: [spentLogin, lent] }), runner, { ...open, env: {} });
+        try {
+          const message = await messageOf(dispatch(h, { model: HAIKU, tasks: plain }));
+          expect(message).toMatch(/^USAP explicit route claude-code\/claude-haiku-5-5 cannot launch: Claude 1 \(the Claude login an unpinned route uses\): cooling down until Mon 02:59/);
+          expect(message).toContain("pin an eligible claudeAccount");
+          expect(runner).not.toHaveBeenCalled();
+          expect(selected).toEqual([]);
         } finally { await shutdown(h); }
       });
     });
