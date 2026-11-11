@@ -238,7 +238,9 @@ export function classifyFailure(error: string | undefined): FailureKind {
   const message = error ?? "";
   // A budget stop says nothing about the route; its numbers must not read as an HTTP status.
   if (/turn.limit|-turn|turn budget|time budget|deadline|timed out after/i.test(message) && !/\b402\b|insufficient[_ ]credits/i.test(message)) return "other";
-  if (/\b402\b|insufficient[_ ]credits|requires more credits|no endpoints? (?:found|available)|endpoints? out of \d+ requested|subscription_quota_exceeded|usage limit|quota[_ -]?(?:exhausted|exceeded|reached)/i.test(message)) return "quota";
+  // `insufficient_quota` and `Allocated quota exceeded` arrive as HTTP 429 bodies: spent quota, not a throttle, so they
+  // hop to the next tier rather than being read as a transient rate limit.
+  if (/\b402\b|insufficient[_ ]credits|insufficient[_ ]quota|allocated quota exceeded|requires more credits|no endpoints? (?:found|available)|endpoints? out of \d+ requested|subscription_quota_exceeded|usage limit|quota[_ -]?(?:exhausted|exceeded|reached)/i.test(message)) return "quota";
   // A 429 or rate limit is the route throttling right now, not a 4xx defect: it is held out at once (2026-11-03: a route kept
   // receiving scouts while every call came back 429, because a 4xx only demotes after three in a row).
   if (/\b429\b|too many requests|rate.?limit/i.test(message)) return "rate-limit";

@@ -819,6 +819,39 @@ interface RetainedTeardown {
   warning: string;
 }
 
+/**
+ * A `/reload` replaces the extension instance inside the SAME process. Live
+ * runtimes, retained leases and the last teardown warning are therefore
+ * process-global: a successor instance must recognize its own predecessor's
+ * lease and hand it over, never collide with it and degrade to memory-only.
+ * Keyed by session owner, so a foreign session or process never matches.
+ */
+const LIVE_RUNTIMES = Symbol.for("ultraterm.usap.live-runtimes.v1");
+function liveRuntimes(): Map<string, SessionRuntime> {
+  const holder = globalThis as unknown as Record<symbol, Map<string, SessionRuntime> | undefined>;
+  if (!holder[LIVE_RUNTIMES]) holder[LIVE_RUNTIMES] = new Map();
+  return holder[LIVE_RUNTIMES]!;
+}
+const RETAINED_TEARDOWNS = Symbol.for("ultraterm.usap.retained-teardowns.v1");
+function retainedTeardownRegistry(): RetainedTeardown[] {
+  const holder = globalThis as unknown as Record<symbol, RetainedTeardown[] | undefined>;
+  if (!holder[RETAINED_TEARDOWNS]) holder[RETAINED_TEARDOWNS] = [];
+  return holder[RETAINED_TEARDOWNS]!;
+}
+const SHUTDOWN_WARNING_BOX = Symbol.for("ultraterm.usap.shutdown-warning.v1");
+/** The host-side operations a predecessor closure forwards to after a handover. */
+interface HostRedirect {
+  flushCompletions(current: SessionRuntime): void;
+  retryDelivery(current: SessionRuntime): void;
+  persistTelemetry(current: SessionRuntime, run: RunRecord): void;
+  setStatus(current: SessionRuntime, ctx?: ExtensionContext): void;
+}
+function shutdownWarningBox(): { current?: { at: number; owner: string; message: string } } {
+  const holder = globalThis as unknown as Record<symbol, { current?: { at: number; owner: string; message: string } } | undefined>;
+  if (!holder[SHUTDOWN_WARNING_BOX]) holder[SHUTDOWN_WARNING_BOX] = {};
+  return holder[SHUTDOWN_WARNING_BOX]!;
+}
+
 /** Tool calls in a row without a dispatch before the parent is reminded once to fan out independent parts. */
 export const DELEGATION_NUDGE_AFTER = 40;
 export const DELEGATION_NUDGE_TEXT =
@@ -860,6 +893,17 @@ interface SessionRuntime {
   flushingCompletions: boolean;
   deliveryRetry?: ReturnType<typeof setTimeout>;
   deliveryRetries: number;
+  /** The host API of the instance that currently owns this runtime. A reload
+   * handover rebinds it so telemetry and completion delivery use the live host. */
+  hostPi: ExtensionAPI;
+  /** Set only when a `/reload` shutdown parked this live runtime for its successor.
+   * A concurrent duplicate instance never sees it and keeps degrading safely. */
+  handedOver?: boolean;
+  /** The extension instance (factory closure) that currently hosts this runtime. A
+   * predecessor's worker callbacks still reference its own closure; those forward
+   * to `redirect` (the host's operations) instead of acting on a stale host. */
+  hostToken: object;
+  redirect?: HostRedirect;
   store?: CheckpointStore;
   checkpointError?: string;
   checkpointHealth: PersistenceHealth;
@@ -1286,15 +1330,22 @@ export function createUltratermSubagentsExtension(
     /** Teardowns whose workers had not settled at the bounded deadline. Their
      * checkpoint lease and live state stay retained (never force-released, never
      * stolen) until the real `coordinator.shutdown()` promise settles. */
-    const retainedTeardowns: RetainedTeardown[] = [];
+    /** Identifies this factory instance as a runtime's host; a reload successor gets its own. */
+    const instanceToken = {};
+    /** A predecessor instance forwards to the current host when it no longer hosts a runtime. */
+    const hostRedirectOf = (current: SessionRuntime): HostRedirect | undefined =>
+      current.hostToken === instanceToken ? undefined : current.redirect;
+    const retainedTeardowns = retainedTeardownRegistry();
     /** Survives the runtime it described so a successor session can report it. */
-    let lastShutdownWarning: { at: number; owner: string; message: string } | undefined;
+    const warningBox = shutdownWarningBox();
 
     const persistenceOf = (current: SessionRuntime): Persistence => current.store ? "checkpointed" : "memory-only";
     const sessionWarning = (current: SessionRuntime): string | undefined =>
-      current.shutdownWarning ?? (lastShutdownWarning?.owner === current.owner ? lastShutdownWarning.message : undefined);
+      current.shutdownWarning ?? (warningBox.current?.owner === current.owner ? warningBox.current.message : undefined);
 
     const setStatus = (current: SessionRuntime, ctx?: ExtensionContext): void => {
+      const host = hostRedirectOf(current);
+      if (host) return host.setStatus(current, ctx);
       const target = ctx ?? current.statusContext;
       if (!target || current.closed || !ownsContext(current, target)) return;
       current.statusContext = target;
@@ -1332,13 +1383,17 @@ export function createUltratermSubagentsExtension(
     };
 
     const persistTelemetry = (current: SessionRuntime, run: RunRecord): void => {
+      const host = hostRedirectOf(current);
+      if (host) return host.persistTelemetry(current, run);
       if (runtime !== current || !current.telemetryWritable || !ownsContext(current, current.statusContext)) return;
       const snapshot = usapTelemetrySnapshot(run, linksFor(current, run));
       const signature = JSON.stringify(snapshot);
       if (current.telemetrySignatures.get(run.id) === signature) return;
       try {
         // Pi's public action delegates to SessionManager.appendCustomEntry.
-        pi.appendEntry(USAP_TELEMETRY_CUSTOM_TYPE, snapshot);
+        // The bound host is the instance that owns the runtime now, so a reload
+        // handover keeps telemetry on the live host instead of a stale one.
+        current.hostPi.appendEntry(USAP_TELEMETRY_CUSTOM_TYPE, snapshot);
         current.telemetrySignatures.set(run.id, signature);
       } catch {
         // Telemetry observation must never affect child execution.
@@ -1400,8 +1455,8 @@ export function createUltratermSubagentsExtension(
       if (index >= 0) retainedTeardowns.splice(index, 1);
       // The warning only described the retained lease; drop it once every lease
       // for that session has actually settled.
-      if (lastShutdownWarning?.owner === entry.owner && !retainedTeardowns.some((other) => other.owner === entry.owner)) {
-        lastShutdownWarning = undefined;
+      if (warningBox.current?.owner === entry.owner && !retainedTeardowns.some((other) => other.owner === entry.owner)) {
+        warningBox.current = undefined;
       }
     };
 
@@ -1437,6 +1492,8 @@ export function createUltratermSubagentsExtension(
         return;
       }
       current.closed = true;
+      const live = liveRuntimes();
+      if (live.get(current.owner) === current) live.delete(current.owner);
       clearTimeout(current.deliveryRetry);
       // Snapshot before shutdown changes active tasks into ordinary cancellations.
       for (const run of current.coordinator.list()) {
@@ -1457,6 +1514,7 @@ export function createUltratermSubagentsExtension(
         if (persist && runtime === current) {
           for (const run of current.coordinator.list()) persistTelemetry(current, run);
         }
+        current.telemetryWritable = false;
         closeBindings(current);
         current.workerRuntimes.clear();
         releaseRuntimeUi(current, ctx);
@@ -1468,7 +1526,8 @@ export function createUltratermSubagentsExtension(
       // released and never stolen. The lease closes on real settlement only.
       const entry: RetainedTeardown = { owner: current.owner, runtime: current, warning: RETAINED_LEASE_WARNING };
       retainedTeardowns.push(entry);
-      lastShutdownWarning = { at: Date.now(), owner: current.owner, message: RETAINED_LEASE_WARNING };
+      current.telemetryWritable = false;
+      warningBox.current = { at: Date.now(), owner: current.owner, message: RETAINED_LEASE_WARNING };
       current.shutdownWarning = RETAINED_LEASE_WARNING;
       current.checkpointError = RETAINED_LEASE_WARNING;
       // Frozen worker runtimes stay resolvable: a live worker still needs its route.
@@ -1481,7 +1540,7 @@ export function createUltratermSubagentsExtension(
           const message = "Worker shutdown failed; checkpoint lease retained because worker termination is unconfirmed";
           current.checkpointError = message;
           current.shutdownWarning = message;
-          lastShutdownWarning = { at: Date.now(), owner: current.owner, message };
+          warningBox.current = { at: Date.now(), owner: current.owner, message };
         },
       );
       releaseRuntimeUi(current, ctx, RETAINED_LEASE_WARNING);
@@ -1595,10 +1654,42 @@ export function createUltratermSubagentsExtension(
       throw new Error(`${action} is refused: ${current.checkpointError ?? "this session cannot own its durable checkpoint store"}. A run started now could not be resumed; hub list and hub diagnose stay read-only.`);
     };
 
+    /** A reload handover: the reloaded instance takes over the predecessor's
+     * live runtime (store, coordinator, relay, workers) for the SAME session.
+     * Nothing is claimed twice and no running worker is cancelled. */
+    const adoptRuntime = (parked: SessionRuntime, ctx: ExtensionContext): SessionRuntime => {
+      runtime = parked;
+      parked.hostPi = pi;
+      parked.handedOver = false;
+      // This instance now hosts the runtime; the predecessor's callbacks forward here.
+      parked.hostToken = instanceToken;
+      parked.redirect = {
+        flushCompletions: (c) => flushCompletions(c),
+        retryDelivery: (c) => retryDelivery(c),
+        persistTelemetry: (c, run) => persistTelemetry(c, run),
+        setStatus: (c, ctx) => setStatus(c, ctx),
+      };
+      parked.statusContext = ctx;
+      parked.agentIdle = ctx.isIdle?.() ?? true;
+      parked.telemetryWritable = true;
+      liveRuntimes().set(parked.owner, parked);
+      setStatus(parked, ctx);
+      reclaimLostSteers(parked);
+      flushCompletions(parked);
+      return parked;
+    };
+
     const ensureRuntime = (ctx: ExtensionContext): SessionRuntime => {
       const owner = sessionOwner(ctx);
       if (!owner) throw new Error("USAP requires a native session identity; access refused.");
       const [ownerSessionId, ownerSessionFile] = JSON.parse(owner) as [string, string | null];
+      // A predecessor instance of this same session (a /reload in this process,
+      // with or without a shutdown event) may still own the live runtime and its
+      // checkpoint lock. Adopt it instead of claiming a second store.
+      if (!runtime || runtime.closed) {
+        const parked = liveRuntimes().get(owner);
+        if (parked && !parked.closed && parked.handedOver) return adoptRuntime(parked, ctx);
+      }
       if (runtime && !runtime.closed) {
         if (runtime.owner !== owner) throw new Error("USAP session ownership mismatch; access refused until the session lifecycle is initialized.");
         runtime.statusContext = ctx;
@@ -1639,10 +1730,18 @@ export function createUltratermSubagentsExtension(
         onTaskSettled: (run, task) => { recordSettledTask(evidenceStoreOf(dependencies), run, task, (dependencies.now ?? Date.now)()); },
         replyPolicy: (run, task) => {
           const receipt = run.selection?.taskClass;
-          if (receipt?.outcome !== "served" || task.taskClass !== receipt.name) return undefined;
-          const retryMaxTokens = configuredTaskClass(receipt.name)?.retryMaxTokens;
+          const classed = receipt !== undefined && receipt.outcome === "served" && task.taskClass === receipt.name;
+          // An implicit (non-explicit-route) wave continues a content-filter refusal
+          // on its next configured route at any point, in the same worker session.
+          // An explicit route never reroutes, so it gets no policy at all.
+          const implicit = run.selection?.source !== undefined && run.selection.source !== "override";
+          if (!classed && !implicit) return undefined;
           const alternates = (workerRuntimes.get(run.id)?.alternates ?? []).map((item) => `${item.model.provider}/${item.model.id}`);
-          return { ...(retryMaxTokens !== undefined ? { maxTokens: retryMaxTokens } : {}), alternates };
+          if (!classed && alternates.length === 0) return undefined;
+          const retryMaxTokens = classed ? configuredTaskClass(receipt!.name)?.retryMaxTokens : undefined;
+          // The empty-reply boost retry stays a classed-run contract; an implicit
+          // wave without a class only gains the content-filter continuation.
+          return { ...(retryMaxTokens !== undefined ? { maxTokens: retryMaxTokens } : {}), alternates, ...(classed ? {} : { emptyReplyRetry: false }) };
         },
         onChange: (run) => {
           if (!created || created.closed) return;
@@ -1698,6 +1797,8 @@ export function createUltratermSubagentsExtension(
         workerRuntimes,
         telemetrySignatures: new Map(),
         telemetryWritable: true,
+        hostPi: pi,
+        hostToken: instanceToken,
         statusContext: ctx,
         closed: false,
         completionBuffer: [],
@@ -1720,13 +1821,14 @@ export function createUltratermSubagentsExtension(
         checkpointCollision: claim.collision,
         checkpointError: claim.error,
         readOnlyCheckpoints: () => readOnlyCheckpointsFor(owner),
-        shutdownWarning: lastShutdownWarning?.owner === owner ? lastShutdownWarning.message : undefined,
+        shutdownWarning: warningBox.current?.owner === owner ? warningBox.current.message : undefined,
         attachStore: (candidate: CheckpointStore, adoptCtx?: ExtensionContext) => adoptStore(candidate, adoptCtx),
         // Tools can initialize the runtime after agent_start already fired.
         agentIdle: ctx.isIdle?.() ?? true,
         startupWatchers: new Set(),
       };
       runtime = created;
+      liveRuntimes().set(owner, created);
       if (store) adoptStore(store, ctx);
       // Surface a retained lease (and its refusal of new work) in live status.
       const warning = sessionWarning(created);
@@ -1786,6 +1888,8 @@ export function createUltratermSubagentsExtension(
     // Short, bounded retries bridge SDK idle/append transitions without polling
     // throughout a long task or re-submitting an accepted wake.
     const retryDelivery = (current: SessionRuntime): void => {
+      const host = hostRedirectOf(current);
+      if (host) return host.retryDelivery(current);
       if (current.closed || !ownsContext(current, current.statusContext) || current.deliveryRetry) return;
       if (current.deliveryRetries >= 20) {
         // A busy parent receives a steer only when its current step ends (a long tool call can take minutes), so a missing
@@ -1821,6 +1925,8 @@ export function createUltratermSubagentsExtension(
     /** Busy completions steer into the current turn. Idle background completions
      * request at most one new turn per flush; receipts prevent repeat delivery. */
     const flushCompletions = (current: SessionRuntime): void => {
+      const host = hostRedirectOf(current);
+      if (host) return host.flushCompletions(current);
       if (runtime !== current || current.closed || !ownsContext(current, current.statusContext) || current.flushingCompletions) return;
       if (current.agentIdle && current.statusContext?.isIdle && !current.statusContext.isIdle()) {
         retryDelivery(current);
@@ -1870,7 +1976,7 @@ export function createUltratermSubagentsExtension(
             // Pi treats triggerTurn:false as deferred passive append even when
             // busy. Omit it then: native steer joins the current run, never starts
             // a new one; only an idle parent gets an explicit wake request.
-            pi.sendMessage(message, current.agentIdle
+            current.hostPi.sendMessage(message, current.agentIdle
               ? { deliverAs: "steer", triggerTurn }
               : { deliverAs: "steer" });
           } catch {
@@ -1881,7 +1987,7 @@ export function createUltratermSubagentsExtension(
             const observed = observedCompletionIds(current.statusContext) ?? new Set<string>();
             acknowledge(observed);
             if (!batch.every((item) => observed.has(item.runId))) {
-              try { pi.sendMessage(message, { deliverAs: "steer", triggerTurn: false }); }
+              try { current.hostPi.sendMessage(message, { deliverAs: "steer", triggerTurn: false }); }
               catch { retryDelivery(current); return; }
             }
           }
@@ -2015,8 +2121,20 @@ export function createUltratermSubagentsExtension(
       flushCompletions(runtime);
     });
 
-    const leaveSession = async (_event: unknown, ctx: ExtensionContext) => {
+    const leaveSession = async (event: { reason?: string } | undefined, ctx: ExtensionContext) => {
       if (runtime && !ownsContext(runtime, ctx)) return;
+      const current = runtime;
+      // A reload in this process is a handover, not a teardown: with workers still
+      // running, the runtime (store, coordinator, relay) stays live and parked in
+      // the process-global registry so the reloaded instance adopts it. Without
+      // workers the ordinary settled teardown releases the checkpoint lock.
+      if (event?.reason === "reload" && current && !current.closed && current.coordinator.activeRuns().length > 0) {
+        clearTimeout(current.deliveryRetry);
+        current.deliveryRetry = undefined;
+        current.handedOver = true;
+        releaseRuntimeUi(current, ctx);
+        return;
+      }
       await destroyRuntime(ctx);
     };
     // Before-switch/fork hooks are cancellable and precede SDK validation.

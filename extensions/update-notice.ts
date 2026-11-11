@@ -26,6 +26,53 @@ export function noticeText(state: UpdateState): string | undefined {
   return state.available ? `Steak Pi ${state.latest} available (you have ${state.current}) · /steak-update` : undefined;
 }
 
+/** The host surface a queued reload needs. Pi's built-in `/reload` warns and drops
+ * while busy; Steak Pi's own reload paths must never abort a running operation and
+ * never drop the request: they wait for idle and, if the host is busy again when
+ * the wait returns, run at the next idle instead. */
+export interface ReloadContext {
+  isIdle(): boolean;
+  waitForIdle?: () => Promise<void>;
+  reload(): Promise<void>;
+}
+
+export async function reloadWhenIdle(
+  pi: Pick<ExtensionAPI, "on">,
+  ctx: ReloadContext,
+  notify: (message: string, level: "info" | "error") => void,
+): Promise<void> {
+  if (typeof ctx.waitForIdle !== "function") {
+    notify("Reload refused: this Pi build does not expose ctx.waitForIdle, so reloading now could abort a running operation. Run /reload yourself once the agent is idle.", "error");
+    return;
+  }
+  let queued = false;
+  let done = false;
+  // Always reload through the command context (the only one that exposes reload);
+  // the agent_settled event context is not a command context.
+  const runReload = async (): Promise<void> => {
+    if (done) return;
+    done = true;
+    off();
+    try {
+      await ctx.reload();
+    } catch (error) {
+      notify(`Reload failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+    }
+  };
+  const off = pi.on("agent_settled", async () => {
+    if (queued) await runReload();
+  });
+  if (!ctx.isIdle()) notify("Steak Pi reload queued: it will run when the current response finishes.", "info");
+  await ctx.waitForIdle();
+  if (ctx.isIdle()) {
+    await runReload();
+    return;
+  }
+  // The wait returned but a new run already started: keep the request queued for
+  // the next idle instead of letting the host warn and drop it.
+  queued = true;
+}
+
 function runCli(args: string[]): Promise<{ ok: boolean; output: string }> {
   return new Promise((resolve) => {
     execFile("/bin/sh", [CLI, ...args], { timeout: 300_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
@@ -66,8 +113,7 @@ export default function updateNotice(pi: ExtensionAPI): void {
       ctx.ui.setStatus(STATUS_KEY, undefined);
       ctx.ui.notify(result.output.split("\n").slice(-3).join("\n"), "info");
       if (/up to date/i.test(result.output)) return;
-      await ctx.waitForIdle?.();
-      await ctx.reload();
+      await reloadWhenIdle(pi, ctx, (message, level) => ctx.ui.notify(message, level));
     },
   });
 }

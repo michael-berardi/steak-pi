@@ -320,7 +320,7 @@ describe("self-healing at the dispatch boundary", () => {
       expect(next.details.run.model).toBe(A);
     } finally { await t.close(); }
   });
-  it("never resends a content-filter refusal that arrives after output began; the run fails with the named cause", async () => {
+  it("continues an implicit classed wave past a content-filter refusal that arrived after output began, naming the hop", async () => {
     configure();
     const store = newStore();
     const refusal = '400: {"code":"data_inspection_failed","message":"Input text data may contain inappropriate content."}';
@@ -330,13 +330,13 @@ describe("self-healing at the dispatch boundary", () => {
         context.onProgress({ outputStarted: true });
         return context.reply?.alternate === undefined
           ? { state: "failed", output: "partial", error: refusal, turns: 1, usage: emptyUsage() }
-          : { state: "done", output: "Evidence: must not run", turns: 1, usage: emptyUsage() };
+          : { state: "done", output: "Evidence: continued on the next route", turns: 1, usage: emptyUsage() };
       },
     });
     try {
       const result = await t.dispatch({ tasks: [leaf("class-heal")] });
-      expect(t.calls.map((call) => call.reply)).toEqual([undefined]);
-      expect(result.details.run.tasks[0]).toMatchObject({ state: "failed", error: expect.stringContaining("data_inspection_failed") });
+      expect(t.calls.map((call) => call.reply)).toEqual([undefined, { alternate: 0 }]);
+      expect(result.details.run.tasks[0]).toMatchObject({ state: "done" });
       expect(store.view().tasks[0]).toMatchObject({ route: A, outcome: "fail", failureKind: "content-filter" });
     } finally { await t.close(); }
   });

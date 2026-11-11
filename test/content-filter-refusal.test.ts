@@ -41,3 +41,19 @@ describe("provider content-filter refusal shape", () => {
     expect(transientFailure(DATA_INSPECTION, 0)).toBeUndefined();
   });
 });
+
+describe("quota and rate-limit classification of HTTP 429 bodies", () => {
+  it("names a 429 whose body says insufficient_quota a quota refusal, not a transient rate limit", () => {
+    expect(classifyFailure('429 Too Many Requests: {"error":{"code":"insufficient_quota","message":"You exceeded your current quota"}}')).toBe("quota");
+    expect(classifyFailure('429 {"error":{"message":"Allocated quota exceeded, please increase your quota limit"}}')).toBe("quota");
+  });
+
+  it("keeps a plain 429 throttle as a rate limit that is never a quota refusal", () => {
+    expect(classifyFailure("429 Too Many Requests: slow down")).toBe("rate-limit");
+    expect(classifyFailure("429 rate limit reached for requests per minute")).toBe("rate-limit");
+  });
+
+  it("does not read a content-filter 400 as a quota refusal", () => {
+    expect(classifyFailure(DATA_INSPECTION)).toBe("content-filter");
+  });
+});

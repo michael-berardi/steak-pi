@@ -67,7 +67,7 @@ export interface CoordinatorOptions {
    * refused on spent credits or a server error after output began: retry once on the same route with a higher output
    * budget, then move to the next ranked route (`alternates`, as `provider/model`, in order). Absent: neither happens.
    */
-  replyPolicy?: (run: RunRecord, task: TaskRecord) => { maxTokens?: number; alternates: readonly string[] } | undefined;
+  replyPolicy?: (run: RunRecord, task: TaskRecord) => { maxTokens?: number; alternates: readonly string[]; emptyReplyRetry?: boolean } | undefined;
 }
 
 /** An empty or output-exhausted reply: the worker answered but wrote nothing a parent can use. */
@@ -571,6 +571,10 @@ export class SubagentCoordinator {
           let leftRouteAt = this.now();
           let leftRouteCost = 0;
           let currentRoute = runtime.record.model;
+          // An implicit (non-explicit-route) wave may continue a content-filter
+          // refusal on its next configured route at ANY point, with the worker
+          // session and transcript intact. An explicit route never reroutes.
+          const implicitWave = runtime.record.selection?.source !== undefined && runtime.record.selection.source !== "override";
           for (let attempt = 0; ; attempt += 1) {
             // Automatic continuation shares the original task budget. Supply
             // an attempt-local run view so neither runner replenishes it and
@@ -603,17 +607,19 @@ export class SubagentCoordinator {
             // once; an empty or output-exhausted reply is retried once here with a higher output budget, then moves on.
             const emptyKind = emptyReplyKind(result);
             const refusal = result.state === "failed" ? classifyFailure(result.error) : undefined;
-            // A provider content-filter refusal hops only before any output: after output the run fails with its named cause.
-            const contentFiltered = refusal === "content-filter" && task.outputStarted !== true;
+            // A provider content-filter refusal names the input, not the route: an
+            // implicit wave hops at any point (the resumed worker session keeps the
+            // transcript); pre-output hops stay available to every classed run.
+            const contentFiltered = refusal === "content-filter" && (task.outputStarted !== true || implicitWave);
             const hardRefusal = refusal === "quota" || refusal === "http-5xx" || contentFiltered;
             const policy = (emptyKind || hardRefusal) && !isTerminal(task.state) && !taskRuntime.stopState && !taskRuntime.controller.signal.aborted
               && safeTurns(result.turns, 0) < runtime.record.maxTurns && this.remainingRunBudgetMs(runtime) >= MIN_RESUME_BUDGET_MS
               ? this.replyPolicy?.(runtime.record, task) : undefined;
             const nextAlternate = policy?.alternates[alternateIndex + 1];
-            if (policy && (emptyKind && !hardRefusal && !retriedOnRoute || nextAlternate !== undefined)) {
+            if (policy && (emptyKind && !hardRefusal && !retriedOnRoute && policy.emptyReplyRetry !== false || nextAlternate !== undefined)) {
               await result.cleanup;
               const spent = result.usage?.cost?.total ?? 0;
-              if (emptyKind && !hardRefusal && !retriedOnRoute) {
+              if (emptyKind && !hardRefusal && !retriedOnRoute && policy.emptyReplyRetry !== false) {
                 retriedOnRoute = true;
                 task.retriedOnSameRoute = true;
                 reply = { boost: true, ...(policy.maxTokens !== undefined ? { maxTokens: policy.maxTokens } : {}) };
@@ -662,6 +668,14 @@ export class SubagentCoordinator {
             this.observe(runtime);
             if (!(await abortableDelay(transient.delayMs, taskRuntime.controller.signal))) break;
             delete task.currentTool;
+          }
+          if (result.state === "failed" && classifyFailure(result.error) === "content-filter") {
+            // The refusal must never read as a generic worker failure: name the
+            // provider's content filter and how to run the same task elsewhere.
+            const cause = String(result.error ?? "").slice(0, 200);
+            result = { ...result, error: `The provider's content filter refused this turn (${cause}). ${implicitWave
+              ? "No further configured route accepted it for this implicit wave"
+              : "No reroute was attempted: explicit routes are never rerouted"}. Rerun the same task on another route by dispatching it again with a different model or profile (for example model: "provider/model") whose provider accepts this input.` };
           }
           if (!isTerminal(task.state)) {
             this.finishTask(runtime, task, taskRuntime.stopState ?? result.state, {

@@ -785,18 +785,56 @@ describe("content-filter refusal at the classed-run boundary", () => {
     await coordinator.shutdown();
   });
 
-  it("never resends after output began: the run fails with the named cause", async () => {
+  it("never reroutes an explicit route after output began: the run fails with the named cause and the rerun guidance", async () => {
     const replies: Array<WorkerRunContextReply> = [];
     const coordinator = new Coordinator(async ({ reply, onProgress }) => {
       replies.push(reply);
       onProgress({ outputStarted: true });
       return { state: "failed", output: "partial", error: REFUSAL, turns: 1, usage: usage(1) };
     }, { scheduler: new Scheduler(1), replyPolicy: () => ({ alternates: ["p/b"] }) });
-    coordinator.start(run("content-after", 1, 1, 600_000));
+    coordinator.start({ ...run("content-after", 1, 1, 600_000), selection: { source: "override" } } as RunRecord);
     const settled = await coordinator.wait("content-after", "all");
     expect(replies).toEqual([undefined]);
-    expect(settled.tasks[0]).toMatchObject({ state: "failed", error: REFUSAL });
+    expect(settled.tasks[0]).toMatchObject({ state: "failed", error: expect.stringContaining(REFUSAL) });
+    expect(settled.tasks[0].error).toMatch(/provider's content filter refused this turn .*explicit routes are never rerouted.*model: "provider\/model"/s);
     expect(settled.tasks[0].routeFallbacks).toBeUndefined();
+    await coordinator.shutdown();
+  });
+
+  it("continues an implicit wave's content-filter refusal on the next route after output began, transcript intact, with the hop named", async () => {
+    const replies: Array<WorkerRunContextReply> = [];
+    const coordinator = new Coordinator(async ({ reply, onProgress }) => {
+      replies.push(reply);
+      if (reply?.alternate === undefined) {
+        onProgress({ outputStarted: true });
+        return { state: "failed", output: "partial", error: REFUSAL, turns: 1, usage: usage(1) };
+      }
+      return { state: "done", output: "Evidence: continued on the next route", turns: 1, usage: usage(1) };
+    }, { scheduler: new Scheduler(1), replyPolicy: () => ({ alternates: ["p/b"] }) });
+    coordinator.start({ ...run("content-implicit", 1, 1, 600_000), selection: { source: "chain" } } as RunRecord);
+    const settled = await coordinator.wait("content-implicit", "all");
+    expect(replies).toEqual([undefined, { alternate: 0 }]);
+    expect(settled.tasks[0]).toMatchObject({ state: "done", output: expect.stringContaining("Evidence: continued on the next route") });
+    expect(settled.tasks[0].routeFallbacks).toHaveLength(1);
+    expect(settled.tasks[0].routeFallbacks?.[0]).toMatch(/->p\/b \(content-filter refusal\)$/);
+    expect(settled.tasks[0].routeHopDetails?.[0]).toMatchObject({ to: "p/b", cause: expect.stringMatching(/^content-filter: /) });
+    await coordinator.shutdown();
+  });
+
+  it("treats a 429 insufficient_quota refusal as a quota refusal and hops an implicit wave to the next tier", async () => {
+    const QUOTA = '429 Too Many Requests: {"error":{"code":"insufficient_quota","message":"You exceeded your current quota"}}';
+    const replies: Array<WorkerRunContextReply> = [];
+    const coordinator = new Coordinator(async ({ reply }) => {
+      replies.push(reply);
+      if (reply?.alternate === undefined) return { state: "failed", output: "", error: QUOTA, turns: 1, usage: usage(1) };
+      return { state: "done", output: "Evidence: next tier answered", turns: 1, usage: usage(1) };
+    }, { scheduler: new Scheduler(1), replyPolicy: () => ({ alternates: ["p/b"] }) });
+    coordinator.start({ ...run("quota-implicit", 1, 1, 600_000), selection: { source: "chain" } } as RunRecord);
+    const settled = await coordinator.wait("quota-implicit", "all");
+    expect(replies).toEqual([undefined, { alternate: 0 }]);
+    expect(settled.tasks[0]).toMatchObject({ state: "done" });
+    expect(settled.tasks[0].routeFallbacks?.[0]).toMatch(/->p\/b$/);
+    expect(settled.tasks[0].routeFallbacks?.[0]).not.toMatch(/content-filter/);
     await coordinator.shutdown();
   });
 });

@@ -1586,6 +1586,62 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
     await duplicate.handlers.get("session_shutdown")!({}, duplicate.ctx);
   });
 
+  it("a /reload in the same process releases the checkpoint lock when no worker runs, so the reloaded instance checkpoints", async () => {
+    const root = mkdtempSync(join(tmpdir(), "usap-reload-idle-")); dirs.push(root);
+    const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "reload-idle" };
+    const runner = vi.fn(async () => ({ state: "done" as const, output: "finished before reload", turns: 1, usage: emptyUsage() }));
+    const owner = harness(() => runner, durable);
+    await owner.handlers.get("session_start")!({}, owner.ctx);
+    const dispatched = await owner.tools.get("ultraterm_subagents").execute("a", { goal: "idle reload", background: true, tasks: [{ label: "quick", task: "quick" }] }, undefined, undefined, owner.ctx);
+    const runId = dispatched.details.run.runId;
+    await flush();
+    // Pi emits session_shutdown(reason "reload") and awaits it before the successor's session_start.
+    await owner.handlers.get("session_shutdown")!({ reason: "reload" }, owner.ctx);
+    const successor = harness(() => runner, durable);
+    await successor.handlers.get("session_start")!({ reason: "reload" }, successor.ctx);
+    const listed = await successor.tools.get("ultraterm_hub").execute("list", { action: "list" }, undefined, undefined, successor.ctx);
+    expect(listed.details.persistence).toBe("checkpointed");
+    expect(listed.details.shutdownWarning).toBeNull();
+    expect(listed.details.runs.map((run: any) => run.runId)).toContain(runId);
+    // The completion was already delivered by the predecessor: never replayed after the reload.
+    expect(owner.messages).toHaveLength(1);
+    expect(successor.messages).toHaveLength(0);
+    await successor.handlers.get("session_shutdown")!({ reason: "quit" }, successor.ctx);
+  });
+
+  it("a /reload while a worker runs hands the live runtime to the successor: no collision, no cancel, completion on the live host", async () => {
+    const root = mkdtempSync(join(tmpdir(), "usap-reload-live-")); dirs.push(root);
+    const durable = { root: join(root, "checkpoints"), parent: join(root, "parent.jsonl"), prefix: "reload-live" };
+    let started = false;
+    let settleWorker!: () => void;
+    const runner = () => async (): ReturnType<WorkerRunner> => {
+      started = true;
+      return new Promise((resolve) => {
+        settleWorker = () => resolve({ state: "done" as const, output: "finished after reload", turns: 1, usage: emptyUsage() });
+      });
+    };
+    const owner = harness(runner, durable);
+    await owner.handlers.get("session_start")!({}, owner.ctx);
+    const dispatched = await owner.tools.get("ultraterm_subagents").execute("start", { goal: "long reload", background: true, tasks: [{ label: "long", task: "long" }] }, undefined, undefined, owner.ctx);
+    const runId = dispatched.details.run.runId;
+    await vi.waitFor(() => expect(started).toBe(true));
+    // Pi reloads: the old instance shuts down with a worker still running, then the successor starts.
+    await owner.handlers.get("session_shutdown")!({ reason: "reload" }, owner.ctx);
+    const successor = harness(runner, durable);
+    await successor.handlers.get("session_start")!({ reason: "reload" }, successor.ctx);
+    const listed = await successor.tools.get("ultraterm_hub").execute("list", { action: "list" }, undefined, undefined, successor.ctx);
+    expect(listed.details.persistence).toBe("checkpointed");
+    expect(listed.details.shutdownWarning).toBeNull();
+    const live = listed.details.runs.find((run: any) => run.runId === runId);
+    expect(live).toBeDefined();
+    expect(live.state).not.toBe("cancelled");
+    // The worker was never aborted by the reload: it settles and the successor delivers the completion.
+    settleWorker();
+    await vi.waitFor(() => expect(successor.messages).toHaveLength(1));
+    expect(owner.messages).toHaveLength(0);
+    await successor.handlers.get("session_shutdown")!({ reason: "quit" }, successor.ctx);
+  });
+
   it.each([Number.NaN, -1, Number.POSITIVE_INFINITY, 1.5])("rejects an unsafe shutdownGraceMs (%s)", (grace) => {
     expect(() => createUltratermSubagentsExtension({ shutdownGraceMs: grace })).toThrow(RangeError);
   });
