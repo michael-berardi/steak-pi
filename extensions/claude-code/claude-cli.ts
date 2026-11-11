@@ -1156,9 +1156,12 @@ class ClaudeProcess {
     let rateLimitSession: string | undefined;
 
     try {
-      await waitForOperation((async () => {
-        const frames = continuation ? input.frames.slice(-1) : input.frames;
-        for (const frame of frames) {
+      // The replay is bounded per frame, not as a whole: a long conversation on a busy machine
+      // needs more than one budget to load, while a frame that is never acknowledged (even under
+      // native chatter) still ends the wait. Each acknowledged frame is progress.
+      const frames = continuation ? input.frames.slice(-1) : input.frames;
+      for (const [index, frame] of frames.entries()) {
+        await waitForOperation((async () => {
           await writeFrame(this.child, frame, this.timeoutMs, input.signal);
           if (frame.shouldQuery === false) {
             for (;;) {
@@ -1172,8 +1175,8 @@ class ClaudeProcess {
               }
             }
           }
-        }
-      })(), this.timeoutMs, "Claude Code history replay", input.signal, abort);
+        })(), this.timeoutMs, `Claude Code history replay (frame ${index + 1} of ${frames.length})`, input.signal, abort);
+      }
 
       for (;;) {
         const event = await this.queue.next(input.signal, this.timeoutMs);

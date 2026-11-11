@@ -14,6 +14,19 @@ if (process.argv.includes("auth")) { console.log(JSON.stringify({ loggedIn: true
 const usage = { input_tokens: 1, output_tokens: 1 };
 for await (const line of readline.createInterface({ input: process.stdin })) {
   const frame = JSON.parse(line);
+  if (process.env.MODE === "replay-slow") {
+    // Every replayed frame is acknowledged, each well inside the budget; the whole replay is not.
+    if (frame.type === "assistant") continue;
+    if (frame.shouldQuery === false) {
+      await new Promise(resolve => setTimeout(resolve, 400));
+      console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, num_turns: 0, usage }));
+      continue;
+    }
+    console.log(JSON.stringify({ type: "stream_event", event: { type: "message_stop" } }));
+    console.log(JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "ok" }], stop_reason: "end_turn", usage } }));
+    console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, usage }));
+    continue;
+  }
   if (process.env.MODE === "replay-chatter") { setInterval(() => console.log(JSON.stringify({ type: "rate_limit_event" })), 30); continue; }
   if (process.env.MODE === "error") {
     console.log(JSON.stringify({ type: "assistant", error: "fixture failure\\u001b[31m\\nline", message: { role: "assistant", content: [] } }));
@@ -71,7 +84,12 @@ async function fixture(mode: string, check: (input: Parameters<typeof runClaudeR
   await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
   try {
     await check({ model: "sonnet", cwd: root, systemPrompt: "s", manifest: [], extraBody: {}, toolNames: new Set(),
-      frames: [{ type: "user", message: { role: "user", content: [{ type: "text", text: "hello" }] }, ...(mode === "replay-chatter" ? { shouldQuery: false as const } : {}) }],
+      frames: mode === "replay-slow"
+        ? [...Array.from({ length: 4 }, (_, turn) => [
+            { type: "user" as const, message: { role: "user" as const, content: [{ type: "text", text: `turn ${turn}` }] }, shouldQuery: false as const },
+            { type: "assistant" as const, message: { role: "assistant" as const, content: [{ type: "text", text: "ok" }] } },
+          ]).flat(), { type: "user" as const, message: { role: "user" as const, content: [{ type: "text", text: "now" }] } }]
+        : [{ type: "user", message: { role: "user", content: [{ type: "text", text: "hello" }] }, ...(mode === "replay-chatter" ? { shouldQuery: false as const } : {}) }],
       timeoutMs: 1_000, env: { PI_CLAUDE_CODE_COMMAND: executable, MODE: mode },
       upstreamUrl: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}` });
   } finally {
@@ -111,6 +129,17 @@ test("history replay has a wall bound even with native chatter", () => fixture("
   const started = Date.now();
   await assert.rejects(runClaudeRequest(input), /history replay/);
   assert.ok(Date.now() - started < 2_500);
+}));
+
+test("a long history replay that keeps being acknowledged outlives one budget", () => fixture("replay-slow", async input => {
+  const started = Date.now();
+  const output = await runClaudeRequest(input);
+  assert.equal(output.message.stop_reason, "end_turn");
+  assert.ok(Date.now() - started > 1_500, "four 400 ms acknowledgements exceed the 1 s budget as a whole");
+}));
+
+test("a replay wait-limit error names the frame that was not acknowledged", () => fixture("replay-chatter", async input => {
+  await assert.rejects(runClaudeRequest(input), /history replay \(frame 1 of 1\) exceeded its wait limit/);
 }));
 
 test("empty native error content retains sanitized event.error", () => fixture("error", async input => {
