@@ -255,6 +255,9 @@ tmux_private resize-window -t "$SESSION" -x 120 -y 40
 tmux_private send-keys -t "$SESSION:0.0" -l '/resume'
 tmux_private send-keys -t "$SESSION:0.0" Enter
 wait_for_current "Resume Session"
+# Switch the picker from "Current Folder" to "All" (its own tab key) so the seeded fixture session is listed.
+tmux_private send-keys -t "$SESSION:0.0" Tab
+sleep .3
 # Select the seeded fixture explicitly; the current session can sort ahead of it.
 tmux_private send-keys -t "$SESSION:0.0" -l 'fixture-resume-marker'
 sleep .2
