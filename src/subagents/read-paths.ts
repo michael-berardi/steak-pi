@@ -77,15 +77,23 @@ export function normalizeReadPath(input: unknown, field: string, home: string = 
   if (!raw.startsWith("~") && !isAbsolute(raw)) refuse(field, "must be an absolute path or start with ~/");
   const absolute = resolve(expandHome(raw, home, field));
 
+  let physicalHome: string;
   try {
-    realpathSync.native(home);
+    physicalHome = realpathSync.native(home);
   } catch {
     refuse(field, "cannot be checked: the operator home is unavailable");
   }
 
   for (const root of READ_PATH_ROOTS) {
-    const rootPath = join(home, root);
-    if (!isBelow(rootPath, absolute)) continue;
+    // Accept both spellings of the home: the operator's own (`home`) and the
+    // physical one. A resumed run records physical paths, and refusing them
+    // because $HOME itself is reached through a symlink would break the resume.
+    const rootPath = isBelow(join(home, root), absolute)
+      ? join(home, root)
+      : isBelow(join(physicalHome, root), absolute)
+        ? join(physicalHome, root)
+        : undefined;
+    if (rootPath === undefined) continue;
     const segments = relative(rootPath, absolute).split(sep).filter((value) => value.length > 0);
     if (segments.length < MIN_GRANT_SEGMENTS) {
       refuse(field, `must name a folder inside a home below ~/${root} (for example ~/${root}/home/folder); the cache root and a task or job home itself are never granted`);

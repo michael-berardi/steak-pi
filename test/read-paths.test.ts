@@ -91,6 +91,24 @@ describe("read-only artifact roots outside the run cwd (J-3760)", () => {
     expect(() => normalizeReadPath(`~/${"a".repeat(2_100)}`, "readPaths[0]", home)).toThrow(/at most/);
   });
 
+  it("accepts the recorded physical path when $HOME itself sits behind a symlink", () => {
+    // A resumed run passes the physical path it recorded at dispatch; that must
+    // still validate when the operator home is reached through a symlink.
+    const base = realpathSync.native(mkdtempSync(join(tmpdir(), "j3760-home-root-")));
+    const real = join(base, "real-home");
+    mkdirSync(join(real, ".cache", "ut-coordinator", "J-3760", "captures"), { recursive: true });
+    const linkedHome = join(base, "home-link");
+    symlinkSync(real, linkedHome);
+    try {
+      expect(normalizeReadPath(join(real, ".cache", "ut-coordinator", "J-3760", "captures"), "readPaths[0]", linkedHome))
+        .toBe(join(real, ".cache", "ut-coordinator", "J-3760", "captures"));
+      expect(normalizeReadPath("~/.cache/ut-coordinator/J-3760/captures", "readPaths[0]", linkedHome))
+        .toBe(join(real, ".cache", "ut-coordinator", "J-3760", "captures"));
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   it("refuses a file, a missing folder, a traversal and a control character", () => {
     expect(() => normalizeReadPath(join(CAPTURES(), "home-375.png"), "readPaths[0]", home)).toThrow(/real directory/);
     expect(() => normalizeReadPath(join(CAPTURES(), "missing"), "readPaths[0]", home)).toThrow(/does not exist/);

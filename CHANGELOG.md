@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.25.5 (2026-11-11)
+
+- **A resumed run keeps its `readPaths` grant even when `$HOME` is a symlink.** Dispatch records the physical
+  artifact path, and resume passes that recorded path back through validation; the check compared it only against the
+  operator's own spelling of the private home, so a home reached through a symlink refused a grant that had already
+  been approved (fails closed, but it breaks the resume). Both spellings are accepted, and a test covers a symlinked
+  home with a resumed physical path.
+
 ## 0.25.4 (2026-11-11)
 
 - **The footer keeps its stats inside the pane, and a flat-plan route shows plan usage instead of `$0.000`.**
