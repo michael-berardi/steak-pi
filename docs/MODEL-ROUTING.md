@@ -275,6 +275,7 @@ resolves the configured chain:
   routine wave: a provider's spent-plan wording (`subscription_quota_exceeded`,
   `GoUsageLimitError`, "usage limit has been reached", Pi's "You have hit your ChatGPT usage
   limit", a 402 / insufficient credits / no endpoints found refusal, a "quota exhausted" phrase,
+  a provider content-filter refusal (an HTTP 400 naming a content-inspection code such as `data_inspection_failed`),
   or a cooling-down router refusal). Every failed worker must carry one; a bare 429, auth,
   route or spawn failure still fails synchronously. The same tasks re-run once on the next
   configured tier; a tier the failed run reached and everything ahead of it is never retried.
@@ -448,8 +449,10 @@ cannot be written never fails a dispatch.
 - **Retry, then move on.** A reply that comes back empty or out of output tokens (`stopReason length`: reasoning
   consumed the budget) is retried **once** on the same route with a higher output budget (`retryMaxTokens`, else
   double the model's own, never above 131072), then the task runs on the next ranked route. A reply that fails with
-  spent credits (402, "insufficient credits") or a 5xx moves to the next ranked route at once, with the cause recorded
-  as the left route's failure. A route whose profile has an `ensure` hook is not offered as a per-task alternate. A
+  spent credits (402, "insufficient credits"), a 5xx, or a provider content-filter refusal before output (an HTTP 400
+  naming a content-inspection code) moves to the next ranked route at once, with the cause recorded as the left route's
+  failure (`content-filter`). A content-filter refusal judges the input, not the route, so it never demotes the route.
+  After output began, a content-filter refusal is never resent: the run fails with its named cause. A route whose profile has an `ensure` hook is not offered as a per-task alternate. A
   failure before any output uses the runtime pre-output hop along the same ranked chain.
 
 **Reading and teaching it.** `ultraterm_hub` with `action: "routes"` (read-only; `taskClass` filters) prints, per class,

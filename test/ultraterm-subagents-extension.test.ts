@@ -3440,12 +3440,25 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
         } finally { await shutdown(h); }
       });
 
+      it("synthetic: a provider content-filter refusal (HTTP 400, data_inspection_failed) before output falls through to the next tier", async () => {
+        const CONTENT_FILTER = '400: {"code":"data_inspection_failed","message":"Input text data may contain inappropriate content.","type":"data_inspection_failed"}';
+        const runner = routed({ [GO_ROUTE]: CONTENT_FILTER });
+        const { h } = quotaHarness(status({ codex: solUp, go: goUp, claude: claudeUp }), runner, open);
+        try {
+          const result = await dispatch(h, { tasks: plain });
+          expect(runner.mock.calls.map(([context]) => context.run.model)).toEqual([GO_ROUTE, SOL_ROUTE]);
+          expect(result.details.run).toMatchObject({ model: SOL_ROUTE, state: "done" });
+          expect((await recordOf(h, "run-fixed-1")).state).toBe("failed");
+        } finally { await shutdown(h); }
+      });
+
       it.each([
         ["a route failure", "Reserved Codex account has no exact Terra model with configured OAuth authentication"],
         ["an expired login", "OAuth access token expired; sign in again"],
         ["a spawn failure", "spawn ut-provider-accounts ENOENT"],
         ["a bare 429 rate limit", "429 Too Many Requests"],
         ["a router that is merely unavailable", "Provider account router unavailable or no account eligible (exit 1)"],
+        ["a bare 400 that names no content-inspection code", "400 Bad Request: malformed JSON body"],
       ])("an implicit launch failure that is %s is not a quota cause and still fails synchronously", async (_name, error) => {
         const runner = routed({ [GO_ROUTE]: error });
         const { h, selected } = quotaHarness(status({ codex: solOut, go: goUp, claude: claudeUp }), runner, open);

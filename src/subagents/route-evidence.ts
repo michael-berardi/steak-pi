@@ -12,6 +12,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSy
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { RunRecord, TaskRecord } from "./types.ts";
+import { isContentFilterRefusal } from "../content-filter-refusal.ts";
 
 export const ROUTE_EVIDENCE_ENV = "STEAK_PI_ROUTE_EVIDENCE";
 /** One generation of history is kept next to the live file, so the store stays under about twice this. */
@@ -23,7 +24,8 @@ export type EvidenceOutcome = "pass" | "fail" | "unknown";
 /** Where the outcome came from, weakest last: a reviewer's verdict, a test gate the worker reported, an
  * operator's explicit record, or only the worker's own final state. */
 export type EvidenceSource = "verification" | "test-gate" | "operator" | "worker-state";
-export const FAILURE_KINDS = ["empty-output", "reasoning-exhausted", "tool-error", "http-4xx", "http-5xx", "quota", "rate-limit", "other"] as const;
+/** `content-filter`: the provider inspected the input and refused it (an HTTP 400 naming a content-inspection code). The route is not at fault. */
+export const FAILURE_KINDS = ["empty-output", "reasoning-exhausted", "tool-error", "http-4xx", "http-5xx", "quota", "rate-limit", "content-filter", "other"] as const;
 export type FailureKind = (typeof FAILURE_KINDS)[number];
 
 export interface TaskEvidence {
@@ -240,6 +242,8 @@ export function classifyFailure(error: string | undefined): FailureKind {
   // A 429 or rate limit is the route throttling right now, not a 4xx defect: it is held out at once (2026-11-03: a route kept
   // receiving scouts while every call came back 429, because a 4xx only demotes after three in a row).
   if (/\b429\b|too many requests|rate.?limit/i.test(message)) return "rate-limit";
+  // Before the generic 4xx: an HTTP 400 that names a content-inspection code is the input refused, not a malformed request.
+  if (isContentFilterRefusal(message)) return "content-filter";
   if (/\b5\d\d\b|overloaded|service unavailable|bad gateway|gateway time-?out/i.test(message)) return "http-5xx";
   if (/\b4\d\d\b/i.test(message)) return "http-4xx";
   if (/no final output|produced no (?:final )?(?:output|answer)|empty (?:reply|response|output)/i.test(message)) return "empty-output";

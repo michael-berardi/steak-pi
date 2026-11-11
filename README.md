@@ -206,9 +206,10 @@ the reviewed paid routes and the subset you allow. With nothing configured the
 tool still starts and every explicit `model`, `profile` or `harness` works; an
 implicit dispatch fails with the config key to set. Paid routes spend only
 while reviewed **and** allowed; deleting the entry revokes them. A gateway's
-402 / insufficient credits or "no endpoints found" refusal, or a provider's
-usage-limit refusal, moves an implicit wave to the next configured tier instead
-of stalling. An approved, active free preference applies to implicit workers
+402 / insufficient credits or "no endpoints found" refusal, a provider's
+usage-limit refusal, or a provider content-filter refusal (an HTTP 400 that names
+`data_inspection_failed`, `content_policy_violation` or a similar code) moves an
+implicit wave to the next configured tier instead of stalling. An approved, active free preference applies to implicit workers
 until its expiry; explicit selections remain exact. Account-leased subscription
 routes stay isolated and balanced, without copying credentials or changing the
 parent environment. Image reviews never silently switch to the automatic

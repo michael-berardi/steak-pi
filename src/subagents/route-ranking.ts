@@ -153,6 +153,8 @@ export function routeHealth(tasks: readonly TaskEvidence[], probeTimes: readonly
       if (demoted) { demoted = undefined; windowStart = index; }
       return;
     }
+    // A provider content-filter refusal names this input, not the route: it neither counts toward a demotion nor demotes.
+    if (task.failureKind === "content-filter") return;
     consecutive += 1;
     if (demoted) { demoted = { ...demoted, since: task.at }; return; }
     const window = decided.slice(Math.max(windowStart, index + 1 - settings.window), index + 1);

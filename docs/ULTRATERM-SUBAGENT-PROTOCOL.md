@@ -463,7 +463,8 @@ The parent may choose either execution mode:
   produced output and the run settled, the same dispatch call re-runs the same tasks once
   on the next configured tier with no parent re-dispatch, inside the startup window
   and before `Started`. A gateway's 402 "Insufficient credits" / "No endpoints found"
-  refusal is such a cause. Each tier is tried at most
+  refusal is such a cause, and so is a provider content-filter refusal (an HTTP 400 naming
+  `data_inspection_failed` or a similar code) that arrives before any output. Each tier is tried at most
   once; the refused first run stays `failed` with its causes and is marked delivered; the
   second run's `chainRoutes`, `fallbackReason` and dispatch text name the fall-through and
   why. If the next tier also cannot launch, the call fails synchronously naming both
@@ -519,7 +520,7 @@ the route that measured best for that kind of task:
   why. Every settled task of a classed wave appends one record to the evidence store
   (`~/.pi/agent/usap/route-evidence.jsonl`); a route that keeps failing is demoted with a named cause, re-probed once
   after a cooldown and promoted by a pass; an empty or output-exhausted reply is retried once with a higher output
-  budget and then moves to the next ranked route; a 402 or 5xx moves on at once. Hub `routes` (read-only) prints the
+  budget and then moves to the next ranked route; a 402, a 5xx or a pre-output content-filter refusal moves on at once (a refusal after output fails the run with its named cause). Hub `routes` (read-only) prints the
   per-class estimates; hub `record-outcome` (`runId`, `outcome`, optional `taskId`, `source`) attaches a verification
   verdict to a run's evidence. Details: `docs/MODEL-ROUTING.md`.
 

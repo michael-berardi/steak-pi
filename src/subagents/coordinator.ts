@@ -599,11 +599,13 @@ export class SubagentCoordinator {
                 toolErrors: prior.toolErrors + safeTurns(result.toolErrors, 0),
                 toolSuccesses: prior.toolSuccesses + safeTurns(result.toolSuccesses, 0) };
             }
-            // Self-healing for a classed run. A spent-credit or server-error refusal moves to the next ranked route at
+            // Self-healing for a classed run. A spent-credit, server-error or pre-output content-filter refusal moves to the next ranked route at
             // once; an empty or output-exhausted reply is retried once here with a higher output budget, then moves on.
             const emptyKind = emptyReplyKind(result);
             const refusal = result.state === "failed" ? classifyFailure(result.error) : undefined;
-            const hardRefusal = refusal === "quota" || refusal === "http-5xx";
+            // A provider content-filter refusal hops only before any output: after output the run fails with its named cause.
+            const contentFiltered = refusal === "content-filter" && task.outputStarted !== true;
+            const hardRefusal = refusal === "quota" || refusal === "http-5xx" || contentFiltered;
             const policy = (emptyKind || hardRefusal) && !isTerminal(task.state) && !taskRuntime.stopState && !taskRuntime.controller.signal.aborted
               && safeTurns(result.turns, 0) < runtime.record.maxTurns && this.remainingRunBudgetMs(runtime) >= MIN_RESUME_BUDGET_MS
               ? this.replyPolicy?.(runtime.record, task) : undefined;
@@ -619,7 +621,8 @@ export class SubagentCoordinator {
               } else {
                 alternateIndex += 1;
                 const cause = `${emptyKind ?? refusal}: ${String(result.error ?? "empty reply").slice(0, 200)}`;
-                task.routeFallbacks = [...(task.routeFallbacks ?? []), `${currentRoute}->${nextAlternate}`];
+                // The receipt names a content-filter refusal beside the hop, so the input refusal is visible, not a silent route change.
+                task.routeFallbacks = [...(task.routeFallbacks ?? []), `${currentRoute}->${nextAlternate}${refusal === "content-filter" ? " (content-filter refusal)" : ""}`];
                 task.routeHopDetails = [...(task.routeHopDetails ?? []), { from: currentRoute, to: nextAlternate!, cause, costUsd: Math.max(0, spent - leftRouteCost), seconds: Math.max(0, (this.now() - leftRouteAt) / 1000) }];
                 task.lastStep = `model-fallback:${currentRoute}->${nextAlternate}`;
                 currentRoute = nextAlternate!;

@@ -1,5 +1,6 @@
 import type { TaskClassDecision } from "./subagents/types.ts";
 import { withCatalogExtras } from "./catalog-extras.ts";
+import { isContentFilterRefusal } from "./content-filter-refusal.ts";
 import type { ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { temporaryRouteForRegistration, ensureTemporaryFreeMetadata, FREE_PROVIDER, assertTemporaryFreeRequest, isTemporaryFreeModel, preferredFreeMetadata, selectPreferredFreePhysical, temporaryFreeOptions, withTemporaryFreeCatalog, TemporaryFreeRouteRequestError } from "./temporary-free-route.ts";
 import { createAllowlistApproval, findPaidRoute } from "./explicit-paid-route.ts";
@@ -80,7 +81,10 @@ export const ROUTE_UNAVAILABLE_WORDING = /\b402\b|insufficient[_ ]credits|requir
 export const OPENROUTER_ROUTE_UNAVAILABLE = ROUTE_UNAVAILABLE_WORDING;
 export function eligibleChainFallback(message: string): boolean {
   // Auth, permission, region, context and 400-class failures never hop, whatever transient wording they carry.
-  if (/abort|cancel|auth|permission|region|context|invalid|\b(?:400|401|403)\b/i.test(message)) return false;
+  // The one 400 that hops is a provider content-filter refusal, named by its error code or type (see content-filter-refusal.ts).
+  if (/abort|cancel|auth|permission|region/i.test(message)) return false;
+  if (isContentFilterRefusal(message)) return true;
+  if (/context|invalid|\b(?:400|401|403)\b/i.test(message)) return false;
   if (ROUTE_UNAVAILABLE_WORDING.test(message)) return true;
   if (/\b404\b/i.test(message)) return false;
   return eligibleGoFallback(message) || /subscription_quota_exceeded|GoUsageLimitError|usage limit|quota[_ -]?(?:exhausted|exceeded|reached)/i.test(message);

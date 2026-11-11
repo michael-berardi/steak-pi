@@ -146,7 +146,7 @@ describe("selection ranks the launchable class routes on the store", () => {
 });
 
 // The dispatch boundary: the real coordinator and extension, a fake worker.
-function build(options: { runner?: WorkerRunner; store: RouteEvidenceStore; rng?: Rng; models?: readonly Model[] }) {
+function build(options: { runner?: WorkerRunner; store: RouteEvidenceStore; rng?: Rng; models?: readonly Model[]; announceOutput?: boolean }) {
   const tools = new Map<string, any>();
   const handlers = new Map<string, (...args: any[]) => unknown>();
   const pi = {
@@ -157,7 +157,7 @@ function build(options: { runner?: WorkerRunner; store: RouteEvidenceStore; rng?
     calls.push({ route: context.run.model, reply: context.reply });
     // A worker that got as far as a model reply has announced its first output, so a failure afterwards settles the
     // task instead of failing the dispatch call itself.
-    context.onProgress({ outputStarted: true });
+    if (options.announceOutput !== false) context.onProgress({ outputStarted: true });
     return options.runner ? options.runner(context) : { state: "done" as const, output: "ok", turns: 1, usage: emptyUsage() };
   });
   let id = 0;
@@ -295,6 +295,49 @@ describe("self-healing at the dispatch boundary", () => {
       expect(next.details.run.model).toBe(B);
       expect(next.details.run.selection.taskClass.decision.estimates.find((item: { entry: string }) => item.entry === A)).toMatchObject({ status: "demoted", cause: expect.stringMatching(/spent credits or a usage limit \(quota\)/) });
       expect(next.content[0].text).toMatch(/alpha-p\/alpha-model p\(pass\)[^|]*\[demoted: route refused on spent credits/);
+    } finally { await t.close(); }
+  });
+  it("fails over before output on a provider content-filter refusal, naming the refusal in the receipt", async () => {
+    configure();
+    const store = newStore();
+    const refusal = '400: {"code":"data_inspection_failed","message":"Input text data may contain inappropriate content.","type":"data_inspection_failed"}';
+    const t = build({
+      store, rng: seeded(3), announceOutput: false,
+      runner: async (context) => context.reply?.alternate === undefined
+        ? { state: "failed", output: "", error: refusal, turns: 1, usage: emptyUsage() }
+        : { state: "done", output: "Evidence: the next route answered the same turn", turns: 1, usage: usageWith(0.01, 100) },
+    });
+    try {
+      const result = await t.dispatch({ tasks: [leaf("class-heal")] });
+      expect(t.calls.map((call) => call.reply)).toEqual([undefined, { alternate: 0 }]);
+      expect(result.details.run.tasks[0].state).toBe("done");
+      expect(t.calls.length).toBe(2);
+      expect(store.view().tasks[0]).toMatchObject({ failureKind: "content-filter", hop: true });
+      const rows = store.view().tasks.map((row) => `${row.route}:${row.outcome}:${row.failureKind ?? "-"}${row.hop ? ":hop" : ""}`);
+      expect(rows).toEqual([`${A}:fail:content-filter:hop`, `${B}:pass:-`]);
+      // A content-filter refusal names this input, not the route: the route is not demoted for it.
+      const next = await t.dispatch({ tasks: [leaf("class-heal")] });
+      expect(next.details.run.model).toBe(A);
+    } finally { await t.close(); }
+  });
+  it("never resends a content-filter refusal that arrives after output began; the run fails with the named cause", async () => {
+    configure();
+    const store = newStore();
+    const refusal = '400: {"code":"data_inspection_failed","message":"Input text data may contain inappropriate content."}';
+    const t = build({
+      store,
+      runner: async (context) => {
+        context.onProgress({ outputStarted: true });
+        return context.reply?.alternate === undefined
+          ? { state: "failed", output: "partial", error: refusal, turns: 1, usage: emptyUsage() }
+          : { state: "done", output: "Evidence: must not run", turns: 1, usage: emptyUsage() };
+      },
+    });
+    try {
+      const result = await t.dispatch({ tasks: [leaf("class-heal")] });
+      expect(t.calls.map((call) => call.reply)).toEqual([undefined]);
+      expect(result.details.run.tasks[0]).toMatchObject({ state: "failed", error: expect.stringContaining("data_inspection_failed") });
+      expect(store.view().tasks[0]).toMatchObject({ route: A, outcome: "fail", failureKind: "content-filter" });
     } finally { await t.close(); }
   });
   it("fails over at once on a server error after output began", async () => {

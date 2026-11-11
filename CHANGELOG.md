@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.25.3 (2026-11-11)
+
+- **A provider content-filter refusal moves the turn to the next route instead of failing the worker.** A
+  provider's input inspection can refuse ordinary engineering text before any output: an HTTP 400 whose error code
+  or type names content inspection (`data_inspection_failed`, `content_policy_violation`, `content_filter` and
+  similar). Matching is by that response shape only, never by provider name. Before output:
+  - an automatic chain hop moves to the next authenticated route, with the same replayed request, and the same
+    classed task re-runs on the next ranked route;
+  - an implicit wave whose workers were all refused this way re-runs the same tasks on the next configured tier;
+  - the receipt names the refusal (`content-filter`, `(content-filter refusal)` on the hop).
+  After output began, the refusal is never resent: the run fails with its named cause. A content-filter refusal
+  judges the input rather than the route, so it never demotes the route. A bare 400 (bad request, context length,
+  invalid body) still never hops.
+
 ## 0.25.2 (2026-11-11)
 
 - **An implicit review runs on a Claude account it can actually launch, and a pre-output refusal reaches its

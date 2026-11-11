@@ -591,6 +591,43 @@ describe("synthetic: pre-output custom-chain fallback (real provider streams)", 
       .toEqual([`opencode-go/${goPrimary.id}->xiaomi/${mimoFlash.id}`]);
   });
 
+  it("hops before output when a provider content-filter refusal names its error code (HTTP 400)", async () => {
+    const refusal = "400: {\"code\":\"data_inspection_failed\",\"message\":\"Input text data may contain inappropriate content.\",\"type\":\"data_inspection_failed\"}";
+    const runtime = chainRuntime({
+      models: [goPrimary, mimoFlash],
+      scripts: {
+        "opencode-go": (model) => [routeStart(model), routeFail(model, refusal)],
+        xiaomi: (model) => [routeStart(model), ...routeText(model, "next route answered"), routeDone(model)],
+      },
+      chain: DEFAULT_TEXT_WORKER_CHAIN,
+      approve: () => true,
+    });
+    const events = await drain(runtime.registry.getProvider("opencode-go")!.streamSimple(goPrimary, context(), session() as never));
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(events.find((event) => event.type === "done")?.message).toMatchObject({ provider: "xiaomi", model: mimoFlash.id });
+    expect(runtime.fallbacks.map((hop) => `${hop.from.provider}/${hop.from.id}->${hop.to.provider}/${hop.to.id}`))
+      .toEqual([`opencode-go/${goPrimary.id}->xiaomi/${mimoFlash.id}`]);
+  });
+
+  it("never resends after output when a content-filter refusal arrives mid-answer; the run fails with the named cause", async () => {
+    const refusal = "400: {\"code\":\"data_inspection_failed\",\"message\":\"Input text data may contain inappropriate content.\"}";
+    const failure = routeFail(goPrimary, refusal);
+    const runtime = chainRuntime({
+      models: [goPrimary, mimoFlash],
+      scripts: {
+        "opencode-go": (model) => [routeStart(model), ...routeText(model, "partial answer"), failure],
+        xiaomi: (model) => [routeStart(model), ...routeText(model, "must not run"), routeDone(model)],
+      },
+      chain: DEFAULT_TEXT_WORKER_CHAIN,
+      approve: () => true,
+    });
+    const events = await drain(runtime.registry.getProvider("opencode-go")!.streamSimple(goPrimary, context(), session() as never));
+    expect(runtime.calls.get("xiaomi")?.mock.calls ?? []).toHaveLength(0);
+    expect(runtime.fallbacks).toHaveLength(0);
+    expect(events.some((event) => event.type === "done")).toBe(false);
+    expect(events.at(-1)).toMatchObject({ type: "error", error: { errorMessage: expect.stringContaining("data_inspection_failed") } });
+  });
+
   it("records both custom-chain hops when Go and Codex subscriptions are exhausted", async () => {
     const runtime = chainRuntime({
       models: [goPrimary, sol, mimoFlash],
@@ -720,6 +757,16 @@ describe("synthetic: pre-output custom-chain fallback (real provider streams)", 
     // Same-plan Go retry still refuses the exhaustion signal; only the chain may leave.
     expect(eligibleGoFallback("subscription_quota_exceeded")).toBe(false);
     expect(eligibleChainFallback("subscription_quota_exceeded")).toBe(true);
+  });
+
+  it("hops on a 400 only when it names a content-inspection code, never on a bare 400 or a provider name", () => {
+    expect(eligibleChainFallback('400: {"code":"data_inspection_failed","type":"data_inspection_failed"}')).toBe(true);
+    expect(eligibleChainFallback('400 {"error":{"type":"content_policy_violation"}}')).toBe(true);
+    for (const message of ["400 bad request: malformed JSON", "400 invalid_request_error: messages too long", "400 context length exceeded", "data_inspection_failed from alibaba"]) {
+      expect(eligibleChainFallback(message), message).toBe(false);
+    }
+    // Auth still never hops, even beside a content-filter code.
+    expect(eligibleChainFallback("401 auth failed after 400 data_inspection_failed")).toBe(false);
   });
 });
 

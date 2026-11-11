@@ -3,6 +3,7 @@ import { resolveStagedModule } from "../src/subagents/staged-runtime.ts";
 import { registryForSolSelection, type CreateIsolatedModelRuntime } from "../src/subagents/codex-selection.ts";
 import { GO_ACCOUNT_ROUTER_TIMEOUT_MS, type AccountCommand } from "../src/subagents/provider-accounts.ts";
 import { claudeLoginBlock, claudeQuotaBlock, CODEX_QUOTA, isMeteredQuota, isQuotaLaunchFailure, pickClaudeAccount, rankClaudeAccounts, quotaChain, quotaProviderOf, readProviderQuota, routeQuotaBlock, type ClaudeAccountPick, type QuotaProvider, type QuotaSnapshot } from "../src/subagents/provider-quota.ts";
+import { isContentFilterRefusal } from "../src/content-filter-refusal.ts";
 import { noClaudeCause, planOnlyCause, resolveProjectPolicy, type ProjectPolicy } from "../src/subagents/project-policy.ts";
 import { AVAILABILITY_TTL_MS, computeAvailability } from "../src/subagents/route-availability.ts";
 import { canFallbackReview, implicitReviewFallbackRoute, implicitReviewRoute, isReadOnlyReviewWave, recordReviewFallback } from "../src/subagents/reviewer-fallback.ts";
@@ -470,14 +471,15 @@ const launchFailureText = (task: TaskRecord): string => task.error ?? "";
 
 /**
  * The tiers a run reached, when its pre-output failure may fall through to the next tier: every worker
- * that failed at launch (`failures`) died on a provider quota or usage limit, and no worker anywhere in
+ * that failed at launch (`failures`) died on a provider quota or usage limit or a provider content-filter refusal, and no worker anywhere in
  * the run (`seen`, the settled snapshot) produced output or finished, since re-running would repeat work.
  * A plain auth, route or spawn failure, or any mix with one, is not a quota cause and stays a
  * synchronous failure.
  */
 function quotaFallThroughProviders(seen: RunRecord | undefined, failures: readonly TaskRecord[]): QuotaProvider[] | undefined {
   if (!seen || seen.tasks.some((task) => task.outputStarted === true || task.state === "done")) return undefined;
-  if (failures.length === 0 || !failures.every((task) => isQuotaLaunchFailure(launchFailureText(task)))) return undefined;
+  // A provider content-filter refusal (an HTTP 400 naming a content-inspection code) is an input refusal that another tier can answer.
+  if (failures.length === 0 || !failures.every((task) => isQuotaLaunchFailure(launchFailureText(task)) || isContentFilterRefusal(launchFailureText(task)))) return undefined;
   const providers = reachedProviders(seen);
   return providers.length > 0 ? providers : undefined;
 }

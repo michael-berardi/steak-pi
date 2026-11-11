@@ -768,3 +768,36 @@ describe("explicit partial outcome for budget stops", () => {
     expect(expired.tasks[1].outcome).toBeUndefined();
   });
 });
+
+describe("content-filter refusal at the classed-run boundary", () => {
+  const REFUSAL = '400: {"code":"data_inspection_failed","message":"Input text data may contain inappropriate content.","type":"data_inspection_failed"}';
+
+  it("re-runs the same task on the next chain route before output and names the refusal in the receipt", async () => {
+    const replies: Array<WorkerRunContextReply> = [];
+    const coordinator = new Coordinator(async ({ reply }) => {
+      replies.push(reply);
+      return reply?.alternate === 0 ? result("done", 1, "Evidence: next route") : { state: "failed", output: "", error: REFUSAL, turns: 1, usage: usage(1) };
+    }, { scheduler: new Scheduler(1), replyPolicy: () => ({ alternates: ["p/b"] }) });
+    coordinator.start(run("content-hop", 1, 1, 600_000));
+    const settled = await coordinator.wait("content-hop", "all");
+    expect(replies).toEqual([undefined, { alternate: 0 }]);
+    expect(settled.tasks[0]).toMatchObject({ state: "done", routeFallbacks: ["fake->p/b (content-filter refusal)"] });
+    await coordinator.shutdown();
+  });
+
+  it("never resends after output began: the run fails with the named cause", async () => {
+    const replies: Array<WorkerRunContextReply> = [];
+    const coordinator = new Coordinator(async ({ reply, onProgress }) => {
+      replies.push(reply);
+      onProgress({ outputStarted: true });
+      return { state: "failed", output: "partial", error: REFUSAL, turns: 1, usage: usage(1) };
+    }, { scheduler: new Scheduler(1), replyPolicy: () => ({ alternates: ["p/b"] }) });
+    coordinator.start(run("content-after", 1, 1, 600_000));
+    const settled = await coordinator.wait("content-after", "all");
+    expect(replies).toEqual([undefined]);
+    expect(settled.tasks[0]).toMatchObject({ state: "failed", error: REFUSAL });
+    expect(settled.tasks[0].routeFallbacks).toBeUndefined();
+    await coordinator.shutdown();
+  });
+});
+type WorkerRunContextReply = import("../src/subagents/types.ts").WorkerRunContext["reply"];
