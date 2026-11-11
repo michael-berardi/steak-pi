@@ -2,6 +2,7 @@ import { assertActiveModelSelector } from "../retired-model-selection.ts";
 import { TASK_CLASS_MAX_LENGTH, TASK_CLASS_PATTERN } from "../routing-config.ts";
 import { isClaudeAccountId } from "./claude-account.ts";
 import { claudeOwnedPathRules } from "./claude-owned-paths.ts";
+import { normalizeReadPath } from "./read-paths.ts";
 import { claudeCodeModelOf } from "./model-selection.ts";
 import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -241,6 +242,7 @@ export function normalizeDispatch(
   thinking: string,
   now: number = Date.now(),
   idFactory: IdFactory = randomUUID,
+  home: string = homedir(),
 ): RunRecord {
   if (input === null || typeof input !== "object") fail("input must be an object");
   assertActiveModelSelector(input.model);
@@ -329,6 +331,26 @@ export function normalizeDispatch(
     if (mayEdit && suppliedPaths.length === 0) {
       fail(`${field} may edit and requires at least one owned path`);
     }
+    if (source.readPaths !== undefined && !Array.isArray(source.readPaths)) {
+      fail(`${field}.readPaths must be an array`);
+    }
+    const suppliedReadPaths = source.readPaths ?? [];
+    if (suppliedReadPaths.length > 0 && mayEdit) {
+      fail(`${field} may edit and cannot also read outside cwd; readPaths is read-only and never combines with writable ownership`);
+    }
+    const readPaths: string[] = [];
+    for (const [readIndex, readPath] of suppliedReadPaths.entries()) {
+      const readField = `${field}.readPaths[${readIndex}]`;
+      // Refused here, before any checkpoint, relay peer or worker exists: a
+      // reviewer never starts with a grant that does not apply.
+      let normalized: string;
+      try {
+        normalized = normalizeReadPath(readPath, readField, home);
+      } catch (error) {
+        fail(error instanceof Error ? error.message : `${readField} was refused`);
+      }
+      if (!readPaths.includes(normalized)) readPaths.push(normalized);
+    }
 
     const ownedPaths = suppliedPaths.map((ownedPath, ownedIndex) => {
       const ownedField = `${field}.ownedPaths[${ownedIndex}]`;
@@ -363,6 +385,7 @@ export function normalizeDispatch(
       role,
       mayEdit,
       ownedPaths,
+      readPaths,
       allowBash,
       ...(taskClass === undefined ? {} : { taskClass }),
       state: "queued" as const,

@@ -96,6 +96,10 @@ export interface SubagentTaskInput {
   role?: SubagentRole;
   mayEdit?: boolean;
   ownedPaths?: string[];
+  /** Read-only artifact roots outside the run cwd for a read-only leaf (J-3760).
+   * Validated at dispatch: private agent homes only, existing real directories,
+   * never on a task that may edit. Granted read-only, never writable. */
+  readPaths?: string[];
   allowBash?: boolean;
   /** Operator-named task class (a lowercase slug). Steers an implicit text wave onto the chain the
    * operator configured for that class (`taskClasses` in routing.json); unknown classes are ignored. */
@@ -248,6 +252,9 @@ export interface NormalizedTask {
   role: SubagentRole;
   mayEdit: boolean;
   ownedPaths: string[];
+  /** Physical read-only artifact roots granted at dispatch. Absent on a checkpoint
+   * written before this field existed; every reader treats absent as empty. */
+  readPaths?: string[];
   allowBash: boolean;
   /** The class the dispatch declared for this task (provenance only; the run's route is already frozen). */
   taskClass?: string;

@@ -143,6 +143,7 @@ function cloneTask(task: TaskRecord): TaskRecord {
   return {
     ...task,
     ownedPaths: [...task.ownedPaths],
+    ...(task.readPaths ? { readPaths: [...task.readPaths] } : {}),
     changedPaths: [...workerJournal(task).changedPaths],
     lastStep: workerJournal(task).lastStep,
     usage: cloneUsage(task.usage),

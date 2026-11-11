@@ -47,8 +47,8 @@ describe("dispatch ergonomics regressions", () => {
     expect(result.details.summary).toEqual({
       harness: "pi", model: "openai-codex/gpt-6.1-sol", profile: null, thinking: "medium", background,
       tasks: [
-        { label: "edit", role: "worker", mayEdit: true, allowBash: true, ownedPaths: 1, modelRoute: "openai-codex/gpt-6.1-sol", selectionSource: "override" },
-        { label: "read", role: "reviewer", mayEdit: false, allowBash: false, ownedPaths: 0, modelRoute: "openai-codex/gpt-6.1-sol", selectionSource: "override" },
+        { label: "edit", role: "worker", mayEdit: true, allowBash: true, ownedPaths: 1, readPaths: 0, modelRoute: "openai-codex/gpt-6.1-sol", selectionSource: "override" },
+        { label: "read", role: "reviewer", mayEdit: false, allowBash: false, ownedPaths: 0, readPaths: 0, modelRoute: "openai-codex/gpt-6.1-sol", selectionSource: "override" },
       ],
     });
     expect(result.content[0].text).toContain('"mayEdit":false');

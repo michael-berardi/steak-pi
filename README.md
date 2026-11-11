@@ -21,20 +21,20 @@ serious sessions need: parallel subagents with hard limits, compaction that
 costs no model calls, checks that run after every edit, and a status line that
 tells you what the agent is doing.
 
-Current release: **0.23.18**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
+Current release: **0.25.0**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
 [UltraTerm](https://paretocybernetics.com/software/).
 
 ## Install
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.23.18
+pi install git:github.com/michael-berardi/steak-pi@v0.25.0
 ```
 
 Or from the release archive, without Git:
 
 ```sh
-shasum -a 256 -c steak-pi-0.23.18.tgz.sha256
-tar -xzf steak-pi-0.23.18.tgz
+shasum -a 256 -c steak-pi-0.25.0.tgz.sha256
+tar -xzf steak-pi-0.25.0.tgz
 npm install --ignore-scripts --prefix "$PWD/package"
 pi install "$PWD/package"
 ```
@@ -167,6 +167,14 @@ parent
   Claude ownership paths with permission-rule characters such as `[slug]` are
   rejected before starting. Automatic review fallback is read-only: write,
   shell or ownership grants never move silently to another harness.
+- **Reading outside the run cwd:** a read-only leaf may declare `readPaths` for
+  private artifacts that must not be staged in a checkout (captures,
+  screenshots, logs). Each entry must be an existing real folder below
+  `~/.cache/ut-coordinator/J-NNNN/`, `~/.cache/agent-scratch/<task>/` or
+  `~/.cache/ut-overseer/J-NNNN/`, and is validated at dispatch. It grants reads
+  only: Claude Code adds it with `--add-dir` while its tool allowlist stays
+  Read/Grep/Glob, and a Pi child may `read`, `grep`, `find` and `ls` there. See
+  the [protocol](./docs/ULTRATERM-SUBAGENT-PROTOCOL.md#read-only-artifact-roots-outside-the-run-cwd-readpaths).
 - **Budgets:** a 10-minute deadline by default (up to 8 hours) and 64 turns per
   worker by default. Output, relay and history are also bounded. A worker is told
   once when two requests remain, so it writes its findings and a remaining-work

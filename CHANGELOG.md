@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.25.0 (2026-11-11)
+
+- **A read-only reviewer can finally read the captures it was asked to review.** Claude Code workers run with
+  `--restricted`, which confines file tools to the run cwd, so an image reviewer whose evidence lived in a job's
+  private cache could not open it at all; the only reachable place was inside the project checkout, which USAP job
+  briefs forbid. `ownedPaths` could not help because dispatch refuses paths outside cwd. A read-only task now takes
+  `readPaths`: an explicit list of artifact folders it may read, validated at dispatch before the wave is
+  checkpointed or any worker exists. Each entry must be an existing real directory strictly below a private agent
+  home (`~/.cache/ut-coordinator/J-NNNN/<folder>`, `~/.cache/agent-scratch/<task>/<folder>`,
+  `~/.cache/ut-overseer/J-NNNN/<folder>`); the cache root, a job home itself, any other location, a file, a `..`
+  segment, a control character or a symlink is refused with a named field error. The grant is read-only on both
+  harnesses: Claude Code adds each path with `--add-dir` while the tool allowlist stays `Read,Grep,Glob` under
+  `--permission-mode dontAsk` (no write tool, no write rule), and a Pi child may `read`, `grep`, `find` and `ls`
+  inside a declared root, re-checking the filesystem on every call. `mayEdit` and `readPaths` never combine, and the
+  explicit Claude API route refuses `readPaths` because its argv forbids `--add-dir`. Resumed runs keep the grant
+  they were dispatched with.
+
 ## 0.24.1 (2026-11-10)
 
 - **A Claude Code worker that has to wait no longer kills itself.** Two USAP workers waiting on a deploy window and a

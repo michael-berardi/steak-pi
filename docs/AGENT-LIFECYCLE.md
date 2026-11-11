@@ -58,7 +58,7 @@ Children use native in-process Pi `AgentSession`s with:
 - filesystem reads constrained to the run working directory;
 - edits and writes constrained to prevalidated, non-overlapping owned paths,
   with case-folded comparisons on macOS and Windows;
-- read-only tasks omit writable `ownedPaths` and carry read scope in task text;
+- read-only tasks omit writable `ownedPaths` and carry read scope in task text, or name private artifact folders outside cwd with `readPaths` (read-only, validated at dispatch);
 - shell access disabled unless explicitly requested; and
 - no orchestration tool or recursive delegation path.
 

@@ -302,7 +302,9 @@ closed. Admission never changes the default route, adds a fallback, or touches
 authentication. It means the parent has staged image
 files under the run cwd and the child inspects them with the CLI's native Read
 tool, which presents image files to the model. Read-only reviewers' tool
-allowlist stays Read/Grep/Glob and `--restricted` still confines reads to cwd.
+allowlist stays Read/Grep/Glob and `--restricted` still confines reads to the run
+cwd plus any read-only artifact root the task declares with `readPaths` (see
+below).
 It does not mean inline image attachments or base64 in the prompt. Relay and
 hub send carry text only, never images. The task text
 names each staged relative path; a missing, unreadable, non-image, or
@@ -310,6 +312,42 @@ outside-cwd file is a failed review attempt, never something to infer. Pi
 `requireImages` admission and every stream, turn, output and lifetime bound are
 unchanged. Unit checks for this contract are synthetic and prove admission logic
 only; the capability is accepted after a real native CLI staged-image smoke.
+
+**Read-only artifact roots outside the run cwd (`readPaths`).** A job's captures,
+screenshots and logs must never be staged inside a project checkout, and
+`--restricted` refuses every path outside the run cwd, so a read-only reviewer
+that had to inspect such artifacts had no legal place to read them. A read-only
+task may now declare `readPaths`: an explicit list of folders it may read. It is
+validated at dispatch, before the wave is checkpointed or a worker exists:
+
+- read-only leaves only (`mayEdit` false); a task that may write cannot also
+  read outside cwd;
+- each entry must be an existing real directory strictly below a private agent
+  home: `~/.cache/ut-coordinator/J-NNNN/<folder>`, `~/.cache/agent-scratch/<task>/<folder>`
+  or `~/.cache/ut-overseer/J-NNNN/<folder>`. The cache root, a job home itself
+  (`~/.cache/ut-coordinator/J-NNNN`), another location such as `$HOME`, a
+  project checkout or `/tmp` are refused with a named field error;
+- no `..`, control character or overlong value, no file, no symlink leaf and no
+  symlink anywhere below home: the grant records the physical path;
+- duplicates collapse; an unreadable value fails the whole dispatch.
+
+The grant is read-only on both harnesses. `claude-code` passes each path as
+`--add-dir` while `--tools` stays `Read,Grep,Glob` and `--permission-mode`
+stays `dontAsk`, so there is no write tool and no write allow rule; the
+explicit API route forbids `--add-dir` and refuses `readPaths` with a named
+error. A Pi child resolves `read`, `grep`, `find` and `ls` against cwd or a
+declared root, re-reading the filesystem on every call so a path that became a
+symlink after dispatch is refused. Example:
+
+```json
+{ "label": "Review captures", "role": "reviewer", "mayEdit": false,
+  "readPaths": ["~/.cache/ut-coordinator/J-3706/captures"] }
+```
+
+The reviewer still gets no shell and no write authority. Evidence for these
+bounds is synthetic unit coverage (allowed root, refused sibling, refused
+symlink, no write rule); a real native image read through the CLI is the live
+acceptance.
 
 **Claude owned-path admission.** Unsupported `ownedPaths` for `claude-code`
 fail at dispatch, before the wave is registered, checkpointed, or started.
@@ -733,7 +771,9 @@ USAP is coordination, not a security sandbox.
   isolation.
 - File ownership is a protocol invariant, not an operating-system lock.
   `ownedPaths` are writable ownership only and must be omitted for read-only
-  tasks; read scope belongs in task text. Ownership comparisons are case-folded
+  tasks; read scope belongs in task text. A read-only leaf that must read
+  private artifacts outside cwd names them in `readPaths`, which grants reads
+  only and is validated at dispatch. Ownership comparisons are case-folded
   on macOS and Windows before overlap/authorization checks.
 - `allowBash` is explicit unsandboxed shell access in the operator trust domain.
   It can bypass `ownedPaths` and should be granted only when necessary.

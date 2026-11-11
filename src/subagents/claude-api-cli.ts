@@ -45,7 +45,7 @@ export interface ClaudeApiWaveSpec {
 }
 
 const SPEC_KEYS = ["goal", "route", "cwd", "constraints", "contract", "tasks", "concurrency", "timeoutMs", "maxTurns", "thinking", "thinkingReason"];
-const TASK_KEYS = ["label", "task", "role", "mayEdit", "ownedPaths", "allowBash"];
+const TASK_KEYS = ["label", "task", "role", "mayEdit", "ownedPaths", "readPaths", "allowBash"];
 
 /** Strict wave spec: unknown keys are errors, so a typo can never widen permissions silently. */
 export function parseWaveSpec(text: string): ClaudeApiWaveSpec {
@@ -65,6 +65,11 @@ export function parseWaveSpec(text: string): ClaudeApiWaveSpec {
     if (task === null || typeof task !== "object" || Array.isArray(task)) throw new Error(`tasks[${index}] must be an object`);
     const bad = Object.keys(task).filter((key) => !TASK_KEYS.includes(key));
     if (bad.length) throw new Error(`tasks[${index}] has unsupported key(s): ${bad.slice(0, 4).join(", ")}`);
+    // The API argv forbids --add-dir, so a declared read-only artifact root cannot
+    // be granted on this route: refuse it here, before any admission or checkpoint.
+    if ((task as Record<string, unknown>).readPaths !== undefined) {
+      throw new Error(`tasks[${index}].readPaths cannot be granted on the explicit API route (its argv forbids --add-dir); use a Claude subscription route or the Pi harness`);
+    }
   }
   return { ...spec, route } as unknown as ClaudeApiWaveSpec;
 }
@@ -236,7 +241,7 @@ export async function resumeClaudeApiRun(runId: string, deps: ClaudeApiWaveDeps 
     const run = normalizeDispatch({
       goal: snapshot.goal, constraints: snapshot.constraints, contract: snapshot.contract, harness: "claude-code", model: snapshot.model,
       thinking: snapshot.thinkingLevel, concurrency: claudeApiConcurrency(snapshot.concurrency, unfinished.length), timeoutMs: snapshot.timeoutMs, maxTurns: snapshot.maxTurns, background: true,
-      tasks: unfinished.map((task) => ({ label: task.label, task: task.task, role: task.role, mayEdit: task.mayEdit, ...(task.mayEdit ? { ownedPaths: task.ownedPaths } : {}), allowBash: task.allowBash })),
+      tasks: unfinished.map((task) => ({ label: task.label, task: task.task, role: task.role, mayEdit: task.mayEdit, ...(task.mayEdit ? { ownedPaths: task.ownedPaths } : {}), ...((task.readPaths?.length ?? 0) > 0 ? { readPaths: task.readPaths } : {}), allowBash: task.allowBash })),
     }, snapshot.cwd, snapshot.model, snapshot.thinkingLevel, deps.now?.() ?? Date.now(), deps.idFactory);
     run.selection = resolveClaudeApiSelection(claudeApiModelOf(snapshot.model)!);
     run.resumedFrom = runId;

@@ -32,6 +32,7 @@ import { Type } from "typebox";
 import { PROCESS_LISTING_GUIDANCE } from "./process-listing-guidance.ts";
 import { providerUsageLimit, reportsSpentPlan } from "./provider-quota.ts";
 import { assertOwnedPath } from "./policy.ts";
+import { readPathPromptLines, readUnderDeclaredRoots } from "./read-paths.ts";
 import { finalWorkerReport, workerJournal } from "./coordinator.ts";
 import { assertActiveModelSelector } from "../retired-model-selection.ts";
 import { assertWorkerDependencies, resolveWorkerDependency } from "./dependency-preflight.ts";
@@ -398,7 +399,8 @@ export function buildPiWorkerSystemPrompt(run: RunRecord, task: TaskRecord): str
       : "No shell access is available.",
     "Exclusive writable ownership:",
     ownership,
-    "Reads are restricted to the run cwd, except native Read may open individual regular files explicitly named in this leaf under ~/.cache/ut-overseer/<job>/. Cache directories, unassigned files, and symlink escapes are denied. Writes, when enabled, remain restricted to the owned paths above.",
+    "Reads are restricted to the run cwd, except native Read may open individual regular files explicitly named in this leaf under ~/.cache/ut-overseer/<job>/, and the read-only artifact roots the parent granted below. Cache directories, unassigned files, and symlink escapes are denied. Writes, when enabled, remain restricted to the owned paths above.",
+    ...readPathPromptLines(task.readPaths, "Read-only artifact roots granted by the parent (reads only, never writes):"),
     "",
     ...workerFinalReportInstructions(),
   ].join("\n");
@@ -441,6 +443,26 @@ function guardedPath(cwd: string, supplied: string, ownedPaths: readonly string[
   return assertOwnedPath(cwd, normalized, ownedPaths, mode);
 }
 
+/** Declared read-only artifact roots (J-3760) apply to a read, never to a write. */
+function declaredReadPath(readPaths: readonly string[] | undefined, supplied: string): string | undefined {
+  if (!readPaths || readPaths.length === 0) return undefined;
+  const normalized = supplied.startsWith("@") ? supplied.slice(1) : supplied;
+  const home = homedir();
+  const expanded = normalized.startsWith("~/") ? `${home}${sep}${normalized.slice(2)}` : normalized;
+  if (normalized.includes("\0") || normalized.split(/[\\/]/).includes("..")) return undefined;
+  return readUnderDeclaredRoots(readPaths, resolve(expanded));
+}
+
+/** Path for a directory tool: under cwd, or inside a declared read-only root. */
+function guardedReadDirPath(cwd: string, supplied: string, task: TaskRecord): string {
+  const declared = declaredReadPath(task.readPaths, supplied);
+  if (declared !== undefined) return declared;
+  const normalized = supplied.startsWith("@") ? supplied.slice(1) : supplied;
+  const home = homedir();
+  const expanded = normalized.startsWith("~/") ? `${home}${sep}${normalized.slice(2)}` : normalized;
+  return assertOwnedPath(cwd, expanded, task.ownedPaths, "read");
+}
+
 /** A task-text file mention grants Read only, never directory discovery or writes. */
 function guardedReadPath(cwd: string, supplied: string, task: TaskRecord): string {
   const home = homedir();
@@ -449,6 +471,8 @@ function guardedReadPath(cwd: string, supplied: string, task: TaskRecord): strin
   try {
     return guardedPath(cwd, expanded, task.ownedPaths, "read");
   } catch (cwdError) {
+    const declared = declaredReadPath(task.readPaths, supplied);
+    if (declared !== undefined) return declared;
     if (normalized.includes("\0") || normalized.split(/[\\/]/).includes("..")) throw cwdError;
     const path = resolve(cwd, expanded);
     const staging = join(home, ".cache", "ut-overseer");
@@ -588,7 +612,7 @@ export function createGuardedPiWorkerTools(options: GuardedToolOptions): AnyTool
     }),
     async execute(id, raw, signal, update, ctx) {
       const params = raw as { pattern: string; path?: string; glob?: string; ignoreCase?: boolean; literal?: boolean; context?: number; limit?: number };
-      const path = params.path === undefined ? undefined : guardedPath(cwd, params.path, task.ownedPaths, "read");
+      const path = params.path === undefined ? undefined : guardedReadDirPath(cwd, params.path, task);
       const base = await nativeTool("grep", (native) => native.createGrepToolDefinition(cwd));
       return base.execute(id, { ...params, ...(path === undefined ? {} : { path }) }, signal, update, ctx);
     },
@@ -604,7 +628,7 @@ export function createGuardedPiWorkerTools(options: GuardedToolOptions): AnyTool
     }),
     async execute(id, raw, signal, update, ctx) {
       const params = raw as { pattern: string; path?: string; limit?: number };
-      const path = params.path === undefined ? undefined : guardedPath(cwd, params.path, task.ownedPaths, "read");
+      const path = params.path === undefined ? undefined : guardedReadDirPath(cwd, params.path, task);
       const base = await nativeTool("find", (native) => native.createFindToolDefinition(cwd));
       return base.execute(id, { ...params, ...(path === undefined ? {} : { path }) }, signal, update, ctx);
     },
@@ -619,7 +643,7 @@ export function createGuardedPiWorkerTools(options: GuardedToolOptions): AnyTool
     }),
     async execute(id, raw, signal, update, ctx) {
       const params = raw as { path?: string; limit?: number };
-      const path = params.path === undefined ? undefined : guardedPath(cwd, params.path, task.ownedPaths, "read");
+      const path = params.path === undefined ? undefined : guardedReadDirPath(cwd, params.path, task);
       const base = await nativeTool("ls", (native) => native.createLsToolDefinition(cwd));
       return base.execute(id, { ...params, ...(path === undefined ? {} : { path }) }, signal, update, ctx);
     },

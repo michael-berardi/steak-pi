@@ -142,7 +142,8 @@ Claude Code. A running parent cannot load the new route without a restart; run
 `docs/CLAUDE-API-ROUTE.md`).
 The same harness serves workers and scouts too: select it explicitly and grant
 `mayEdit` + `ownedPaths` and/or `allowBash`. Read-only Claude reviewers never
-receive Bash, even when requested. Reads stay confined to cwd; each owned path
+receive Bash, even when requested. Reads stay confined to cwd plus any
+`readPaths` root a read-only task declares; each owned path
 becomes a CLI `Edit(...)` allow rule under `dontAsk`, so
 the CLI itself denies writes outside owned paths. `allowBash` adds the Bash tool
 and, as on Pi, is operator-level shell that can bypass ownership. Each Claude
@@ -289,6 +290,13 @@ failing); the dispatch note shows the numbers. Teach it: after you verify a clas
 `fail`; hub `routes` prints the per-class estimates. A leaf on a test-gated class ends its
 report with `TEST-GATE: pass` or `TEST-GATE: fail`.
 
+A reviewer that must inspect captures kept outside a checkout (a job's captures
+or screenshots under `~/.cache/ut-coordinator/J-NNNN/...` or
+`~/.cache/agent-scratch/...`) declares them in `readPaths` on its task instead of
+staging evidence inside the repo. It is read-only, private homes only, validated
+at dispatch, and granted as a Claude `--add-dir` (tools stay Read/Grep/Glob) or a
+Pi read root; `mayEdit` and `readPaths` never combine.
+
 Set `requireImages: true` for visual critics or render inspection. The registry
 must advertise image input and a native text/tool adapter must be available.
 Inspect the receipt and hub's provider/model/profile, selection provenance and
@@ -352,7 +360,8 @@ fairness; never remove live or unreadable leases or queue records to force room.
 
 USAP is a protocol, not a sandbox. Children may share the working directory,
 environment, and operator trust domain. `ownedPaths` apply only to guarded
-edit/write tools and must be omitted for read-only leaves. `allowBash` grants
+edit/write tools and must be omitted for read-only leaves; `readPaths` grants
+reads of a named private artifact folder outside cwd, never a write. `allowBash` grants
 unsandboxed operator-level shell access that can bypass `ownedPaths`, except
 read-only Claude reviewers never receive Bash. Tool
 restrictions and path ownership are coordination controls, not OS isolation.

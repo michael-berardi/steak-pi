@@ -43,6 +43,7 @@ import type { RelayBroker } from "./relay.ts";
 import { ClaudeRelay, CLAUDE_RELAY_PROMPT, claudeUserMessage, stripClaudeRelayLines } from "./claude-relay.ts";
 import { claudeOwnedPathRules } from "./claude-owned-paths.ts";
 import { claudeReviewReadDirs } from "./claude-review-read.ts";
+import { readPathPromptLines } from "./read-paths.ts";
 export { claudeOwnedPathRules } from "./claude-owned-paths.ts";
 import { randomUUID, createHash } from "node:crypto";
 import { applyClaudeAccountEnv, resolveClaudeAccount, type ClaudeAccountId } from "./claude-account.ts";
@@ -79,6 +80,8 @@ export interface ClaudeWorkerPermissions {
   mayEdit?: boolean;
   allowBash?: boolean;
   ownedPaths?: readonly string[];
+  /** Read-only artifact roots declared at dispatch (J-3760); granted as read-only --add-dir, never writable. */
+  readPaths?: readonly string[];
   /** Leaf task text; a read-only reviewer's explicitly named staged review path grants one read-only --add-dir. */
   task?: string;
   /** Home for the staged-review grant; tests inject a fake home. Defaults to the operator home. */
@@ -180,6 +183,8 @@ export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPer
   const ownedPaths = permissions.ownedPaths ?? [];
   if (permissions.mayEdit && ownedPaths.length === 0) throw new Error("claude-code mayEdit leaves require at least one owned path");
   if (!permissions.mayEdit && ownedPaths.length > 0) throw new Error("claude-code read-only leaves cannot own writable paths");
+  const declaredReadPaths = permissions.readPaths ?? [];
+  if (permissions.mayEdit && declaredReadPaths.length > 0) throw new Error("claude-code readPaths are read-only and cannot be granted to a mayEdit leaf");
   const shell = claudeShellPolicy(permissions);
   const tools = [CLAUDE_CODE_ALLOWED_TOOLS,
     ...(permissions.mayEdit ? [CLAUDE_CODE_EDIT_TOOLS] : []),
@@ -190,7 +195,12 @@ export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPer
   ];
   // Read-only reviewers may get one extra read-only directory (their staged job
   // review folder, named in their task text). Never writable; see claude-review-read.ts.
-  const readDirs = claudeReviewReadDirs({ role: permissions.role, mayEdit: permissions.mayEdit, task: permissions.task ?? "" }, permissions.home);
+  // A read-only leaf may also name private artifact roots at dispatch (J-3760):
+  // those are validated there and re-checked here; the tool allowlist never widens.
+  const readDirs = [...new Set([
+    ...claudeReviewReadDirs({ role: permissions.role, mayEdit: permissions.mayEdit, task: permissions.task ?? "" }, permissions.home),
+    ...declaredReadPaths,
+  ])];
   const args = [
     "--print",
     "--output-format", "stream-json",
@@ -236,6 +246,9 @@ export function claudeApiWorkerArgs(maxTurns: number | undefined, permissions: C
     throw new Error("claude-code API settings must be an absolute file path, never inline settings");
   }
   if (!Number.isFinite(api.maxBudgetUsd) || api.maxBudgetUsd <= 0 || api.maxBudgetUsd > 25) throw new Error("claude-code API session budget must be a positive USD amount of at most 25");
+  // The API argv forbids --add-dir (it is a credential/extension-bearing flag on that
+  // route), so a declared read-only artifact root cannot be granted there: name it.
+  if ((permissions.readPaths ?? []).length > 0) throw new Error("claude-code readPaths cannot be granted on the explicit API route; use a Claude subscription route or the Pi harness for a reviewer that reads outside the run cwd");
   const args = [
     "--bare",
     ...claudeWorkerArgs(maxTurns, permissions, resolve, model, session, effort),
@@ -333,6 +346,7 @@ export function buildClaudeWorkerContinuationPrompt(task: TaskRecord, maxTurns?:
     PROCESS_LISTING_GUIDANCE,
     ...(claudeShellPolicy(task).permissionLine ? [permissionLine(task)] : []),
     ...(task.ownedPaths.length > 0 ? ["Owned paths:", ...task.ownedPaths.map((value) => `- ${value}`)] : []),
+    ...readPathPromptLines(task.readPaths, "Read-only artifact roots (outside the run cwd; never writable):"),
     "Finish the remaining work only, then return the required concise final report.",
     ...(maxTurns === undefined ? [] : [turnBudgetPromptLine(maxTurns)]),
   ].join("\n");
@@ -351,7 +365,7 @@ export function buildClaudeWorkerPrompt(run: RunRecord, task: TaskRecord, relay 
     permissionLine(task),
     // Observed on CLI 2.1.296: `--bare` offers only Read (plus Edit and Bash when granted); Grep, Glob and Write were absent. Say so rather than promise tools the session lacks.
     ...(claudeApiModelOf(run.model) ? ["This session runs in the CLI's minimal bare mode: Grep, Glob, Write and NotebookEdit may not be provided, so read files with Read and change files with Edit. The tools you actually hold are the ones available."] : []),
-    ...(run.selection?.images ? ["Image inspection uses native Read on image files staged under the run cwd; inline attachments and image relay are unsupported. Read every image you claim to have inspected."] : []),
+    ...(run.selection?.images ? ["Image inspection uses native Read on image files staged under the run cwd or a read-only artifact root granted for this leaf; inline attachments and image relay are unsupported. Read every image you claim to have inspected."] : []),
     relay ? CLAUDE_RELAY_PROMPT : "There is no relay tool on this harness: peer messaging is unsupported. Report coordination needs in your final report instead.",
     WORKER_CHECK_SCOPE,
     "You have no commit, push, or deploy permission; this prompt grants none.",
@@ -379,6 +393,7 @@ export function buildClaudeWorkerPrompt(run: RunRecord, task: TaskRecord, relay 
     task.mayEdit
       ? `Owned writable paths (writes anywhere else are denied by the CLI):\n${task.ownedPaths.map((owned) => `- ${owned}`).join("\n")}`
       : "Nothing is writable.",
+    ...readPathPromptLines(task.readPaths, "Read-only artifact roots granted for this leaf (outside the run cwd; Read/Grep/Glob only, never writable):"),
     "",
     ...workerFinalReportInstructions(),
   ].join("\n");
