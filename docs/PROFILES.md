@@ -42,9 +42,12 @@ profile is the neutral virtual `steak-pi/preferred-free`.
 
 When `implicitReview.route` is configured, all-reviewer waves with no explicit
 harness/model/profile run it on the official Claude Code CLI at medium effort (high/xhigh when the dispatch asks with a reason) with
-existing subscription authentication; only the
+existing subscription authentication on an account the router shows eligible
+(the wave pins it, so the review never runs on a spent session login while another
+account can take it); only the
 [bounded automatic review exception](./MODEL-ROUTING.md#implicit-review) may use
-`implicitReview.fallback` when Claude is proven unavailable. Any other Claude
+`implicitReview.fallback` when Claude is proven unavailable, including a
+recognized quota or auth refusal before model output. Any other Claude
 Code wave (`harness: "claude-code"`) runs the model named in `model` or the
 operator's `claudeCodeDefaults`. Claude workers get `mayEdit` + `ownedPaths`
 (enforced by CLI `Edit(...)` allow rules under `dontAsk`). `allowBash` is

@@ -212,7 +212,10 @@ of stalling. An approved, active free preference applies to implicit workers
 until its expiry; explicit selections remain exact. Account-leased subscription
 routes stay isolated and balanced, without copying credentials or changing the
 parent environment. Image reviews never silently switch to the automatic
-text-review fallback. Missing credentials fail the run instead of falling back
+text-review fallback, and an implicit review pins an eligible Claude account so it
+never runs on a spent login while another account can take it; a Claude quota or
+auth refusal before model output moves the same review to the configured fallback
+inside the same tool call. Missing credentials fail the run instead of falling back
 to something that bills differently. Details: [model routing](./docs/MODEL-ROUTING.md),
 [profiles](./docs/PROFILES.md).
 

@@ -152,7 +152,7 @@ USAP uses one coordinator, hub, capacity limiter, checkpoint store and telemetry
 surface for both Pi workers and the official headless Claude Code CLI. An absent
 `harness` means Pi except for an all-reviewer wave with no explicit route when
 the operator configured `implicitReview.route`: that wave runs the configured
-Claude Code route at medium effort (high/xhigh only when the dispatch asks with a reason). The [automatic text-review exception](./MODEL-ROUTING.md#implicit-review) alone permits `implicitReview.fallback` evidence when Claude is proven unavailable; it is not expert approval.
+Claude Code route on a router-eligible account at medium effort (high/xhigh only when the dispatch asks with a reason). The [automatic text-review exception](./MODEL-ROUTING.md#implicit-review) alone permits `implicitReview.fallback` evidence when Claude is proven unavailable; it is not expert approval.
 Explicit Pi/model/profile selections still win.
 
 `harness: "claude-code"` runs the operator's `claudeCodeDefaults.worker` for
@@ -744,7 +744,9 @@ defaults and `textWorkerChain` / `multimodalWorkerChain`; explicitly native-Pi
 reviewer chains lead with `reviewerChainHead` when configured — the legacy
 "expert review chain" name is a native-Pi routing label, not expert sign-off.
 All-reviewer waves with no explicit route use `implicitReview.route` when
-configured. Existing explicitly selected Pi profiles keep their native route
+configured, pinned on a Claude account the router shows eligible; a recognized
+quota or auth refusal before model output re-runs the same review on
+`implicitReview.fallback` inside the same tool call, and the result names both routes. Existing explicitly selected Pi profiles keep their native route
 semantics. No failed expert review silently falls back to another model.
 Explicit model/profile selection wins. See [PROFILES.md](./PROFILES.md) and
 [MODEL-ROUTING.md](./MODEL-ROUTING.md) for the configuration keys. Record the

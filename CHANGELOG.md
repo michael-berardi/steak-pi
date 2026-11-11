@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.25.2 (2026-11-11)
+
+- **An implicit review runs on a Claude account it can actually launch, and a pre-output refusal reaches its
+  configured fallback.** The per-turn route line could say the Claude subscription tier was up while every
+  dispatch was refused by the CLI with "quota limit reached". The tier verdict is whole-account-set: one eligible
+  account made it read "up", but an implicit all-reviewer wave pinned no account, so it ran on the parent's own
+  Claude login, which was the spent one. Three things change:
+  - the implicit review route asks the router and **pins an eligible account**, exactly like the implicit worker
+    tier, and records it as an automatic pick (`selection.accountAutomatic`) rather than an operator choice;
+  - a parent login the router proves spent, with no account left to pin, is proven Claude unavailability for a
+    read-only review, so that wave goes to `implicitReview.fallback` before anything launches;
+  - a Claude review worker refused on a recognized quota or auth failure **before model output** now re-runs the
+    same review tasks on `implicitReview.fallback` inside the same call, with a fresh router read at refusal time
+    instead of the dispatch-time snapshot. The refused run stays failed with its own cause, the receipt and the
+    result name both routes, and when the fallback cannot launch either, the failure names both causes. Privileged
+    and image reviews keep their exact Claude route, and the failure says why the fallback never applies to them.
+- **An unpinned explicit `claude-code` route is refused on the login it would use.** A route that names no
+  `claudeAccount` runs on this session's own login, so that account is what the router must prove launchable:
+  the refusal names that login and the router's own cause for it, and points at pinning an eligible account. The
+  per-turn route line also names a spent session login beside an otherwise-up tier, so an unpinned route is never
+  a surprise.
+- **"quota limit reached" is a recognized quota cause.** It is the Claude Code CLI adapter's own pre-output
+  wording, and it matched no usage-limit pattern, so such a refusal was never classified as a quota failure.
+
 ## 0.25.1 (2026-11-11)
 
 - **`readPaths` hardening after the completion review.** The new read-only artifact grant is tightened where the

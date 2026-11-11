@@ -298,11 +298,16 @@ without advertised image input are rejected.
 ### Implicit review
 
 When `implicitReview.route` is set, implicit all-reviewer waves run it on the
-official Claude Code CLI at medium effort unless the dispatch asks for high/xhigh with a reason. Only a router status proving every Claude
-account ineligible, or a Claude child with a recognized quota/auth failure
-**before model output**, may use `implicitReview.fallback` on Pi, and only for
-read-only reviewers (no `mayEdit`, `allowBash` or owned paths). Mixed implicit
-worker/reviewer waves are rejected. A task records `reviewFallback: {from,to,reason}`
+official Claude Code CLI at medium effort unless the dispatch asks for high/xhigh with a reason. The wave asks
+the router first and **pins an eligible Claude account** for the review, like the implicit worker tier, so a
+review never runs on this session's own login while another account can take it; the pin is recorded as an
+automatic pick, never as an operator choice. Only a router status proving every Claude account ineligible, a
+session login the router proves spent with nothing left to pin, or a Claude child with a recognized quota/auth
+failure **before model output**, may use `implicitReview.fallback` on Pi, and only for read-only reviewers (no
+`mayEdit`, `allowBash` or owned paths). That pre-output refusal is handled inside the same tool call: the same
+review tasks are re-run on the fallback after a fresh router read, the refused run stays failed with its own
+cause, and when the fallback cannot launch either, both causes are named. Mixed implicit worker/reviewer waves
+are rejected. A task records `reviewFallback: {from,to,reason}`
 and `routeFallbacks`; a successful fallback review emits
 `<label> fallback review: USAP <run-id> receipt=<checkpoint.json> report=<task-id>`.
 Receipts mark these runs `automatic-review` / `automatic-review-fallback`, never
