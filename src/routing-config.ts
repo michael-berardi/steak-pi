@@ -165,6 +165,16 @@ export interface SubscriptionRouteCheck {
   /** Pinned model ids that are refused even on this route (for example a batch transport). */
   excludeIdPattern?: RegExp;
 }
+/** The operator's opt-in interactive chain virtual model (`interactiveChainModel`). Absent key:
+ * nothing is registered and interactive slots behave exactly as before. The provider, id and
+ * display name are the operator's own choice; Steak Pi ships none. */
+export interface InteractiveChainModelConfig {
+  provider: string;
+  id: string;
+  name: string;
+  /** Which configured worker chain the virtual model follows; absent means `textWorkerChain`. */
+  chain?: "textWorkerChain" | "multimodalWorkerChain";
+}
 export interface ClaudeFallbackTierConfig { ordinary: string; substantial: string }
 export interface ClaudeCodeDefaultsConfig { worker?: string; reviewer?: string }
 export interface ImplicitReviewConfig { route: string; fallback?: string }
@@ -196,6 +206,8 @@ export interface RoutingConfig {
   temporaryFreeExclusions?: readonly TemporaryFreeExclusion[];
   subscriptionRouteChecks?: readonly SubscriptionRouteCheck[];
   subscriptionFirstProvider?: string;
+  /** Opt-in virtual model that gives an interactive slot the operator's worker chain; absent: none. */
+  interactiveChainModel?: InteractiveChainModelConfig;
   claudeFallbackTier?: ClaudeFallbackTierConfig;
   claudeCodeDefaults?: ClaudeCodeDefaultsConfig;
   implicitReview?: ImplicitReviewConfig;
@@ -562,6 +574,23 @@ export function parseRoutingConfig(raw: unknown): RoutingConfig {
     });
   }
   if (raw.subscriptionFirstProvider !== undefined) config.subscriptionFirstProvider = text(raw.subscriptionFirstProvider, "subscriptionFirstProvider");
+  if (raw.interactiveChainModel !== undefined) {
+    const entry = raw.interactiveChainModel;
+    if (!object(entry)) return fail("interactiveChainModel", "expected { provider, id, name, chain }");
+    for (const field of Object.keys(entry)) {
+      if (!["provider", "id", "name", "chain"].includes(field)) return fail(`interactiveChainModel.${field}`, "unknown key (allowed: provider, id, name, chain)");
+    }
+    const chain = optionalText(entry.chain, "interactiveChainModel.chain");
+    if (chain !== undefined && chain !== "textWorkerChain" && chain !== "multimodalWorkerChain") {
+      return fail("interactiveChainModel.chain", 'expected "textWorkerChain" or "multimodalWorkerChain"');
+    }
+    config.interactiveChainModel = {
+      provider: text(entry.provider, "interactiveChainModel.provider"),
+      id: text(entry.id, "interactiveChainModel.id"),
+      name: text(entry.name, "interactiveChainModel.name"),
+      ...(chain !== undefined ? { chain: chain as InteractiveChainModelConfig["chain"] } : {}),
+    };
+  }
   if (raw.claudeFallbackTier !== undefined) {
     const entry = raw.claudeFallbackTier;
     if (!object(entry)) return fail("claudeFallbackTier", "expected { ordinary, substantial }");

@@ -20,8 +20,9 @@ A malformed file fails the routing decision that needs it with a
 re-read when their identity changes, so edits apply without a restart.
 
 The parent session keeps the model the operator selected and has no provider
-fallback. Child worker runs have exactly one ordered automatic chain (the
-operator's); every other selection is exact.
+fallback, unless the operator opts into the interactive chain virtual model
+(`interactiveChainModel`, below). Child worker runs have exactly one ordered
+automatic chain (the operator's); every other selection is exact.
 
 ## routing.json
 
@@ -134,6 +135,12 @@ JavaScript sources, case-insensitive unless noted. Unknown keys are ignored
   // without an explicit grant stay denied ("subscription first"). None: no veto.
   "subscriptionFirstProvider": "provider-a",
 
+  // Opt-in virtual model for interactive slots: one operator-named selection that
+  // follows a configured worker chain (default textWorkerChain). Absent: nothing is
+  // registered and interactive sessions behave exactly as before. See
+  // "Interactive chain virtual model" below.
+  "interactiveChainModel": { "provider": "provider-a", "id": "my-chain", "name": "My chain", "chain": "textWorkerChain" },
+
   // Claude Code CLI adapter choices (routes are the adapter's pinned claude-code/<model> ids).
   "claudeFallbackTier": { "ordinary": "claude-code/<small-model>", "substantial": "claude-code/<medium-model>" },
   "claudeCodeDefaults": { "worker": "claude-code/<medium-model>", "reviewer": "claude-code/<large-model>" },
@@ -170,6 +177,7 @@ What each key replaces, and what happens without it:
 | `hiddenModelPatterns` | pickers hide nothing beyond the harness scope |
 | `subscriptionRouteChecks` | only local endpoints and the Claude Code CLI adapter are subscription/local; no family is pinned |
 | `subscriptionFirstProvider` | no subscription-first veto |
+| `interactiveChainModel` | no virtual model is registered; interactive slots keep today's exact-selection behaviour |
 | `claudeFallbackTier` | an implicit wave whose chain is out fails naming every cause |
 | `claudeCodeDefaults` | `harness: "claude-code"` needs an explicit `model` |
 | `implicitReview` | implicit all-reviewer waves resolve the native reviewer chain |
@@ -529,6 +537,57 @@ Hot reload: `createConfigRefresher` polls `models.json`, `auth.json`,
 registry with `allowNetwork:false` once per observed revision. Hot reload
 propagates *configuration*, never *code*: a session started before an upgrade
 keeps its previous rules until it restarts.
+
+## Interactive chain virtual model (opt-in)
+
+Interactive sessions normally keep the exact model the operator selected: a
+slot whose plan runs out ends its turn on the error until someone switches the
+model. The optional `interactiveChainModel` key gives an interactive slot the
+same ordered chain workers use, under one operator-named virtual selection:
+
+```jsonc
+{
+  "textWorkerChain": ["provider-a/model-name", "provider-b/model-name"],
+  "interactiveChainModel": {
+    "provider": "provider-a",   // any provider id; the virtual entry is listed under it
+    "id": "my-chain",           // must not collide with a physical model id of that provider
+    "name": "My chain",         // the display name shown in /model and the status band
+    "chain": "textWorkerChain"  // optional; "textWorkerChain" (default) or "multimodalWorkerChain"
+  }
+}
+```
+
+How to enable it:
+
+1. Configure the chain you want the slot to follow (`textWorkerChain` or
+   `multimodalWorkerChain`) and add the `interactiveChainModel` key above.
+   Validate the file with `steak-pi routing check` before saving.
+2. Restart Steak Pi (registration happens at startup; adding or removing the key
+   needs a restart, while chain edits apply on the next routing decision).
+3. Select the virtual model once with `/model` (it appears under the configured
+   provider with the configured name). The selection persists like any model.
+
+Behaviour while it is selected:
+
+- Each new user request routes to the **first available step** of the configured
+  chain, with the same checks an implicit worker dispatch uses: exact identity,
+  capability, configured auth, catalog membership, subscription/local or
+  reviewed-and-allowlisted paid route, and `onlyWhen` quota conditions (the
+  account router is asked at most once per minute, and only when a step has an
+  `onlyWhen`). A slot returns to the preferred route as soon as it can work.
+- Continuation requests keep the physical model that last answered; an automatic
+  retry leaves the failed step for the next chain step only for a chain-eligible
+  error, otherwise Pi's own same-route retry semantics are unchanged.
+- The same pre-output chain wrapper workers use is installed beneath the virtual
+  selection, so quota, plan-limit and content-filter refusals hop to the next
+  authenticated step **before any output**, with the same spend approval and a
+  `model-fallback:from->to` hop receipt on the status band.
+- The status band shows the virtual name plus the physical route that answered
+  the latest assistant message (`my-chain → provider-b/model-name`). Usage and
+  cost stay attributed to the physical provider on every assistant message.
+- Explicit `/model` selections are never rerouted: the chain applies only while
+  the virtual model itself is selected. Absent key: nothing is registered and
+  interactive behaviour is exactly as before.
 
 ## Temporary approved free workers
 

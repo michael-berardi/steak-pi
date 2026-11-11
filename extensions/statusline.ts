@@ -24,6 +24,7 @@ import {
 import {
   collectUsage,
   emptyUsage,
+  lastRoutedModel,
   renderCompanionFooter,
   renderCompanionHeader,
   renderComposerBands,
@@ -101,6 +102,7 @@ export default function companionUiExtension(pi: ExtensionAPI): void {
   let requestRender = () => {};
   let usageDirty = true;
   let cachedUsage = emptyUsage();
+  let cachedRouted: string | undefined;
 
   let signalMode = "";
   const signalActivity = createActivitySignal(
@@ -148,7 +150,16 @@ export default function companionUiExtension(pi: ExtensionAPI): void {
 
     let footerData: ReadonlyFooterDataProvider | undefined;
     const snapshot = () => {
-      const model = ctx.model as { provider?: string } | undefined;
+      const model = ctx.model as { provider?: string; api?: string } | undefined;
+      const usage = (() => {
+        if (usageDirty) {
+          const entries = ctx.sessionManager.getEntries();
+          cachedUsage = collectUsage(entries);
+          cachedRouted = lastRoutedModel(entries);
+          usageDirty = false;
+        }
+        return cachedUsage;
+      })();
       return {
         state,
         cwd: ctx.cwd,
@@ -156,14 +167,11 @@ export default function companionUiExtension(pi: ExtensionAPI): void {
         sessionName: ctx.sessionManager.getSessionName() ?? undefined,
         model: ctx.model,
         provider: model?.provider,
+        // Under a virtual selection the band shows the virtual name plus the physical
+        // route that answered the latest assistant message; cost stays per-message.
+        routed: model?.api === "pi-virtual" ? cachedRouted : undefined,
         thinking: ctx.thinkingLevel,
-        usage: (() => {
-          if (usageDirty) {
-            cachedUsage = collectUsage(ctx.sessionManager.getEntries());
-            usageDirty = false;
-          }
-          return cachedUsage;
-        })(),
+        usage,
         context: contextSnapshot(ctx),
         planRoute: ctx.model ? isFlatPlanRoute(ctx.model) : false,
       };
@@ -330,7 +338,7 @@ export default function companionUiExtension(pi: ExtensionAPI): void {
     requestRender();
   });
   pi.on("agent_settled", async (_event, ctx) => update({ type: "settled" }, ctx));
-  pi.on("model_select", async (_event, _ctx) => requestRender());
+  pi.on("model_select", async (_event, _ctx) => { usageDirty = true; requestRender(); });
   pi.on("thinking_level_select", async (_event, _ctx) => requestRender());
   pi.on("session_info_changed", async (_event, _ctx) => requestRender());
 }

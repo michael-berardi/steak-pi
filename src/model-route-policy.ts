@@ -694,7 +694,7 @@ function evaluateOnlyWhen(condition: OnlyWhenCondition, options: ChainOptions): 
 /** One authenticated chain route or a fail-closed error. Reviewed paid
  * steps need the operator's exact allowlist grant (re-read per selection); an
  * unreviewed metered endpoint never enters an automatic chain. */
-export function selectChainedWorkerModel(registry: Registry, chain: readonly WorkerRouteStep[], options: ChainOptions = {}): Model {
+export function selectChainedWorkerModel(registry: ChainRegistry, chain: readonly WorkerRouteStep[], options: ChainOptions = {}): Model {
   const approve = options.approvePaidRoute ?? AUTOMATIC_CHAIN_APPROVAL;
   for (const step of chain) {
     if (step.onlyWhen && !evaluateOnlyWhen(step.onlyWhen, options)) continue;

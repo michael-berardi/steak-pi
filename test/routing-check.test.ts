@@ -29,4 +29,16 @@ describe("steak-pi routing check", () => {
     const p = join(dir, "broken.json"); writeFileSync(p, "{");
     expect(run(p).code).toBe(1);
   });
+  it("accepts a valid interactiveChainModel key", () => {
+    const result = run(write("interactive-ok.json", { interactiveChainModel: { provider: "provider-a", id: "chain", name: "Operator chain" }, textWorkerChain: ["provider-a/model-name"] }));
+    expect(result).toMatchObject({ code: 0 });
+  });
+  it("rejects a malformed interactiveChainModel key, naming it", () => {
+    const missingName = run(write("interactive-bad-name.json", { interactiveChainModel: { provider: "provider-a", id: "chain" } }));
+    expect(missingName.code).toBe(1);
+    expect(missingName.out).toContain("interactiveChainModel.name");
+    const badChain = run(write("interactive-bad-chain.json", { interactiveChainModel: { provider: "provider-a", id: "chain", name: "Operator chain", chain: "otherChain" } }));
+    expect(badChain.code).toBe(1);
+    expect(badChain.out).toContain("interactiveChainModel.chain");
+  });
 });

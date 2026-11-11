@@ -54,6 +54,9 @@ export interface FooterSnapshot {
   sessionName?: string;
   model?: unknown;
   provider?: string;
+  /** The physical route that answered the latest assistant message while a virtual
+   * model is selected (`provider/id`); the selection itself keeps the virtual name. */
+  routed?: string;
   thinking?: string;
   usage: UsageTotals;
   context?: ContextSnapshot;
@@ -110,6 +113,22 @@ export function collectUsage(entries: readonly unknown[]): UsageTotals {
     }
   }
   return total;
+}
+
+/** The physical route of the latest assistant message that names one (`provider/id`),
+ * for display under a virtual selection. Failed routing leaves the virtual model on a
+ * message; those entries are skipped. Usage/cost attribution itself stays per assistant
+ * message in {@link collectUsage}, exactly as Pi persisted it. */
+export function lastRoutedModel(entries: readonly unknown[]): string | undefined {
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index] as { type?: unknown; message?: { role?: unknown; provider?: unknown; model?: unknown; api?: unknown } } | undefined;
+    if (!entry || entry.type !== "message" || entry.message?.role !== "assistant") continue;
+    const { provider, model, api } = entry.message;
+    if (typeof provider !== "string" || !provider || typeof model !== "string" || !model) continue;
+    if (api === "pi-virtual") continue;
+    return `${provider}/${model}`;
+  }
+  return undefined;
 }
 
 function paintSides(
@@ -303,6 +322,12 @@ function joinSegments(
     : [segment]);
 }
 
+/** The selection name, plus the physical route that answered when a virtual model is selected. */
+function modelLabel(snapshot: FooterSnapshot): string {
+  const name = shortModel(snapshot.model);
+  return snapshot.routed ? `${name} → ${snapshot.routed}` : name;
+}
+
 function composerIdentity(
   width: number,
   snapshot: FooterSnapshot,
@@ -317,7 +342,7 @@ function composerIdentity(
   const reasoning = thinking && thinking !== "off" ? thinking : "";
   const full = [
     { text: "◆ ", paint: palette.accent },
-    { text: shortModel(snapshot.model), paint: palette.text },
+    { text: modelLabel(snapshot), paint: palette.text },
     ...(reasoning ? [
       { text: " · ", paint: palette.muted },
       { text: reasoning, paint: palette.text },
@@ -334,7 +359,7 @@ function composerIdentity(
   const modelBudget = width - statusBudget - displayWidth(separator)
     - (thinkingText ? displayWidth(thinkingText) + 1 : 0);
   return [
-    { text: truncatePlain(shortModel(snapshot.model), modelBudget), paint: palette.text },
+    { text: truncatePlain(modelLabel(snapshot), modelBudget), paint: palette.text },
     ...(thinkingText ? [{ text: ` ${thinkingText}`, paint: palette.text }] : []),
     { text: separator, paint: palette.muted },
     { text: truncatePlain(statusText, statusBudget), paint: paintStatus },
