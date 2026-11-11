@@ -15,15 +15,22 @@ const V1 = "0.98.0";
 const V2 = "0.99.0";
 const PI_PIN = "1.0.4";
 
-/** A release base folder: steak-pi.tgz (+ versioned copy) and SHA256SUMS, package/ layout like the real archive. */
+/** A release base folder: steak-pi.tgz (+ versioned copy) and SHA256SUMS, package/ layout like the real archive.
+ * The package carries one offline file: dependency so a real `npm ci` provably installs node_modules on any npm. */
 function buildBase(base: string, version: string, withPin: boolean) {
   const stage = mkdtempSync(join(tmpdir(), "steak-install-src-"));
   const pkg = join(stage, "package");
   mkdirSync(join(pkg, "bin"), { recursive: true });
-  writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "steak-pi", version, private: true, bin: { "steak-pi": "bin/steak-pi" } }));
-  const root: Record<string, unknown> = { name: "steak-pi", version };
+  mkdirSync(join(pkg, "dep"), { recursive: true });
+  writeFileSync(join(pkg, "dep", "package.json"), JSON.stringify({ name: "dep", version: "1.0.0" }));
+  writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "steak-pi", version, private: true, bin: { "steak-pi": "bin/steak-pi" }, dependencies: { dep: "file:dep" } }));
+  const root: Record<string, unknown> = { name: "steak-pi", version, dependencies: { dep: "file:dep" } };
   if (withPin) root.devDependencies = { "@earendil-works/pi-coding-agent": PI_PIN };
-  writeFileSync(join(pkg, "package-lock.json"), JSON.stringify({ name: "steak-pi", version, lockfileVersion: 3, requires: true, packages: { "": root } }));
+  writeFileSync(join(pkg, "package-lock.json"), JSON.stringify({ name: "steak-pi", version, lockfileVersion: 3, requires: true, packages: {
+    "": root,
+    dep: { name: "dep", version: "1.0.0" },
+    "node_modules/dep": { name: "dep", version: "1.0.0", resolved: "dep", link: true },
+  } }));
   writeFileSync(join(pkg, "bin", "steak-pi"), readFileSync(CLI), { mode: 0o755 });
   mkdirSync(base, { recursive: true });
   const tgz = join(base, "steak-pi.tgz");
@@ -143,7 +150,7 @@ describe("steak-pi one-step installer (install.sh)", () => {
     const pkg = join(f.steakHome, "releases", V1, "package");
     expect(settings(f).packages).toEqual([pkg]);
     expect(existsSync(join(pkg, "bin", "steak-pi"))).toBe(true);
-    expect(existsSync(join(pkg, "node_modules"))).toBe(true); // real npm ci ran
+    expect(existsSync(join(pkg, "node_modules", "dep"))).toBe(true); // real npm ci installed the file: dependency
     expect(existsSync(join(f.bin, "steak-pi"))).toBe(true);
     expect(existsSync(join(f.bin, "pi"))).toBe(false); // pi existed: no shim
     expect(r.stdout).toContain("Pi was already installed");
