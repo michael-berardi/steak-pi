@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.26.0 (2026-11-11)
+
+- **One model choice that follows your worker chain in interactive slots (opt-in).** Add `interactiveChainModel` to `routing.json` and pick that model in `/model`: each request goes to the first available step of your worker chain, and a quota, plan-limit or content-filter refusal moves to the next step before any output, the same way workers do. The footer shows which model answered, and cost stays attributed to that model. Without the key nothing changes. Setup: docs/MODEL-ROUTING.md.
+
 ## 0.25.7 (2026-11-11)
 
 - **A reload no longer breaks running subagents.** After `/reload`, the reloaded session takes over its own live USAP runs and their checkpoint store, instead of showing "USAP checkpoints memory-only: already owned by a live host in this process". With no runs in flight the store is released cleanly.
