@@ -444,18 +444,19 @@ function guardedPath(cwd: string, supplied: string, ownedPaths: readonly string[
 }
 
 /** Declared read-only artifact roots (J-3760) apply to a read, never to a write. */
-function declaredReadPath(readPaths: readonly string[] | undefined, supplied: string): string | undefined {
+function declaredReadPath(cwd: string, readPaths: readonly string[] | undefined, supplied: string): string | undefined {
   if (!readPaths || readPaths.length === 0) return undefined;
   const normalized = supplied.startsWith("@") ? supplied.slice(1) : supplied;
   const home = homedir();
   const expanded = normalized.startsWith("~/") ? `${home}${sep}${normalized.slice(2)}` : normalized;
   if (normalized.includes("\0") || normalized.split(/[\\/]/).includes("..")) return undefined;
-  return readUnderDeclaredRoots(readPaths, resolve(expanded));
+  // Relative paths resolve against the run cwd, exactly as the native tools do.
+  return readUnderDeclaredRoots(readPaths, resolve(cwd, expanded));
 }
 
 /** Path for a directory tool: under cwd, or inside a declared read-only root. */
 function guardedReadDirPath(cwd: string, supplied: string, task: TaskRecord): string {
-  const declared = declaredReadPath(task.readPaths, supplied);
+  const declared = declaredReadPath(cwd, task.readPaths, supplied);
   if (declared !== undefined) return declared;
   const normalized = supplied.startsWith("@") ? supplied.slice(1) : supplied;
   const home = homedir();
@@ -471,7 +472,7 @@ function guardedReadPath(cwd: string, supplied: string, task: TaskRecord): strin
   try {
     return guardedPath(cwd, expanded, task.ownedPaths, "read");
   } catch (cwdError) {
-    const declared = declaredReadPath(task.readPaths, supplied);
+    const declared = declaredReadPath(cwd, task.readPaths, supplied);
     if (declared !== undefined) return declared;
     if (normalized.includes("\0") || normalized.split(/[\\/]/).includes("..")) throw cwdError;
     const path = resolve(cwd, expanded);

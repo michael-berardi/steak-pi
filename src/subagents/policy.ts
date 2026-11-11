@@ -3,6 +3,7 @@ import { TASK_CLASS_MAX_LENGTH, TASK_CLASS_PATTERN } from "../routing-config.ts"
 import { isClaudeAccountId } from "./claude-account.ts";
 import { claudeOwnedPathRules } from "./claude-owned-paths.ts";
 import { normalizeReadPath } from "./read-paths.ts";
+import { claudeApiModelOf } from "./claude-api-route.ts";
 import { claudeCodeModelOf } from "./model-selection.ts";
 import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -337,6 +338,11 @@ export function normalizeDispatch(
     const suppliedReadPaths = source.readPaths ?? [];
     if (suppliedReadPaths.length > 0 && mayEdit) {
       fail(`${field} may edit and cannot also read outside cwd; readPaths is read-only and never combines with writable ownership`);
+    }
+    // The explicit API route's argv forbids --add-dir, so the grant cannot be
+    // enforced there: refuse the whole wave here, before any checkpoint.
+    if (suppliedReadPaths.length > 0 && claudeApiModelOf(model) !== undefined) {
+      fail(`${field}.readPaths cannot be granted on the explicit API route (its argv forbids --add-dir); use a Claude subscription route or the Pi harness`);
     }
     const readPaths: string[] = [];
     for (const [readIndex, readPath] of suppliedReadPaths.entries()) {

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.25.1 (2026-11-11)
+
+- **`readPaths` hardening after the completion review.** The new read-only artifact grant is tightened where the
+  review found slack: an `agent-scratch` task home (`~/.cache/agent-scratch/<task>`) is refused exactly like a job
+  home, so a grant always names a folder inside a home; a `~user` form is refused by name instead of being resolved
+  against the process cwd; each grant is re-checked at every launch, so a queued leaf whose folder was replaced by a
+  symlink is refused instead of handing the CLI a different directory; an explicit Claude API run refuses
+  `readPaths` at dispatch (the route's argv forbids `--add-dir`) rather than at launch; and a Pi child resolves a
+  relative path against the run cwd, not the process cwd. Tests cover each one, plus the guarded Pi tools exposing
+  no write, edit or shell to a leaf that carries a grant.
+
 ## 0.25.0 (2026-11-11)
 
 - **A read-only reviewer can finally read the captures it was asked to review.** Claude Code workers run with

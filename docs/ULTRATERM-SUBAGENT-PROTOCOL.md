@@ -327,17 +327,24 @@ validated at dispatch, before the wave is checkpointed or a worker exists:
   or `~/.cache/ut-overseer/J-NNNN/<folder>`. The cache root, a job home itself
   (`~/.cache/ut-coordinator/J-NNNN`), another location such as `$HOME`, a
   project checkout or `/tmp` are refused with a named field error;
-- no `..`, control character or overlong value, no file, no symlink leaf and no
-  symlink anywhere below home: the grant records the physical path;
+- `agent-scratch` keeps one folder per task, so a grant names a folder inside a
+  task home (`~/.cache/agent-scratch/<task>/<folder>`), never
+  `~/.cache/agent-scratch/<task>` itself;
+- no `..`, control character, `~user` form or overlong value, no file, no
+  symlink leaf and no symlink anywhere below the private-home root: the grant
+  records the physical path. The private-home root itself may be an operator
+  symlink (this machine links `~/.cache/ut-coordinator` to `ut-overseer`);
 - duplicates collapse; an unreadable value fails the whole dispatch.
 
 The grant is read-only on both harnesses. `claude-code` passes each path as
 `--add-dir` while `--tools` stays `Read,Grep,Glob` and `--permission-mode`
-stays `dontAsk`, so there is no write tool and no write allow rule; the
-explicit API route forbids `--add-dir` and refuses `readPaths` with a named
-error. A Pi child resolves `read`, `grep`, `find` and `ls` against cwd or a
-declared root, re-reading the filesystem on every call so a path that became a
-symlink after dispatch is refused. Example:
+stays `dontAsk`, so there is no write tool and no write allow rule. The
+explicit API route forbids `--add-dir`, so a `readPaths` leaf on it is refused
+at dispatch (and again by the wave-spec parser), before any checkpoint. Every
+launch re-checks the folder: a grant whose directory was replaced by a symlink
+while the leaf waited is refused, never handed to the CLI. A Pi child resolves
+`read`, `grep`, `find` and `ls` against cwd or a declared root, re-reading the
+filesystem for the requested path on every call. Example:
 
 ```json
 { "label": "Review captures", "role": "reviewer", "mayEdit": false,

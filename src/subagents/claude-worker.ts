@@ -43,7 +43,7 @@ import type { RelayBroker } from "./relay.ts";
 import { ClaudeRelay, CLAUDE_RELAY_PROMPT, claudeUserMessage, stripClaudeRelayLines } from "./claude-relay.ts";
 import { claudeOwnedPathRules } from "./claude-owned-paths.ts";
 import { claudeReviewReadDirs } from "./claude-review-read.ts";
-import { readPathPromptLines } from "./read-paths.ts";
+import { readPathPromptLines, verifyGrantedReadPath } from "./read-paths.ts";
 export { claudeOwnedPathRules } from "./claude-owned-paths.ts";
 import { randomUUID, createHash } from "node:crypto";
 import { applyClaudeAccountEnv, resolveClaudeAccount, type ClaudeAccountId } from "./claude-account.ts";
@@ -183,7 +183,8 @@ export function claudeWorkerArgs(maxTurns?: number, permissions: ClaudeWorkerPer
   const ownedPaths = permissions.ownedPaths ?? [];
   if (permissions.mayEdit && ownedPaths.length === 0) throw new Error("claude-code mayEdit leaves require at least one owned path");
   if (!permissions.mayEdit && ownedPaths.length > 0) throw new Error("claude-code read-only leaves cannot own writable paths");
-  const declaredReadPaths = permissions.readPaths ?? [];
+  // Re-checked at every launch: a queued leaf can wait while a folder is replaced.
+  const declaredReadPaths = (permissions.readPaths ?? []).map((path, index) => verifyGrantedReadPath(path, `readPaths[${index}]`));
   if (permissions.mayEdit && declaredReadPaths.length > 0) throw new Error("claude-code readPaths are read-only and cannot be granted to a mayEdit leaf");
   const shell = claudeShellPolicy(permissions);
   const tools = [CLAUDE_CODE_ALLOWED_TOOLS,

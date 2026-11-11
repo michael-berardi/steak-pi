@@ -33,17 +33,12 @@ export const READ_PATH_ROOTS = [
 ] as const;
 
 /**
- * Per home: the deepest folder shape a grant may name. `ut-coordinator` and
- * `ut-overseer` keep one folder per job (`J-1234`), so a grant names a folder
- * inside a job home and never the job home itself (it holds that job's report
- * and handoff). `agent-scratch` keeps one folder per task, so one segment below
- * the root is already a named task.
+ * `<root>/<one-segment>` is a job home (`ut-coordinator`, `ut-overseer`, which
+ * hold that job's report and handoff) or a task home (`agent-scratch`, which
+ * holds that task's own notes), so a grant always names a folder INSIDE one of
+ * those and never the home itself.
  */
-const ROOT_SHAPE: Record<(typeof READ_PATH_ROOTS)[number], { jobFolder: boolean }> = {
-  ".cache/ut-coordinator": { jobFolder: true },
-  ".cache/agent-scratch": { jobFolder: false },
-  ".cache/ut-overseer": { jobFolder: true },
-};
+const MIN_GRANT_SEGMENTS = 2;
 
 const JOB_FOLDER = /^J-\d+$/;
 const MAX_READ_PATH_LENGTH = 2_000;
@@ -57,9 +52,12 @@ function isBelow(parent: string, candidate: string): boolean {
   return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
-function expandHome(value: string, home: string): string {
+function expandHome(value: string, home: string, field: string): string {
   if (value === "~") return home;
-  if (value.startsWith(`~${sep}`) || value.startsWith("~/")) return join(home, value.slice(2));
+  if (value.startsWith("~/")) return join(home, value.slice(2));
+  // `~user/...` is never expanded here; resolving it would anchor it at the
+  // process cwd, so it is refused by name instead.
+  if (value.startsWith("~")) refuse(field, "must use ~/ for the operator home; ~user paths are not supported");
   return value;
 }
 
@@ -77,7 +75,7 @@ export function normalizeReadPath(input: unknown, field: string, home: string = 
   if (raw.length > MAX_READ_PATH_LENGTH) refuse(field, `must be at most ${MAX_READ_PATH_LENGTH} characters`);
   if (raw.split(/[\\/]/).includes("..")) refuse(field, "must not contain a parent-directory segment");
   if (!raw.startsWith("~") && !isAbsolute(raw)) refuse(field, "must be an absolute path or start with ~/");
-  const absolute = resolve(expandHome(raw, home));
+  const absolute = resolve(expandHome(raw, home, field));
 
   try {
     realpathSync.native(home);
@@ -89,13 +87,11 @@ export function normalizeReadPath(input: unknown, field: string, home: string = 
     const rootPath = join(home, root);
     if (!isBelow(rootPath, absolute)) continue;
     const segments = relative(rootPath, absolute).split(sep).filter((value) => value.length > 0);
-    const shape = ROOT_SHAPE[root];
-    if (shape.jobFolder) {
-      if (segments.length < 2 || !JOB_FOLDER.test(segments[0])) {
-        refuse(field, `must name a folder inside a job home below ~/${root} (for example ~/${root}/J-1234/captures); the cache root and a job home itself are never granted`);
-      }
-    } else if (segments.length < 1) {
-      refuse(field, `must name a folder below ~/${root}; the cache root itself is never granted`);
+    if (segments.length < MIN_GRANT_SEGMENTS) {
+      refuse(field, `must name a folder inside a home below ~/${root} (for example ~/${root}/home/folder); the cache root and a task or job home itself are never granted`);
+    }
+    if (root !== ".cache/agent-scratch" && !JOB_FOLDER.test(segments[0])) {
+      refuse(field, `must name a folder inside a job home (~/${root}/J-1234/folder), never another folder directly below ~/${root}`);
     }
 
     let stat;
@@ -157,4 +153,28 @@ export function readUnderDeclaredRoots(readPaths: readonly string[], candidate: 
 export function readPathPromptLines(readPaths: readonly string[] | undefined, heading: string): string[] {
   const paths = readPaths ?? [];
   return paths.length === 0 ? [] : [heading, ...paths.map((value) => `- ${value}`)];
+}
+
+/**
+ * Launch-time re-check of a grant already validated at dispatch: the folder must
+ * still be the same real directory. A queued or background leaf can wait while a
+ * path is replaced, and the CLI must never be handed a directory that is no
+ * longer the one that was validated. Returns the validated physical path.
+ */
+export function verifyGrantedReadPath(path: string, field: string): string {
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch {
+    refuse(field, "no longer exists");
+  }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) refuse(field, "is no longer a real directory");
+  let physical: string;
+  try {
+    physical = realpathSync.native(path);
+  } catch {
+    refuse(field, "cannot be resolved on disk");
+  }
+  if (physical !== path) refuse(field, "no longer resolves to the validated directory");
+  return physical;
 }

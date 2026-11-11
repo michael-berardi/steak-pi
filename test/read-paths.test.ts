@@ -75,11 +75,20 @@ describe("read-only artifact roots outside the run cwd (J-3760)", () => {
     }
   });
 
-  it("refuses the cache root and a job home itself, so a grant always names a folder", () => {
+  it("refuses the cache root and a task or job home itself, so a grant always names a folder", () => {
+    mkdirSync(join(home, ".cache", "agent-scratch", "solo-task"), { recursive: true });
     expect(() => normalizeReadPath(join(home, ".cache", "ut-coordinator"), "readPaths[0]", home)).toThrow(/never granted/);
     expect(() => normalizeReadPath(join(home, ".cache", "agent-scratch"), "readPaths[0]", home)).toThrow(/never granted/);
-    expect(() => normalizeReadPath(join(home, ".cache", "ut-coordinator", "J-3760"), "readPaths[0]", home)).toThrow(/job home/);
-    expect(() => normalizeReadPath(join(home, ".cache", "agent-scratch", "top-level-file"), "readPaths[0]", home)).toThrow(/does not exist/);
+    expect(() => normalizeReadPath(join(home, ".cache", "ut-coordinator", "J-3760"), "readPaths[0]", home)).toThrow(/task or job home itself/);
+    // An agent-scratch task home is refused exactly like a job home.
+    expect(() => normalizeReadPath(join(home, ".cache", "agent-scratch", "solo-task"), "readPaths[0]", home)).toThrow(/task or job home itself/);
+    // A job home keeps its report and handoff: only a folder below it is granted.
+    expect(() => normalizeReadPath(join(home, ".cache", "ut-coordinator", "not-a-job", "captures"), "readPaths[0]", home)).toThrow(/never another folder directly below/);
+  });
+
+  it("refuses a ~user form and an overlong value", () => {
+    expect(() => normalizeReadPath("~root/.cache/ut-coordinator/J-3760/captures", "readPaths[0]", home)).toThrow(/~/);
+    expect(() => normalizeReadPath(`~/${"a".repeat(2_100)}`, "readPaths[0]", home)).toThrow(/at most/);
   });
 
   it("refuses a file, a missing folder, a traversal and a control character", () => {
@@ -186,6 +195,25 @@ describe("Claude Code reviewer argv", () => {
     expect(() => claudeApiWorkerArgs(8, reviewer([CAPTURES()]), undefined, "claude-opus-5-5" as never, undefined,
       { settingsPath: "/tmp/settings.json", maxBudgetUsd: 1 })).toThrow(/cannot be granted on the explicit API route/);
   });
+
+  it("refuses the grant at dispatch, before any checkpoint, on an explicit API run", () => {
+    expect(() => normalizeDispatch(
+      { goal: "Review", tasks: [{ label: "Review", task: "Review.", role: "reviewer", readPaths: [CAPTURES()] }] as never },
+      cwd, "claude-code-api/claude-sonnet-5-5", "medium", 1, () => "run-1", home,
+    )).toThrow(/readPaths cannot be granted on the explicit API route/);
+  });
+
+  it("re-checks the grant at launch, so a folder swapped for a symlink is refused", () => {
+    const swapped = join(home, ".cache", "ut-coordinator", "J-3760", "swapped");
+    mkdirSync(swapped, { recursive: true });
+    const args = claudeWorkerArgs(8, reviewer([swapped]));
+    expect(args).toContain(swapped);
+    const moved = join(home, "moved-grant");
+    mkdirSync(moved);
+    rmSync(swapped, { recursive: true, force: true });
+    symlinkSync(moved, swapped);
+    expect(() => claudeWorkerArgs(8, reviewer([swapped]))).toThrow(/no longer a real directory/);
+  });
 });
 
 describe("explicit Claude API wave specs", () => {
@@ -217,9 +245,35 @@ describe("reads and writes under a granted root", () => {
     expect(readUnderDeclaredRoots([CAPTURES()], join(CAPTURES(), "inside-link.png"))).toBe(join(CAPTURES(), "real.png"));
   });
 
-  it("never turns a read grant into write authority", () => {
+  it("never turns a read grant into write authority", async () => {
     expect(() => assertOwnedPath(cwd, join(CAPTURES(), "home-375.png"), [], "write")).toThrow();
-    expect(() => assertOwnedPath(cwd, join(cwd, "new.txt"), [CAPTURES()], "write")).toThrow();
+    const granted = leaf({ readPaths: [CAPTURES()] });
+    const names = createGuardedPiWorkerTools({ cwd, task: granted, relay: {} as never }).map((tool) => tool.name);
+    expect(names).not.toContain("write");
+    expect(names).not.toContain("edit");
+    expect(names).not.toContain("bash");
+    // Dispatch refuses the combination outright, so a writer never carries a grant.
+    expect(() => dispatch([{ label: "Write", task: "Edit.", mayEdit: true, ownedPaths: [cwd], readPaths: [CAPTURES()] }]))
+      .toThrow(/cannot also read outside cwd/);
+  });
+
+  it("refuses grep and find outside the granted root", async () => {
+    const tools = createGuardedPiWorkerTools({ cwd, task: leaf({ readPaths: [CAPTURES()] }), relay: {} as never });
+    const invoke = (name: string, args: unknown) => tools.find((tool) => tool.name === name)!
+      .execute(name, args, undefined, undefined, {} as never);
+    const outside = join(home, ".cache", "ut-coordinator", "J-9999", "captures");
+    await expect(invoke("grep", { pattern: "x", path: outside })).rejects.toThrow();
+    await expect(invoke("find", { pattern: "*.png", path: outside })).rejects.toThrow();
+  });
+
+  it("keeps the recorded grant when a run is re-dispatched (resume path)", () => {
+    const first = dispatch([{ label: "Review", task: "Review.", role: "reviewer", readPaths: ["~/.cache/ut-coordinator/J-3760/captures"] }]);
+    const recorded = first.tasks[0].readPaths!;
+    const again = dispatch([{
+      label: "Review", task: "Review.", role: "reviewer",
+      ...(recorded.length > 0 ? { readPaths: recorded } : {}),
+    }]);
+    expect(again.tasks[0].readPaths).toEqual([CAPTURES()]);
   });
 
   it("lets a Pi child read, list, grep and find inside the granted root only", async () => {
