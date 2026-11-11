@@ -270,7 +270,7 @@ describe("Claude Code reviewer argv", () => {
       const args2 = claudeWorkerArgs(8, { ...reviewer([granted]), home: h });
       const i2 = args2.indexOf("--add-dir");
       expect(args2[i2 + 1]).toBe(physical);
-      expect(args2[i2 + 2]).not.toBe(operator);
+      expect(args2).not.toContain(operator);
     } finally {
       rmSync(base, { recursive: true, force: true });
     }
