@@ -734,13 +734,53 @@ function contextTails(texts: string[]): string[] {
   return tails;
 }
 
-/// Remove the re-attached context from the end of a tool-result string. Only an exact copy of the
-/// whole context is removed; a tool's own output that merely mentions a reminder is left alone.
+const REMINDER_OPEN = "<system-reminder>";
+const REMINDER_CLOSE = "</system-reminder>";
+
+/// What identifies one context block when its body has changed: the first line inside its reminder
+/// tags. The memory index grows during a session, so the copy Claude Code re-attaches later is no
+/// longer byte-identical to the one saved at session start; its opening line is.
+function reminderSignature(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith(REMINDER_OPEN) || !trimmed.endsWith(REMINDER_CLOSE)) return undefined;
+  const line = trimmed.slice(REMINDER_OPEN.length).trimStart().split("\n", 1)[0]?.trim();
+  return line ? line : undefined;
+}
+
+/// True when `candidate` is the saved context block `saved`, exactly or as a newer copy of it.
+function sameContextBlock(candidate: string, saved: string): boolean {
+  if (candidate.trim() === saved) return true;
+  const signature = reminderSignature(saved);
+  return signature !== undefined && reminderSignature(candidate) === signature;
+}
+
+/// When `text` ends with one reminder block per saved context block, in order and each recognised
+/// as that block, return what precedes them. Anything else returns undefined: a tool's own output
+/// that mentions a reminder, or carries only part of the context, is never touched.
+function beforeContextBlocks(text: string, texts: string[]): string | undefined {
+  let rest = text.trimEnd();
+  for (let index = texts.length - 1; index >= 0; index--) {
+    if (!rest.endsWith(REMINDER_CLOSE)) return undefined;
+    const start = rest.lastIndexOf(REMINDER_OPEN);
+    if (start < 0 || !sameContextBlock(rest.slice(start), texts[index]!)) return undefined;
+    rest = rest.slice(0, start);
+    if (index > 0) rest = rest.trimEnd();
+  }
+  return rest;
+}
+
+/// Remove the re-attached context from the end of a tool-result string. An exact copy of the whole
+/// context is removed, and so is a newer copy of it (same blocks, changed bodies).
 function stripContextTail(text: string, texts: string[]): string | undefined {
   const trimmed = text.trimEnd();
   for (const tail of contextTails(texts)) {
     if (trimmed.endsWith(tail)) return trimmed.slice(0, -tail.length);
   }
+  const rest = beforeContextBlocks(text, texts);
+  if (rest === undefined) return undefined;
+  // The context is separated from the output by a blank line (current CLI) or a newline (older CLI).
+  if (rest.endsWith("\n\n")) return rest.slice(0, -2);
+  if (rest.endsWith("\n")) return rest.slice(0, -1);
   return undefined;
 }
 
@@ -758,17 +798,21 @@ function stripToolResultContext(toolResult: Record<string, unknown>, texts: stri
   if (
     tail.length === texts.length &&
     tail.every(
-      (block, index) => block?.type === "text" && typeof block.text === "string" && block.text.trim() === texts[index],
+      (block, index) => block?.type === "text" && typeof block.text === "string" && sameContextBlock(block.text, texts[index]!),
     )
   ) {
     blocks.splice(-texts.length, texts.length);
     return;
   }
 
-  // The context as the end of the final text block.
+  // The context as the whole of, or the end of, the final text block.
   const final = blocks.at(-1);
   if (final?.type !== "text" || typeof final.text !== "string") return;
   if (final.text.trim() === texts.join("\n") || final.text.trim() === texts.join("")) {
+    blocks.pop();
+    return;
+  }
+  if (beforeContextBlocks(final.text, texts)?.trim() === "") {
     blocks.pop();
     return;
   }
@@ -788,7 +832,12 @@ function removeRepeatedUserReminders(messages: NativeRequestMessage[], prefix: u
     const message = messages[index];
     if (message?.role !== "user" || !Array.isArray(message.content)) continue;
     const leading = message.content.slice(0, prefix.length).map(withoutCacheControl);
-    if (JSON.stringify(leading) === normalizedPrefix) message.content.splice(0, prefix.length);
+    // The context again at the head of a later user message: an exact copy, or a newer copy of the same blocks.
+    const newerCopy = leading.length === texts.length && leading.every((block, position) => {
+      const candidate = block as Record<string, unknown> | undefined;
+      return candidate?.type === "text" && typeof candidate.text === "string" && sameContextBlock(candidate.text, texts[position]!);
+    });
+    if (JSON.stringify(leading) === normalizedPrefix || newerCopy) message.content.splice(0, prefix.length);
 
     for (const block of message.content) {
       if (block && typeof block === "object" && (block as Record<string, unknown>).type === "tool_result") {

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.29.2 (2026-11-12)
+
+One fix in the Claude Code provider.
+
+- **The Claude Code context still landed inside tool results once the memory index changed.** 0.28.4 removed the
+  context (the memory index and the account email) that Claude Code re-attaches to the newest tool result on a replay,
+  but only when it was an exact copy of the one saved at the start of the session. A memory index that gained or lost a
+  line mid-session no longer matched, so the whole context came back inside tool results for the rest of the session.
+  A re-attached context is now recognised by the opening line of each of its blocks, so a newer copy is removed too,
+  and the model keeps one copy, in the first message. Output that only looks like a reminder (a different block, the
+  blocks in another order, part of the context, or text not separated from the output by a newline) is left alone.
+- A test fixture no longer names a person.
+
 ## 0.29.1 (2026-11-12)
 
 - **TUI smoke: the resume picker is switched to All scope before the fixture is selected.** The smoke was failing on main while the picker opened on Current Folder; this is a script fix, not an environment one.

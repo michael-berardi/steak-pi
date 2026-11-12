@@ -77,6 +77,55 @@ describe.each([true, false])("replayed context with saved system messages: %s", 
     }
   });
 
+  // The memory index grows during a session, so the copy Claude Code re-attaches later differs from the saved one.
+  const newerMemory = memory.replace("- index entry\n", "- index entry\n- an entry added mid-session\n");
+  const newerTails = [
+    ["a blank line and blank-line-joined blocks", `\n\n${newerMemory.trim()}\n\n${email.trim()}`],
+    ["a blank line and one joined context", `\n\n${newerMemory}${email}`],
+    ["a newline and newline-joined blocks", `\n${newerMemory.trim()}\n${email.trim()}`],
+  ] as const;
+  for (const [label, tail] of newerTails) {
+    test(`a context whose memory index changed mid-session is still removed (${label})`, () => {
+      assert.equal(toolResults(rewrite(request(`out-2${tail}`), withSystem)).at(-1)?.content, "out-2");
+      // Output that itself ends in a newline keeps it. Only checked for the blank-line separator the current CLI
+      // writes: after a single-newline separator the two cannot be told apart, for an exact copy either.
+      if (tail.startsWith("\n\n")) {
+        assert.equal(toolResults(rewrite(request(`out-2\n${tail}`), withSystem)).at(-1)?.content, "out-2\n");
+      }
+      assert.deepEqual(toolResults(rewrite(request([{ type: "text", text: `out-2${tail}` }]), withSystem)).at(-1)?.content, [{ type: "text", text: "out-2" }]);
+    });
+  }
+
+  test("a changed context as separate trailing blocks, or as the whole final block, is removed", () => {
+    const separate = [{ type: "text", text: "out-2" }, { type: "text", text: newerMemory }, { type: "text", text: email }];
+    assert.deepEqual(toolResults(rewrite(request(separate), withSystem)).at(-1)?.content, [{ type: "text", text: "out-2" }]);
+    const whole = [{ type: "text", text: "out-2" }, { type: "text", text: `${newerMemory.trim()}\n\n${email.trim()}` }];
+    assert.deepEqual(toolResults(rewrite(request(whole), withSystem)).at(-1)?.content, [{ type: "text", text: "out-2" }]);
+  });
+
+  test("a changed context never leaves the model with two copies, and the first message keeps the saved one", () => {
+    const messages = rewrite(request(`out-2\n\n${newerMemory.trim()}\n\n${email.trim()}`), withSystem);
+    assert.deepEqual(messages[0]?.content, [...prefix, ...canonical]);
+    const text = JSON.stringify(messages);
+    assert.equal(text.split("# MEMORY").length - 1, 1);
+    assert.equal(text.split("# userEmail").length - 1, 1);
+    assert.equal(text.includes("added mid-session"), false);
+  });
+
+  test("reminder-shaped output that is not the context is left alone", () => {
+    const other = "<system-reminder>\nSomething else entirely.\n</system-reminder>";
+    const cases = [
+      `out\n\n${other}\n\n${email.trim()}`, // right count, wrong first block
+      `out\n\n${email.trim()}\n\n${newerMemory.trim()}`, // right blocks, wrong order
+      `out\n\n${newerMemory.trim()}`, // only part of the context
+      `out ${newerMemory.trim()}\n\n${email.trim()}`, // not separated from the output by a newline
+    ];
+    for (const content of cases) {
+      assert.equal(toolResults(rewrite(request(content), withSystem)).at(-1)?.content, content);
+      assert.deepEqual(toolResults(rewrite(request([{ type: "text", text: content }]), withSystem)).at(-1)?.content, [{ type: "text", text: content }]);
+    }
+  });
+
   test("the first user message keeps its context exactly once", () => {
     const messages = rewrite(request(`out-2\n\n${memory}${email}`), withSystem);
     assert.deepEqual(messages[0]?.content, [...prefix, ...canonical]);

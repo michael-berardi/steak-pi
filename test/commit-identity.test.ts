@@ -44,7 +44,7 @@ describe("commit identity guard", () => {
   });
 
   it("passes a correctly attributed commit", () => {
-    const repo = repoWithCommit("Michael Berardi", "michael-berardi@users.noreply.github.com");
+    const repo = repoWithCommit("A Contributor", "contributor@users.noreply.github.com");
     const r = runGuard(repo);
     expect(r.status).toBe(0);
     expect(r.stdout).toMatch(/^OK/);
