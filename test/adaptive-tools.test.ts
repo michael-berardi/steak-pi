@@ -68,7 +68,7 @@ describe("adaptive tool loadout: growth", () => {
   });
   it("renders the guidelines of the arriving tools", () => {
     const { pi } = fakePi();
-    const text = growthGuidance(pi);
+    const text = growthGuidance(pi as any);
     expect(text).toContain("ultraterm_subagents");
     expect(text).toContain("- Fan out by default.");
   });
