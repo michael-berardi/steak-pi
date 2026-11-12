@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.28.0 (2026-11-11)
 
 - **One-step installers.** The GitHub release now offers `install.sh` (macOS and Linux) and `install.ps1` (Windows), plus the package archive and `SHA256SUMS`. One command downloads the release, checks its SHA-256 before installing, unpacks it into the release-folder layout `steak-pi update` maintains, points Pi at it, adds the `steak-pi` command, and finishes with `steak-pi status`. It uses the Node 22.19+ and `pi` already on the machine, or fetches the official Node and installs the pinned Pi into the Steak Pi folder when they are missing (a `pi` shim is added only when none existed). Re-running upgrades in place. No sudo, no shell-profile edits.
 - `scripts/build-release.sh` builds the release assets deterministically and also emits a version-less `steak-pi.tgz` and `SHA256SUMS`, so `releases/latest/download` works without knowing the version. The existing versioned archive and `.sha256` names are kept.
