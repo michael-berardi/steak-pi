@@ -59,8 +59,9 @@
     "usap:claude-api": "node scripts/usap-claude-api.ts",
     "test:tui": "./scripts/test-pi-tui-smoke.sh && ./scripts/test-pi-startup-paste.sh",
     "typecheck": "tsc --noEmit",
+    "check:identity": "node scripts/check-commit-identity.mjs",
     "ui:simulate": "node --experimental-strip-types src/tui/simulator.ts",
-    "verify": "npm run typecheck && npm test && npm run test:tui"
+    "verify": "npm run typecheck && npm run check:identity && npm test && npm run test:tui"
   },
   "pi": {
     "extensions": [
