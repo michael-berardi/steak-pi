@@ -173,6 +173,9 @@ export class InboxConsumer {
   private readonly instanceId: string;
   private token?: string;
   private pending?: Claim;
+  /** Claims UltraTerm released because they never recorded within its bound (a
+   * lost steer). Never dispatched again; recorded if they still persist late. */
+  private late: Claim[] = [];
   private invoked = new Set<string>();
   private controller = new AbortController();
   private timer?: ReturnType<typeof setTimeout>;
@@ -214,6 +217,10 @@ export class InboxConsumer {
       // already injected and awaiting persisted evidence blocks the next lease.
       const r = await this.request("inbox.poll", { ready: !this.pending });
       if (!this.valid()) return;
+      const dropped = this.takeReleased(r.released);
+      await this.recordLate();
+      // A just-released claim: the next poll is ready and takes the next note.
+      if (!this.valid() || dropped) return;
       if (r.message) {
         const m = r.message as Claim;
         if (![m.receiptId, m.claimId, m.fromSessionId, m.toSessionId, m.text].every(v => typeof v === "string") || Buffer.byteLength(m.text) > 64 * 1024) throw Error("invalid claim");
@@ -261,6 +268,31 @@ export class InboxConsumer {
       this.token = undefined;
     } }
     finally { this.running = false; }
+  }
+  /** UltraTerm releases an active delivery that never recorded within its bound
+   * and names it on every poll for a while. Holding it forever kept this host at
+   * ready=false and parked every later note behind it (2026-11-12). Drop only the
+   * exact claim named; it stays in `invoked`, so it is never sent twice. */
+  private takeReleased(released: unknown): boolean {
+    const m = this.pending;
+    if (!m || !Array.isArray(released)) return false;
+    const notice = released.find((n: any) => n && n.receiptId === m.receiptId && n.claimId === m.claimId) as { cause?: unknown } | undefined;
+    if (!notice) return false;
+    this.late = [...this.late, m].slice(-4);
+    this.pending = undefined;
+    const cause = typeof notice.cause === "string" ? notice.cause.slice(0, 64) : "released";
+    this.set("durable-queue", `released held claim ${m.receiptId} (${cause}); taking the next note`);
+    return true;
+  }
+  /** Record a released note that persisted after all: the sender's receipt then tells the truth. */
+  private async recordLate() {
+    for (const m of [...this.late]) {
+      const evidence = this.d.evidence(m);
+      if (!evidence || !this.valid()) continue;
+      const proof = typeof evidence === "string" ? { entryId: evidence } : evidence;
+      await this.request("inbox.record", { receiptId: m.receiptId, claimId: m.claimId, ...proof });
+      this.late = this.late.filter(x => x !== m);
+    }
   }
   stop() {
     if (this.stopped) return;

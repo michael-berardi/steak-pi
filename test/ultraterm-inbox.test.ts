@@ -90,6 +90,42 @@ describe("native inbox state machine", () => {
     expect(replacement.calls.some(r => r.cmd === "inbox.record")).toBe(false);
     replacement.consumer.stop();
   });
+  it("drops a claim UltraTerm released after its record bound, takes the next note, and records the released one only if it lands late", async () => {
+    // 2026-11-12: a lost steer left this host holding one claim at ready=false; eleven later notes waited 3+ hours.
+    const next: Claim = { ...claim, receiptId: "receipt-2", claimId: "claim-2", text: "next" };
+    let released = false, served = claim;
+    const evidence: Record<string, string> = {};
+    const calls: any[] = []; const send = vi.fn();
+    const transport = { request: vi.fn(async (r: any) => {
+      calls.push(r);
+      if (r.cmd === "inbox.register") return { token: "private", terminalId: "terminal" };
+      if (r.cmd === "inbox.poll") return { message: r.ready ? served : null, released: released ? [{ receiptId: claim.receiptId, claimId: claim.claimId, cause: "active-delivery-record-timeout" }] : [] };
+      return {};
+    }) };
+    const consumer = new InboxConsumer({ host, transport, idle: () => false, current: () => true, evidence: (c?: Claim) => c ? evidence[c.receiptId] : undefined, send });
+    await consumer.tick(); await consumer.tick();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(calls.at(-1)).toMatchObject({ cmd: "inbox.poll", ready: false });
+    // A notice naming another claim id never drops the held claim.
+    transport.request.mockImplementationOnce(async (r: any) => { calls.push(r); return { message: null, released: [{ receiptId: claim.receiptId, claimId: "other", cause: "x" }, null] } as any; });
+    await consumer.tick();
+    expect(consumer.phase).toBe("delivery-pending");
+    released = true; served = next;
+    await consumer.tick();
+    expect(consumer.status).toContain("active-delivery-record-timeout");
+    await consumer.tick();
+    expect(calls.filter(r => r.cmd === "inbox.poll").at(-1).ready).toBe(true);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1][0]).toEqual(customMessage(next));
+    // The released note persists late: recorded under its own claim, and never sent a second time.
+    evidence[claim.receiptId] = "late-entry";
+    await consumer.tick();
+    expect(calls.find(r => r.cmd === "inbox.record" && r.receiptId === claim.receiptId)).toMatchObject({ claimId: claim.claimId, entryId: "late-entry" });
+    await consumer.tick();
+    expect(calls.filter(r => r.cmd === "inbox.record" && r.receiptId === claim.receiptId)).toHaveLength(1);
+    expect(send.mock.calls.filter(c => c[0].details.receiptId === claim.receiptId)).toHaveLength(1);
+    consumer.stop();
+  });
   it("withholds delivery whenever primary ownership proof is already lost", async () => {
     for (const ownership of ["pid", "generation", "session-file"]) {
       const h = harness(); h.idle(false); h.valid(false);
