@@ -141,8 +141,11 @@ function Main {
       if (-not $piVersionInstalled) {
         $lockPath = Join-Path $pkgSrc 'package-lock.json'
         if (-not (Test-Path $lockPath)) { Fail 'the release has no package-lock.json to read the Pi version pin from; set STEAK_PI_PI_VERSION' }
-        $lock = Get-Content $lockPath -Raw | ConvertFrom-Json
-        $piVersionInstalled = $lock.packages.''.devDependencies.'@earendil-works/pi-coding-agent'
+        # Read the pin with Node (always present here): ConvertFrom-Json rejects the lockfile's "" key,
+        # and -AsHashTable does not exist in Windows PowerShell 5.1. Same expression as install.sh.
+        $piVersionInstalled = (& $nodeBin -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).packages[""].devDependencies["@earendil-works/pi-coding-agent"] || ""' $lockPath | Select-Object -First 1)
+        if ($LASTEXITCODE -ne 0) { Fail 'cannot read the Pi version pin from package-lock.json (node failed to parse it)' }
+        if ($piVersionInstalled) { $piVersionInstalled = "$piVersionInstalled".Trim() }
         if (-not $piVersionInstalled) { Fail "no Pi version pin in the release's package-lock.json; set STEAK_PI_PI_VERSION" }
       }
       Write-Host "Pi not found; installing @earendil-works/pi-coding-agent@$piVersionInstalled into $piHome..."
