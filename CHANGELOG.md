@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+Steak Pi is one package that adapts; there is no mode to choose.
+
+- **One-shot runs start light, interactive and hosted sessions are unchanged.** In `pi -p` and `--mode json` the
+  dispatch, hub and todo tools and their guidance are left out of the first request (8,226 bytes against 20,384 on the
+  scripted-model benchmark), plus the short-reasoning line and a small `load_tools` tool. The terminal UI and
+  `--mode rpc` send the same first request as 0.28.5.
+- **The dispatch and todo tools load once when the work needs them:** the prompt asks for delegation, parallel work or
+  task tracking; the run reaches its tenth tool call; the model calls `load_tools`; or the session already has a todo
+  plan or checkpointed dispatch runs. Their guidelines arrive in the tool result that carried the change, because Pi
+  does not refresh a run's system prompt mid-run (settled with the scripted model). The tool list does not change again
+  after that, apart from the hub appearing after the first dispatch, as before.
+- **`steak-pi run --lean` is still accepted and still forces the light shape**, but a plain one-shot run no longer
+  needs it. `--tools`, `--no-tools`, `--exclude-tools` and `STEAK_PI_DEFER_TOOLS=off` keep working and win.
+- **`STEAK_PI_WORK_RULES_BRIEF`** now defaults to the light shape (on while light, off once the tools load); `0` and `1`
+  still force it.
+- **Benchmark: `benchmarks/overhead/adaptive.py`** checks the shapes and the three triggers against the scripted model.
+
+Results (ParetoBench, one model, 3 repeats, paired, 95% intervals), no flags, against the 0.28.5 default: 20 short
+tasks cost 0.75 times (0.66 to 0.85), better, all 60 runs correct in every arm; against `run --lean` 0.98 times (0.85 to
+1.12), no clear difference; against stock Pi 0.82 times (0.68 to 0.97), better. 11 long tasks: 33 of 33 correct (lean
+31 of 33), 0.83 times (0.69 to 1.00) the 0.28.5 default, no clear difference, and 0.77 times (0.62 to 0.95) stock Pi,
+better.
+
 ## 0.28.5 (2026-11-12)
 
 Steak Pi costs less on the same work. Measured with ParetoBench on one model and one machine, paired on task and

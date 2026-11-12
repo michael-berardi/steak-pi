@@ -79,7 +79,7 @@ where you have not set them yourself:
 
 ```sh
 steak-pi run          # same arguments as pi
-steak-pi run --lean   # a one-shot task: no dispatch or todo tools, and a short-reasoning rule
+steak-pi run --lean   # still accepted; no longer needed (see "One package, no modes"), it forces the light shape for the whole run
 steak-pi env          # show what it sets
 steak-pi status       # installed version, selected Pi settings file and integration
 steak-pi update       # install the latest release (--check only reports)
@@ -375,20 +375,38 @@ completes the eight-file fixture without subagents, so its timing is not a
 parallel-worker comparison. Earlier measurements are in
 [`benchmarks/`](./benchmarks/usap/README.md).
 
-### One-shot leaves: run lean
+### One package, no modes
 
-A session that will not delegate does not need the dispatch tool or the todo tool, and their schemas and guidance
-are most of what Steak Pi adds to every request. Pi's own flag leaves them out for one run:
+There is no flag to choose and no second variant. How a session is used decides what it starts with, and the work
+decides when it grows:
 
-```sh
-pi -p --exclude-tools ultraterm_subagents,todo "fix the failing date test"
-```
+- **Interactive and hosted sessions** (the terminal UI, `--mode rpc`) send every tool from the first request, exactly
+  as 0.28.5 did.
+- **One-shot runs** (`pi -p`, `--mode json`) start light: no dispatch, hub or todo tool and none of their guidance,
+  plus a short-reasoning line in the working rules, and one very small tool, `load_tools` (about 200 bytes of schema).
+- **The dispatch and todo tools load once, for the rest of the session,** when any of these happens: the prompt asks
+  for delegation, parallel work or task tracking (subagents, "in parallel", "fan out", a todo list); the run reaches
+  its tenth tool call; the model calls `load_tools`; or the session already holds a todo plan or checkpointed
+  dispatch runs. After that the tool list does not change again (the hub still appears after the first dispatch, as
+  before). Pi sends a tool's guidelines only in the system prompt it built before the run started, so when the tools
+  arrive mid-run their guidelines arrive in the tool result that carried them; a prompt that asks for them loads them
+  before the first request, where the guidance sits in its usual place. The short-reasoning line goes with the light
+  shape when the prompt loads the tools; a run that loads them mid-run keeps the line it started with.
+- **Your choice wins.** `--tools`, `--no-tools` or `--exclude-tools` on the command line disable the adaptive loadout,
+  and `STEAK_PI_DEFER_TOOLS=off` restores every tool from the first request.
+- **`steak-pi run --lean`** is still accepted. It passes `--exclude-tools ultraterm_subagents,ultraterm_hub,todo` and
+  sets the short-reasoning line, so the run stays light and cannot load the tools. It is no longer needed: a plain
+  one-shot run now costs what a lean run costs.
 
-The guards, compaction, verify-after-edit and routing policy stay. When a tool is left out, the skill that explains
-it is left out of the catalog too, and no route notice is added. Measured November 11, 2026 on Pi 1.0.4 with the
-overhead benchmark (scripted local model, medians of 5, all 75 runs passed): the first request of a one-shot edit is
-6,114 bytes on stock Pi, 23,005 bytes on Steak Pi and 7,036 bytes on Steak Pi run lean. The default is unchanged.
-This measures request size, not task cost: compare cost on your own tasks before making it a habit.
+The guards, compaction, verify-after-edit and routing policy are the same in every shape. When a tool is left out, the
+skill that explains it is left out of the catalog too, and no route notice is added. Measured with the overhead
+benchmark (scripted local model; `benchmarks/overhead/adaptive.py` checks the shapes and the three triggers): the first
+request of a one-shot edit is 8,226 bytes (stock Pi 6,114, 0.28.5 default 20,384), and a hosted session is 20,389 bytes,
+the same prompt as 0.28.5 apart from path lengths. On ParetoBench (one model, 3 repeats, paired, 95% intervals; no
+flags) the 20 short tasks were all correct in every arm and cost 0.75 times (0.66 to 0.85, better) the 0.28.5 default,
+0.98 times (0.85 to 1.12, no clear difference) `run --lean` and 0.82 times (0.68 to 0.97, better) stock Pi; the 11 long
+tasks were 33 of 33 correct and cost 0.83 times (0.69 to 1.00, no clear difference) the 0.28.5 default and 0.77 times
+(0.62 to 0.95, better) stock Pi. This is one model on one machine; compare cost on your own tasks.
 
 ### Against Claude Code
 
@@ -424,9 +442,9 @@ the Claude route, small tasks and one machine. Reproduce it with
 | `STEAK_PI_FINISH_GUARD=0` | on | Turn the finish guard off |
 | `STEAK_PI_WRITE_GUARD=off` | on | Allow `write` to replace a file the session has not read |
 | `STEAK_PI_WORK_RULES=off` | on | Leave the working rules out of the system prompt (`STEAK_PI_WORK_RULES_TEXT` replaces them) |
-| `STEAK_PI_WORK_RULES_BRIEF=1` | off (`run --lean` sets it) | Add the short-reasoning line to the working rules |
-| `STEAK_PI_DEFER_TOOLS=off` | on | Expose every tool from the first request |
-| `pi --exclude-tools ultraterm_subagents,todo` | off | Lean one-shot leaf: no dispatch or todo tool, their skills hidden (Performance, above) |
+| `STEAK_PI_WORK_RULES_BRIEF=0\|1` | follows the light shape | Short-reasoning line: on while a one-shot run is light, off once tools load; `1` forces it on (`run --lean` sets it), `0` keeps it out |
+| `STEAK_PI_DEFER_TOOLS=off` | on | Expose every tool from the first request (also turns the light one-shot start off) |
+| `pi --exclude-tools ultraterm_subagents,todo` | off | Fixed loadout: no dispatch or todo tool, no loader, their skills hidden (One package, no modes, above) |
 | `STEAK_PI_WORKER_SDK=unbundled` | host bundle | Workers load their own Pi SDK copy |
 | `STEAK_PI_SKILL_CATALOG_LITE=off` | on | Keep Pi's stock skill catalog |
 | `STEAK_PI_SKILL_CATALOG_BYTES` | `8192` | Byte budget for the skill catalog |

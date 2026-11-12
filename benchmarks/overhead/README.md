@@ -18,6 +18,10 @@ tools (`--exclude-tools ultraterm_subagents,todo`) and skips the fanout case.
 Each row also records the first request's system-prompt and tool-schema bytes. `PI_BIN` selects the host Pi (default:
 `./node_modules/.bin/pi`); `MOCK_PORT` the local port.
 
+`adaptive.py` checks the adaptive tool loadout (docs/ADAPTIVE-TOOLS.md) against the scripted model: first-request size
+of a one-shot run, hosted sessions unchanged, the prompt, call-count and loader triggers, explicit flags, the opt-out. It
+exits 1 on any failed check; `mock-model.py` plans `steps:N` (N serial bash calls) and `loader:` (call `load_tools`).
+
 Cases: `direct` (one file), `modules` (four files), `gate` (eight files,
 inline), `fanout` (eight files through one `ultraterm_subagents` dispatch,
 eight workers). A run passes when Pi exits 0 and every expected file exists.

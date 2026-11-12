@@ -313,9 +313,10 @@ run_env() {
   esac
 }
 
-# --lean (first argument only) runs a one-shot leaf: no dispatch tool and no todo tool, so their schemas and guidance
-# are not sent, and the working rules gain the short-reasoning line (measured to help the lean run only). Everything
-# else (guards, working rules, compaction) stays on. STEAK_PI_WORK_RULES_BRIEF=0 keeps the line out.
+# Steak Pi is one adaptive package: a one-shot run already starts light and loads the dispatch and todo tools when the
+# work needs them, so plain `run` is the way to run it. --lean (first argument only) is still accepted and forces the
+# light shape for the whole run: no dispatch, hub or todo tool (they cannot load), and the short-reasoning line in the
+# working rules. Everything else (guards, working rules, compaction) stays on. STEAK_PI_WORK_RULES_BRIEF=0 keeps the line out.
 LEAN_TOOLS="ultraterm_subagents,ultraterm_hub,todo"
 
 cmd_run() {
@@ -366,7 +367,7 @@ case "${1:-help}" in
     say "  status    show installed versions and management mode"
     say "  version   print the CLI/package version"
     say "  remove    remove the pi-side package"
-    say "  run       launch pi with Steak Pi's Node runtime defaults (args pass through; --lean first runs without the dispatch and todo tools)"
+    say "  run       launch pi with Steak Pi's Node runtime defaults (args pass through; one package, no mode to pick; --lean first is still accepted and keeps the whole run light)"
     say "  usap-api  run explicit Claude API USAP waves: admit | dispatch <wave.json> | resume <run-id>"
     say "  local     slot in a local GGUF model: add <gguf|owner/repo:quant> | start | stop | status | ensure <id> | release <id>"
     say "  routing   check [file]: validate routing.json exactly as every Pi turn does (run it before saving an edit)"
