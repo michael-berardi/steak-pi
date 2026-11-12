@@ -113,7 +113,7 @@ else
   PI_VERSION_INSTALLED="${STEAK_PI_PI_VERSION:-}"
   if [ -z "$PI_VERSION_INSTALLED" ]; then
     [ -f "$TMP/src/package/package-lock.json" ] || die "the release has no package-lock.json to read the Pi version pin from; set STEAK_PI_PI_VERSION"
-    PI_VERSION_INSTALLED=$("$NODE_BIN" -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).packages["node_modules/@earendil-works/pi-coding-agent"].version || ""' "$TMP/src/package/package-lock.json")
+    PI_VERSION_INSTALLED=$("$NODE_BIN" -p '((JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).packages || {})["node_modules/@earendil-works/pi-coding-agent"] || {}).version || ""' "$TMP/src/package/package-lock.json")
     PI_VERSION_INSTALLED=$(printf '%s' "$PI_VERSION_INSTALLED" | tr -d '\r')
     [ -n "$PI_VERSION_INSTALLED" ] || die "no Pi version pin in the release's package-lock.json; set STEAK_PI_PI_VERSION"
   fi
@@ -177,7 +177,8 @@ if [ "$PI_WAS_PRESENT" -eq 0 ]; then PATH="$HOME_DIR/pi/node_modules/.bin:$PATH"
 export PATH
 STEAK_PI_LIBEXEC="$REL/package" "$REL/package/bin/steak-pi" install </dev/null || die "'steak-pi install' failed; Pi's settings were not changed"
 
-if [ "$PI_WAS_PRESENT" -eq 0 ]; then write_shim pi "$HOME_DIR/pi/node_modules/.bin/pi" || true; fi
+PI_SHIM_WRITTEN=0
+if [ "$PI_WAS_PRESENT" -eq 0 ]; then write_shim pi "$HOME_DIR/pi/node_modules/.bin/pi" && PI_SHIM_WRITTEN=1; fi
 STEAK_BIN="$BIN_DIR/steak-pi"
 write_shim steak-pi "$REL/package/bin/steak-pi" || STEAK_BIN="$REL/package/bin/steak-pi"
 
@@ -192,8 +193,10 @@ case "$STATUS_OUT" in *"$VERSION"*) ;; *) die "'steak-pi status' does not report
 
 if [ "$PI_WAS_PRESENT" -eq 1 ]; then
   say "Steak Pi $VERSION installed ($STEAK_BIN). Pi was already installed; Steak Pi was added to it."
-else
+elif [ "$PI_SHIM_WRITTEN" -eq 1 ]; then
   say "Steak Pi $VERSION installed ($STEAK_BIN). Pi $PI_VERSION_INSTALLED was installed too ($BIN_DIR/pi)."
+else
+  say "Steak Pi $VERSION installed ($STEAK_BIN). Pi $PI_VERSION_INSTALLED was installed into $HOME_DIR/pi; no pi command was added to $BIN_DIR."
 fi
 case ":$PATH:" in *":$BIN_DIR:"*) ;; *) say "Add $BIN_DIR to your PATH:  export PATH=\"$BIN_DIR:\$PATH\"" ;; esac
 say "Next: steak-pi run"

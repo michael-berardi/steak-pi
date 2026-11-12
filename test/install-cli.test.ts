@@ -91,12 +91,12 @@ exit 0
 const TOOLS = ["node", "npm", "curl", "wget", "tar", "shasum", "sha256sum", "awk", "sed", "grep", "mktemp", "uname",
   "cat", "cut", "head", "tr", "dirname", "basename", "ls", "chmod", "mv", "rm", "mkdir", "ln", "cp"];
 
-function fixture(opts: { piPresent: boolean; fakeNpm: boolean; version?: string }) {
+function fixture(opts: { piPresent: boolean; fakeNpm: boolean; version?: string; noPin?: boolean }) {
   // realpath: macOS tmpdir is a symlink (/var -> /private/var) and the CLI pins paths with pwd -P.
   const home = realpathSync(mkdtempSync(join(tmpdir(), "steak-install-cli-")));
   const base = join(home, "release-base");
   const version = opts.version ?? V1;
-  buildBase(base, version, opts.fakeNpm); // the Pi pin is only read when Pi is absent (fake npm there)
+  buildBase(base, version, opts.fakeNpm && !opts.noPin); // the Pi pin is only read when Pi is absent (fake npm there)
   const tools = join(home, "tools"); mkdirSync(tools);
   for (const tool of TOOLS) {
     // Never place a symlink where a fake will be written: writeFileSync follows symlinks and would
@@ -293,6 +293,26 @@ describe("steak-pi one-step installer (install.sh)", () => {
   }, 120000);
 });
 
+describe("installer edge cases from the second review", () => {
+  it("a lockfile without the Pi entry prints the die message, not a Node stack trace", () => {
+    const f = fixture({ piPresent: false, fakeNpm: true, noPin: true });
+    const r = runInstall(f);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain("no Pi version pin in the release's package-lock.json");
+    expect(r.stderr).not.toMatch(/TypeError|at Object\.|node:internal/);
+  }, 120000);
+
+  it("does not claim Pi was installed too when the pi shim was left alone", () => {
+    const f = fixture({ piPresent: false, fakeNpm: true });
+    mkdirSync(f.bin, { recursive: true });
+    writeFileSync(join(f.bin, "pi"), "#!/bin/sh\necho users-own-pi\n", { mode: 0o755 });
+    const r = runInstall(f);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).not.toContain("was installed too");
+    expect(r.stdout).toContain("no pi command was added");
+  }, 120000);
+});
+
 describe("scripts/build-release.sh output folder guard", () => {
   const BUILD = resolve(import.meta.dirname, "..", "scripts", "build-release.sh");
   const root = resolve(import.meta.dirname, "..");
@@ -353,6 +373,13 @@ describe("scripts/install.ps1 static guards (Windows-only patterns that must not
     expect(code).toContain("$ProgressPreference = 'SilentlyContinue'");
     expect(code).not.toMatch(/^\$ErrorActionPreference/m);
     expect(code).not.toMatch(/^\s*exit\b/m);
+  });
+  it("recognises a 0.28.0 shim whose profile path was saved as ASCII (Jos? for José)", () => {
+    expect(code).toContain("$asciiHome");
+    expect(code).toMatch(/\$text\.Contains\(\$asciiHome\)/);
+  });
+  it("stays pure ASCII (a BOM-less non-ASCII file is mis-read by Windows PowerShell 5.1)", () => {
+    expect(ps1).toMatch(/^[\x00-\x7f]*$/);
   });
   it("marks every shim and checks the marker before writing", () => {
     expect(code).toContain("steak-pi-installer-shim");

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.28.2 (2026-11-11)
+
+Two fixes in the one-step installers. Windows was tested under PowerShell 7 on Linux, not yet on a Windows machine.
+
+- **Windows: upgrading from 0.28.0 left a dead `steak-pi.cmd` on a profile folder with non-ASCII characters.** 0.28.0 wrote the path in ASCII (C:\Users\José was saved as Jos?), so the installer did not recognise its own old shim and kept it. It now matches that form too and replaces the shim.
+- **macOS and Linux: a release lockfile without the Pi entry** now prints the installer's own message instead of a Node stack trace, and the closing line says Pi was installed too only when the `pi` command was actually added.
+
 ## 0.28.1 (2026-11-11)
 
 Fixes in the one-step installers. Windows was tested under PowerShell 7 on Linux, not yet on a Windows machine.

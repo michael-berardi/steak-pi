@@ -162,7 +162,9 @@ function Install-SteakPi {
     function Test-OwnShim([string]$file) {
       if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return $false }
       $text = [IO.File]::ReadAllText($file)
-      return $text.Contains($marker) -or $text.Contains($homeDir)
+      # 0.28.0 wrote the path as ASCII, so C:\Users\Jos\u00e9 was saved as Jos?: match that form too.
+      $asciiHome = [Text.Encoding]::ASCII.GetString([Text.Encoding]::ASCII.GetBytes($homeDir))
+      return $text.Contains($marker) -or $text.Contains($homeDir) -or $text.Contains($asciiHome)
     }
     $foundPi = Get-Command pi -ErrorAction SilentlyContinue | Select-Object -First 1
     $piWasPresent = [bool]$foundPi -and -not ($foundPi.Source -and (Test-OwnShim $foundPi.Source))
