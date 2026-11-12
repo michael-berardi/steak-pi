@@ -11,6 +11,7 @@ import { parseRoute, routeLabel, routingConfigOrEmpty, DSH_ROUTE_PREFIX, TASK_CL
 import { statSync } from "node:fs";
 import { PersistenceHealth } from "../src/subagents/persistence-health.ts";
 import { deferredToolsEnabled, setToolActive } from "../src/deferred-tools.ts";
+import { hideSkill, toolIsOffered } from "../src/skill-visibility.ts";
 import { setPinnedPanel } from "../src/tui/pinned-panels.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
@@ -861,6 +862,9 @@ function shutdownWarningBox(): { current?: { at: number; owner: string; message:
   if (!holder[SHUTDOWN_WARNING_BOX]) holder[SHUTDOWN_WARNING_BOX] = {};
   return holder[SHUTDOWN_WARNING_BOX]!;
 }
+
+/** The shipped skill that documents the dispatch tool; its catalog entry is hidden when the tool is not offered. */
+export const USAP_SKILL_NAME = "ultraterm-subagent-protocol";
 
 /** Tool calls in a row without a dispatch before the parent is reminded once to fan out independent parts. */
 export const DELEGATION_NUDGE_AFTER = 40;
@@ -2056,6 +2060,12 @@ export function createUltratermSubagentsExtension(
     // never pins a dead account. One router read per cache window; any failure leaves the prompt untouched.
     let availabilityCache: { at: number; key: string; line: string } | undefined;
     pi.on("before_agent_start", async (event, ctx) => {
+      // A session run without the dispatch tool (--exclude-tools, --tools) cannot delegate: it gets neither the
+      // per-turn route notice nor the catalog entry that tells it to read the delegation skill first.
+      if (!toolIsOffered(pi, "ultraterm_subagents")) {
+        const systemPrompt = hideSkill(event.systemPrompt, USAP_SKILL_NAME);
+        return systemPrompt === event.systemPrompt ? undefined : { systemPrompt };
+      }
       try {
         const now = dependencies.now?.() ?? Date.now();
         const key = ctx.cwd;

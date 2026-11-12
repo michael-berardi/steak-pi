@@ -13,6 +13,7 @@ import {
 } from "../src/todo-core.ts";
 import { createTodoPanel, hasTodoPlan, hasUnfinishedTodo } from "../src/todo-render.ts";
 import { setPinnedPanel } from "../src/tui/pinned-panels.ts";
+import { hideSkill, toolIsOffered } from "../src/skill-visibility.ts";
 
 import { canonicalSessionFile } from "../src/subagents/checkpoints.ts";
 
@@ -351,6 +352,11 @@ export default function steakPieExtension(pi: ExtensionAPI): void {
   // only — no extra turns, no messages, no auto-marking.
   pi.on?.("before_agent_start", async (event, ctx) => {
     if (closed) return;
+    // Without the todo tool there is no plan to maintain, so the skill that explains it is left out of the catalog.
+    if (!toolIsOffered(pi, "todo")) {
+      const systemPrompt = hideSkill(event.systemPrompt, "todo");
+      return systemPrompt === event.systemPrompt ? undefined : { systemPrompt };
+    }
     const guidance = await loadGuidance(ctx);
     if (!guidance) return;
     return { systemPrompt: `${event.systemPrompt}\n\n${guidance}` };
