@@ -712,9 +712,76 @@ function setReplayCacheBreakpoints(messages: NativeRequestMessage[]): void {
   if (final) setCacheBreakpoint(final);
 }
 
+/// The text blocks of the Claude Code context (memory index, account email, ...) that Claude Code
+/// attaches once, to the first user message.
+function contextTexts(prefix: unknown[] | undefined): string[] {
+  const texts: string[] = [];
+  for (const block of prefix ?? []) {
+    const text = contentText([block]).trim();
+    if (text) texts.push(text);
+  }
+  return texts;
+}
+
+/// Every way Claude Code spells the context when it re-attaches it to a tool result: the blocks
+/// joined by nothing, a newline or a blank line, and itself separated from the output by a blank
+/// line (current CLI) or a newline (older CLI).
+function contextTails(texts: string[]): string[] {
+  const tails: string[] = [];
+  for (const lead of ["\n\n", "\n"]) {
+    for (const join of ["\n\n", "\n", ""]) tails.push(lead + texts.join(join));
+  }
+  return tails;
+}
+
+/// Remove the re-attached context from the end of a tool-result string. Only an exact copy of the
+/// whole context is removed; a tool's own output that merely mentions a reminder is left alone.
+function stripContextTail(text: string, texts: string[]): string | undefined {
+  const trimmed = text.trimEnd();
+  for (const tail of contextTails(texts)) {
+    if (trimmed.endsWith(tail)) return trimmed.slice(0, -tail.length);
+  }
+  return undefined;
+}
+
+function stripToolResultContext(toolResult: Record<string, unknown>, texts: string[]): void {
+  if (typeof toolResult.content === "string") {
+    const stripped = stripContextTail(toolResult.content, texts);
+    if (stripped !== undefined) toolResult.content = stripped;
+    return;
+  }
+  if (!Array.isArray(toolResult.content)) return;
+  const blocks = toolResult.content as Array<Record<string, unknown>>;
+
+  // The context as its own trailing text blocks, one per context block.
+  const tail = blocks.slice(-texts.length);
+  if (
+    tail.length === texts.length &&
+    tail.every(
+      (block, index) => block?.type === "text" && typeof block.text === "string" && block.text.trim() === texts[index],
+    )
+  ) {
+    blocks.splice(-texts.length, texts.length);
+    return;
+  }
+
+  // The context as the end of the final text block.
+  const final = blocks.at(-1);
+  if (final?.type !== "text" || typeof final.text !== "string") return;
+  if (final.text.trim() === texts.join("\n") || final.text.trim() === texts.join("")) {
+    blocks.pop();
+    return;
+  }
+  const stripped = stripContextTail(final.text, texts);
+  if (stripped !== undefined) final.text = stripped;
+}
+
+/// Claude Code attaches its context to the first user message only. When it replays a history it
+/// re-attaches that context to the newest user message, which after a tool call is a tool result.
+/// Remove it again so the context appears once and every tool result reaches the model unchanged.
 function removeRepeatedUserReminders(messages: NativeRequestMessage[], prefix: unknown[] | undefined): void {
-  const reminder = contentText(prefix).trimEnd();
-  if (!reminder || !prefix) return;
+  const texts = contextTexts(prefix);
+  if (!prefix || texts.length === 0) return;
   const normalizedPrefix = JSON.stringify(prefix.map(withoutCacheControl));
 
   for (let index = 1; index < messages.length; index++) {
@@ -723,19 +790,9 @@ function removeRepeatedUserReminders(messages: NativeRequestMessage[], prefix: u
     const leading = message.content.slice(0, prefix.length).map(withoutCacheControl);
     if (JSON.stringify(leading) === normalizedPrefix) message.content.splice(0, prefix.length);
 
-    const toolResult = message.content.findLast(
-      (block) => block && typeof block === "object" && (block as Record<string, unknown>).type === "tool_result",
-    ) as Record<string, unknown> | undefined;
-    if (!toolResult) continue;
-
-    const suffix = `\n${reminder}`;
-    if (typeof toolResult.content === "string" && toolResult.content.endsWith(suffix)) {
-      toolResult.content = toolResult.content.slice(0, -suffix.length);
-    } else if (Array.isArray(toolResult.content)) {
-      const final = toolResult.content.at(-1) as Record<string, unknown> | undefined;
-      if (final?.type === "text" && typeof final.text === "string") {
-        if (final.text === reminder) toolResult.content.pop();
-        else if (final.text.endsWith(suffix)) final.text = final.text.slice(0, -suffix.length);
+    for (const block of message.content) {
+      if (block && typeof block === "object" && (block as Record<string, unknown>).type === "tool_result") {
+        stripToolResultContext(block as Record<string, unknown>, texts);
       }
     }
   }
@@ -815,8 +872,10 @@ export function rewriteInitialRequest(
       if (!trailingText || !initialText.includes(trailingText)) break;
       messages.pop();
     }
-    removeRepeatedUserReminders(messages, prefix);
   }
+  // Independent of the saved system messages: a replay without them still gets the context
+  // re-attached to its newest tool result.
+  if (messages) removeRepeatedUserReminders(messages, prefix);
 
   if (nativeSystemInjections) {
     messages = injectNativeSystemMessages(messages!, nativeSystemInjections);
@@ -884,11 +943,13 @@ export function buildRequestTransform(input: {
   canonicalInitialUser: unknown[];
 }): (body: Buffer) => Buffer {
   return (body) => {
+    // A history saved before the context was recorded has no prefix: read it from this request.
+    const prefix = input.initialUserPrefix ?? deriveInitialUserPrefix(body, input.canonicalInitialUser);
     const shaped =
-      input.initialUserPrefix || input.initialSystemMessages || input.nativeSystemInjections
+      prefix || input.initialSystemMessages || input.nativeSystemInjections
         ? rewriteInitialRequest(
             body,
-            input.initialUserPrefix,
+            prefix,
             input.canonicalInitialUser,
             input.initialSystemMessages,
             input.nativeSystemInjections,

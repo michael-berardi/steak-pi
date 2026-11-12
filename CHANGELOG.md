@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.28.4 (2026-11-12)
+
+One fix in the Claude Code provider.
+
+- **The Claude Code context landed inside tool results.** Claude Code attaches its context (the memory index and the account email) to the first user message. When Steak Pi replays a conversation after a tool call, Claude Code attached the same context again to the newest tool result, so the model saw it at the end of tool output and paid for it again on every request. Steak Pi removed the copy only when saved system messages existed and only the part after a single newline, which left a stray newline in the output and missed the common case. It now removes the repeated context from a replayed tool result whether the result is a string or a list of blocks, whether the memory index and email arrive as one or separate blocks, and with or without saved system messages, and it reads the context from the request itself when none was saved. The context appears once, in the first user message, and a tool result reaches the model unchanged. A tool's own output that mentions a reminder is never touched unless it ends with an exact copy of the whole context. This is fixed.
+
 ## 0.28.3 (2026-11-12)
 
 One fix in the Windows installer. Windows was tested under PowerShell 7 on Linux, not yet on a Windows machine.
