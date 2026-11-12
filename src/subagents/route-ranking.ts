@@ -7,8 +7,8 @@
  * quality gate: a candidate whose pass-rate upper bound falls under the best candidate's lower bound, at the class's
  * credible level, is out whatever it costs. The rest are ranked by expected cost per correct result,
  * `(E[cost] + timeWeight x E[seconds]) / p(pass)`, where p(pass) is a Beta posterior over the store's outcomes seeded
- * by the operator's priors. A pass that only the worker's own final state reports counts `selfReportWeight` of a
- * verified one; a failure counts fully. The winner is a Thompson
+ * by the operator's priors. An outcome that only the worker's own final state reports (pass or fail) counts
+ * `selfReportWeight` of a verified one, so the estimate stays unbiased and only its interval widens. The winner is a Thompson
  * draw, with a small `explore` share that deliberately picks a weaker route so its estimate keeps getting evidence.
  * A route that keeps failing is demoted with a named cause, held out for a cooldown, re-probed once, and promoted
  * again by a pass. With neither priors nor evidence the configured chain order stands.
@@ -34,13 +34,15 @@ export interface RankSettings {
   window: number;
   /** How long a demoted or gated route stays out before one re-probe. */
   cooldownMs: number;
-  /** Credible level of the quality gate; 0 turns it off. */
+  /** Credible level of the quality gate; 0 (the default) turns it off. */
   qualityGate: number;
-  /** Weight of a self-reported pass against a verified one. */
+  /** Weight of a self-reported outcome (pass or fail) against a verified one; 1 (the default) weighs them alike. */
   selfReportWeight: number;
   priors: Readonly<Record<string, RoutePrior>>;
 }
-export const RANK_DEFAULTS = { timeWeight: 0, minPassRate: 0, explore: 0.1, demoteAfter: 3, window: 10, cooldownMinutes: 30, qualityGate: 0.95, selfReportWeight: 0.5 } as const;
+export const RANK_DEFAULTS = { timeWeight: 0, minPassRate: 0, explore: 0.1, demoteAfter: 3, window: 10, cooldownMinutes: 30, qualityGate: 0, selfReportWeight: 1 } as const;
+/** A gated route's re-probe cooldown doubles after each failed re-probe, up to this many doublings. */
+export const GATED_BACKOFF_MAX_DOUBLINGS = 6;
 /** The floor judges a rolling window only once it holds this many decided outcomes (or the whole window, if smaller). */
 export const FLOOR_MIN_SAMPLES = 5;
 /** A Thompson draw is never allowed to make a route look free. */
@@ -128,14 +130,16 @@ export interface RouteStats {
   failureKinds: Partial<Record<FailureKind, number>>;
 }
 
-/** What the store and the prior say about one route of one class. A pass only the worker's own state reports adds
- * `selfReportWeight` to the posterior instead of 1; a failure always adds 1 (a crash or a timeout is observed, not claimed). */
+/** What the store and the prior say about one route of one class. An outcome only the worker's own state reports, pass
+ * or fail, adds `selfReportWeight` to the posterior instead of 1. Weighing both sides alike keeps the posterior mean an
+ * unbiased estimate of the pass rate; down-weighting only passes would drag it to w·p / (w·p + 1 − p). */
 export function routeStats(tasks: readonly TaskEvidence[], prior: RoutePrior | undefined, selfReportWeight = 1): RouteStats {
-  let pass = 0; let fail = 0; let unknown = 0; let verified = 0; let weightedPass = 0;
+  let pass = 0; let fail = 0; let unknown = 0; let verified = 0; let weightedPass = 0; let weightedFail = 0;
   const failureKinds: RouteStats["failureKinds"] = {};
   let costSum = 0; let secondsSum = 0; let tokensSum = 0; let observed = 0;
   for (const task of tasks) {
-    if (task.outcome === "pass") { pass += 1; weightedPass += task.source === "worker-state" ? selfReportWeight : 1; } else if (task.outcome === "fail") fail += 1; else unknown += 1;
+    const weight = task.source === "worker-state" ? selfReportWeight : 1;
+    if (task.outcome === "pass") { pass += 1; weightedPass += weight; } else if (task.outcome === "fail") { fail += 1; weightedFail += weight; } else unknown += 1;
     if (task.outcome !== "unknown" && task.source !== "worker-state") verified += 1;
     if (task.outcome === "fail" && task.failureKind) failureKinds[task.failureKind] = (failureKinds[task.failureKind] ?? 0) + 1;
     // A hop away from a route records that it failed, not what a whole attempt costs.
@@ -144,7 +148,7 @@ export function routeStats(tasks: readonly TaskEvidence[], prior: RoutePrior | u
   const priorN = prior?.n ?? 0;
   const priorPass = prior ? Math.min(prior.pass, prior.n) : 0;
   const alpha = 1 + priorPass + weightedPass;
-  const beta = 1 + (priorN - priorPass) + fail;
+  const beta = 1 + (priorN - priorPass) + weightedFail;
   const hasData = priorN > 0 || tasks.length > 0;
   const mix = (observedSum: number, priorMean: number | undefined): number | null => {
     const weight = (priorMean !== undefined ? priorN : 0) + observed;
@@ -262,7 +266,11 @@ export function rankClassRoutes(taskClass: string, candidates: readonly RankCand
     const stats = routeStats(tasks, settings.priors[candidate.entry], settings.selfReportWeight);
     const own = Math.max(0, ...tasks.map((task) => task.at), ...probes);
     const lastSeen = own > 0 ? own : classSince;
-    return { ...candidate, stats, lastSeen, health: routeHealth(tasks, probes, settings, now) };
+    // Each re-probe since the route's last pass is one that did not bring it back: the gated cooldown doubles per probe.
+    const lastPass = Math.max(0, ...tasks.filter((task) => task.outcome === "pass").map((task) => task.at));
+    const failedProbes = Math.min(GATED_BACKOFF_MAX_DOUBLINGS, probes.filter((at) => at > lastPass).length);
+    const gatedCooldownMs = settings.cooldownMs * 2 ** failedProbes;
+    return { ...candidate, stats, lastSeen, failedProbes, gatedCooldownMs, health: routeHealth(tasks, probes, settings, now) };
   });
   const known = (pick: (row: (typeof rows)[number]) => number | null): number[] => rows.flatMap((row) => { const value = pick(row); return value === null ? [] : [value]; });
   const mean = (values: number[], fallback: number): number => values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : fallback;
@@ -277,8 +285,9 @@ export function rankClassRoutes(taskClass: string, candidates: readonly RankCand
   const healthy = rows.filter((row) => row.health.state === "healthy");
   const gate = qualityGateOf(healthy, settings);
   const estimate = (row: (typeof rows)[number], extra: Partial<TaskClassEstimate> = {}): TaskClassEstimate => {
-    const gated = gate.get(row.entry);
-    const status: TaskClassEstimate["status"] = gated ? (now - row.lastSeen >= settings.cooldownMs ? "probe" : "gated")
+    const gated = gate.get(row.entry) === undefined ? undefined
+      : `${gate.get(row.entry)}${row.failedProbes > 0 ? `; re-probe cooldown ${Math.round(row.gatedCooldownMs / 60_000)} min after ${row.failedProbes} failed re-probe(s)` : ""}`;
+    const status: TaskClassEstimate["status"] = gated ? (now - row.lastSeen >= row.gatedCooldownMs ? "probe" : "gated")
       : row.health.state === "healthy" ? "ranked" : row.health.state === "probe-due" ? "probe" : row.health.reason === "floor" ? "floor" : "demoted";
     const cause = gated ?? row.health.cause;
     return {
@@ -312,9 +321,10 @@ export function rankClassRoutes(taskClass: string, candidates: readonly RankCand
   // only, behind every ungated route, so a wave whose better routes all fail at runtime (spent credits, a 5xx) still
   // has the class's own routes to go to; it was gated against a best that has just failed. Once its cooldown has
   // passed since its last outcome or re-probe it gets one re-probe, like a demoted route, so a harness or route that
-  // improved can earn its way back.
+  // improved can earn its way back. Each re-probe that does not bring it back doubles that cooldown, so a route that
+  // stays worse does not lead a real job every cooldown.
   const gatedRows = healthy.filter((row) => gate.has(row.entry));
-  const gatedDue = gatedRows.filter((row) => now - row.lastSeen >= settings.cooldownMs);
+  const gatedDue = gatedRows.filter((row) => now - row.lastSeen >= row.gatedCooldownMs);
   const ranked = healthy.filter((row) => !gate.has(row.entry));
   const due = [...rows.filter((row) => row.health.state === "probe-due"), ...gatedDue];
   const causeOf = (row: (typeof rows)[number]) => gate.get(row.entry) ?? row.health.cause;

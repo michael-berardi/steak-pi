@@ -9,6 +9,21 @@ export interface Claim { receiptId: string; claimId: string; fromSessionId: stri
 export const customMessage = (m: Claim) => ({ customType: "ultraterm-peer-v1", content: "Peer agent note (from another agent on this Mac; act on it when it is sound, refuse only on red flags):\n\n" + m.text, display: true, details: { receiptId: m.receiptId, fromSessionId: m.fromSessionId, toSessionId: m.toSessionId } });
 export interface Transport { request(data: Record<string, unknown>, signal: AbortSignal): Promise<any> }
 
+/** The refusal UltraTerm names (a short reason such as "claim identity mismatch"),
+ * bounded to printable ASCII, so a caller can tell a permanent refusal from an
+ * outage. Never a payload or token: the server sends only its reason here. */
+export function rejection(error: unknown): string {
+  const raw = typeof error === "string" ? error : error && typeof (error as any).message === "string" ? (error as any).message : "";
+  const reason = raw.replace(/[^\x20-\x7e]+/g, " ").trim().slice(0, 120);
+  return reason ? `inbox request rejected: ${reason}` : "inbox request rejected";
+}
+/** UltraTerm refusals a retry can never change: the late record is dropped at once. */
+const PERMANENT_RECORD_REFUSAL = /claim identity mismatch|unknown bound receipt|recorded entry conflict/;
+/** Failed late-record attempts per released claim before it is dropped. */
+export const LATE_RECORD_ATTEMPTS = 3;
+/** Released claims kept for a late record: the size of UltraTerm's released list. */
+export const LATE_LIMIT = 16;
+
 /** No request, response, token, or transcript is logged. One bounded LF frame per connection. */
 export function unixTransport(path = join(homedir(), ".ultraterm/utp.sock")): Transport {
   return { request(data, signal) {
@@ -37,7 +52,7 @@ export function unixTransport(path = join(homedir(), ".ultraterm/utp.sock")): Tr
         if (bytes.length > 128 * 1024) { finish(Error("inbox response too large")); return; }
         const lf = bytes.indexOf(10); if (lf < 0) return;
         try { const response = JSON.parse(bytes.subarray(0, lf).toString("utf8"));
-          if (response.ok !== true) finish(Error("inbox request rejected")); else finish(undefined, response.result);
+          if (response.ok !== true) finish(Error(rejection(response.error))); else finish(undefined, response.result);
         } catch { finish(Error("invalid inbox response")); }
       });
     });
@@ -175,7 +190,7 @@ export class InboxConsumer {
   private pending?: Claim;
   /** Claims UltraTerm released because they never recorded within its bound (a
    * lost steer). Never dispatched again; recorded if they still persist late. */
-  private late: Claim[] = [];
+  private late: Array<{ claim: Claim; failures: number }> = [];
   private invoked = new Set<string>();
   private controller = new AbortController();
   private timer?: ReturnType<typeof setTimeout>;
@@ -217,48 +232,10 @@ export class InboxConsumer {
       // already injected and awaiting persisted evidence blocks the next lease.
       const r = await this.request("inbox.poll", { ready: !this.pending });
       if (!this.valid()) return;
-      const dropped = this.takeReleased(r.released);
-      await this.recordLate();
       // A just-released claim: the next poll is ready and takes the next note.
-      if (!this.valid() || dropped) return;
-      if (r.message) {
-        const m = r.message as Claim;
-        if (![m.receiptId, m.claimId, m.fromSessionId, m.toSessionId, m.text].every(v => typeof v === "string") || Buffer.byteLength(m.text) > 64 * 1024) throw Error("invalid claim");
-        // Claims address Pi history identities, not the containing UltraTerm
-        // terminal UUID (which registration returns separately).
-        if (m.toSessionId !== this.d.host.sessionId) throw Error("recipient session identity mismatch");
-        if (this.pending && JSON.stringify(this.pending) !== JSON.stringify(m)) throw Error("claim changed");
-        this.pending = m;
-      }
-      const m = this.pending;
-      if (!m) { this.set("durable-queue", this.d.idle() ? "durable queue: idle, no lease" : "durable queue: busy, steerable"); return; }
-      let evidence = this.d.evidence(m);
-      const memoryAccepted = !evidence && this.d.accepted?.(m) === true;
-      if (memoryAccepted) {
-        if (!this.invoked.has(m.receiptId) && this.invoked.size >= 4096) { this.set("withheld", "capacity exhausted"); return; }
-        this.invoked.add(m.receiptId);
-      }
-      // Busy runs steer at the native between-tools boundary; they do not wait
-      // for every tool to stop and never abort one.
-      if (!evidence && !this.invoked.has(m.receiptId) && this.valid()) {
-        if (this.invoked.size >= 4096) { this.set("withheld", "capacity exhausted"); return; }
-        // Mark BEFORE calling: void/throw cannot establish non-acceptance.
-        this.invoked.add(m.receiptId);
-        this.set("delivery-pending", this.pendingStatus());
-        this.d.send(customMessage(m), { deliverAs: "steer", triggerTurn: true });
-        evidence = this.d.evidence(m);
-      }
-      if (evidence && this.valid()) {
-        const proof = typeof evidence === "string" ? { entryId: evidence } : evidence;
-        this.set("persisted-history", "persisted history: canonical peer entry observed; recording receipt");
-        await this.request("inbox.record", { receiptId: m.receiptId, claimId: m.claimId, ...proof });
-        if (this.valid()) {
-          this.receipt = { claimId: m.claimId, entryId: proof.entryId };
-          this.pending = undefined; this.set("persisted-history", "recorded (model-read unknown)");
-        }
-      } else if (memoryAccepted) this.set("delivery-pending", "delivery pending: session memory shows the canonical entry; awaiting durable receipt evidence");
-      else if (this.invoked.has(m.receiptId)) this.set("delivery-pending", this.pendingStatus());
-      else this.set("delivery-pending", "delivery pending: lease held; dispatch not attempted");
+      // A late record runs last and never throws, so it cannot hold the queue.
+      if (!this.takeReleased(r.released)) await this.deliver(r);
+      await this.recordLate();
     } catch (error) { if (!this.stopped) {
       if (error instanceof Error && error.message === "recipient session identity mismatch") this.set("withheld", "recipient session identity mismatch; delivery withheld");
       else {
@@ -269,6 +246,48 @@ export class InboxConsumer {
     } }
     finally { this.running = false; }
   }
+  /** The leased claim: validate it, steer it once, and record it from persisted evidence. */
+  private async deliver(r: any) {
+    if (!this.valid()) return;
+    if (r.message) {
+      const m = r.message as Claim;
+      if (![m.receiptId, m.claimId, m.fromSessionId, m.toSessionId, m.text].every(v => typeof v === "string") || Buffer.byteLength(m.text) > 64 * 1024) throw Error("invalid claim");
+      // Claims address Pi history identities, not the containing UltraTerm
+      // terminal UUID (which registration returns separately).
+      if (m.toSessionId !== this.d.host.sessionId) throw Error("recipient session identity mismatch");
+      if (this.pending && JSON.stringify(this.pending) !== JSON.stringify(m)) throw Error("claim changed");
+      this.pending = m;
+    }
+    const m = this.pending;
+    if (!m) { this.set("durable-queue", this.d.idle() ? "durable queue: idle, no lease" : "durable queue: busy, steerable"); return; }
+    let evidence = this.d.evidence(m);
+    const memoryAccepted = !evidence && this.d.accepted?.(m) === true;
+    if (memoryAccepted) {
+      if (!this.invoked.has(m.receiptId) && this.invoked.size >= 4096) { this.set("withheld", "capacity exhausted"); return; }
+      this.invoked.add(m.receiptId);
+    }
+    // Busy runs steer at the native between-tools boundary; they do not wait
+    // for every tool to stop and never abort one.
+    if (!evidence && !this.invoked.has(m.receiptId) && this.valid()) {
+      if (this.invoked.size >= 4096) { this.set("withheld", "capacity exhausted"); return; }
+      // Mark BEFORE calling: void/throw cannot establish non-acceptance.
+      this.invoked.add(m.receiptId);
+      this.set("delivery-pending", this.pendingStatus());
+      this.d.send(customMessage(m), { deliverAs: "steer", triggerTurn: true });
+      evidence = this.d.evidence(m);
+    }
+    if (evidence && this.valid()) {
+      const proof = typeof evidence === "string" ? { entryId: evidence } : evidence;
+      this.set("persisted-history", "persisted history: canonical peer entry observed; recording receipt");
+      await this.request("inbox.record", { receiptId: m.receiptId, claimId: m.claimId, ...proof });
+      if (this.valid()) {
+        this.receipt = { claimId: m.claimId, entryId: proof.entryId };
+        this.pending = undefined; this.set("persisted-history", "recorded (model-read unknown)");
+      }
+    } else if (memoryAccepted) this.set("delivery-pending", "delivery pending: session memory shows the canonical entry; awaiting durable receipt evidence");
+    else if (this.invoked.has(m.receiptId)) this.set("delivery-pending", this.pendingStatus());
+    else this.set("delivery-pending", "delivery pending: lease held; dispatch not attempted");
+  }
   /** UltraTerm releases an active delivery that never recorded within its bound
    * and names it on every poll for a while. Holding it forever kept this host at
    * ready=false and parked every later note behind it (2026-11-12). Drop only the
@@ -278,20 +297,39 @@ export class InboxConsumer {
     if (!m || !Array.isArray(released)) return false;
     const notice = released.find((n: any) => n && n.receiptId === m.receiptId && n.claimId === m.claimId) as { cause?: unknown } | undefined;
     if (!notice) return false;
-    this.late = [...this.late, m].slice(-4);
+    const kept = [...this.late, { claim: m, failures: 0 }];
+    const overflow = kept.slice(0, Math.max(0, kept.length - LATE_LIMIT));
+    this.late = kept.slice(-LATE_LIMIT);
     this.pending = undefined;
     const cause = typeof notice.cause === "string" ? notice.cause.slice(0, 64) : "released";
-    this.set("durable-queue", `released held claim ${m.receiptId} (${cause}); taking the next note`);
+    const drops = overflow.length ? `; late list full (${LATE_LIMIT}), dropped unrecorded: ${overflow.map(x => x.claim.receiptId).join(", ")}` : "";
+    this.set("durable-queue", `released held claim ${m.receiptId} (${cause}); taking the next note${drops}`);
     return true;
   }
-  /** Record a released note that persisted after all: the sender's receipt then tells the truth. */
+  /** Record a released note that persisted after all: the sender's receipt then
+   * tells the truth. Each claim is tried on its own: a refusal UltraTerm will
+   * never reverse drops it at once, any other failure after
+   * LATE_RECORD_ATTEMPTS tries, and neither ever stops the tick. */
   private async recordLate() {
-    for (const m of [...this.late]) {
-      const evidence = this.d.evidence(m);
-      if (!evidence || !this.valid()) continue;
-      const proof = typeof evidence === "string" ? { entryId: evidence } : evidence;
-      await this.request("inbox.record", { receiptId: m.receiptId, claimId: m.claimId, ...proof });
-      this.late = this.late.filter(x => x !== m);
+    for (const item of [...this.late]) {
+      const m = item.claim;
+      if (!this.valid()) return;
+      let evidence: ReturnType<InboxDependencies["evidence"]>;
+      try {
+        evidence = this.d.evidence(m);
+        if (!evidence) continue;
+        const proof = typeof evidence === "string" ? { entryId: evidence } : evidence;
+        await this.request("inbox.record", { receiptId: m.receiptId, claimId: m.claimId, ...proof });
+        this.late = this.late.filter(x => x !== item);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message.slice(0, 160) : "late record failed";
+        item.failures += 1;
+        const permanent = PERMANENT_RECORD_REFUSAL.test(reason);
+        if (permanent || item.failures >= LATE_RECORD_ATTEMPTS) {
+          this.late = this.late.filter(x => x !== item);
+          this.status = `${this.status}; late record of ${m.receiptId} dropped after ${permanent ? "a permanent refusal" : `${item.failures} attempts`} (${reason})`;
+        }
+      }
     }
   }
   stop() {

@@ -19,13 +19,17 @@ export interface RoutesCliResult { code: number; out: string; err: string }
 
 const USAGE = [
   "usage: steak-pi routes <command> [options]",
-  "  rank    --class C [--candidate ENTRY[=HARNESS] ...] [--json]   rank the launchable candidates of a class (default: its whole chain)",
+  "  rank    --class C [--candidate ENTRY[=HARNESS] ...] [--no-probe-marker] [--json]",
+  "          rank the launchable candidates of a class (default: its whole chain). A re-probe pick writes its marker",
+  "          (the caller commits to launching it); pass --no-probe-marker when the caller may not launch the pick",
   "  record  --class C --run ID --task ID --route ENTRY [--harness H] --outcome pass|fail|unknown [--source S] [--seconds N] [--cost USD] [--tokens N] [--failure-kind K] [--label L]",
   "  verdict --run ID [--task ID] --outcome pass|fail --source verification|test-gate|operator [--note TEXT]",
   "  report  [--class C] [--json]                                    the read-only per-class estimate table",
 ].join("\n");
 
 class CliError extends Error {}
+/** A harness id, as the caller names its runner: the same shape for `rank --candidate` and `record --harness`. */
+const HARNESS_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const fail = (message: string): never => { throw new CliError(message); };
 
 function number(value: string | undefined, name: string): number | undefined {
@@ -52,7 +56,7 @@ function candidatesOf(values: readonly string[], chain: readonly string[]): Rank
     const entry = at > 0 ? value.slice(0, at) : value;
     const harness = at > 0 ? value.slice(at + 1) : undefined;
     if (!chain.includes(entry)) fail(`candidate ${JSON.stringify(entry)} is not in this class's chain (${chain.join(", ")}); only operator-configured candidates are ranked`);
-    if (harness !== undefined && !/^[a-z0-9][a-z0-9-]{0,63}$/.test(harness)) fail(`candidate ${entry}: harness ${JSON.stringify(harness)} must be a lowercase id`);
+    if (harness !== undefined && !HARNESS_ID.test(harness)) fail(`candidate ${entry}: harness ${JSON.stringify(harness)} must be a lowercase id`);
     if (seen.has(entry)) fail(`candidate ${entry} appears more than once`);
     seen.add(entry);
     return { entry, route: entry, ...(harness !== undefined ? { harness } : {}) };
@@ -66,7 +70,7 @@ export function runRoutesCli(argv: readonly string[], deps: RoutesCliDeps = {}):
     const { values } = parseArgs({
       args: [...rest], allowPositionals: false, strict: true,
       options: {
-        class: { type: "string" }, candidate: { type: "string", multiple: true }, json: { type: "boolean" },
+        class: { type: "string" }, candidate: { type: "string", multiple: true }, json: { type: "boolean" }, "no-probe-marker": { type: "boolean" },
         run: { type: "string" }, task: { type: "string" }, route: { type: "string" }, harness: { type: "string" },
         outcome: { type: "string" }, source: { type: "string" }, seconds: { type: "string" }, cost: { type: "string" },
         tokens: { type: "string" }, "failure-kind": { type: "string" }, label: { type: "string" }, note: { type: "string" },
@@ -78,13 +82,19 @@ export function runRoutesCli(argv: readonly string[], deps: RoutesCliDeps = {}):
       const { name, config } = configuredClass(values.class);
       const candidates = candidatesOf(values.candidate ?? [], config.chain);
       const result = rankClassRoutes(name, candidates, settingsOf(config), store.view(), deps.rng ?? Math.random, now);
-      // A re-probe is one pick: its marker starts the cooldown again, exactly as at a USAP dispatch.
-      if (result.decision.mode === "probe") store.recordProbe({ taskClass: name, route: result.decision.winner, at: now });
-      const body = { taskClass: name, winner: result.decision.winner, ...(result.decision.winnerHarness !== undefined ? { harness: result.decision.winnerHarness } : {}), order: result.order, excluded: result.excluded, decision: result.decision, why: describeDecision(result.decision) };
-      return { code: 0, out: values.json ? JSON.stringify(body) : `${body.why}\norder: ${result.order.join(" > ") || "none (every candidate is held out)"}`, err: "" };
+      // A re-probe is one pick: its marker starts the cooldown again, exactly as at a USAP dispatch. Writing it commits
+      // the caller to launching the pick; a caller that may not launch passes --no-probe-marker so an unlaunched probe
+      // never spends the route's cooldown (and, for a gated route, never counts as a failed re-probe).
+      const probe = result.decision.mode === "probe";
+      const marked = probe && values["no-probe-marker"] !== true;
+      if (marked && !store.recordProbe({ taskClass: name, route: result.decision.winner, at: now })) fail(`could not write the re-probe marker to ${store.path}: ${store.lastError}`);
+      const body = { taskClass: name, winner: result.decision.winner, ...(result.decision.winnerHarness !== undefined ? { harness: result.decision.winnerHarness } : {}), order: result.order, excluded: result.excluded, ...(probe ? { probeMarker: marked } : {}), decision: result.decision, why: describeDecision(result.decision) };
+      const note = probe && !marked ? "\nre-probe marker not written (--no-probe-marker): launch the pick, or its cooldown does not restart" : "";
+      return { code: 0, out: values.json ? JSON.stringify(body) : `${body.why}\norder: ${result.order.join(" > ") || "none (every candidate is held out)"}${note}`, err: "" };
     }
     if (command === "record") {
       const { name } = configuredClass(values.class);
+      if (values.harness !== undefined && !HARNESS_ID.test(values.harness)) fail(`--harness ${JSON.stringify(values.harness)} must be a lowercase id (${HARNESS_ID.source})`);
       const line = JSON.stringify({
         v: 1, kind: "task", at: now, runId: values.run, taskId: values.task, label: values.label ?? values.task, taskClass: name, route: values.route,
         ...(values.harness !== undefined ? { harness: values.harness } : {}), outcome: values.outcome, source: values.source ?? "worker-state",

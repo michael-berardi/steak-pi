@@ -380,21 +380,26 @@ exactly as it would have resolved without a class. The rules around that:
 
 The chain order is only the starting point. Every task of a classed wave leaves a record of how its route did, and the
 next dispatch of that class first holds the steps that can launch (the checks above come first and are never relaxed)
-to a **quality gate**, then ranks the rest by **expected cost per correct result**:
+to the class's **quality gate** when the operator has set one, then ranks the rest by **expected cost per correct
+result**:
 
     gate:  out if upper(p(pass)) < lower(p(pass) of the best route), at the class's qualityGate level
     score(route) = (E[cost] + timeWeight x E[seconds]) / p(pass)        lower is better
 
 - `p(pass)` is a Beta posterior over the route's recorded passes and fails, seeded by the operator's `priors`:
-  `Beta(1 + priorPass + w x selfReportedPasses + verifiedPasses, 1 + (priorN - priorPass) + fails)`, where `w` is the
-  class's `selfReportWeight` (default 0.5): a pass only the worker's own final state reports counts half of one a
-  verification, a test gate or the operator confirmed. A failure counts fully whatever its source (a crash or a
-  timeout is observed, not claimed).
-- **Quality is a gate, not a trade.** A route whose one-sided credible upper bound (default level 95%) is under the
-  best route's lower bound is `gated`: never the pick, never explored, and only the last resort of a runtime failover
-  after every ungated route has failed. Once `cooldownMinutes` have passed since its last outcome or re-probe it gets
-  one re-probe, like a demoted route, so a route that improved can earn its way back. A route gated by its prior alone
-  is held from the class's first recorded outcome. `qualityGate: 0` turns the gate off. `E[cost]` and `E[seconds]` are the mean of the
+  `Beta(1 + priorPass + w x selfReportedPasses + verifiedPasses, 1 + (priorN - priorPass) + w x selfReportedFails +
+  verifiedFails)`, where `w` is the class's `selfReportWeight` (default 1, so every outcome counts alike). An outcome
+  only the worker's own final state reports, pass or fail, counts `w` of one a verification, a test gate or the operator
+  confirmed. Both sides are weighted alike, so the posterior mean stays an unbiased estimate of the pass rate and a
+  lower `w` only widens its interval (weighting passes alone would pull a 60% route to 43% at `w` 0.5).
+- **Quality is a gate, not a trade** (opt-in: set the class's `qualityGate`, for example `0.95`; the default `0` leaves
+  it off). A route whose one-sided credible upper bound at that level is under the best route's lower bound is
+  `gated`: never the pick, never explored, and only the last resort of a runtime failover after every ungated route has
+  failed. Once `cooldownMinutes` have passed since its last outcome or re-probe it gets one re-probe, like a demoted
+  route, so a route that improved can earn its way back. Each re-probe that does not bring it back (no pass since)
+  doubles that cooldown, up to 64 times `cooldownMinutes`, so a route that stays worse does not lead a real job every
+  cooldown; a pass resets it. A route gated by its prior alone is held from the class's first recorded outcome.
+  `E[cost]` and `E[seconds]` are the mean of the
   route's recorded attempts (dollars from the run's usage cost, wall seconds), mixed with the prior's `costUsd` and
   `seconds` weighted by its `n`. A route with no cost yet is judged at the class's average, so only `p(pass)`
   separates it.
@@ -413,9 +418,9 @@ Per-class keys (all optional; Steak Pi ships no class, route or number of its ow
 | `explore` | `0.1` | share of dispatches that pick a weaker route on purpose (0 to 0.5) |
 | `demoteAfter` | `3` | consecutive failures that demote a route for this class |
 | `window` | `10` | decided outcomes the rolling pass rate looks at (the floor needs `min(window, 5)` of them) |
-| `cooldownMinutes` | `30` | how long a demoted or gated route stays out before one re-probe |
-| `qualityGate` | `0.95` | credible level of the quality gate (0 to 0.999); `0` turns it off |
-| `selfReportWeight` | `0.5` | weight of a pass only the worker's own state reports, against a verified one (0 to 1) |
+| `cooldownMinutes` | `30` | how long a demoted or gated route stays out before one re-probe (a gated route's doubles per failed re-probe) |
+| `qualityGate` | `0` (off) | credible level of the quality gate (0 to 0.999), for example `0.95`; `0` turns it off |
+| `selfReportWeight` | `1` | weight of an outcome (pass or fail) only the worker's own state reports, against a verified one (0 to 1) |
 | `retryMaxTokens` | double the model's own | output budget for the one same-route retry of an empty reply |
 | `slots` | none | most tasks one wave may run on this class's routes at once (a local server with one slot is `1`); a wider wave runs the normal chain |
 | `maxScope` | none | `"small"`: the class is for small, bounded tasks; a wave with a task that may both edit and run a shell runs the normal chain |
@@ -427,6 +432,8 @@ A worked example. Two routes serve `class-a`, and the operator's own benchmark g
       "chain": ["route-a", "route-b"],          // profile ids or exact provider/model routes
       "timeWeight": 0.0005,                     // half a cent buys ten seconds
       "minPassRate": 0.6,
+      "qualityGate": 0.95,                      // opt-in: hold out a route credibly worse than the best
+      "selfReportWeight": 0.5,                  // opt-in: a worker's own report counts half of a verified outcome
       "priors": {
         "route-a": { "pass": 13, "n": 14, "costUsd": 0.0004, "seconds": 12 },
         "route-b": { "pass": 13, "n": 14, "costUsd": 0.0004, "seconds": 3 }
@@ -515,8 +522,24 @@ whole agent panes (each candidate a `harness/profile` entry of a class chain):
 
 The caller passes only the candidates it can launch for the job (after its own capability, quota and project-policy
 checks); a candidate outside the class chain is refused. `rank` prints `{ winner, harness, order, excluded, decision,
-why }` and writes the re-probe marker when it re-probes; `record` and `verdict` append to the store. A malformed
-routing.json fails with its cause.
+why }` and, when it re-probes, writes the re-probe marker (with `probeMarker: true`): writing it commits the caller to
+launching the pick, because the marker restarts the route's cooldown and, for a gated route, counts as a re-probe that
+has not yet passed. A caller that may not launch the pick (a dry run, a job that may still be cancelled) passes
+`--no-probe-marker`; the pick is the same and the output says `probeMarker: false`. `record --harness` takes the same
+lowercase id as `--candidate ENTRY=HARNESS`. `record` and `verdict` append to the store. A malformed routing.json fails
+with its cause.
+
+**Turning on the gate and the self-report weight: release order.** `qualityGate` and `selfReportWeight` ship off
+(`0` and `1`), so upgrading changes no class's ranking. Every Pi pane, coordinator and CLI that reads the same
+routing.json validates it strictly, and a release before 0.30.0 refuses these two keys as unknown, which stops every
+session sharing the file. So:
+
+1. Release 0.30.0 with no routing.json change.
+2. Confirm every pane, coordinator and `steak-pi` CLI that reads the file runs 0.30.0 or later.
+3. Add the keys to a copy, run `steak-pi routing check <copy>`, and move it into place only when it prints `ok`.
+
+Downgrading below 0.30.0 after the keys are in the file stops every session that shares it: remove the keys first.
+Unknown keys stay refused; the check is not loosened for this.
 
 ### Profile launch hooks (`ensure`)
 

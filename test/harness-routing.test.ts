@@ -47,7 +47,8 @@ const view = (tasks: TaskEvidence[]) => ({ tasks, probes: [] });
 const NATIVE = { entry: "alpha-p/alpha-model", route: "alpha-p/alpha-model", harness: "pi" };
 const DSH = { entry: "steak-dsh/alpha-p/alpha-model", route: "steak-dsh/alpha-p/alpha-model", harness: "steak-dsh" };
 const NOW = () => clock + 10 * MIN;
-const settings = (over: Parameters<typeof settingsOf>[0] = {}) => settingsOf({ explore: 0, demoteAfter: 100, window: 500, ...over });
+// The gate is opt-in (shipped default 0, off): these tests turn it on the way an operator would, in the class config.
+const settings = (over: Parameters<typeof settingsOf>[0] = {}) => settingsOf({ explore: 0, demoteAfter: 100, window: 500, qualityGate: 0.95, ...over });
 
 describe("quality is a gate, not a trade", () => {
   // The cheap candidate passes a third of its verified runs; the dear one passes every run. Cost per pass alone
@@ -98,23 +99,50 @@ describe("quality is a gate, not a trade", () => {
     expect(result.decision.mode).toBe("probe");
     expect(result.order[0]).toBe(DSH.entry);
   });
+  it("doubles a gated candidate's cooldown after each re-probe that did not bring it back", () => {
+    // Opus review run-0fc250e1 finding 3: a gated route led a real job once every cooldown, forever.
+    const tasks = evidence();
+    const pick = (probes: number[], at: number) => rankClassRoutes("class-h", [NATIVE, DSH], settings({ cooldownMinutes: 30 }),
+      { tasks, probes: probes.map((probeAt) => ({ v: 1 as const, kind: "probe" as const, taskClass: "class-h", route: DSH.entry, at: probeAt })) }, seeded(1), at);
+    const last = Math.max(...tasks.map((item) => item.at));
+    // One failed re-probe: 60 minutes, not 30.
+    const first = last + 31 * MIN;
+    expect(pick([first], first + 31 * MIN).decision.mode).not.toBe("probe");
+    expect(pick([first], first + 31 * MIN).decision.estimates.find((item) => item.entry === DSH.entry)!.cause).toMatch(/re-probe cooldown 60 min after 1 failed re-probe/);
+    expect(pick([first], first + 61 * MIN).decision.mode).toBe("probe");
+    // Two: 120 minutes.
+    const second = first + 61 * MIN;
+    expect(pick([first, second], second + 119 * MIN).decision.mode).not.toBe("probe");
+    expect(pick([first, second], second + 121 * MIN).decision.mode).toBe("probe");
+    // A pass after the probes resets the backoff to the base cooldown.
+    const passed = [...tasks, { ...row(DSH.entry, "pass"), at: second + 10 * MIN }];
+    const reset = rankClassRoutes("class-h", [NATIVE, DSH], settings({ cooldownMinutes: 30 }),
+      { tasks: passed, probes: [first, second].map((probeAt) => ({ v: 1 as const, kind: "probe" as const, taskClass: "class-h", route: DSH.entry, at: probeAt })) }, seeded(1), second + 41 * MIN);
+    expect(reset.decision.mode).toBe("probe");
+  });
 });
 
 describe("verified outcomes count more than a worker's own report", () => {
-  it("weighs a self-reported pass below a verified one; a failure counts fully either way", () => {
+  it("weighs every self-reported outcome, pass or fail, below a verified one", () => {
     const self = routeStats(spread("r", 4, 0, { source: "worker-state" }), undefined, 0.5);
     const verified = routeStats(spread("r", 4, 0, { source: "verification" }), undefined, 0.5);
     expect(self.alpha).toBe(1 + 2);
     expect(verified.alpha).toBe(1 + 4);
-    const failed = routeStats([row("r", "fail", { source: "worker-state" })], undefined, 0.5);
-    expect(failed.beta).toBe(1 + 1);
+    expect(routeStats([row("r", "fail", { source: "worker-state" })], undefined, 0.5).beta).toBe(1 + 0.5);
+    expect(routeStats([row("r", "fail", { source: "verification" })], undefined, 0.5).beta).toBe(1 + 1);
   });
-  it("ranks 20 verified passes above 30 self-reported ones at the default weight", () => {
+  it("keeps the estimate unbiased: down-weighted self-reports move the interval, not the mean", () => {
+    // Opus review run-0fc250e1 finding 2: weighting only passes pulled a 60% route to w·p/(w·p+1−p) = 43%.
+    const self = routeStats(spread("r", 60, 40, { source: "worker-state" }), undefined, 0.5);
+    expect(self.passRate!).toBeCloseTo(0.6, 1);
+    expect(Math.abs(self.passRate! - 0.6)).toBeLessThan(0.01);
+    expect(self.alpha + self.beta).toBe(2 + 50);
+  });
+  it("ranks 20 verified passes above 30 self-reported ones when the operator sets selfReportWeight", () => {
     const tasks = [...spread(NATIVE.entry, 30, 0, { source: "worker-state" }), ...spread(DSH.entry, 20, 0, { source: "test-gate" })];
-    const result = rankClassRoutes("class-h", [NATIVE, DSH], settings(), view(tasks), seeded(1), NOW());
+    const result = rankClassRoutes("class-h", [NATIVE, DSH], settings({ selfReportWeight: 0.5 }), view(tasks), seeded(1), NOW());
     const p = (entry: string) => result.decision.estimates.find((item) => item.entry === entry)!.passRate!;
     expect(p(DSH.entry)).toBeGreaterThan(p(NATIVE.entry));
-    expect(RANK_DEFAULTS.selfReportWeight).toBeLessThan(1);
   });
 });
 
@@ -162,7 +190,8 @@ describe("no harness is preferred by code", () => {
   });
   it("ships no harness name, prior or weight in the ranking defaults", () => {
     const defaults = settingsOf({});
-    expect(defaults.priors).toEqual({});
+    // Opus review run-0fc250e1 finding 2: the gate and the self-report weight are off until the operator opts in.
+    expect(defaults).toMatchObject({ qualityGate: 0, selfReportWeight: 1, timeWeight: 0, priors: {} });
     const shipped = JSON.stringify({ RANK_DEFAULTS, defaults });
     for (const harness of [...HARNESS_IDS, "steak-pi", "stock-pi"]) expect(shipped).not.toContain(harness);
   });

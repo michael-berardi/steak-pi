@@ -283,12 +283,13 @@ it before each worker launches, refuses the launch with its stderr as the named 
 (an implicit wave then falls through to the next step in the same call), and runs
 `release` when the worker ends however it ends. Never put a command in a task or a
 dispatch argument; hooks come only from the operator's routing.json. Which step serves a
-class is decided by recorded evidence once the class has priors or outcomes (a quality gate
-first, then cost per verified pass, with a small exploration share and automatic demotion of a
+class is decided by recorded evidence once the class has priors or outcomes (the class's
+quality gate first when the operator sets one, then cost per verified pass, with a small exploration share and automatic demotion of a
 route that keeps failing); the dispatch note shows the numbers. A chain entry may name a
 harness (`steak-dsh/<provider>/<model-id>` beside the native `provider/model`), so the class
 also picks the harness per wave; the note's `Harness:` line says which and why. Teach it:
-a verified outcome counts more than a worker's own `done`, so after you verify a classed run
+a verified outcome replaces a worker's own `done` (and outweighs it where the class sets
+`selfReportWeight`), so after you verify a classed run
 (a test gate, a reviewer wave), call hub `record-outcome` with its `runId` and `pass` or
 `fail`; hub `routes` prints the per-class estimates. A leaf on a test-gated class ends its
 report with `TEST-GATE: pass` or `TEST-GATE: fail`.

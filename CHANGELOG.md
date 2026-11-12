@@ -1,18 +1,24 @@
 # Changelog
 
-## Unreleased
+## 0.30.0 (2026-11-12)
 
-The task-class router chooses the harness per job, on the quality, speed and cost of verified outcomes.
+The task-class router can choose the harness per job, on the quality, speed and cost of verified outcomes; and one
+lost steer no longer blocks a pane's inbox.
 
-- **A candidate is a (harness, model route) pair, and quality is a gate.** A class chain may hold the same model on
-  two harnesses (`provider/model` on the native Pi worker, `steak-dsh/provider/model` on Steak DSH); they are ranked as
-  two candidates. A candidate whose pass-rate upper bound falls under the best candidate's lower bound (new class key
-  `qualityGate`, default 0.95; 0 turns it off) is never the pick and never explored, whatever it costs; it stays only
-  as the last resort of a runtime failover, and gets one re-probe per cooldown so an improved one can return. The
-  rest are ranked by cost per verified pass plus `timeWeight` times seconds per verified pass, as before.
-- **Verified outcomes count more than a worker's own report.** A pass only the worker's final state reports counts
-  `selfReportWeight` (new class key, default 0.5) of one a verification, a test gate or the operator confirmed. A
-  failure counts fully.
+Upgrading changes no class's ranking: the two new class keys ship off. To turn them on, release first and edit
+routing.json last (below).
+
+- **A candidate is a (harness, model route) pair.** A class chain may hold the same model on two harnesses
+  (`provider/model` on the native Pi worker, `steak-dsh/provider/model` on Steak DSH); they are ranked as two
+  candidates, by cost per verified pass plus `timeWeight` times seconds per verified pass, as before.
+- **Opt-in quality gate.** With the new class key `qualityGate` set (for example `0.95`; default `0`, off), a candidate
+  whose pass-rate upper bound falls under the best candidate's lower bound is never the pick and never explored,
+  whatever it costs. It stays only as the last resort of a runtime failover, and gets one re-probe per cooldown so an
+  improved one can return; each re-probe that does not bring it back doubles that cooldown (up to 64 times), and a pass
+  resets it.
+- **Opt-in self-report weight.** With the new class key `selfReportWeight` below 1 (default `1`), an outcome only the
+  worker's own final state reports, pass or fail, counts that fraction of one a verification, a test gate or the
+  operator confirmed. Both sides are weighted, so the pass-rate estimate stays unbiased and only its interval widens.
 - **A timeout is named.** A task that hits its deadline is recorded as a `timeout` failure with its whole wall time,
   so it counts against both quality and speed. Each evidence record also names the harness that ran it.
 - **The dispatch note says which harness and why.** A classed wave's note starts with `Harness: <id>, chosen by task
@@ -21,8 +27,23 @@ The task-class router chooses the harness per job, on the quality, speed and cos
   `noClaudeProjects` could launch a Claude step of the class chain; project policy now removes those candidates before
   ranking (unavailable, not a loss), including a harness-qualified step whose inner route is Claude.
 - **`steak-pi routes rank | record | verdict | report`.** The same ranker and evidence store for a job queue that
-  launches whole agent panes, so its jobs and USAP leaves learn from one memory.
+  launches whole agent panes, so its jobs and USAP leaves learn from one memory. `rank` writes a re-probe marker only
+  when the caller will launch the pick; `--no-probe-marker` ranks without writing it. `record --harness` takes the same
+  lowercase id as `rank --candidate ENTRY=HARNESS`.
+- **A delivery UltraTerm released no longer blocks the inbox.** UltraTerm releases an active delivery that never
+  recorded within its bound; the host now drops the claim it names and takes the next note (one lost steer had parked
+  eleven notes behind it). The released claim is still recorded if it persists late. That late record runs at the end
+  of each poll, on its own: a refusal UltraTerm will not reverse (claim identity mismatch, unknown bound receipt,
+  recorded entry conflict) drops it at once, any other failure after three tries, and neither stops the next note. Up
+  to 16 released claims are kept, as many as UltraTerm lists; an older one dropped unrecorded is named in the status
+  line. An inbox refusal now carries UltraTerm's short reason instead of only "inbox request rejected".
 - A test fails if the ranking prefers a harness by name, or if a harness, prior or weight ships as a default.
+
+**Release order for `qualityGate` and `selfReportWeight`.** Every pane, coordinator and CLI sharing routing.json
+validates it strictly, and releases before 0.30.0 refuse these keys as unknown, which stops every session sharing the
+file. (1) Release 0.30.0 with no routing.json change. (2) Confirm every pane, coordinator and `steak-pi` CLI runs 0.30.0
+or later. (3) Add the keys to a copy, run `steak-pi routing check <copy>`, and move it into place only on `ok`.
+Downgrading below 0.30.0 with the keys in the file stops those sessions: remove the keys first.
 
 ## 0.29.2 (2026-11-12)
 

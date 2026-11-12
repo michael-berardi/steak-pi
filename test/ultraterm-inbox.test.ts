@@ -126,6 +126,55 @@ describe("native inbox state machine", () => {
     expect(send.mock.calls.filter(c => c[0].details.receiptId === claim.receiptId)).toHaveLength(1);
     consumer.stop();
   });
+  // Opus review run-0fc250e1 finding 1: a throwing late record ran before the pending-claim block and aborted every tick.
+  function releasedHarness(record: (r: any) => unknown) {
+    const notes = Array.from({ length: 20 }, (_, i): Claim => ({ ...claim, receiptId: `receipt-${i}`, claimId: `claim-${i}`, text: `note ${i}` }));
+    let at = 0; let release: Claim[] = [];
+    const evidence: Record<string, string> = {};
+    const calls: any[] = []; const send = vi.fn();
+    const transport = { request: vi.fn(async (r: any) => {
+      calls.push(r);
+      if (r.cmd === "inbox.register") return { token: "private", terminalId: "terminal" };
+      if (r.cmd === "inbox.poll") return { message: r.ready ? notes[at] : null, released: release.map(c => ({ receiptId: c.receiptId, claimId: c.claimId, cause: "active-delivery-record-timeout" })) };
+      if (r.cmd === "inbox.record") return record(r);
+      return {};
+    }) };
+    const consumer = new InboxConsumer({ host, transport, idle: () => false, current: () => true, evidence: (c?: Claim) => c ? evidence[c.receiptId] : undefined, send });
+    /** Lease note `at`, then have UltraTerm release it, so the host moves on to the next. */
+    const leaseAndRelease = async () => { await consumer.tick(); release = [notes[at]]; await consumer.tick(); release = []; at += 1; };
+    return { notes, calls, send, consumer, evidence, leaseAndRelease, next: () => notes[at] };
+  }
+  for (const [label, refusal, attempts] of [["an outage", "inbox response lost", 3], ["a permanent refusal", "inbox request rejected: claim identity mismatch", 1]] as const) {
+    it(`a late record that keeps failing on ${label} never stalls the queue and is dropped after ${attempts} attempt(s)`, async () => {
+      const h = releasedHarness((r: any) => { if (r.receiptId === "receipt-0") throw Error(refusal); return {}; });
+      await h.leaseAndRelease();
+      h.evidence["receipt-0"] = "late-entry";
+      // The next note is still leased, sent and recorded on every tick the late record fails.
+      for (let i = 0; i < 4; i += 1) {
+        const note = h.next();
+        await h.consumer.tick();
+        expect(h.send.mock.calls.map(c => c[0].details.receiptId)).toContain(note.receiptId);
+        h.evidence[note.receiptId] = `entry-${i}`;
+        await h.consumer.tick();
+        expect(h.calls.filter(r => r.cmd === "inbox.record" && r.receiptId === note.receiptId)).toHaveLength(1);
+        h.notes.splice(h.notes.indexOf(note), 1);
+      }
+      expect(h.calls.filter(r => r.cmd === "inbox.record" && r.receiptId === "receipt-0")).toHaveLength(attempts);
+      expect(h.consumer.phase).toBe("persisted-history");
+      h.consumer.stop();
+    });
+  }
+  it("keeps 16 released claims for a late record and names the oldest it drops in the status line", async () => {
+    // Opus review finding 6: .slice(-4) silently pushed the oldest released claim out.
+    const h = releasedHarness(() => ({}));
+    for (let i = 0; i < 17; i += 1) await h.leaseAndRelease();
+    expect(h.consumer.status).toContain("late list full (16), dropped unrecorded: receipt-0");
+    for (let i = 0; i < 17; i += 1) h.evidence[`receipt-${i}`] = `late-${i}`;
+    await h.consumer.tick();
+    const lateRecorded = h.calls.filter(r => r.cmd === "inbox.record").map(r => r.receiptId);
+    expect(lateRecorded).toEqual(Array.from({ length: 16 }, (_, i) => `receipt-${i + 1}`));
+    h.consumer.stop();
+  });
   it("withholds delivery whenever primary ownership proof is already lost", async () => {
     for (const ownership of ["pid", "generation", "session-file"]) {
       const h = harness(); h.idle(false); h.valid(false);
@@ -247,12 +296,17 @@ it("Unix transport frames isolated requests and aborts a lost response", async (
     socket.once("data", data => {
       const r = JSON.parse(data.toString());
       if (r.cmd === "test") socket.end(JSON.stringify({ ok: true, result: { message: null } }) + "\n");
+      // UltraTerm's refusal reason reaches the caller, bounded and printable only.
+      if (r.cmd === "refuse") socket.end(JSON.stringify({ ok: false, error: "claim identity mismatch\u0007\n" + "x".repeat(400) }) + "\n");
     });
   });
   try {
     await new Promise<void>(resolve => server.listen(path, resolve)); chmodSync(path, 0o600);
     const transport = unixTransport(path);
     expect(await transport.request({ cmd: "test" }, new AbortController().signal)).toEqual({ message: null });
+    const refused = await transport.request({ cmd: "refuse" }, new AbortController().signal).then(() => "", (e: Error) => e.message);
+    expect(refused).toMatch(/^inbox request rejected: claim identity mismatch x+$/);
+    expect(refused.length).toBeLessThanOrEqual("inbox request rejected: ".length + 120);
     const controller = new AbortController();
     const pending = transport.request({ cmd: "lost" }, controller.signal);
     controller.abort(); await expect(pending).rejects.toThrow("stopped");

@@ -45,7 +45,8 @@ describe("rank", () => {
     expect(body.decision.mode).toBe("chain-order");
   });
   it("follows recorded job outcomes, keeps a credibly worse candidate out of the pick, and ranks only the candidates passed", () => {
-    configure();
+    // The quality gate is opt-in per class (shipped default off).
+    configure({ qualityGate: 0.95 });
     const store = newStore();
     record(store, PANE_A, "harness-a", Array.from({ length: 12 }, (_, index) => index % 2 === 0 ? "pass" : "fail"));
     record(store, PANE_B, "harness-b", Array.from({ length: 12 }, () => "pass"));
@@ -55,6 +56,23 @@ describe("rank", () => {
     expect(body.decision.estimates.find((item: { entry: string }) => item.entry === PANE_A).status).toBe("gated");
     expect(body.decision.estimates.map((item: { entry: string }) => item.entry)).not.toContain(PANE_C);
     expect(body.why).toMatch(/on harness harness-b/);
+  });
+  it("writes the re-probe marker only when the caller commits to launching the pick (--no-probe-marker)", () => {
+    // Opus review run-0fc250e1 finding 4: rank wrote the marker even when the caller did not launch the pick.
+    configure({ demoteAfter: 2, cooldownMinutes: 1 });
+    const store = newStore();
+    // PANE_A is demoted by two failures recorded at NOW; ranking an hour later makes it due for its one re-probe.
+    record(store, PANE_A, "harness-a", ["fail", "fail"]);
+    record(store, PANE_B, "harness-b", ["pass"]);
+    const later = (argv: string[]) => runRoutesCli(argv, { store, rng, now: () => NOW + 3_600_000 });
+    const dry = JSON.parse(later(["rank", "--class", "class-q", "--no-probe-marker", "--json"]).out);
+    expect(dry).toMatchObject({ winner: PANE_A, probeMarker: false, decision: { mode: "probe" } });
+    expect(store.view().probes).toHaveLength(0);
+    expect(later(["rank", "--class", "class-q", "--no-probe-marker"]).out).toMatch(/re-probe marker not written \(--no-probe-marker\)/);
+    // Without the flag the marker is written, and the route's cooldown restarts.
+    expect(JSON.parse(later(["rank", "--class", "class-q", "--json"]).out)).toMatchObject({ winner: PANE_A, probeMarker: true });
+    expect(store.view().probes).toMatchObject([{ taskClass: "class-q", route: PANE_A }]);
+    expect(JSON.parse(later(["rank", "--class", "class-q", "--json"]).out).decision.mode).not.toBe("probe");
   });
   it("refuses an unconfigured class or a candidate outside the class chain, by name", () => {
     configure();
@@ -89,6 +107,10 @@ describe("record and verdict", () => {
     expect(cli([...base, "--route", PANE_A, "--failure-kind", "melted"], store)).toMatchObject({ code: 2, err: expect.stringMatching(/--failure-kind must be one of/) });
     expect(cli([...base, "--route", PANE_A, "--source", "vibes"], store).code).toBe(2);
     expect(cli(["verdict", "--run", "r", "--outcome", "pass", "--source", "worker-state"], store).code).toBe(2);
+    // Opus review run-0fc250e1 finding 5: --harness is held to the same id shape as rank --candidate ENTRY=HARNESS.
+    for (const harness of ["Harness-A", "-x", "a b", "a/b", "", "x".repeat(65)]) {
+      expect(cli([...base, "--route", PANE_A, `--harness=${harness}`], store)).toMatchObject({ code: 2, err: expect.stringMatching(/--harness .* must be a lowercase id/) });
+    }
     expect(store.view().tasks).toHaveLength(0);
   });
 });
@@ -98,6 +120,8 @@ describe("report and the installed command", () => {
     configure();
     const store = newStore();
     record(store, PANE_A, "harness-a", ["pass", "pass"]);
+    expect(cli(["report", "--class", "class-q"], store).out).toMatch(/quality gate off · self-report weight 1 /);
+    configure({ qualityGate: 0.95 });
     const result = cli(["report", "--class", "class-q"], store);
     expect(result.out).toMatch(/harness-a\/profile-x \[harness-a\]: healthy/);
     expect(result.out).toMatch(/quality gate 95%/);
