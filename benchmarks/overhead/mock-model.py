@@ -10,13 +10,14 @@ Plans: "Fan out" prompts call ultraterm_subagents with one write task per file;
 worker leaves ("exactly this content:") write their file; other prompts write
 all fixture files with one parallel batch of write calls. Then it answers.
 """
-import json, os, sys, time, threading
+import json, os, re, sys, time, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOG_PATH_FILE = os.environ.get("MOCK_LOG_PATH_FILE", "")
 LOG_PATH = os.environ.get("MOCK_LOG", "/tmp/mockllm.jsonl")
 LATENCY = float(os.environ.get("MOCK_LATENCY_MS", "0")) / 1000.0
 lock = threading.Lock()
+SEQ = 0
 
 MODULES = {
     "slug.ts": 'export function slug(s: string): string {\n  return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");\n}\n',
@@ -100,6 +101,12 @@ class H(BaseHTTPRequestHandler):
         req = json.loads(raw or b"{}")
         if os.environ.get("MOCK_DUMP"):
             open(os.environ["MOCK_DUMP"], "wb").write(raw)
+        if os.environ.get("MOCK_DUMP_DIR"):
+            global SEQ
+            with lock:
+                SEQ += 1
+                seq = SEQ
+            open(os.path.join(os.environ["MOCK_DUMP_DIR"], f"req-{seq:02d}.json"), "wb").write(raw)
         messages = req.get("messages", [])
         tools = req.get("tools", [])
         tool_msgs = [m for m in messages if m.get("role") == "tool"]
@@ -132,9 +139,20 @@ class H(BaseHTTPRequestHandler):
             chunks = [dict(base, choices=[{"index": 0, "delta": {"role": "assistant", "tool_calls": [{"index": 0, "id": "call_fan", "type": "function",
                       "function": {"name": "ultraterm_subagents", "arguments": json.dumps(args)}}]}, "finish_reason": None}]),
                       dict(base, choices=[{"index": 0, "delta": {}, "finish_reason": "tool_calls"}], usage=usage)]
+        elif (m_steps := re.search(r"steps:(\d+)", prompt)) and find_tool(tools, "bash") and len(tool_msgs) < int(m_steps.group(1)):
+            # Serial plan: one bash call per request, so the run makes N+1 model requests.
+            call = {"index": 0, "id": f"call_s{len(tool_msgs)}", "type": "function",
+                    "function": {"name": "bash", "arguments": json.dumps({"command": f"echo step {len(tool_msgs)}"})}}
+            chunks = [dict(base, choices=[{"index": 0, "delta": {"role": "assistant", "tool_calls": [call]}, "finish_reason": None}]),
+                      dict(base, choices=[{"index": 0, "delta": {}, "finish_reason": "tool_calls"}], usage=usage)]
+        elif (lt := find_tool(tools, "load_tools")) and "loader:" in prompt and not any("load_tools" in json.dumps(m) for m in messages if m.get("role") == "assistant"):
+            # Loader plan: the model asks for the heavier tools through the loader tool.
+            call = {"index": 0, "id": "call_load", "type": "function",
+                    "function": {"name": "load_tools", "arguments": "{}"}}
+            chunks = [dict(base, choices=[{"index": 0, "delta": {"role": "assistant", "tool_calls": [call]}, "finish_reason": None}]),
+                      dict(base, choices=[{"index": 0, "delta": {}, "finish_reason": "tool_calls"}], usage=usage)]
         elif not tool_msgs and wt and "exactly this content:" in (prompt + sys_text):
             # Worker leaf: write the single owned file named in the task.
-            import re
             m = re.search(r"Create (\S+) with exactly this content:\n(.*?)(?:\n\n|$)", prompt + "\n\n" + sys_text, re.S)
             path, content = (m.group(1), m.group(2)) if m else ("leaf.ts", "")
             if not content.endswith("\n"):

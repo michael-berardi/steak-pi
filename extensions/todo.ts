@@ -14,6 +14,7 @@ import {
 import { createTodoPanel, hasTodoPlan, hasUnfinishedTodo } from "../src/todo-render.ts";
 import { setPinnedPanel } from "../src/tui/pinned-panels.ts";
 import { hideSkill, toolIsOffered } from "../src/skill-visibility.ts";
+import { signalStart } from "../src/adaptive-tools.ts";
 
 import { canonicalSessionFile } from "../src/subagents/checkpoints.ts";
 
@@ -391,6 +392,7 @@ export default function steakPieExtension(pi: ExtensionAPI): void {
       const state = await loadState(owner.dir);
       guard(ctx, owner, capturedEpoch);
       publishPinnedTodo(ctx, state);
+      if (hasTodoPlan(state)) signalStart(pi, "todo plan");
     } catch {
       // An obsolete read must not clear a newer session's panel either.
       if (epoch !== capturedEpoch) return;

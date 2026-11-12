@@ -11,6 +11,7 @@ import { parseRoute, routeLabel, routingConfigOrEmpty, DSH_ROUTE_PREFIX, TASK_CL
 import { statSync } from "node:fs";
 import { PersistenceHealth } from "../src/subagents/persistence-health.ts";
 import { deferredToolsEnabled, setToolActive } from "../src/deferred-tools.ts";
+import { signalStart } from "../src/adaptive-tools.ts";
 import { hideSkill, toolIsOffered } from "../src/skill-visibility.ts";
 import { setPinnedPanel } from "../src/tui/pinned-panels.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -2117,6 +2118,7 @@ export function createUltratermSubagentsExtension(
       if (deferredToolsEnabled()) {
         const hasRuns = current.coordinator.list().length > 0 || (current.store?.list().length ?? 0) > 0;
         setToolActive(pi, "ultraterm_hub", hasRuns);
+        if (hasRuns) signalStart(pi, "dispatch runs");
       }
     });
 

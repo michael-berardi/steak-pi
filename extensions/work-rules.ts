@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { lightShapeActive } from "../src/adaptive-tools.ts";
 
 /**
  * Working rules: one short system-prompt section, the same six lines Steak DSH ships. On the ParetoBench short set
@@ -27,7 +28,11 @@ export function workRulesText(env: NodeJS.ProcessEnv = process.env): string {
   if (/^(0|false|off|no)$/i.test(env.STEAK_PI_WORK_RULES?.trim() ?? "")) return "";
   const custom = env.STEAK_PI_WORK_RULES_TEXT;
   if (typeof custom === "string" && custom.trim()) return custom.trim();
-  if (!/^(1|true|on|yes)$/i.test(env.STEAK_PI_WORK_RULES_BRIEF?.trim() ?? "")) return WORK_RULES;
+  const brief = env.STEAK_PI_WORK_RULES_BRIEF?.trim() ?? "";
+  // The short-reasoning line follows the light shape: on while a one-shot run has not loaded the dispatch and todo
+  // tools, off once it has (STEAK_PI_WORK_RULES_BRIEF=0 keeps it out, =1 keeps it in).
+  const on = /^(1|true|on|yes)$/i.test(brief) || (!/^(0|false|off|no)$/i.test(brief) && lightShapeActive());
+  if (!on) return WORK_RULES;
   const [head, ...rest] = WORK_RULES.split("\n");
   return [head, BRIEF_RULE, ...rest].join("\n");
 }
