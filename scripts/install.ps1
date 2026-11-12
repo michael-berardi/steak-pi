@@ -25,11 +25,13 @@ function Main {
   $releases = Join-Path $homeDir 'releases'
 
   function Fail([string]$message) { throw "steak-pi install: $message" }
+  # Progress lines for the person running the installer: the information stream prints them, and they stay out of the output pipeline.
+  function Say([string]$message) { Write-Information -MessageData $message -InformationAction Continue }
   function Fetch([string]$url, [string]$dest) {
     try { Invoke-WebRequest $url -OutFile $dest -UseBasicParsing }
     catch { Fail "download failed: $url ($($_.Exception.Message))" }
   }
-  function Expect-Sum([string]$file, [string]$name, [string]$sumsFile) {
+  function Assert-Sum([string]$file, [string]$name, [string]$sumsFile) {
     $line = Get-Content $sumsFile | Where-Object { $_ -match '\S' } | Where-Object { ($_ -split '\s+', 2)[1].TrimStart('*') -eq $name } | Select-Object -First 1
     if (-not $line) { Fail "no checksum for $name in $(Split-Path $sumsFile -Leaf)" }
     $want = ($line -split '\s+', 2)[0].ToLower()
@@ -61,10 +63,10 @@ function Main {
   $savedNpm = @{ notifier = $env:npm_config_update_notifier; fund = $env:npm_config_fund; audit = $env:npm_config_audit }
   $stage = $null
   try {
-    Write-Host 'Downloading Steak Pi...'
+    Say 'Downloading Steak Pi...'
     Fetch "$base/$archive" (Join-Path $tmp $archive)
     Fetch "$base/SHA256SUMS" (Join-Path $tmp 'SHA256SUMS')
-    Expect-Sum (Join-Path $tmp $archive) $archive (Join-Path $tmp 'SHA256SUMS')
+    Assert-Sum -file (Join-Path $tmp $archive) -name $archive -sumsFile (Join-Path $tmp 'SHA256SUMS')
     $src = Join-Path $tmp 'src'
     New-Item -ItemType Directory -Path $src | Out-Null
     & tar -xzf (Join-Path $tmp $archive) -C $src
@@ -89,7 +91,7 @@ function Main {
       $arch = switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()) {
         'X64' { 'x64' } 'Arm64' { 'arm64' } default { Fail "unsupported CPU $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)" }
       }
-      Write-Host "Node 22.19 or newer not found; fetching the official Node 22 LTS for $os-$arch..."
+      Say "Node 22.19 or newer not found; fetching the official Node 22 LTS for $os-$arch..."
       $nbase = 'https://nodejs.org/dist/latest-v22.x'
       $sums = Join-Path $tmp 'NODESUMS'
       Fetch "$nbase/SHASUMS256.txt" $sums
@@ -97,7 +99,7 @@ function Main {
       $nname = (Get-Content $sums | Where-Object { $_ -match '\S' } | ForEach-Object { ($_ -split '\s+', 2)[1] } | Where-Object { $_.EndsWith($ext) } | Select-Object -First 1)
       if (-not $nname) { Fail "no official Node build for $os-$arch" }
       Fetch "$nbase/$nname" (Join-Path $tmp $nname)
-      Expect-Sum (Join-Path $tmp $nname) $nname $sums
+      Assert-Sum -file (Join-Path $tmp $nname) -name $nname -sumsFile $sums
       $nver = ($nname -replace '^node-', '') -replace '-.*$', ''
       $runtime = Join-Path $homeDir 'runtime'
       New-Item -ItemType Directory -Force -Path $runtime | Out-Null
@@ -135,7 +137,7 @@ function Main {
     $piVersionInstalled = $null
     $piHome = Join-Path $homeDir 'pi'
     if ($piWasPresent) {
-      Write-Host "Pi is already installed ($((Get-Command pi).Source)); using it."
+      Say "Pi is already installed ($((Get-Command pi).Source)); using it."
     } else {
       $piVersionInstalled = $env:STEAK_PI_PI_VERSION
       if (-not $piVersionInstalled) {
@@ -148,7 +150,7 @@ function Main {
         if ($piVersionInstalled) { $piVersionInstalled = "$piVersionInstalled".Trim() }
         if (-not $piVersionInstalled) { Fail "no Pi version pin in the release's package-lock.json; set STEAK_PI_PI_VERSION" }
       }
-      Write-Host "Pi not found; installing @earendil-works/pi-coding-agent@$piVersionInstalled into $piHome..."
+      Say "Pi not found; installing @earendil-works/pi-coding-agent@$piVersionInstalled into $piHome..."
       New-Item -ItemType Directory -Force -Path $piHome | Out-Null
       $env:npm_config_update_notifier = 'false'; $env:npm_config_fund = 'false'; $env:npm_config_audit = 'false'
       & $npmBin install --prefix $piHome --ignore-scripts --no-audit --no-fund --loglevel=error "@earendil-works/pi-coding-agent@$piVersionInstalled"
@@ -164,10 +166,10 @@ function Main {
     $already = (Test-Path (Join-Path $pkg 'package.json')) -and
       ((Get-Content (Join-Path $pkg 'package.json') -Raw | ConvertFrom-Json).version -eq $version)
     if ($already) {
-      Write-Host "Steak Pi $version is already unpacked; re-pointing Pi."
+      Say "Steak Pi $version is already unpacked; re-pointing Pi."
     } else {
       if (Test-Path $rel) { Fail "release destination $rel already exists but is incomplete; preserved it (remove it and run this again)" }
-      Write-Host "Installing Steak Pi $version..."
+      Say "Installing Steak Pi $version..."
       $stage = Join-Path $releases (".staging-$version-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
       New-Item -ItemType Directory -Path $stage | Out-Null
       Move-Item $pkgSrc (Join-Path $stage 'package')
@@ -205,15 +207,15 @@ function Main {
         $piPkgDir = Join-Path $piHome 'node_modules\@earendil-works\pi-coding-agent'
         $piBinRel = (Get-Content (Join-Path $piPkgDir 'package.json') -Raw | ConvertFrom-Json).bin.pi
         if (-not $piBinRel) { Fail 'the installed Pi package declares no pi bin entry' }
-        Write-Shim 'pi' (Join-Path $piPkgDir $piBinRel) $nodeBin
+        Write-Shim -name 'pi' -target (Join-Path $piPkgDir $piBinRel) -interpreter $nodeBin
       } else {
-        Write-Shim 'pi' (Join-Path $piHome 'node_modules/.bin/pi') $null
+        Write-Shim -name 'pi' -target (Join-Path $piHome 'node_modules/.bin/pi') -interpreter $null
       }
     }
 
     # Point Pi at the unpacked release. STEAK_PI_LIBEXEC is the CLI's supported way to pin a local folder
     # (the Homebrew wrapper uses it); without it `steak-pi install` would pin a git spec instead.
-    Write-Host "Adding Steak Pi $version to Pi..."
+    Say "Adding Steak Pi $version to Pi..."
     $env:PATH = "$binDir$([IO.Path]::PathSeparator)$env:PATH"
     $env:STEAK_PI_LIBEXEC = $pkg
     & $shExe (Join-Path $pkg 'bin/steak-pi') install
@@ -221,7 +223,7 @@ function Main {
     $env:STEAK_PI_LIBEXEC = $savedLibexec
     if ($installCode -ne 0) { Fail "'steak-pi install' failed; Pi's settings were not changed" }
 
-    Write-Shim 'steak-pi' (Join-Path $pkg 'bin/steak-pi') $(if ($onWindows) { $shExe } else { $null })
+    Write-Shim -name 'steak-pi' -target (Join-Path $pkg 'bin/steak-pi') -interpreter $(if ($onWindows) { $shExe } else { $null })
 
     # Windows: add the bin folder to the USER Path only when absent. Never edits profiles.
     if ($onWindows) {
@@ -229,7 +231,7 @@ function Main {
       if (-not $userPath) { $userPath = '' }
       if (($userPath -split ';') -notcontains $binDir) {
         [Environment]::SetEnvironmentVariable('Path', $(if ($userPath) { "$userPath;$binDir" } else { $binDir }), 'User')
-        Write-Host "Added $binDir to your user PATH; open a new terminal to use it."
+        Say "Added $binDir to your user PATH; open a new terminal to use it."
       }
     }
 
@@ -237,21 +239,21 @@ function Main {
     $steakShim = Join-Path $binDir $(if ($onWindows) { 'steak-pi.cmd' } else { 'steak-pi' })
     $statusOut = & $steakShim status 2>&1
     $statusCode = $LASTEXITCODE
-    $statusOut | ForEach-Object { Write-Host $_ }
+    $statusOut | ForEach-Object { Say $_ }
     if ($statusCode -ne 0) { Fail "'steak-pi status' failed after installing" }
     if (($statusOut -join "`n") -notmatch [regex]::Escape($version)) { Fail "'steak-pi status' does not report $version" }
 
     if ($piWasPresent) {
-      Write-Host "Steak Pi $version installed ($steakShim). Pi was already installed; Steak Pi was added to it."
+      Say "Steak Pi $version installed ($steakShim). Pi was already installed; Steak Pi was added to it."
     } else {
-      Write-Host "Steak Pi $version installed ($steakShim). Pi $piVersionInstalled was installed too ($(Join-Path $binDir $(if ($onWindows) { 'pi.cmd' } else { 'pi' })))."
+      Say "Steak Pi $version installed ($steakShim). Pi $piVersionInstalled was installed too ($(Join-Path $binDir $(if ($onWindows) { 'pi.cmd' } else { 'pi' })))."
     }
     if (-not $onWindows) {
       if (($env:PATH -split [IO.Path]::PathSeparator) -notcontains $binDir) {
-        Write-Host "Add $binDir to your PATH:  export PATH=`"$binDir`:`$PATH`""
+        Say "Add $binDir to your PATH:  export PATH=`"$binDir`:`$PATH`""
       }
     }
-    Write-Host 'Next: steak-pi run'
+    Say 'Next: steak-pi run'
   } finally {
     $env:PATH = $savedPath
     $env:STEAK_PI_LIBEXEC = $savedLibexec

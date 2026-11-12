@@ -76,7 +76,7 @@ assert_absent "$HC/agent/settings.json" "P3 no settings"
 
 echo "== PSScriptAnalyzer (skipped with a message if it will not install quickly) =="
 timeout 240 "$PWSH" -NoProfile -Command \
-  "try { Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -ErrorAction Stop; \$r = Invoke-ScriptAnalyzer -Path /rel/install.ps1; if (\$r) { \$r | Format-Table -AutoSize | Out-String | Write-Host; exit 1 } else { 'PSScriptAnalyzer: no findings' } } catch { 'PSScriptAnalyzer skipped: ' + \$_.Exception.Message }" || echo "PSScriptAnalyzer step did not complete cleanly (see above)"
+  "try { Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -ErrorAction Stop; \$r = Invoke-ScriptAnalyzer -Path /rel/install.ps1; if (\$r) { \$r | Format-Table -AutoSize | Out-String | Write-Host; exit 1 } else { 'PSScriptAnalyzer: no findings' } } catch { 'PSScriptAnalyzer skipped: ' + \$_.Exception.Message }" || { echo "FAIL: PSScriptAnalyzer reported findings in install.ps1 (or did not finish within 240s)"; exit 1; }
 
 kill "$SERVER_PID" 2>/dev/null || true
 wait "$SERVER_PID" 2>/dev/null || true
