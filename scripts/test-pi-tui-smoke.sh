@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/tui-smoke-diagnostics.sh
+source "$ROOT/scripts/lib/tui-smoke-diagnostics.sh"
 SESSION="smoke"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/steak-pi-smoke.XXXXXX")"
 printf 'TUI workspace: %s (new, disposable)\n' "$TMP"
@@ -257,7 +259,10 @@ wait_for_current "Resume Session"
 tmux_private send-keys -t "$SESSION:0.0" -l 'fixture-resume-marker'
 sleep .2
 tmux_private send-keys -t "$SESSION:0.0" Enter
-wait_for_current "● resumed"
+if ! wait_for_current "● resumed"; then
+  dump_resume_diagnostics "$TMP/sessions/fixture.jsonl" "$TMP/sessions" "$PI_VERSION" "$(tmux_private display-message -p -t "$SESSION:0.0" '#{pane_current_path}' 2>/dev/null || echo '<pane unavailable>')"
+  exit 1
+fi
 wait_for_current "fixture-resume-marker"
 wait_for_current "Subagents"
 wait_for_current "Turn budget reached"
@@ -315,7 +320,10 @@ tmux_private new-session -d -x 80 -y 24 -s "$SESSION" \
   "cd '$ROOT' && exec $PI_ENV '$PI_EXECUTABLE' --offline --approve --session '$TMP/light-fixture.jsonl' \
     --extension '$TMP/completion-proof.ts' --no-skills --no-prompt-templates --no-context-files --use-theme light"
 record_ownership
-wait_for_current "● resumed"
+if ! wait_for_current "● resumed"; then
+  dump_resume_diagnostics "$TMP/light-fixture.jsonl" "$TMP/sessions" "$PI_VERSION" "$(tmux_private display-message -p -t "$SESSION:0.0" '#{pane_current_path}' 2>/dev/null || echo '<pane unavailable>')"
+  exit 1
+fi
 for width in 40 59 80 120 192; do
   tmux_private resize-window -t "$SESSION" -x "$width" -y 32
   sleep .2
