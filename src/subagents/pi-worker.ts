@@ -1,7 +1,7 @@
 import { isCatalogExtraRoute, registerCatalogExtras } from "../catalog-extras.ts";
 import { routingConfigOrEmpty } from "../routing-config.ts";
 import { resolveProjectPolicy, type ProjectPolicy } from "./project-policy.ts";
-import { CLAUDE_QUOTA, CODEX_QUOTA, isQuotaTierRoute, quotaTiers } from "./provider-quota.ts";
+import { CODEX_QUOTA, isClaudeRouteStep, isQuotaTierRoute, quotaTiers } from "./provider-quota.ts";
 import {
   GO_ACCOUNT_LEASE_RENEW_INTERVAL_MS,
   GO_ACCOUNT_LEASE_TTL_SECONDS,
@@ -933,9 +933,8 @@ function relaySteeringText(envelope: Parameters<NonNullable<Parameters<RelayBrok
   ].join("\n");
 }
 
-/** A chain step on Claude: the claude-code provider, the Anthropic provider, or a route the operator put in the Claude quota tier. */
-const isClaudeStep = (step: WorkerRouteStep): boolean => step.provider === "claude-code" || step.provider === "anthropic"
-  || /^claude[-_]/i.test(step.id) || isQuotaTierRoute(`${step.provider}/${step.id}`, CLAUDE_QUOTA);
+/** A chain step on Claude (see {@link isClaudeRouteStep}): a noClaude project may never hop to one. */
+const isClaudeStep = (step: WorkerRouteStep): boolean => isClaudeRouteStep(step);
 
 /** FINAL automatic chains are the only order a pre-output runtime hop may follow,
  * and only a selection the executor froze *because* it is an automatic chain step

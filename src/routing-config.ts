@@ -123,6 +123,12 @@ export interface TaskClassConfig {
   slots?: number;
   /** "small": the class is for small, bounded tasks; a wave with a task that may both edit and run a shell skips it. */
   maxScope?: "small";
+  /** Credible level of the quality gate: a route whose pass-rate upper bound falls under the best route's lower bound
+   * at this level is held out whatever it costs (default 0.95; 0 turns the gate off). */
+  qualityGate?: number;
+  /** Weight of a pass that only the worker's own final state reports, against one a verification, a test gate or the
+   * operator confirmed (default 0.5). A failure counts fully whatever its source. */
+  selfReportWeight?: number;
   /** Starting estimates per chain entry: `pass` of `n` earlier trials, and the mean cost and seconds of a trial. */
   priors?: Readonly<Record<string, { pass: number; n: number; costUsd?: number; seconds?: number }>>;
 }
@@ -334,7 +340,7 @@ function parseEnsure(value: unknown, key: string): ProfileEnsureConfig {
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
   };
 }
-const TASK_CLASS_KEYS = ["chain", "requiresTestGate", "note", "timeWeight", "minPassRate", "explore", "demoteAfter", "window", "cooldownMinutes", "retryMaxTokens", "slots", "maxScope", "priors"];
+const TASK_CLASS_KEYS = ["chain", "requiresTestGate", "note", "timeWeight", "minPassRate", "explore", "demoteAfter", "window", "cooldownMinutes", "retryMaxTokens", "slots", "maxScope", "qualityGate", "selfReportWeight", "priors"];
 function boundedNumber(value: unknown, key: string, min: number, max: number, integer = false): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max || (integer && !Number.isInteger(value))) {
     return fail(key, `expected ${integer ? "an integer" : "a number"} from ${min} to ${max}`);
@@ -434,6 +440,8 @@ function parseTaskClasses(value: unknown): Record<string, TaskClassConfig> {
       ...(entry.retryMaxTokens !== undefined ? { retryMaxTokens: boundedNumber(entry.retryMaxTokens, `${key}.retryMaxTokens`, 256, 1_048_576, true) } : {}),
       ...(entry.slots !== undefined ? { slots: boundedNumber(entry.slots, `${key}.slots`, 1, 64, true) } : {}),
       ...(entry.maxScope !== undefined ? { maxScope: entry.maxScope === "small" ? "small" as const : fail(`${key}.maxScope`, 'expected "small"') } : {}),
+      ...(entry.qualityGate !== undefined ? { qualityGate: boundedNumber(entry.qualityGate, `${key}.qualityGate`, 0, 0.999) } : {}),
+      ...(entry.selfReportWeight !== undefined ? { selfReportWeight: boundedNumber(entry.selfReportWeight, `${key}.selfReportWeight`, 0, 1) } : {}),
       ...(entry.priors !== undefined ? { priors: parsePriors(entry.priors, `${key}.priors`, chain) } : {}),
     };
   }

@@ -483,6 +483,8 @@ people find it.
 
 `steak-pi routing check [file]` validates a `routing.json` with the same parser every Pi turn uses and prints `ok`, or the key that is wrong and why. Run it on a copy before moving an edit into place: one invalid write stops every session that shares the file.
 
+`steak-pi routes rank | record | verdict | report` gives a job queue outside Pi the same task-class ranking and evidence store a USAP dispatch uses, so it can pick the harness and route per job from recorded outcomes (see [Choosing the harness per job](docs/MODEL-ROUTING.md#choosing-the-harness-per-job)).
+
 ### Hold Backspace to clear the input
 
 Holding Backspace for more than 1.5 seconds clears the entire input editor, without interrupting a running turn. To disable this default-on behavior, set `"holdDeleteClearsInput": false` in `~/.pi/agent/steak-pi.json` (or `steak-pi.json` under `PI_CODING_AGENT_DIR`); restart the session after changing it.

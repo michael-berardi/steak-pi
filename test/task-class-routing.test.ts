@@ -31,10 +31,12 @@ const CONFIG = {
   textWorkerChain: [FALLBACK],
   subscriptionRouteChecks: ["alpha-p", "beta-p", "fallback-p"].map((provider) => ({ provider, host: `${provider}.example` })),
   taskClasses: {
-    "class-a": { chain: [A, B], explore: 0, demoteAfter: 50, window: 50, priors: PRIORS },
+    // class-a and class-fuzzy exercise the receipt and exploration of a clearly weaker route, so the quality gate (its
+    // own tests are in harness-routing.test.ts) is off for them and every outcome counts fully.
+    "class-a": { chain: [A, B], explore: 0, demoteAfter: 50, window: 50, qualityGate: 0, selfReportWeight: 1, priors: PRIORS },
     "class-heal": { chain: [A, B], explore: 0, demoteAfter: 3, cooldownMinutes: 30, retryMaxTokens: 24_000, priors: SURE_PRIORS },
     "class-b": { chain: [B, A], explore: 0 },
-    "class-fuzzy": { chain: [A, B], explore: 0.2, demoteAfter: 100, window: 500, priors: PRIORS },
+    "class-fuzzy": { chain: [A, B], explore: 0.2, demoteAfter: 100, window: 500, qualityGate: 0, selfReportWeight: 1, priors: PRIORS },
   },
 };
 function configure(config: Record<string, unknown> = CONFIG): void {
@@ -448,7 +450,8 @@ describe("self-healing at the dispatch boundary", () => {
       const next = await t.dispatch({ tasks: [leaf("class-heal")] });
       const estimate = next.details.run.selection.taskClass.decision.estimates.find((item: { entry: string }) => item.entry === A);
       expect(estimate.status).toBe("ranked");
-      expect(next.details.run.selection.taskClass.decision.mode).not.toBe("probe");
+      // A is not probed again. (B, credibly below A and idle past its cooldown, may now get its own quality-gate re-probe.)
+      expect(store.view().probes.filter((item) => item.route === A)).toHaveLength(1);
     } finally { await t.close(); }
   });
   it("does not probe a second time while the first probe is in its cooldown, and holds a failed probe out again", async () => {

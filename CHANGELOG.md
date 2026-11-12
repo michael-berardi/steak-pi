@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+The task-class router chooses the harness per job, on the quality, speed and cost of verified outcomes.
+
+- **A candidate is a (harness, model route) pair, and quality is a gate.** A class chain may hold the same model on
+  two harnesses (`provider/model` on the native Pi worker, `steak-dsh/provider/model` on Steak DSH); they are ranked as
+  two candidates. A candidate whose pass-rate upper bound falls under the best candidate's lower bound (new class key
+  `qualityGate`, default 0.95; 0 turns it off) is never the pick and never explored, whatever it costs; it stays only
+  as the last resort of a runtime failover, and gets one re-probe per cooldown so an improved one can return. The
+  rest are ranked by cost per verified pass plus `timeWeight` times seconds per verified pass, as before.
+- **Verified outcomes count more than a worker's own report.** A pass only the worker's final state reports counts
+  `selfReportWeight` (new class key, default 0.5) of one a verification, a test gate or the operator confirmed. A
+  failure counts fully.
+- **A timeout is named.** A task that hits its deadline is recorded as a `timeout` failure with its whole wall time,
+  so it counts against both quality and speed. Each evidence record also names the harness that ran it.
+- **The dispatch note says which harness and why.** A classed wave's note starts with `Harness: <id>, chosen by task
+  class <class> with <entry>: <reason>; p(pass) …, E[cost] …, E[s] …`, and each estimate names its harness.
+- **A noClaude project's class never picks a Claude candidate.** An implicit classed wave in a project under
+  `noClaudeProjects` could launch a Claude step of the class chain; project policy now removes those candidates before
+  ranking (unavailable, not a loss), including a harness-qualified step whose inner route is Claude.
+- **`steak-pi routes rank | record | verdict | report`.** The same ranker and evidence store for a job queue that
+  launches whole agent panes, so its jobs and USAP leaves learn from one memory.
+- A test fails if the ranking prefers a harness by name, or if a harness, prior or weight ships as a default.
+
 ## 0.29.2 (2026-11-12)
 
 One fix in the Claude Code provider.

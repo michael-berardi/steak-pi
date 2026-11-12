@@ -2,7 +2,7 @@ import { setSubagentCountReader, subagentActivityChanged } from "../src/tui/suba
 import { resolveStagedModule } from "../src/subagents/staged-runtime.ts";
 import { registryForSolSelection, type CreateIsolatedModelRuntime } from "../src/subagents/codex-selection.ts";
 import { GO_ACCOUNT_ROUTER_TIMEOUT_MS, type AccountCommand } from "../src/subagents/provider-accounts.ts";
-import { claudeLoginBlock, claudeQuotaBlock, CODEX_QUOTA, isMeteredQuota, isQuotaLaunchFailure, pickClaudeAccount, rankClaudeAccounts, quotaChain, quotaProviderOf, readProviderQuota, routeQuotaBlock, type ClaudeAccountPick, type QuotaProvider, type QuotaSnapshot } from "../src/subagents/provider-quota.ts";
+import { claudeLoginBlock, claudeQuotaBlock, CODEX_QUOTA, isClaudeRouteStep, isMeteredQuota, isQuotaLaunchFailure, pickClaudeAccount, rankClaudeAccounts, quotaChain, quotaProviderOf, readProviderQuota, routeQuotaBlock, type ClaudeAccountPick, type QuotaProvider, type QuotaSnapshot } from "../src/subagents/provider-quota.ts";
 import { isContentFilterRefusal } from "../src/content-filter-refusal.ts";
 import { noClaudeCause, planOnlyCause, resolveProjectPolicy, type ProjectPolicy } from "../src/subagents/project-policy.ts";
 import { AVAILABILITY_TTL_MS, computeAvailability } from "../src/subagents/route-availability.ts";
@@ -537,6 +537,20 @@ function taskClassNote(receipt: TaskClassSelection | undefined, wave: WaveTaskCl
   const evidence = receipt.decision ? ` Route evidence: ${describeDecision(receipt.decision)}.` : "";
   return `Task class ${receipt.name}: ${receipt.outcome === "served" ? "served" : receipt.outcome === "fallback" ? "not served" : "ignored"}; ${receipt.reason}.${evidence}${gate}${note}${riders}${unknown}\n`;
 }
+/** The dispatch-note line naming the harness a task class chose for the wave and why, from the class's own decision. */
+function harnessChoiceNote(receipt: TaskClassSelection, harness: HarnessId): string {
+  const decision = receipt.decision!;
+  const pick = decision.estimates.find((item) => item.entry === decision.winner);
+  const why = decision.mode === "chain-order" ? "no priors or outcomes yet, so the operator's chain order"
+    : decision.mode === "probe" ? "a re-probe of a held-out route after its cooldown"
+    : decision.mode === "explore" ? "the exploration share, to keep a weaker route's estimate current"
+    : `${decision.mode === "thompson" ? "a posterior draw on" : "the best expected"} cost per verified pass${decision.timeWeight > 0 ? ` with timeWeight ${decision.timeWeight} per second` : ""}`;
+  const odds = pick && pick.passRate !== null
+    ? `; p(pass) ${pick.passRate.toFixed(2)}${pick.expectedCostUsd !== null ? `, E[cost] $${pick.expectedCostUsd}` : ""}${pick.expectedSeconds !== null ? `, E[s] ${pick.expectedSeconds}` : ""}, n=${pick.n}${pick.priorN > 0 ? `+${pick.priorN} prior` : ""}`
+    : "";
+  const gated = decision.estimates.filter((item) => item.status === "gated").map((item) => item.entry);
+  return `Harness: ${harness}, chosen by task class ${receipt.name} with ${decision.winner}: ${why}${odds}${gated.length > 0 ? `; quality-gated out: ${gated.join(", ")}` : ""}.\n`;
+}
 /** The words of a receipt for why the wave moved on: a usage limit, an ensure refusal, or both. */
 const fallThroughCause = (fallThroughs: readonly QuotaFallThrough[]): string =>
   fallThroughs.every((item) => item.kind === "ensure") ? "a profile ensure refusal before any worker started"
@@ -640,8 +654,12 @@ async function resolveImplicitWorkerRoute(
     const provider = quotaProviderOf(step);
     return provider !== undefined && spent.has(provider);
   };
+  // Project policy narrows the candidates before anything is ranked: a noClaude project's Claude step (a class
+  // candidate, a harness-qualified step's inner route, or a default chain step) is unavailable, not a loss.
+  const policyBlock = (step: WorkerRouteStep): string | undefined =>
+    policy.noClaude !== undefined && isClaudeRouteStep(step) ? noClaudeCause(policy) : undefined;
   const skipStep = (step: WorkerRouteStep, snapshot: QuotaSnapshot | undefined) =>
-    spentSkip(step) || (snapshot !== undefined && tierBlock(snapshot, step) !== undefined);
+    policyBlock(step) !== undefined || spentSkip(step) || (snapshot !== undefined && tierBlock(snapshot, step) !== undefined);
   let first: NativeSelection | undefined;
   let failure: unknown;
   // A parent on another account-leased tier needs a cross-store Codex-tier lookup. Read quota before
@@ -652,7 +670,7 @@ async function resolveImplicitWorkerRoute(
   let quota: QuotaSnapshot | undefined = (parentTier !== undefined && parentTier !== CODEX_QUOTA && isMeteredQuota(parentTier)) || classNeedsQuota ? await readQuota() : undefined;
   /** Why a class step did not serve the wave, in the words of a receipt. */
   const classStepCause = (entry: TaskClassStep): string =>
-    entry.blocked ?? (quota ? tierBlock(quota, entry.step) : heldBlock(entry.step))
+    entry.blocked ?? policyBlock(entry.step) ?? (quota ? tierBlock(quota, entry.step) : heldBlock(entry.step))
       ?? dshStepBlockReason(ctx.modelRegistry, entry.step, automaticChainOptions(dependencies))
       ?? "not launchable in this session (not authenticated, not in the dispatch catalog, or a reviewed paid route that is not approved in ~/.pi/agent/paid-routes.json)";
   const classStepName = (entry: TaskClassStep): string => entry.profile ? entry.entry : routeStepLabel(entry.step);
@@ -717,7 +735,7 @@ async function resolveImplicitWorkerRoute(
   const exhausted = failure as NoChainRouteError;
   const paid = paidStepPredicate(ctx);
   const causes = exhausted.tried.map((step) =>
-    `${routeStepLabel(step)}: ${tierBlock(quota!, step) ?? (policy.planOnly !== undefined && paid(step) ? planOnlyCause(policy) : "no authenticated route is available in this session and the reviewed route is not approved in ~/.pi/agent/paid-routes.json")}`);
+    `${routeStepLabel(step)}: ${policyBlock(step) ?? tierBlock(quota!, step) ?? (policy.planOnly !== undefined && paid(step) ? planOnlyCause(policy) : "no authenticated route is available in this session and the reviewed route is not approved in ~/.pi/agent/paid-routes.json")}`);
   // A noClaude project never reaches the Claude tier: the walk ends here, once, naming every skipped step.
   if (policy.noClaude !== undefined) {
     throw new Error(`USAP implicit routing found no route that can launch this wave (${[...causes, `Claude subscription tier: ${noClaudeCause(policy)}`].join(" | ")}). No route was started and no fallback was selected; wait for the earliest return named above, or name a route explicitly.`);
@@ -2518,10 +2536,13 @@ export function createUltratermSubagentsExtension(
         : classedDsh ? dshRouteOf({ provider: piResolved!.model.provider, id: piResolved!.model.id })
         : `${piResolved!.model.provider}/${piResolved!.model.id}`;
       const thinking = resolvedThinking;
-      // The dispatch note names the harness whenever it is not Pi.
-      const harnessNote = (dshHarness || classedDsh)
+      // The dispatch note names the harness whenever it is not Pi, and whenever a task class chose it: then it also
+      // says why, from the same decision the receipt carries (the full estimates follow in the task-class line).
+      const classChoice = taskClassReceipt?.outcome === "served" && taskClassReceipt.decision ? taskClassReceipt : undefined;
+      const harnessWhy = classChoice && piResolved ? harnessChoiceNote(classChoice, harnessOf(piResolved.selection.harness)) : "";
+      const harnessNote = harnessWhy + ((dshHarness || classedDsh)
         ? `Harness note: this wave runs on the steak-dsh harness (the DSH headless CLI) on ${model}; relay steering (hub send/redirect) and resume are unsupported on this harness in v1.\n`
-        : "";
+        : "");
       const input: DispatchInput = {
         ...params,
         ...(classedDsh ? { harness: "steak-dsh" as const } : {}),

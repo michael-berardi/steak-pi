@@ -145,9 +145,12 @@ export interface ClaudeSubscriptionReceipt {
 export interface TaskClassEstimate {
   /** The class chain entry (profile id or `provider/model`). */
   entry: string;
+  /** The harness that would run this entry (`pi`, `steak-dsh`, ...), when the caller resolved one. */
+  harness?: string;
   /** `ranked`: eligible. `demoted`: held out after repeated failures. `floor`: held out under the pass-rate floor.
+   * `gated`: held out by the quality gate (credibly below the best candidate's pass rate).
    * `probe`: held out until a re-probe is due, or being re-probed now. `unavailable`: failed a launch check. */
-  status: "ranked" | "demoted" | "floor" | "probe" | "unavailable";
+  status: "ranked" | "demoted" | "floor" | "gated" | "probe" | "unavailable";
   cause?: string;
   /** Decided outcomes in the store (pass + fail) and the operator prior's `n`. */
   n: number;
@@ -166,9 +169,11 @@ export interface TaskClassEstimate {
 export interface TaskClassDecision {
   /** `chain-order`: no priors or evidence, so the configured order. `exploit`: the best expected score won.
    * `thompson`: a posterior draw preferred another route. `explore`: the exploration share picked a weaker route.
-   * `probe`: a demoted route was re-probed after its cooldown. */
+   * `probe`: a demoted or quality-gated route was re-probed after its cooldown. */
   mode: "chain-order" | "exploit" | "thompson" | "explore" | "probe";
   winner: string;
+  /** The harness of the winning entry, when the caller resolved one. */
+  winnerHarness?: string;
   explored: boolean;
   /** Launchable, non-demoted routes in the order a failover follows (winner first). */
   order: Array<{ entry: string; route: string }>;
@@ -176,6 +181,10 @@ export interface TaskClassDecision {
   timeWeight: number;
   minPassRate: number;
   explore: number;
+  /** Credible level of the quality gate (0: off). Absent on decisions recorded before the gate existed. */
+  qualityGate?: number;
+  /** Weight of a self-reported pass against a verified one. Absent on older decisions. */
+  selfReportWeight?: number;
 }
 
 /** How a wave's declared task class steered (or did not steer) its route: the receipt for `taskClasses`. */

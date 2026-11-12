@@ -27,6 +27,13 @@ export function isQuotaTierRoute(route: string, quota: QuotaProvider): boolean {
   const slash = route.indexOf("/");
   return slash > 0 && quotaProviderOf({ provider: route.slice(0, slash), id: route.slice(slash + 1) }) === quota;
 }
+/** A route step on Claude: the claude-code or Anthropic provider, a Claude model id (also behind a gateway prefix such
+ * as `vendor/claude-...`), or a route the operator put in the Claude quota tier. A noClaude project may never launch on
+ * one, by a chain walk, a task-class candidate or a runtime hop. For a harness-qualified step this is its inner route. */
+export function isClaudeRouteStep(step: { provider: string; id: string }): boolean {
+  return step.provider === "claude-code" || step.provider === "anthropic" || /(^|\/)claude[-_]/i.test(step.id)
+    || isQuotaTierRoute(`${step.provider}/${step.id}`, CLAUDE_QUOTA);
+}
 const DETAIL_LIMIT = 120;
 
 /** One configured account as the router's `status` reported it. */

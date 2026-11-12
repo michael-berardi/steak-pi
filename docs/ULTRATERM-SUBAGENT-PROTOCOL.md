@@ -186,8 +186,9 @@ back.
 
 A `taskClasses.<name>.chain` entry (or a `textWorkerChain` entry) may be `steak-dsh/<provider>/<model-id>`: the
 evidence router ranks it beside native routes on the same recorded evidence, evidence rows and priors use the
-route string verbatim, and the ranked winner sets the run's harness. `steak-pi routing check` validates the inner
-model. See [Model routing — Steak DSH harness](./MODEL-ROUTING.md#steak-dsh-harness).
+route string verbatim, and the ranked winner sets the run's harness; the dispatch note's `Harness:` line names it and
+why. `steak-pi routing check` validates the inner model. See [Model routing — Steak DSH
+harness](./MODEL-ROUTING.md#steak-dsh-harness) and [Choosing the harness per job](./MODEL-ROUTING.md#choosing-the-harness-per-job).
 
 Permissions map to the CLI: `mayEdit` + `ownedPaths` become `--permission workspace-write` with one
 `--owned-path` per owned path (writes elsewhere are denied by the CLI), a read-only leaf becomes

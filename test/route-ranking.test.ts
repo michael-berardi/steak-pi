@@ -30,7 +30,9 @@ const B = { entry: "route-b", route: "p-b/model-b" };
 const view = (tasks: TaskEvidence[], probes: Array<{ at: number; route: string }> = []) => ({
   tasks, probes: probes.map((probe) => ({ v: 1 as const, kind: "probe" as const, at: probe.at, taskClass: "class-a", route: probe.route })),
 });
-const settings = (over: Parameters<typeof settingsOf>[0] = {}) => settingsOf({ explore: 0, ...over });
+// These tests pin the raw-count mechanics (Thompson, exploration, demotion) with the quality gate off and every outcome
+// counted fully; the gate and the self-report weight have their own tests in harness-routing.test.ts.
+const settings = (over: Parameters<typeof settingsOf>[0] = {}) => settingsOf({ explore: 0, qualityGate: 0, selfReportWeight: 1, ...over });
 const NOW = clock + 10 * MIN;
 const winners = (tasks: TaskEvidence[], config: Parameters<typeof settingsOf>[0], draws = 60, now = NOW) =>
   Array.from({ length: draws }, (_, index) => rankClassRoutes("class-a", [A, B], settings(config), view(tasks), seeded(index + 1), now).decision.winner);

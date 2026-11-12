@@ -379,13 +379,22 @@ exactly as it would have resolved without a class. The rules around that:
 ### Evidence-driven ranking, self-healing and the evidence store
 
 The chain order is only the starting point. Every task of a classed wave leaves a record of how its route did, and the
-next dispatch of that class ranks the steps that can launch (the checks above come first and are never relaxed) by
-**expected cost per correct result**:
+next dispatch of that class first holds the steps that can launch (the checks above come first and are never relaxed)
+to a **quality gate**, then ranks the rest by **expected cost per correct result**:
 
+    gate:  out if upper(p(pass)) < lower(p(pass) of the best route), at the class's qualityGate level
     score(route) = (E[cost] + timeWeight x E[seconds]) / p(pass)        lower is better
 
 - `p(pass)` is a Beta posterior over the route's recorded passes and fails, seeded by the operator's `priors`:
-  `Beta(1 + priorPass + passes, 1 + (priorN - priorPass) + fails)`. `E[cost]` and `E[seconds]` are the mean of the
+  `Beta(1 + priorPass + w x selfReportedPasses + verifiedPasses, 1 + (priorN - priorPass) + fails)`, where `w` is the
+  class's `selfReportWeight` (default 0.5): a pass only the worker's own final state reports counts half of one a
+  verification, a test gate or the operator confirmed. A failure counts fully whatever its source (a crash or a
+  timeout is observed, not claimed).
+- **Quality is a gate, not a trade.** A route whose one-sided credible upper bound (default level 95%) is under the
+  best route's lower bound is `gated`: never the pick, never explored, and only the last resort of a runtime failover
+  after every ungated route has failed. Once `cooldownMinutes` have passed since its last outcome or re-probe it gets
+  one re-probe, like a demoted route, so a route that improved can earn its way back. A route gated by its prior alone
+  is held from the class's first recorded outcome. `qualityGate: 0` turns the gate off. `E[cost]` and `E[seconds]` are the mean of the
   route's recorded attempts (dollars from the run's usage cost, wall seconds), mixed with the prior's `costUsd` and
   `seconds` weighted by its `n`. A route with no cost yet is judged at the class's average, so only `p(pass)`
   separates it.
@@ -404,7 +413,9 @@ Per-class keys (all optional; Steak Pi ships no class, route or number of its ow
 | `explore` | `0.1` | share of dispatches that pick a weaker route on purpose (0 to 0.5) |
 | `demoteAfter` | `3` | consecutive failures that demote a route for this class |
 | `window` | `10` | decided outcomes the rolling pass rate looks at (the floor needs `min(window, 5)` of them) |
-| `cooldownMinutes` | `30` | how long a demoted route stays out before one re-probe |
+| `cooldownMinutes` | `30` | how long a demoted or gated route stays out before one re-probe |
+| `qualityGate` | `0.95` | credible level of the quality gate (0 to 0.999); `0` turns it off |
+| `selfReportWeight` | `0.5` | weight of a pass only the worker's own state reports, against a verified one (0 to 1) |
 | `retryMaxTokens` | double the model's own | output budget for the one same-route retry of an empty reply |
 | `slots` | none | most tasks one wave may run on this class's routes at once (a local server with one slot is `1`); a wider wave runs the normal chain |
 | `maxScope` | none | `"small"`: the class is for small, bounded tasks; a wave with a task that may both edit and run a shell runs the normal chain |
@@ -426,13 +437,14 @@ At first the two cost the same and `route-b` is faster, so `route-b` is expected
 recorded outcomes then show it failing more often, `p(pass)` falls and the ranking moves to `route-a` by itself; if
 `route-a` starts failing, it moves back. About one dispatch in ten is an exploration that picks the other route. The
 dispatch note shows the numbers behind each pick, for example
-`Route evidence: winner route-b (exploit; explored no; timeWeight 0.0005, floor 0.6, explore 0.1); route-a p(pass) 0.88, E[cost] $0.00040, E[s] 12, n=0+14 prior | route-b p(pass) 0.88, E[cost] $0.00040, E[s] 3, n=0+14 prior`.
+`Route evidence: winner route-b on harness pi (exploit; explored no; timeWeight 0.0005, floor 0.6, explore 0.1, quality gate 95%, self-report weight 0.5); route-a p(pass) 0.88, E[cost] $0.00040, E[s] 12, n=0+14 prior on pi | route-b p(pass) 0.88, E[cost] $0.00040, E[s] 3, n=0+14 prior on pi`.
 
 **What is recorded.** One `task` record per task of a classed wave when it settles: the class, the route (the
 chain entry that finished it), `outcome` (`pass`, `fail`, `unknown`), its `source`, wall seconds, dollars, tokens and,
 for a failure, a `failureKind`: `empty-output`, `reasoning-exhausted`, `tool-error`, `http-4xx`, `http-5xx`, `quota`,
-`rate-limit`, `content-filter`, `budget` (the task ran out of its turn or time budget; ranked exactly like `other`) or
-`other`. A route a task left on the way (a failover) gets its own `fail` record with the cause. Only a task that
+`rate-limit`, `content-filter`, `budget` (the task ran out of its turn budget; ranked exactly like `other`), `timeout`
+(the task hit its wall-clock deadline: a quality failure and, with its whole wall time recorded, a speed failure) or
+`other`. Each record also names the `harness` that ran it. A route a task left on the way (a failover) gets its own `fail` record with the cause. Only a task that
 itself declared the class counts. The outcome's source, strongest first:
 
 1. a **verification verdict** recorded later (`ultraterm_hub` `record-outcome`, below);
@@ -471,6 +483,40 @@ correct result, and its failure kinds. `action: "record-outcome"` with `runId`, 
 `taskId` and `source` (`verification`, `test-gate`, `operator`; default `operator`) attaches a verdict to what a run
 left, so a reviewer's finding or a test result moves the estimates. It records nothing for a run that left no classed
 evidence.
+
+### Choosing the harness per job
+
+A candidate is a **(harness, model route)** pair, and the harness is part of the chain entry the class ranks: a class
+whose chain holds `provider-a/model-a` (the native Pi worker) and `steak-dsh/provider-a/model-a` (the Steak DSH
+harness on the same model) ranks them as two candidates on their own evidence, with the gate, the weights, exploration,
+demotion and re-probe above. Nothing in Steak Pi prefers a harness: with no priors and no outcomes the chain order
+stands, and identical evidence gives identical scores whatever the harness is called (a test fails otherwise).
+
+- **Capability is a filter, applied before ranking.** A candidate that cannot run this job is not a candidate, and
+  being unavailable is never recorded as a loss: a steak-dsh step needs an API-key login (not OAuth-only), its
+  executable, and a text-only wave; a project's `noClaudeProjects` policy removes every Claude step (including a
+  harness-qualified step whose inner route is Claude) and `planOnlyProjects` removes every paid metered step.
+- **The receipt names the harness and why.** A classed implicit wave's dispatch note starts with, for example,
+  `Harness: steak-dsh, chosen by task class class-a with steak-dsh/provider-a/model-a: the best expected cost per
+  verified pass; p(pass) 0.92, E[cost] $0.01, E[s] 40, n=12+10 prior`, and the route-evidence line names each
+  candidate's harness (`... on pi`, `... on steak-dsh`).
+- **Seed priors only where they were measured.** A benchmark of one harness on one model and task shape belongs in the
+  `priors` of the class that runs that model on that shape, with a small `n`, so live outcomes replace it quickly.
+
+**For a job queue outside Pi.** `steak-pi routes` exposes the same ranker and the same store to a caller that launches
+whole agent panes (each candidate a `harness/profile` entry of a class chain):
+
+    steak-pi routes rank --class <class> --candidate <entry>=<harness> ... --json
+    steak-pi routes record --class <class> --run <job> --task <job> --route <entry> --harness <harness> \
+        --outcome pass|fail|unknown [--source worker-state|verification|test-gate|operator] \
+        [--seconds N] [--cost USD] [--tokens N] [--failure-kind timeout|...]
+    steak-pi routes verdict --run <job> [--task <job>] --outcome pass|fail --source verification|test-gate|operator
+    steak-pi routes report [--class <class>] [--json]
+
+The caller passes only the candidates it can launch for the job (after its own capability, quota and project-policy
+checks); a candidate outside the class chain is refused. `rank` prints `{ winner, harness, order, excluded, decision,
+why }` and writes the re-probe marker when it re-probes; `record` and `verdict` append to the store. A malformed
+routing.json fails with its cause.
 
 ### Profile launch hooks (`ensure`)
 

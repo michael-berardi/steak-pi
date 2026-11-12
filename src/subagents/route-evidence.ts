@@ -11,7 +11,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { RunRecord, TaskRecord } from "./types.ts";
+import { harnessOf, type RunRecord, type TaskRecord } from "./types.ts";
 import { isContentFilterRefusal } from "../content-filter-refusal.ts";
 
 export const ROUTE_EVIDENCE_ENV = "STEAK_PI_ROUTE_EVIDENCE";
@@ -26,8 +26,10 @@ export type EvidenceOutcome = "pass" | "fail" | "unknown";
 export type EvidenceSource = "verification" | "test-gate" | "operator" | "worker-state";
 /** `content-filter`: the provider inspected the input and refused it (an HTTP 400 naming a content-inspection code). The route is not at fault.
  * `budget`: the task ran out of its turn or time budget. It counts as a failure exactly like `other` (the router treats
- * the two alike); it has its own name so a store can tell tasks that ran out of budget from tasks that broke. */
-export const FAILURE_KINDS = ["empty-output", "reasoning-exhausted", "tool-error", "http-4xx", "http-5xx", "quota", "rate-limit", "content-filter", "budget", "other"] as const;
+ * the two alike); it has its own name so a store can tell tasks that ran out of budget from tasks that broke.
+ * `timeout`: the task hit its wall-clock deadline. It is a quality failure (no verified result) and a speed failure (its
+ * whole wall time is recorded), so it counts toward demotion and the pass rate like any other failure. */
+export const FAILURE_KINDS = ["empty-output", "reasoning-exhausted", "tool-error", "http-4xx", "http-5xx", "quota", "rate-limit", "content-filter", "budget", "timeout", "other"] as const;
 export type FailureKind = (typeof FAILURE_KINDS)[number];
 
 export interface TaskEvidence {
@@ -40,6 +42,9 @@ export interface TaskEvidence {
   taskClass: string;
   /** The class chain entry (profile id or `provider/model`) that produced this outcome. */
   route: string;
+  /** The harness that ran it, as the recorder named it (USAP: its runner id; the coordinator: its harness id). The
+   * ranking key stays `route`; this field lets a report split one entry's outcomes by harness. */
+  harness?: string;
   outcome: EvidenceOutcome;
   source: EvidenceSource;
   wallSeconds: number;
@@ -97,8 +102,9 @@ export function parseEvidenceLine(line: string): EvidenceRecord | undefined {
     if (item.outcome !== "pass" && item.outcome !== "fail" && item.outcome !== "unknown") return undefined;
     if (typeof item.source !== "string" || !SOURCES.includes(item.source)) return undefined;
     const kind = FAILURE_KINDS.find((candidate) => candidate === item.failureKind);
+    const harness = text(item.harness, 64);
     return {
-      v: 1, kind: "task", at: item.at, runId, taskId, label: text(item.label, 80) ?? taskId, taskClass, route,
+      v: 1, kind: "task", at: item.at, runId, taskId, label: text(item.label, 80) ?? taskId, taskClass, route, ...(harness ? { harness } : {}),
       outcome: item.outcome, source: item.source as EvidenceSource,
       wallSeconds: finite(item.wallSeconds) && item.wallSeconds >= 0 ? item.wallSeconds : 0,
       costUsd: finite(item.costUsd) && item.costUsd >= 0 ? item.costUsd : 0,
@@ -276,7 +282,7 @@ function entryOfRoute(run: RunRecord, route: string): string {
 export function settledTaskEvidence(run: RunRecord, task: TaskRecord, now: number): TaskEvidence[] {
   const receipt = run.selection?.taskClass;
   if (!receipt || receipt.outcome !== "served" || task.taskClass !== receipt.name || receipt.step === undefined) return [];
-  const base = { v: 1 as const, kind: "task" as const, runId: run.id, taskId: task.id, label: task.label.slice(0, 80), taskClass: receipt.name };
+  const base = { v: 1 as const, kind: "task" as const, runId: run.id, taskId: task.id, label: task.label.slice(0, 80), taskClass: receipt.name, harness: harnessOf(run.harness) };
   const hops = task.routeHopDetails ?? [];
   const records: TaskEvidence[] = hops.map((hop) => ({
     ...base, at: now, route: entryOfRoute(run, hop.from), outcome: "fail" as const, source: "worker-state" as const,
@@ -284,7 +290,8 @@ export function settledTaskEvidence(run: RunRecord, task: TaskRecord, now: numbe
   }));
   const finalRoute = hops.length > 0 ? entryOfRoute(run, hops[hops.length - 1].to) : receipt.step;
   const gate = testGateResult(task.output);
-  const kind = task.state === "failed" || task.state === "timed_out" ? classifyFailure(task.error) : undefined;
+  // A deadline is named as such whatever the error text says: it is a quality and a speed failure of this route.
+  const kind = task.state === "timed_out" ? "timeout" as const : task.state === "failed" ? classifyFailure(task.error) : undefined;
   let outcome: EvidenceOutcome;
   let source: EvidenceSource = "worker-state";
   if (task.state === "done") {

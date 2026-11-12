@@ -7,7 +7,7 @@ import type { TaskClassRanking } from "../model-route-policy.ts";
 import { NoChainRouteError, assertModelRoute, assertSubscriptionRequest, selectChainedWorkerStep, selectWorkerModel, selectWorkerThinking,
   workerChainFor, type ChainOptions, type WorkerRouteStep } from "../model-route-policy.ts";
 import { routingConfig, routingConfigOrEmpty, routingConfigPath, routeKey } from "../routing-config.ts";
-import type { DispatchInput, HarnessId, ModelSelection, SubagentTaskInput } from "./types.ts";
+import { harnessOf, type DispatchInput, type HarnessId, type ModelSelection, type SubagentTaskInput } from "./types.ts";
 import { activeTemporaryWorkerRoute, assertTemporaryFreeRequest, isTemporaryFreeModel, PREFERRED_FREE_PROFILE } from "../temporary-free-route.ts";
 import { isDshRoute } from "./dsh-routes.ts";
 import { CLAUDE_CODE_ROUTES, admitClaudeCodeRoute, claudeCodeModelName, claudeCodeRouteModel, claudeCodeRouteOfProfile, claudeCodeServableModel } from "./claude-code-models.ts";
@@ -292,7 +292,9 @@ export function resolveWorkerSelection(
         break;
       }
     }
-    classRanking = launchable.length > 0 ? classWalk.rank?.(launchable.map((item) => ({ entry: item.entry.entry, route: routeKey(item.entry.step) }))) : undefined;
+    // A candidate is (harness, model route): each carries the runner that would serve it, so the decision and its
+    // receipt name the harness the evidence chose. The entry string stays the ranking key.
+    classRanking = launchable.length > 0 ? classWalk.rank?.(launchable.map((item) => ({ entry: item.entry.entry, route: routeKey(item.entry.step), harness: harnessOf(item.entry.step.harness) }))) : undefined;
     const ordered = classRanking
       ? classRanking.order.flatMap((entry) => launchable.filter((item) => item.entry.entry === entry))
       : launchable;
