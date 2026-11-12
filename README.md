@@ -21,7 +21,7 @@ serious sessions need: parallel subagents with hard limits, compaction that
 costs no model calls, checks that run after every edit, and a status line that
 tells you what the agent is doing.
 
-Current release: **0.28.4**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
+Current release: **0.28.5**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
 [UltraTerm](https://paretocybernetics.com/software/).
 
 ## Install
@@ -58,14 +58,14 @@ Overrides: `STEAK_PI_HOME`, `STEAK_PI_BIN_DIR`, `STEAK_PI_VERSION` (pin a versio
 Or install manually with the Pi CLI:
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.28.4
+pi install git:github.com/michael-berardi/steak-pi@v0.28.5
 ```
 
 Or from the release archive, without Git:
 
 ```sh
-shasum -a 256 -c steak-pi-0.28.4.tgz.sha256
-tar -xzf steak-pi-0.28.4.tgz
+shasum -a 256 -c steak-pi-0.28.5.tgz.sha256
+tar -xzf steak-pi-0.28.5.tgz
 npm install --ignore-scripts --prefix "$PWD/package"
 pi install "$PWD/package"
 ```
@@ -79,6 +79,7 @@ where you have not set them yourself:
 
 ```sh
 steak-pi run          # same arguments as pi
+steak-pi run --lean   # a one-shot task: no dispatch or todo tools, and a short-reasoning rule
 steak-pi env          # show what it sets
 steak-pi status       # installed version, selected Pi settings file and integration
 steak-pi update       # install the latest release (--check only reports)
@@ -111,7 +112,8 @@ command). The check runs at most every 6 hours, in the background; `STEAK_PI_NO_
 | **Local compaction** | Summaries built in 10–300 ms with no model call; the full raw session stays searchable |
 | **Verify after edit** | Runs your project check after edits and hands failures straight back to the agent |
 | **Phased todo** | A plan pinned in the terminal, saved per session |
-| **Write guard** | `write` refuses to replace an existing file the session has not read; the error says to read it first |
+| **Write guard** | `write` refuses to replace an existing file the session has not read; the error says to read it first. A file a successful `cat`, `head`, `tail`, `nl`, `sed` or `awk` command printed counts as read |
+| **Working rules** | Six short lines in the system prompt: batch independent calls, gather context once, compute on large files, check a change once, finish every part, keep the final reply short |
 | **Finish guard** | A turn cannot end while todo items are open or the final reply lists unfinished work; capped, never after an abort, error or stop request, on by default |
 | **Companion UI** | One status line for state, model, context pressure, cache use and cost, in your Pi theme |
 | **Skill catalog lite** | Keeps large skill catalogs inside a byte budget without dropping any skill |
@@ -421,6 +423,8 @@ the Claude route, small tasks and one machine. Reproduce it with
 | `~/.pi/agent/steak-pi.json` → `finishGuard` | on, 3 pushes | Finish guard (above) |
 | `STEAK_PI_FINISH_GUARD=0` | on | Turn the finish guard off |
 | `STEAK_PI_WRITE_GUARD=off` | on | Allow `write` to replace a file the session has not read |
+| `STEAK_PI_WORK_RULES=off` | on | Leave the working rules out of the system prompt (`STEAK_PI_WORK_RULES_TEXT` replaces them) |
+| `STEAK_PI_WORK_RULES_BRIEF=1` | off (`run --lean` sets it) | Add the short-reasoning line to the working rules |
 | `STEAK_PI_DEFER_TOOLS=off` | on | Expose every tool from the first request |
 | `pi --exclude-tools ultraterm_subagents,todo` | off | Lean one-shot leaf: no dispatch or todo tool, their skills hidden (Performance, above) |
 | `STEAK_PI_WORKER_SDK=unbundled` | host bundle | Workers load their own Pi SDK copy |

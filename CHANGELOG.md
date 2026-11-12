@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.28.5 (2026-11-12)
+
+Steak Pi costs less on the same work. Measured with ParetoBench on one model and one machine, paired on task and
+repeat, 95% intervals; every run was correct in every arm unless stated.
+
+- **The write guard no longer refuses a file the model just printed.** In 120 benchmark runs it refused 26 writes, every
+  one on a file the model had shown itself with a shell command, and each refusal cost a wasted call and a repeat read.
+  A file that a successful `cat`, `head`, `tail`, `nl`, `sed`, `awk`, `less`, `more` or `bat` command named now counts
+  as read. Listing, testing or searching a file does not count, and a failed command does not.
+- **Six working rules in the system prompt**: batch independent tool calls, gather context once, compute on large files,
+  check a change once, finish every part, keep the final reply short. `STEAK_PI_WORK_RULES=off` leaves them out.
+- **Shorter dispatch text.** The dispatch tool's description and two of its guidelines are shortened (about 4.4 KB less
+  in every request); the full text moved, unchanged, to a "Dispatch reference" section of the delegation skill.
+- **`steak-pi run --lean`** runs a one-shot task without the dispatch, hub and todo tools and adds one short-reasoning
+  line to the rules. That line is not on by default: with it the default run got 30 of 33 long tasks right against 33 of
+  33 without it.
+
+Results, 20 short tasks and 11 long tasks, 3 repeats each:
+
+| Comparison | Short tasks, cost | Long tasks, cost |
+| --- | --- | --- |
+| Default against 0.28.3 default | 0.76 times (0.67 to 0.87), better | not run in one run together |
+| Default against stock Pi | 1.82 times (1.58 to 2.08), worse | 0.95 times (0.81 to 1.12), no clear difference |
+| `run --lean` against stock Pi | 0.94 times (0.81 to 1.10), no clear difference | 0.64 times (0.54 to 0.76), better |
+| 0.28.3 default against stock Pi, for reference | 2.39 times (2.08 to 2.69), worse | 1.52 times (1.33 to 1.83), worse |
+
+The default run still costs more than stock Pi on one-file tasks, because it sends the dispatch tool with every
+request. Use `run --lean` for those. The long tasks were solved by every harness, so they compare cost and time, not
+ability.
+
 ## 0.28.4 (2026-11-12)
 
 One fix in the Claude Code provider.
