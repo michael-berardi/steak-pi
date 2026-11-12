@@ -1,0 +1,22 @@
+#!/bin/sh
+# Test double for npm: records every call; ci makes node_modules; install makes a fake Pi package with a pi bin.
+printf '%s\n' "$*" >> "$NPM_CALLS"
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  ci) mkdir -p node_modules; exit 0;;
+  install)
+    prefix=""; spec=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --prefix) prefix="$2"; shift 2;;
+        -*) shift;;
+        *) spec="$1"; shift;;
+      esac
+    done
+    mkdir -p "$prefix/node_modules/.bin" "$prefix/node_modules/@earendil-works/pi-coding-agent"
+    printf '{"name":"@earendil-works/pi-coding-agent","version":"%s","bin":{"pi":"dist/bundle/cli.js"}}' "${spec##*@}" > "$prefix/node_modules/@earendil-works/pi-coding-agent/package.json"
+    cp "$FAKE_PI" "$prefix/node_modules/.bin/pi"
+    chmod 755 "$prefix/node_modules/.bin/pi"
+    exit 0;;
+esac
+exit 0

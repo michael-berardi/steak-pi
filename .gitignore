@@ -6,3 +6,4 @@ node_modules
 steak-pi-*.tgz
 steak-pi-*.tgz.sha256
 docs/verification/
+dist/

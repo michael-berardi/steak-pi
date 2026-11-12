@@ -1,0 +1,17 @@
+#!/bin/sh
+# Test double for the pi CLI: install/remove rewrite settings.json packages, like pi does for a local path.
+agent="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+mkdir -p "$agent"
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  install|remove)
+    node -e '
+      const fs = require("fs"); const [file, cmd, target] = process.argv.slice(1);
+      let s = {}; try { s = JSON.parse(fs.readFileSync(file, "utf8")); } catch {}
+      const pkgs = Array.isArray(s.packages) ? s.packages : [];
+      s.packages = cmd === "install" ? [target] : pkgs.filter((p) => (typeof p === "string" ? p : p.source) !== target);
+      fs.writeFileSync(file, JSON.stringify(s, null, 2) + "\n");
+    ' "$agent/settings.json" "$cmd" "${1:-}"
+    ;;
+esac
+exit 0
