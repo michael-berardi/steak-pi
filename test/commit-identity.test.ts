@@ -38,8 +38,8 @@ describe("commit identity guard", () => {
   });
 
   it("refuses @local and *.local addresses for committer and author", () => {
-    expect(findLocalIdentities(["abc\tdev@host.local\tok@example.com"]).map((x) => x.role)).toEqual(["author"]);
-    expect(findLocalIdentities(["abc\tok@example.com\tbuild@local"]).map((x) => x.role)).toEqual(["committer"]);
+    expect(findLocalIdentities(["abc\tdev@host.local\tok@example.com"]).map((x: { role: string }) => x.role)).toEqual(["author"]);
+    expect(findLocalIdentities(["abc\tok@example.com\tbuild@local"]).map((x: { role: string }) => x.role)).toEqual(["committer"]);
     expect(findLocalIdentities(["abc\tsomeone@example.local\tsomeone@example.local"]).length).toBe(2);
   });
 
