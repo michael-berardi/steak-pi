@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
@@ -57,6 +58,10 @@ async function fixture(mode: string, check: (input: Parameters<typeof runClaudeR
   const root = await mkdtemp(join(tmpdir(), "request-idle-"));
   const executable = join(root, "claude.mjs");
   await writeFile(executable, FAKE); await chmod(executable, 0o755);
+  // The first launch of a freshly written executable is scanned by the OS (250 to 680 ms measured on macOS, against
+  // 23 ms for the second launch). That would eat most of the 1 s acquisition budget below and fail the test for a
+  // reason it does not test, so the fake is launched once here, outside the timed request.
+  await new Promise<void>((resolve, reject) => execFile(executable, ["auth", "status"], error => error ? reject(error) : resolve()));
   const timers = new Set<NodeJS.Timeout>();
   let attempts = 0;
   const upstream = http.createServer(async (request, response) => {

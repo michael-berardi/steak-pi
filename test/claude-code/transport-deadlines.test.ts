@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -45,6 +46,11 @@ async function fixture(run: (executable: string, root: string, holders: string) 
   const holders = join(root, "holders");
   await writeFile(executable, FAKE);
   await chmod(executable, 0o755);
+  // The first launch of a freshly written executable is scanned by the OS (250 to 680 ms measured on macOS, against
+  // 23 ms for the second). The budgets below are as short as 400 ms, so the fake is launched once here, outside any
+  // timed call. MODE is left out so the auth branch answers and exits.
+  const { MODE: _mode, ...quietEnv } = process.env;
+  await new Promise<void>((resolve, reject) => execFile(executable, ["auth", "status"], { env: quietEnv }, error => error ? reject(error) : resolve()));
   await writeFile(holders, "");
   try { await run(executable, root, holders); }
   finally {
