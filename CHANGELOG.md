@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.28.3 (2026-11-12)
+
+One fix in the Windows installer. Windows was tested under PowerShell 7 on Linux, not yet on a Windows machine.
+
+- **Windows: the installer rewrote your user Path.** It read the Path with its `%VAR%` entries already expanded and saved it back as plain text, so an entry such as `%USERPROFILE%\AppData\Local\Microsoft\WindowsApps` became a fixed path and the value lost its expandable type. It now reads the raw registry value, recognises the bin folder whether written literally or with `%VAR%`, appends it only when absent, keeps the value's existing type, and leaves every other entry untouched. This is fixed.
+
 ## 0.28.2 (2026-11-11)
 
 Two fixes in the one-step installers. Windows was tested under PowerShell 7 on Linux, not yet on a Windows machine.

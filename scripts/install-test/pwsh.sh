@@ -107,6 +107,29 @@ assert_absent "$HC/steak-pi/releases" "P3 no releases"
 assert_absent "$HC/bin/steak-pi" "P3 no shim"
 assert_absent "$HC/agent/settings.json" "P3 no settings"
 
+echo "== P7: Test-PathEntryPresent (Path comparison) =="
+cat > "$W/pathtest.ps1" <<'PSEOF'
+$ast = [System.Management.Automation.Language.Parser]::ParseFile('/rel/install.ps1', [ref]$null, [ref]$null)
+$fn = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Test-PathEntryPresent' }, $true)[0]
+if (-not $fn) { Write-Host 'FAIL: Test-PathEntryPresent not found'; exit 1 }
+. ([scriptblock]::Create($fn.Extent.Text))
+$env:SPTEST_HOME = 'C:\Users\Me'
+$cases = @(
+  @('C:\a;C:\Users\Me\bin', 'C:\Users\Me\bin', $true),
+  @('C:\a;C:\USERS\me\BIN\', 'C:\Users\Me\bin', $true),
+  @('C:\a;%SPTEST_HOME%\bin', 'C:\Users\Me\bin', $true),
+  @('C:\a;%SPTEST_HOME%\bin\', 'C:\Users\Me\bin', $true),
+  @('C:\a;C:\Users\Me\bin2', 'C:\Users\Me\bin', $false),
+  @('', 'C:\Users\Me\bin', $false),
+  @(';;C:\a;', 'C:\Users\Me\bin', $false))
+foreach ($c in $cases) {
+  $got = Test-PathEntryPresent -pathValue $c[0] -dir $c[1]
+  if ($got -ne $c[2]) { Write-Host "FAIL: Test-PathEntryPresent('$($c[0])') = $got, want $($c[2])"; exit 1 }
+}
+Write-Host 'Test-PathEntryPresent: all cases ok'
+PSEOF
+"$PWSH" -NoProfile -File "$W/pathtest.ps1" || { echo "FAIL: P7"; exit 1; }
+
 echo "== PSScriptAnalyzer (skipped with a message if it will not install quickly) =="
 timeout 240 "$PWSH" -NoProfile -Command \
   "try { Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -ErrorAction Stop; \$r = Invoke-ScriptAnalyzer -Path /rel/install.ps1; if (\$r) { \$r | Format-Table -AutoSize | Out-String | Write-Host; exit 1 } else { 'PSScriptAnalyzer: no findings' } } catch { 'PSScriptAnalyzer skipped: ' + \$_.Exception.Message }" || { echo "FAIL: PSScriptAnalyzer reported findings in install.ps1 (or did not finish within 240s)"; exit 1; }

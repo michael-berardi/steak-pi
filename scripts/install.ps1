@@ -8,6 +8,18 @@
 # STEAK_PI_PI_VERSION (Pi version when pi is absent; default: the pin in the release's package-lock.json),
 # STEAK_PI_RELEASE_BASE (override the download base URL, used by tests).
 function Install-SteakPi {
+  # True when an entry of the ;-separated Path value equals $dir literally or after expanding %VAR%
+  # (case-insensitive, trailing backslash ignored).
+  function Test-PathEntryPresent {
+    param([string]$pathValue, [string]$dir)
+    $want = $dir.TrimEnd('\')
+    foreach ($e in ($pathValue -split ';')) {
+      if (-not $e) { continue }
+      if ($e.TrimEnd('\') -ieq $want) { return $true }
+      if ([Environment]::ExpandEnvironmentVariables($e).TrimEnd('\') -ieq $want) { return $true }
+    }
+    return $false
+  }
   $repo = 'github.com/michael-berardi/steak-pi'
   $onWindows = ($PSVersionTable.PSVersion.Major -lt 6) -or $IsWindows
   $base = if ($env:STEAK_PI_RELEASE_BASE) { $env:STEAK_PI_RELEASE_BASE }
@@ -298,12 +310,20 @@ function Install-SteakPi {
 
     # Windows: add the bin folder to the USER Path only when absent. Never edits profiles.
     if ($onWindows) {
-      $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-      if (-not $userPath) { $userPath = '' }
-      if (($userPath -split ';') -notcontains $binDir) {
-        [Environment]::SetEnvironmentVariable('Path', $(if ($userPath) { "$userPath;$binDir" } else { $binDir }), 'User')
-        Say "Added $binDir to your user PATH; open a new terminal to use it."
-      }
+      # The raw value is read without expanding %VAR% entries and written back with the same registry type.
+      $envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+      try {
+        $userPath = [string]$envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        if (-not (Test-PathEntryPresent -pathValue $userPath -dir $binDir)) {
+          $newPath = if ($userPath) { $userPath.TrimEnd(';') + ';' + $binDir } else { $binDir }
+          $kind = if ($userPath) { $envKey.GetValueKind('Path') } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }
+          $envKey.SetValue('Path', $newPath, $kind)
+          # Setting and clearing a user variable broadcasts the environment change so new terminals pick the Path up.
+          [Environment]::SetEnvironmentVariable('STEAK_PI_PATH_REFRESH', '1', 'User')
+          [Environment]::SetEnvironmentVariable('STEAK_PI_PATH_REFRESH', $null, 'User')
+          Say "Added $binDir to your user PATH; open a new terminal to use it."
+        }
+      } finally { if ($envKey) { $envKey.Close() } }
     }
 
     # Health check: the CLI's own status must run and report the release.

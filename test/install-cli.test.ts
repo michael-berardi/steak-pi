@@ -336,6 +336,15 @@ describe("scripts/build-release.sh output folder guard", () => {
 });
 
 describe("scripts/install.ps1 static guards (Windows-only patterns that must not return)", () => {
+  it("writes the user Path through the registry, never the expanding Environment API", () => {
+    expect(code).not.toContain("SetEnvironmentVariable('Path'");
+    expect(code).not.toContain("GetEnvironmentVariable('Path'");
+    expect(code).toContain("OpenSubKey('Environment', $true)");
+    expect(code).toContain("DoNotExpandEnvironmentNames");
+    expect(code).toContain("GetValueKind('Path')");
+    expect(code).toMatch(/finally \{ if \(\$envKey\) \{ \$envKey\.Close\(\) \} \}/);
+  });
+
   const ps1 = readFileSync(resolve(import.meta.dirname, "..", "scripts", "install.ps1"), "utf8");
   const code = ps1.split("\n").filter((l) => !l.trimStart().startsWith("#")).join("\n");
   it("finds Git's own sh and never a bash by name", () => {
