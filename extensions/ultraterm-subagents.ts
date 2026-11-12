@@ -2261,6 +2261,8 @@ export function createUltratermSubagentsExtension(
       // shell denial cannot be bypassed when its subscription is unavailable.
       const fallbackStep = reviewFallbackStep();
       const fallbackRoute = fallbackStep ? routeOfStep(fallbackStep) : undefined;
+      // opusReviewDefault requires an implicit route (no caller pin, harness, model or profile), so a pinned review never
+      // reaches the review fallback: the operator's pin is kept and a refusal on it is reported, not rerouted.
       const readOnlyReviewFallback = opusReviewDefault && fallbackStep !== undefined && isReadOnlyReviewWave(requested.tasks);
       // The configured review fallback is required for a wave this call is already retrying: the first attempt was
       // the Claude review route, refused before any output.
@@ -2280,8 +2282,10 @@ export function createUltratermSubagentsExtension(
       // A noClaude project's implicit review never runs on the Claude review route: it takes the configured review
       // fallback when it can, and otherwise refuses once, before anything starts.
       const reviewPolicy = opusReviewDefault ? projectPolicyOf(ctx, requested, dependencies) : {};
-      if (reviewPolicy.noClaude !== undefined && reviewQuota === undefined) {
-        throw new Error(`USAP implicit review cannot run: Claude review route ${reviewRoute}: ${noClaudeCause(reviewPolicy)}${fallbackStep === undefined ? " | no implicitReview.fallback is configured" : " | the review fallback serves only read-only text reviews"}. No review was started and no fallback was selected; name a review route explicitly.`);
+      // Keyed on the policy itself: a review quota is read for every read-only review, so it can never prove the
+      // noClaude refusal was already decided. An image review or a review with no fallback has no quota-backed path.
+      if (reviewPolicy.noClaude !== undefined && (reviewQuota === undefined || requested.requireImages === true || fallbackStep === undefined || !readOnlyReviewFallback)) {
+        throw new Error(`USAP implicit review cannot run: Claude review route ${reviewRoute}: ${noClaudeCause(reviewPolicy)}${fallbackStep === undefined ? " | no implicitReview.fallback is configured" : requested.requireImages === true ? " | the review fallback serves only read-only text reviews, never an image review" : " | the review fallback serves only read-only text reviews"}. No review was started and no fallback was selected; name a review route explicitly.`);
       }
       const claudeTierBlock = reviewPolicy.noClaude !== undefined ? noClaudeCause(reviewPolicy) : reviewQuota ? claudeQuotaBlock(reviewQuota) : undefined;
       // The review route pins an eligible account, exactly like an implicit worker wave's Claude tier: without a
@@ -2354,7 +2358,9 @@ export function createUltratermSubagentsExtension(
       }
       const claudeWorkerTier = claudeTier !== undefined;
       // The Claude account this launch pins: the worker tier's pick, or the review route's (never the parent's own login).
-      const pickedAccount = tierAccount ?? reviewPick?.account;
+      // An operator's pinned claudeAccount is never replaced by an automatic pick, and a pinned review never falls
+      // back to another route: the pin was the operator's choice, so a refusal on it is reported, not rerouted.
+      const pickedAccount = requested.claudeAccount !== undefined ? undefined : (tierAccount ?? reviewPick?.account);
       // An implicit review wave whose Claude route was refused before output runs the same tasks on the
       // configured fallback within this same call, instead of failing the wave with one cause.
       const reviewFallbackActive = claudeUnavailable || forcedReviewFallback;
@@ -2694,7 +2700,12 @@ export function createUltratermSubagentsExtension(
         // A usage limit on a route that has no quota tier cannot fall through: say which config key would let it.
         const ungated = quotaRouted && !claudeWorkerTier && startupFailures.every((task) => isQuotaLaunchFailure(launchFailureText(task))) && reachedProviders(final ?? startedRun ?? run).length === 0
           ? ` Note: ${model} is in no providerQuotaFallback tier of ~/.config/ultraterm/routing.json, so this usage limit cannot fall through; add its provider there to let an implicit wave move on.` : "";
-        throw new Error(`USAP dispatch failed before any worker produced model output (run ${run.id} · ${model}): ${failureText}.${ungated}${reviewFallbackNotUsed} ${aftermath} ${fallThroughs.length > 0
+        // Name the layer that refused: a worker-level chain hop (inside the worker) has already tried the rest of the
+        // chain before this dispatch-level error, so the route named here is the one that refused last.
+        const hopNote = final?.tasks.some((task) => (task.routeFallbacks?.length ?? 0) > 0)
+          ? ` The in-worker chain already moved ${final.tasks.map((task) => task.routeFallbacks ?? []).flat().join(", ")} before this refusal; ${model} refused last (dispatch layer).`
+          : "";
+        throw new Error(`USAP dispatch failed before any worker produced model output (run ${run.id} · ${model}): ${failureText}.${hopNote}${ungated}${reviewFallbackNotUsed} ${aftermath} ${fallThroughs.length > 0
           ? `This was the automatic fall-through after ${fallThroughSummary(fallThroughs)}: no further fall-through applies, so the dispatch fails with both causes.`
           : "No fallback was selected."}`);
       }

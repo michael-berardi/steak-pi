@@ -2623,6 +2623,27 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
           expect(text).not.toMatch(/Next usable route/);
         } finally { await shutdown(h); }
       });
+
+      // J-3821: the noClaude refusal keys on the project policy, not on whether the review quota was read. An image
+      // review and a review with no implicitReview.fallback both reach Claude today when Claude is up.
+      it.each([
+        ["an image review", { requireImages: true }, /never an image review\. No review was started/],
+        ["a text review with no implicitReview.fallback", {}, /no implicitReview\.fallback is configured\. No review was started/],
+      ])("refuses %s in a noClaude project before any review starts, even when Claude is up", async (_name, extra, fallbackNote) => {
+        const runner = done();
+        const { h, selected } = withPolicy(status({ codex: solUp, go: goUp, claude: claudeUp }), runner, { noClaudeProjects: "$project" });
+        if (Object.keys(extra).length === 0) setRoutingConfigOverride({ implicitReview: { route: "claude-code/claude-opus-5-5" } });
+        try {
+          const refused = dispatch(h, { ...extra, tasks: [{ label: "review", task: "Review the diff", role: "reviewer" }] });
+          await expect(refused).rejects.toThrow(/implicit review cannot run: Claude review route .*Claude is not allowed for this project \(policy noClaudeProjects: .+\)/);
+          await expect(refused).rejects.toThrow(fallbackNote);
+          expect(runner).not.toHaveBeenCalled();
+          expect(selected).toEqual([]);
+        } finally {
+          setRoutingConfigOverride(undefined);
+          await shutdown(h);
+        }
+      });
     });
 
     it("runs the Claude tier at the requested high effort on the substantial tier instead of refusing it", async () => {
