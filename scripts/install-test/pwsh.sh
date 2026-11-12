@@ -63,6 +63,39 @@ assert_contains "$HB/agent/settings.json" "$HB/steak-pi/releases/0.98.0/package"
 assert_contains "$W/p2.log" "Pi 1.0.4 was installed too" "P2 pi-installed message"
 [ -x "$HB/bin/pi" ] || { echo "FAIL: P2 pi shim"; exit 1; }
 
+assert_contains "$HB/bin/pi" "steak-pi-installer-shim" "P2 pi shim marker"
+assert_contains "$HB/bin/steak-pi" "steak-pi-installer-shim" "P2 steak-pi shim marker"
+
+echo "== P4: a foreign pi in the bin folder is left alone; the resolved lock version is used =="
+HD="$W/homeD"; mkdir -p "$HD/bin"
+printf '#!/bin/sh\necho users-own-pi\n' > "$HD/bin/pi"; chmod 755 "$HD/bin/pi"
+env HOME="$HD" PATH="$W/binB:/usr/bin:/bin" PI_CODING_AGENT_DIR="$HD/agent" \
+  STEAK_PI_HOME="$HD/steak-pi" STEAK_PI_BIN_DIR="$HD/bin" STEAK_PI_RELEASE_BASE="http://127.0.0.1:8791/baseB" \
+  NPM_CALLS="$HD/npm-calls.log" FAKE_PI="$W/fake-pi" \
+  "$PWSH" -NoProfile -File /rel/install.ps1 > "$W/p4.log" 2>&1 || { cat "$W/p4.log"; exit 1; }
+assert_contains "$HD/bin/pi" "users-own-pi" "P4 foreign pi preserved"
+assert_contains "$W/p4.log" "alone: it was not written by this installer" "P4 message"
+assert_contains "$HD/npm-calls.log" "@earendil-works/pi-coding-agent@1.0.4" "P4 resolved pin, not the ^1.0.0 range"
+assert_contains "$HD/agent/settings.json" "$HD/steak-pi/releases/0.98.0/package" "P4 settings pin"
+
+echo "== P5: re-run with our own pi shim on PATH is not taken for the user's Pi =="
+env HOME="$HB" PATH="$HB/bin:$W/binB:/usr/bin:/bin" PI_CODING_AGENT_DIR="$HB/agent" \
+  STEAK_PI_HOME="$HB/steak-pi" STEAK_PI_BIN_DIR="$HB/bin" STEAK_PI_RELEASE_BASE="http://127.0.0.1:8791/baseB" \
+  NPM_CALLS="$HB/npm-calls2.log" FAKE_PI="$W/fake-pi" \
+  "$PWSH" -NoProfile -File /rel/install.ps1 > "$W/p5.log" 2>&1 || { cat "$W/p5.log"; exit 1; }
+if grep -Fq "Pi is already installed" "$W/p5.log"; then echo "FAIL: P5 took its own shim for the user's Pi"; exit 1; fi
+assert_contains "$W/p5.log" "Pi 1.0.4 was installed too" "P5 message"
+
+echo "== P6: relative STEAK_PI_HOME and STEAK_PI_BIN_DIR (the cwd must not matter later) =="
+HE="$W/homeE"; mkdir -p "$HE/cwd"
+( cd "$HE/cwd" && env HOME="$HE" PATH="$W/binA:/usr/bin:/bin" PI_CODING_AGENT_DIR="$HE/agent" \
+  STEAK_PI_HOME="rel/steak-pi" STEAK_PI_BIN_DIR="./rel/bin" STEAK_PI_RELEASE_BASE="http://127.0.0.1:8791/base1" \
+  "$PWSH" -NoProfile -File /rel/install.ps1 > "$W/p6.log" 2>&1 ) || { cat "$W/p6.log"; exit 1; }
+assert_contains "$HE/agent/settings.json" "$HE/cwd/rel/steak-pi/releases/0.98.0/package" "P6 absolute pin from a relative home"
+[ -f "$HE/cwd/rel/steak-pi/releases/0.98.0/package/package.json" ] || { echo "FAIL: P6 release missing"; exit 1; }
+[ -x "$HE/cwd/rel/bin/steak-pi" ] || { echo "FAIL: P6 shim missing"; exit 1; }
+if ls "$HE/cwd/rel/steak-pi/releases" | grep -q '^\.staging'; then echo "FAIL: P6 staging folder left behind"; exit 1; fi
+
 echo "== P3: corrupted archive refused, nothing installed =="
 HC="$W/homeC"; mkdir -p "$HC"
 corrupt "$W/base1"

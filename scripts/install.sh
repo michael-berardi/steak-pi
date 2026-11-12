@@ -101,14 +101,20 @@ command -v "$NPM" >/dev/null 2>&1 || die "npm not found next to $NODE_BIN or on 
 # Pi: the one on PATH when present, else the pinned release installed into Steak Pi's own folder.
 PI_WAS_PRESENT=0
 PI_VERSION_INSTALLED=""
-if command -v pi >/dev/null 2>&1; then
+# A pi that is one of our own shims (from an earlier run) is not the user's Pi: it is installed again below.
+MARKER="steak-pi-installer-shim"
+# is_ours <file>: carries the marker, or is a 0.28.0 shim (no marker; it names a path inside our home folder).
+is_ours() { [ -f "$1" ] && { grep -qF "$MARKER" "$1" 2>/dev/null || grep -qF "$HOME_DIR/" "$1" 2>/dev/null; }; }
+FOUND_PI=$(command -v pi 2>/dev/null || true)
+if [ -n "$FOUND_PI" ] && ! is_ours "$FOUND_PI"; then
   PI_WAS_PRESENT=1
-  say "Pi is already installed ($(command -v pi)); using it."
+  say "Pi is already installed ($FOUND_PI); using it."
 else
   PI_VERSION_INSTALLED="${STEAK_PI_PI_VERSION:-}"
   if [ -z "$PI_VERSION_INSTALLED" ]; then
     [ -f "$TMP/src/package/package-lock.json" ] || die "the release has no package-lock.json to read the Pi version pin from; set STEAK_PI_PI_VERSION"
-    PI_VERSION_INSTALLED=$("$NODE_BIN" -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).packages[""].devDependencies["@earendil-works/pi-coding-agent"] || ""' "$TMP/src/package/package-lock.json")
+    PI_VERSION_INSTALLED=$("$NODE_BIN" -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).packages["node_modules/@earendil-works/pi-coding-agent"].version || ""' "$TMP/src/package/package-lock.json")
+    PI_VERSION_INSTALLED=$(printf '%s' "$PI_VERSION_INSTALLED" | tr -d '\r')
     [ -n "$PI_VERSION_INSTALLED" ] || die "no Pi version pin in the release's package-lock.json; set STEAK_PI_PI_VERSION"
   fi
   say "Pi not found; installing @earendil-works/pi-coding-agent@$PI_VERSION_INSTALLED into $HOME_DIR/pi..."
@@ -138,35 +144,45 @@ else
   rm -rf "$STAGE"; STAGE=""
 fi
 
-# The pi shim is added only when no pi existed before this run.
-write_shim() { # write_shim <name> <exec-target>
+# Shims carry a marker line. A file in the bin folder that we did not write is never replaced.
+# write_shim <name> <exec-target>; returns 1 (and says so) when it left a foreign file alone.
+write_shim() {
+  if [ -e "$BIN_DIR/$1" ] && ! is_ours "$BIN_DIR/$1"; then
+    say "Left $BIN_DIR/$1 alone: it was not written by this installer."
+    return 1
+  fi
   shim="$BIN_DIR/$1.tmp.$$"
   if [ -n "$NODE_DIR" ]; then
     cat > "$shim" <<WRAP
 #!/bin/sh
+# $MARKER
 PATH="$NODE_DIR/bin:\$PATH"; export PATH
 exec "$2" "\$@"
 WRAP
   else
     cat > "$shim" <<WRAP
 #!/bin/sh
+# $MARKER
 exec "$2" "\$@"
 WRAP
   fi
   chmod 755 "$shim"; mv -f "$shim" "$BIN_DIR/$1"
 }
-if [ "$PI_WAS_PRESENT" -eq 0 ]; then write_shim pi "$HOME_DIR/pi/node_modules/.bin/pi"; fi
-
 # Point Pi at the unpacked release. STEAK_PI_LIBEXEC is the CLI's supported way to pin a local folder
 # (the Homebrew wrapper uses it); without it `steak-pi install` would pin a git spec instead.
 say "Adding Steak Pi $VERSION to Pi..."
-PATH="$BIN_DIR:$PATH"; export PATH
+# Our own Pi is reachable through its node_modules/.bin during the install; its pi shim is written only afterwards.
+PATH="$BIN_DIR:$PATH"
+if [ "$PI_WAS_PRESENT" -eq 0 ]; then PATH="$HOME_DIR/pi/node_modules/.bin:$PATH"; fi
+export PATH
 STEAK_PI_LIBEXEC="$REL/package" "$REL/package/bin/steak-pi" install </dev/null || die "'steak-pi install' failed; Pi's settings were not changed"
 
-write_shim steak-pi "$REL/package/bin/steak-pi"
+if [ "$PI_WAS_PRESENT" -eq 0 ]; then write_shim pi "$HOME_DIR/pi/node_modules/.bin/pi" || true; fi
+STEAK_BIN="$BIN_DIR/steak-pi"
+write_shim steak-pi "$REL/package/bin/steak-pi" || STEAK_BIN="$REL/package/bin/steak-pi"
 
 # Health check: the CLI's own status must run and report the release.
-if STATUS_OUT=$("$BIN_DIR/steak-pi" status 2>&1 </dev/null); then
+if STATUS_OUT=$("$STEAK_BIN" status 2>&1 </dev/null); then
   printf '%s\n' "$STATUS_OUT"
 else
   printf '%s\n' "$STATUS_OUT" >&2
@@ -175,9 +191,9 @@ fi
 case "$STATUS_OUT" in *"$VERSION"*) ;; *) die "'steak-pi status' does not report $VERSION" ;; esac
 
 if [ "$PI_WAS_PRESENT" -eq 1 ]; then
-  say "Steak Pi $VERSION installed ($BIN_DIR/steak-pi). Pi was already installed; Steak Pi was added to it."
+  say "Steak Pi $VERSION installed ($STEAK_BIN). Pi was already installed; Steak Pi was added to it."
 else
-  say "Steak Pi $VERSION installed ($BIN_DIR/steak-pi). Pi $PI_VERSION_INSTALLED was installed too ($BIN_DIR/pi)."
+  say "Steak Pi $VERSION installed ($STEAK_BIN). Pi $PI_VERSION_INSTALLED was installed too ($BIN_DIR/pi)."
 fi
 case ":$PATH:" in *":$BIN_DIR:"*) ;; *) say "Add $BIN_DIR to your PATH:  export PATH=\"$BIN_DIR:\$PATH\"" ;; esac
 say "Next: steak-pi run"

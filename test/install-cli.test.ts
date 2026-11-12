@@ -3,7 +3,7 @@
 // pi / npm so both branches (Pi present, Pi absent) run offline. The real `npm ci` path is exercised with an
 // empty dependency set, exactly like the updater tests. Nothing touches the operator's ~/.pi or release folder.
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -25,11 +25,13 @@ function buildBase(base: string, version: string, withPin: boolean) {
   writeFileSync(join(pkg, "dep", "package.json"), JSON.stringify({ name: "dep", version: "1.0.0" }));
   writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "steak-pi", version, private: true, bin: { "steak-pi": "bin/steak-pi" }, dependencies: { dep: "file:dep" } }));
   const root: Record<string, unknown> = { name: "steak-pi", version, dependencies: { dep: "file:dep" } };
-  if (withPin) root.devDependencies = { "@earendil-works/pi-coding-agent": PI_PIN };
+  // The range in devDependencies differs from the resolved version on purpose: the installer must use the resolved one.
+  if (withPin) root.devDependencies = { "@earendil-works/pi-coding-agent": "^1.0.0" };
   writeFileSync(join(pkg, "package-lock.json"), JSON.stringify({ name: "steak-pi", version, lockfileVersion: 3, requires: true, packages: {
     "": root,
     dep: { name: "dep", version: "1.0.0" },
     "node_modules/dep": { name: "dep", version: "1.0.0", resolved: "dep", link: true },
+    ...(withPin ? { "node_modules/@earendil-works/pi-coding-agent": { version: PI_PIN } } : {}),
   } }));
   writeFileSync(join(pkg, "bin", "steak-pi"), readFileSync(CLI), { mode: 0o755 });
   mkdirSync(base, { recursive: true });
@@ -235,4 +237,126 @@ describe("steak-pi one-step installer (install.sh)", () => {
     expect(r.stderr).toContain("needs curl or wget");
     expect(existsSync(join(f.steakHome, "releases"))).toBe(false);
   }, 60000);
+
+  it("Pi absent: the pin is the RESOLVED lockfile version, not the devDependencies range", () => {
+    const f = fixture({ piPresent: false, fakeNpm: true });
+    const r = runInstall(f);
+    expect(r.status, r.stderr).toBe(0);
+    const calls = readFileSync(f.npmCalls, "utf8");
+    expect(calls).toContain(`@earendil-works/pi-coding-agent@${PI_PIN}`);
+    expect(calls).not.toContain("^1.0.0");
+  }, 120000);
+
+  it("every shim carries the marker, and the pi shim is written only after steak-pi install succeeded", () => {
+    const f = fixture({ piPresent: false, fakeNpm: true });
+    expect(runInstall(f).status).toBe(0);
+    for (const name of ["pi", "steak-pi"]) expect(readFileSync(join(f.bin, name), "utf8")).toContain("steak-pi-installer-shim");
+    // A Pi whose `install` fails: the run fails and no pi shim is left behind.
+    const g = fixture({ piPresent: false, fakeNpm: true });
+    writeFileSync(join(g.home, "fake-pi-fails"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    const r = runInstall(g, { FAKE_PI: join(g.home, "fake-pi-fails") });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain("'steak-pi install' failed");
+    expect(existsSync(join(g.bin, "pi"))).toBe(false);
+  }, 180000);
+
+  it("never replaces a pi or steak-pi in the bin folder that the installer did not write", () => {
+    const f = fixture({ piPresent: false, fakeNpm: true });
+    mkdirSync(f.bin, { recursive: true });
+    writeFileSync(join(f.bin, "pi"), "#!/bin/sh\necho users-own-pi\n", { mode: 0o755 });
+    writeFileSync(join(f.bin, "steak-pi"), "#!/bin/sh\necho users-own-steak-pi\n", { mode: 0o755 });
+    const r = runInstall(f);
+    expect(r.status, r.stderr).toBe(0);
+    expect(readFileSync(join(f.bin, "pi"), "utf8")).toContain("users-own-pi");
+    expect(readFileSync(join(f.bin, "steak-pi"), "utf8")).toContain("users-own-steak-pi");
+    expect(r.stdout).toContain("alone: it was not written by this installer");
+    expect(settings(f).packages).toEqual([join(f.steakHome, "releases", V1, "package")]);
+  }, 120000);
+
+  it("a re-run does not take its own pi shim for a Pi the user already had", () => {
+    const f = fixture({ piPresent: false, fakeNpm: true });
+    expect(runInstall(f).status).toBe(0);
+    const again = runInstall(f, { PATH: `${f.bin}:${f.env.PATH}` }); // our shim is now on PATH
+    expect(again.status, again.stderr).toBe(0);
+    expect(again.stdout).not.toContain("Pi is already installed");
+    expect(again.stdout).toContain(`Pi ${PI_PIN} was installed too`);
+    expect(readFileSync(join(f.bin, "pi"), "utf8")).toContain("steak-pi-installer-shim");
+  }, 180000);
+
+  it("replaces a 0.28.0 shim (no marker, names a path inside the Steak Pi home)", () => {
+    const f = fixture({ piPresent: true, fakeNpm: false });
+    mkdirSync(f.bin, { recursive: true });
+    writeFileSync(join(f.bin, "steak-pi"), `#!/bin/sh\nexec "${f.steakHome}/releases/0.27.0/package/bin/steak-pi" "$@"\n`, { mode: 0o755 });
+    const r = runInstall(f);
+    expect(r.status, r.stderr).toBe(0);
+    expect(readFileSync(join(f.bin, "steak-pi"), "utf8")).toContain("steak-pi-installer-shim");
+  }, 120000);
+});
+
+describe("scripts/build-release.sh output folder guard", () => {
+  const BUILD = resolve(import.meta.dirname, "..", "scripts", "build-release.sh");
+  const root = resolve(import.meta.dirname, "..");
+  for (const out of [".", "/", ""]) {
+    it(`refuses ${JSON.stringify(out)} before deleting anything`, () => {
+      const r = spawnSync("/bin/sh", [BUILD, out], { encoding: "utf8", cwd: root });
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toContain("refusing output folder");
+      expect(existsSync(join(root, "package.json"))).toBe(true);
+    });
+  }
+  it("refuses the repository root given as an absolute path", () => {
+    const r = spawnSync("/bin/sh", [BUILD, root], { encoding: "utf8", cwd: root });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain("refusing output folder");
+    expect(existsSync(join(root, "package.json"))).toBe(true);
+  });
+  it("zips deterministically with gzip -n on the bsdtar branch", () => {
+    expect(readFileSync(BUILD, "utf8")).toContain("gzip -n");
+  });
+});
+
+describe("scripts/install.ps1 static guards (Windows-only patterns that must not return)", () => {
+  const ps1 = readFileSync(resolve(import.meta.dirname, "..", "scripts", "install.ps1"), "utf8");
+  const code = ps1.split("\n").filter((l) => !l.trimStart().startsWith("#")).join("\n");
+  it("finds Git's own sh and never a bash by name", () => {
+    expect(code).not.toMatch(/Get-Command\s+bash/);
+    expect(code).toMatch(/Git\\bin\\sh\.exe/);
+    expect(code).toContain("$env:SystemRoot");
+  });
+  it("passes no double quotes inside a node -p argument", () => {
+    expect(code).not.toMatch(/-p\s+'[^']*"/);
+    expect(code).toContain("read-pi-pin.js");
+    expect(code).toContain("node_modules/@earendil-works/pi-coding-agent");
+    expect(code).not.toContain("devDependencies");
+  });
+  it("writes no shim as ASCII; .cmd shims are %~dp0-relative or OEM-encoded", () => {
+    expect(code).not.toMatch(/-Encoding\s+Ascii/i);
+    expect(code).toContain("%~dp0..");
+    expect(code).toContain("OEMCodePage");
+  });
+  it("unpacks into a staging folder under the Steak Pi home, not %TEMP%", () => {
+    expect(code).not.toMatch(/\$src\s*=\s*Join-Path\s+\$tmp/);
+    expect(code).not.toMatch(/Move-Item\s+\$pkgSrc\s+\(Join-Path\s+\$stage/);
+    expect(code).toMatch(/\$stage\s*=\s*Join-Path\s+\$releases/);
+  });
+  it("removes an existing node folder before the zip Move-Item", () => {
+    expect(code).toMatch(/Remove-Item[^\n]*\$nodeDir[^\n]*\n\s*Move-Item\s+\$inner\.FullName\s+\$nodeDir/);
+  });
+  it("relaxes ErrorActionPreference around captured native stderr (2>&1)", () => {
+    for (const line of code.split("\n").filter((l) => /status 2>&1/.test(l))) expect(line).toBeTruthy();
+    expect(code).toMatch(/ErrorActionPreference = 'Continue'[\s\S]*status 2>&1/);
+  });
+  it("normalises the home and bin paths, opts in to TLS 1.2, and leaves the session alone", () => {
+    expect(code).toContain("GetUnresolvedProviderPathFromPSPath($homeDir)");
+    expect(code).toContain("GetUnresolvedProviderPathFromPSPath($binDir)");
+    expect(code).toContain("SecurityProtocolType]::Tls12");
+    expect(code).toContain("$ProgressPreference = 'SilentlyContinue'");
+    expect(code).not.toMatch(/^\$ErrorActionPreference/m);
+    expect(code).not.toMatch(/^\s*exit\b/m);
+  });
+  it("marks every shim and checks the marker before writing", () => {
+    expect(code).toContain("steak-pi-installer-shim");
+    expect(code).toContain("Test-OwnShim");
+    expect(code).toContain("not written by this installer");
+  });
 });

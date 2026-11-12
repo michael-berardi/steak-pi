@@ -7,9 +7,7 @@
 # Environment: STEAK_PI_HOME (Windows default %LOCALAPPDATA%\steak-pi), STEAK_PI_BIN_DIR, STEAK_PI_VERSION,
 # STEAK_PI_PI_VERSION (Pi version when pi is absent; default: the pin in the release's package-lock.json),
 # STEAK_PI_RELEASE_BASE (override the download base URL, used by tests).
-$ErrorActionPreference = 'Stop'
-
-function Main {
+function Install-SteakPi {
   $repo = 'github.com/michael-berardi/steak-pi'
   $onWindows = ($PSVersionTable.PSVersion.Major -lt 6) -or $IsWindows
   $base = if ($env:STEAK_PI_RELEASE_BASE) { $env:STEAK_PI_RELEASE_BASE }
@@ -22,7 +20,15 @@ function Main {
   $binDir = if ($env:STEAK_PI_BIN_DIR) { $env:STEAK_PI_BIN_DIR }
             elseif ($onWindows) { Join-Path $homeDir 'bin' }
             else { Join-Path $HOME '.local/bin' }
+  # Normalise now: a relative path or one with '/' would otherwise defeat every later path comparison.
+  $homeDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($homeDir)
+  $binDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($binDir)
   $releases = Join-Path $homeDir 'releases'
+  # Windows PowerShell 5.1: opt in to TLS 1.2 (GitHub and nodejs.org require it) and skip the slow progress bar.
+  if ($PSVersionTable.PSVersion.Major -lt 6) {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+  }
+  $ProgressPreference = 'SilentlyContinue'
 
   function Fail([string]$message) { throw "steak-pi install: $message" }
   # Progress lines for the person running the installer: the information stream prints them, and they stay out of the output pipeline.
@@ -49,12 +55,25 @@ function Main {
   if (-not (Get-Command tar -ErrorAction SilentlyContinue)) {
     Fail 'needs tar to unpack the release; Windows 10 1803+ ships tar.exe, or install Git for Windows (https://git-scm.com/download/win)'
   }
-  $sh = Get-Command sh -ErrorAction SilentlyContinue
-  if (-not $sh) { $sh = Get-Command bash -ErrorAction SilentlyContinue }
-  if (-not $sh) {
+  # The CLI is a POSIX shell script. On Windows use Git for Windows' own sh.exe: Git's default PATH has only Git\cmd,
+  # and a bash found by name is usually the WSL launcher in System32, which cannot run it. Never accept anything under SystemRoot.
+  $shExe = $null
+  if ($onWindows) {
+    $candidates = @()
+    $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+    if ($gitCmd -and $gitCmd.Source) { $candidates += (Join-Path (Split-Path (Split-Path $gitCmd.Source -Parent) -Parent) 'bin\sh.exe') }
+    if ($env:ProgramFiles) { $candidates += (Join-Path $env:ProgramFiles 'Git\bin\sh.exe') }
+    foreach ($c in $candidates) {
+      $underSystem = $env:SystemRoot -and $c.StartsWith($env:SystemRoot, [StringComparison]::OrdinalIgnoreCase)
+      if (-not $underSystem -and (Test-Path -LiteralPath $c)) { $shExe = $c; break }
+    }
+  } else {
+    $sh = Get-Command sh -ErrorAction SilentlyContinue
+    if ($sh) { $shExe = $sh.Source }
+  }
+  if (-not $shExe) {
     Fail "the steak-pi CLI is a POSIX shell script and needs sh; install Git for Windows (https://git-scm.com/download/win), which provides sh.exe, then run this again"
   }
-  $shExe = $sh.Source
 
   $tmp = Join-Path ([IO.Path]::GetTempPath()) ('steak-pi-install-' + [guid]::NewGuid())
   New-Item -ItemType Directory -Path $tmp | Out-Null
@@ -67,7 +86,10 @@ function Main {
     Fetch "$base/$archive" (Join-Path $tmp $archive)
     Fetch "$base/SHA256SUMS" (Join-Path $tmp 'SHA256SUMS')
     Assert-Sum -file (Join-Path $tmp $archive) -name $archive -sumsFile (Join-Path $tmp 'SHA256SUMS')
-    $src = Join-Path $tmp 'src'
+    # Unpack straight into a staging folder inside Steak Pi's own home (Move-Item across drives fails on Windows PowerShell 5.1).
+    New-Item -ItemType Directory -Force -Path $releases | Out-Null
+    $stage = Join-Path $releases ('.staging-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
+    $src = $stage
     New-Item -ItemType Directory -Path $src | Out-Null
     & tar -xzf (Join-Path $tmp $archive) -C $src
     if ($LASTEXITCODE -ne 0) { Fail 'cannot unpack the download (tar failed)' }
@@ -111,6 +133,7 @@ function Main {
         if ($onWindows) {
           Expand-Archive (Join-Path $tmp $nname) -DestinationPath $nodeTmp
           $inner = Get-ChildItem $nodeTmp | Select-Object -First 1
+          if (Test-Path $nodeDir) { Remove-Item -Recurse -Force $nodeDir }
           Move-Item $inner.FullName $nodeDir
           Remove-Item -Recurse -Force $nodeTmp
         } else {
@@ -133,20 +156,34 @@ function Main {
     }
 
     # Pi: the one on PATH when present, else the pinned release installed into Steak Pi's own folder.
-    $piWasPresent = [bool](Get-Command pi -ErrorAction SilentlyContinue)
+    # A pi that is one of our own shims (an earlier run) is not the user's Pi: it is installed again below.
+    $marker = 'steak-pi-installer-shim'
+    # Ours: carries the marker, or is a 0.28.0 shim (no marker; it names a path inside our home folder).
+    function Test-OwnShim([string]$file) {
+      if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return $false }
+      $text = [IO.File]::ReadAllText($file)
+      return $text.Contains($marker) -or $text.Contains($homeDir)
+    }
+    $foundPi = Get-Command pi -ErrorAction SilentlyContinue | Select-Object -First 1
+    $piWasPresent = [bool]$foundPi -and -not ($foundPi.Source -and (Test-OwnShim $foundPi.Source))
     $piVersionInstalled = $null
     $piHome = Join-Path $homeDir 'pi'
     if ($piWasPresent) {
-      Say "Pi is already installed ($((Get-Command pi).Source)); using it."
+      Say "Pi is already installed ($($foundPi.Source)); using it."
     } else {
       $piVersionInstalled = $env:STEAK_PI_PI_VERSION
       if (-not $piVersionInstalled) {
         $lockPath = Join-Path $pkgSrc 'package-lock.json'
         if (-not (Test-Path $lockPath)) { Fail 'the release has no package-lock.json to read the Pi version pin from; set STEAK_PI_PI_VERSION' }
-        # Read the pin with Node (always present here): ConvertFrom-Json rejects the lockfile's "" key,
-        # and -AsHashTable does not exist in Windows PowerShell 5.1. Same expression as install.sh.
-        $piVersionInstalled = (& $nodeBin -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).packages[""].devDependencies["@earendil-works/pi-coding-agent"] || ""' $lockPath | Select-Object -First 1)
-        if ($LASTEXITCODE -ne 0) { Fail 'cannot read the Pi version pin from package-lock.json (node failed to parse it)' }
+        # Read the RESOLVED version with Node (always present here): ConvertFrom-Json rejects the lockfile's "" key, and
+        # -AsHashTable does not exist in Windows PowerShell 5.1. The JavaScript lives in a file: Windows PowerShell 5.1
+        # passes double quotes inside a native argument unescaped, which broke `node -p '...'`.
+        $readPin = Join-Path $tmp 'read-pi-pin.js'
+        [IO.File]::WriteAllText($readPin, "const l = JSON.parse(require('fs').readFileSync(process.argv[2], 'utf8'));`nconst e = l.packages && l.packages['node_modules/@earendil-works/pi-coding-agent'];`nconsole.log((e && e.version) || '');`n")
+        $savedEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+        try { $piVersionInstalled = (& $nodeBin $readPin $lockPath 2>&1 | Select-Object -First 1); $pinCode = $LASTEXITCODE }
+        finally { $ErrorActionPreference = $savedEap }
+        if ($pinCode -ne 0) { Fail 'cannot read the Pi version pin from package-lock.json (node failed to parse it)' }
         if ($piVersionInstalled) { $piVersionInstalled = "$piVersionInstalled".Trim() }
         if (-not $piVersionInstalled) { Fail "no Pi version pin in the release's package-lock.json; set STEAK_PI_PI_VERSION" }
       }
@@ -170,60 +207,92 @@ function Main {
     } else {
       if (Test-Path $rel) { Fail "release destination $rel already exists but is incomplete; preserved it (remove it and run this again)" }
       Say "Installing Steak Pi $version..."
-      $stage = Join-Path $releases (".staging-$version-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
-      New-Item -ItemType Directory -Path $stage | Out-Null
-      Move-Item $pkgSrc (Join-Path $stage 'package')
       # The same dependency install `steak-pi update` runs: the extensions import Pi's own packages, so dev dependencies stay.
-      Push-Location (Join-Path $stage 'package')
+      Push-Location $pkgSrc
       try {
         & $npmBin ci --ignore-scripts --no-audit --no-fund --loglevel=error
         $ciCode = $LASTEXITCODE
       } finally { Pop-Location }
       if ($ciCode -ne 0) { Fail "npm ci failed for Steak Pi $version; nothing was changed" }
       New-Item -ItemType Directory -Path $rel | Out-Null
-      Move-Item (Join-Path $stage 'package') $pkg
+      Move-Item $pkgSrc $pkg
       Remove-Item -Recurse -Force $stage; $stage = $null
     }
 
     # Shims: .cmd on Windows; on Linux (PowerShell 7 testing) plain sh shims so the commands run there too.
+    # Every shim carries the marker line; a file in the bin folder that we did not write is never replaced.
+    # Windows paths under Steak Pi's own home are written relative to the shim (%~dp0): the shim is plain ASCII that
+    # way, whatever the user's profile folder is called. Anything else is written in the OEM code page cmd.exe reads.
+    $binIsHomeBin = $onWindows -and ($binDir -eq (Join-Path $homeDir 'bin'))
+    function Get-ShimPath([string]$path) {
+      if ($binIsHomeBin -and $path.StartsWith("$homeDir\", [StringComparison]::OrdinalIgnoreCase)) { return '%~dp0..\' + $path.Substring($homeDir.Length + 1) }
+      return $path
+    }
+    function Get-ShPath([string]$path) { # the same path for an sh script sitting in the bin folder
+      if ($binIsHomeBin -and $path.StartsWith("$homeDir\", [StringComparison]::OrdinalIgnoreCase)) { return '"$(dirname "$0")/../' + $path.Substring($homeDir.Length + 1).Replace('\', '/') + '"' }
+      return '"' + $path.Replace('\', '/') + '"'
+    }
     function Write-Shim([string]$name, [string]$target, [string]$interpreter) {
+      $files = if ($onWindows) { @("$name.cmd") } else { @($name) }
+      if ($onWindows -and $name -eq 'pi') { $files += 'pi' } # Git's sh, which runs the steak-pi CLI, finds `pi` only without an extension
+      foreach ($f in $files) {
+        if ((Test-Path -LiteralPath (Join-Path $binDir $f)) -and -not (Test-OwnShim (Join-Path $binDir $f))) {
+          Say "Left $(Join-Path $binDir $f) alone: it was not written by this installer."
+          return $false
+        }
+      }
       if ($onWindows) {
-        $lines = @('@echo off')
-        if ($nodeDir) { $lines += "set `"PATH=$nodeDir;%PATH%`"" }
-        if ($interpreter) { $lines += "@`"$interpreter`" `"$target`" %*" } else { $lines += "@`"$target`" %*" }
-        $shim = Join-Path $binDir "$name.cmd"
-        Set-Content -Path $shim -Value ($lines -join "`r`n") -Encoding Ascii
+        $lines = @('@echo off', "REM $marker")
+        if ($nodeDir) { $lines += "set `"PATH=$(Get-ShimPath $nodeDir);%PATH%`"" }
+        if ($interpreter) { $lines += "@`"$(Get-ShimPath $interpreter)`" `"$(Get-ShimPath $target)`" %*" } else { $lines += "@`"$(Get-ShimPath $target)`" %*" }
+        $oem = [Text.Encoding]::GetEncoding([Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage)
+        [IO.File]::WriteAllText((Join-Path $binDir "$name.cmd"), (($lines -join "`r`n") + "`r`n"), $oem)
+        if ($name -eq 'pi') {
+          $sl = @('#!/bin/sh', "# $marker")
+          if ($interpreter) { $sl += "exec $(Get-ShPath $interpreter) $(Get-ShPath $target) `"`$@`"" } else { $sl += "exec $(Get-ShPath $target) `"`$@`"" }
+          [IO.File]::WriteAllText((Join-Path $binDir 'pi'), (($sl -join "`n") + "`n"), (New-Object Text.UTF8Encoding($false)))
+        }
       } else {
-        $lines = @('#!/bin/sh')
+        $lines = @('#!/bin/sh', "# $marker")
         if ($nodeDir) { $lines += "PATH=`"$(Join-Path $nodeDir 'bin'):`$PATH`"; export PATH" }
         if ($interpreter) { $lines += "exec `"$interpreter`" `"$target`" `"`$@`"" } else { $lines += "exec `"$target`" `"`$@`"" }
         $shim = Join-Path $binDir $name
-        Set-Content -Path $shim -Value ($lines -join "`n") -Encoding Ascii
+        [IO.File]::WriteAllText($shim, (($lines -join "`n") + "`n"), (New-Object Text.UTF8Encoding($false)))
         & chmod 755 $shim
       }
-    }
-    if (-not $piWasPresent) {
-      if ($onWindows) {
-        $piPkgDir = Join-Path $piHome 'node_modules\@earendil-works\pi-coding-agent'
-        $piBinRel = (Get-Content (Join-Path $piPkgDir 'package.json') -Raw | ConvertFrom-Json).bin.pi
-        if (-not $piBinRel) { Fail 'the installed Pi package declares no pi bin entry' }
-        Write-Shim -name 'pi' -target (Join-Path $piPkgDir $piBinRel) -interpreter $nodeBin
-      } else {
-        Write-Shim -name 'pi' -target (Join-Path $piHome 'node_modules/.bin/pi') -interpreter $null
-      }
+      return $true
     }
 
     # Point Pi at the unpacked release. STEAK_PI_LIBEXEC is the CLI's supported way to pin a local folder
     # (the Homebrew wrapper uses it); without it `steak-pi install` would pin a git spec instead.
     Say "Adding Steak Pi $version to Pi..."
+    # Our own Pi is reachable through its node_modules\.bin during the install; its pi shim is written only afterwards.
     $env:PATH = "$binDir$([IO.Path]::PathSeparator)$env:PATH"
+    if (-not $piWasPresent) { $env:PATH = "$(Join-Path $piHome 'node_modules\.bin')$([IO.Path]::PathSeparator)$env:PATH" }
     $env:STEAK_PI_LIBEXEC = $pkg
     & $shExe (Join-Path $pkg 'bin/steak-pi') install
     $installCode = $LASTEXITCODE
     $env:STEAK_PI_LIBEXEC = $savedLibexec
     if ($installCode -ne 0) { Fail "'steak-pi install' failed; Pi's settings were not changed" }
 
-    Write-Shim -name 'steak-pi' -target (Join-Path $pkg 'bin/steak-pi') -interpreter $(if ($onWindows) { $shExe } else { $null })
+    # The pi shim is written only after `steak-pi install` succeeded, and only when no Pi of the user's existed.
+    if (-not $piWasPresent) {
+      $piTarget = $null; $piInterp = $null
+      if ($onWindows) {
+        $piPkgDir = Join-Path $piHome 'node_modules\@earendil-works\pi-coding-agent'
+        $piBinRel = (Get-Content (Join-Path $piPkgDir 'package.json') -Raw | ConvertFrom-Json).bin.pi
+        if (-not $piBinRel) { Fail 'the installed Pi package declares no pi bin entry' }
+        $piTarget = Join-Path $piPkgDir $piBinRel; $piInterp = $nodeBin
+      } else {
+        $piTarget = Join-Path $piHome 'node_modules/.bin/pi'
+      }
+      [void](Write-Shim -name 'pi' -target $piTarget -interpreter $piInterp)
+    }
+
+    $steakShim = Join-Path $binDir $(if ($onWindows) { 'steak-pi.cmd' } else { 'steak-pi' })
+    if (-not (Write-Shim -name 'steak-pi' -target (Join-Path $pkg 'bin/steak-pi') -interpreter $(if ($onWindows) { $shExe } else { $null }))) {
+      $steakShim = $null
+    }
 
     # Windows: add the bin folder to the USER Path only when absent. Never edits profiles.
     if ($onWindows) {
@@ -236,20 +305,24 @@ function Main {
     }
 
     # Health check: the CLI's own status must run and report the release.
-    $steakShim = Join-Path $binDir $(if ($onWindows) { 'steak-pi.cmd' } else { 'steak-pi' })
-    $statusOut = & $steakShim status 2>&1
-    $statusCode = $LASTEXITCODE
-    $statusOut | ForEach-Object { Say $_ }
+    # Native stderr merged into the output: under 'Stop' Windows PowerShell 5.1 turns its first line into a terminating error.
+    $savedEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try {
+      if ($steakShim) { $statusOut = & $steakShim status 2>&1 }
+      else { $steakShim = Join-Path $pkg 'bin/steak-pi'; $statusOut = & $shExe $steakShim status 2>&1 }
+      $statusCode = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $savedEap }
+    $statusOut | ForEach-Object { Say "$_" }
     if ($statusCode -ne 0) { Fail "'steak-pi status' failed after installing" }
     if (($statusOut -join "`n") -notmatch [regex]::Escape($version)) { Fail "'steak-pi status' does not report $version" }
 
     if ($piWasPresent) {
       Say "Steak Pi $version installed ($steakShim). Pi was already installed; Steak Pi was added to it."
     } else {
-      Say "Steak Pi $version installed ($steakShim). Pi $piVersionInstalled was installed too ($(Join-Path $binDir $(if ($onWindows) { 'pi.cmd' } else { 'pi' })))."
+      Say "Steak Pi $version installed ($steakShim). Pi $piVersionInstalled was installed too ($(Join-Path $binDir $(if ($onWindows) { 'pi.cmd' } else { 'pi' })) unless that name was left alone)."
     }
     if (-not $onWindows) {
-      if (($env:PATH -split [IO.Path]::PathSeparator) -notcontains $binDir) {
+      if (($savedPath -split [IO.Path]::PathSeparator) -notcontains $binDir) {
         Say "Add $binDir to your PATH:  export PATH=`"$binDir`:`$PATH`""
       }
     }
@@ -263,4 +336,9 @@ function Main {
   }
 }
 
-Main
+# Run in a function so nothing but this one call touches the caller's session (irm | iex).
+function Invoke-SteakPiInstall {
+  $ErrorActionPreference = 'Stop'
+  Install-SteakPi
+}
+Invoke-SteakPiInstall

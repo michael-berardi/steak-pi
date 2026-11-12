@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.28.1 (2026-11-11)
+
+Fixes in the one-step installers. Windows was tested under PowerShell 7 on Linux, not yet on a Windows machine.
+
+- **Windows: the installer found the wrong `sh`.** It could pick the WSL launcher in System32 as the shell for the CLI. It now uses Git for Windows' own `sh.exe` (found from `git` or Program Files) and never anything under the Windows folder.
+- **Windows: the first install without Pi failed** because Windows PowerShell passes double quotes in a command argument unescaped, which broke the one-line Node call that reads the Pi pin. The JavaScript now runs from a file.
+- **Both installers installed Pi's version range instead of the resolved version.** They now read the exact version from the lockfile.
+- **Shims are marked, and a file the installer did not write is never replaced.** A `pi` or `steak-pi` already in the bin folder is left alone with a one-line message. A re-run no longer mistakes its own `pi` shim for a Pi you had before, and the `pi` shim is written only after `steak-pi install` succeeded.
+- **Windows: shims are `%~dp0`-relative** so a profile folder with non-ASCII characters works, others are written in the OEM code page; the release is unpacked straight into a staging folder under the Steak Pi home (no cross-drive move); an existing Node folder is replaced cleanly; native stderr no longer aborts the health check; relative or `/` home overrides are normalised; TLS 1.2 is enabled on Windows PowerShell 5.1; the script no longer leaves `$ErrorActionPreference` changed in your session.
+- `scripts/build-release.sh` refuses an empty, `.`, `/` or repository-root output folder before deleting it, and gzips deterministically on macOS.
+
 ## 0.28.0 (2026-11-11)
 
 - **One-step installers.** The GitHub release now offers `install.sh` (macOS and Linux) and `install.ps1` (Windows), plus the package archive and `SHA256SUMS`. One command downloads the release, checks its SHA-256 before installing, unpacks it into the release-folder layout `steak-pi update` maintains, points Pi at it, adds the `steak-pi` command, and finishes with `steak-pi status`. It uses the Node 22.19+ and `pi` already on the machine, or fetches the official Node and installs the pinned Pi into the Steak Pi folder when they are missing (a `pi` shim is added only when none existed). Re-running upgrades in place. No sudo, no shell-profile edits.

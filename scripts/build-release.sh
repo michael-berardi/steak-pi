@@ -8,7 +8,13 @@
 # Usage: scripts/build-release.sh [out-dir]   (run from a clean checkout of the release tag)
 set -eu
 cd "$(dirname "$0")/.."
-OUT="${1:-dist/release}"
+OUT="${1-dist/release}"
+# Refuse an output folder that would wipe something important before the rm -rf below.
+case "$OUT" in ""|.|./|/|..|../) echo "build-release: refusing output folder '$OUT'" >&2; exit 1 ;; esac
+if [ -d "$OUT" ]; then
+  out_abs=$(cd "$OUT" && pwd -P); root_abs=$(pwd -P)
+  { [ "$out_abs" != "/" ] && [ "$out_abs" != "$root_abs" ]; } || { echo "build-release: refusing output folder '$OUT' (the repository root or /)" >&2; exit 1; }
+fi
 [ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "build-release: the working tree has changes; build from a clean checkout" >&2; exit 1; }
 VERSION=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' package.json | head -n 1)
 [ -n "$VERSION" ] || { echo "build-release: cannot read the version from package.json" >&2; exit 1; }
@@ -23,7 +29,8 @@ git archive --format=tar HEAD | tar -x -C "$stage/package"
 if tar --version 2>/dev/null | grep -qi gnu; then
   tar -C "$stage" --owner=0 --group=0 --numeric-owner --mtime=@0 --no-recursion -czf "$OUT/steak-pi-$VERSION.tgz" -T "$stage.list"
 else
-  COPYFILE_DISABLE=1 tar -C "$stage" --uid 0 --gid 0 --uname root --gname root --no-xattrs --no-recursion -czf "$OUT/steak-pi-$VERSION.tgz" -T "$stage.list"
+  COPYFILE_DISABLE=1 tar -C "$stage" --uid 0 --gid 0 --uname root --gname root --no-xattrs --no-recursion -cf "$stage.tar" -T "$stage.list"
+  gzip -n < "$stage.tar" > "$OUT/steak-pi-$VERSION.tgz"; rm -f "$stage.tar"
 fi
 rm -f "$stage.list"
 cp "$OUT/steak-pi-$VERSION.tgz" "$OUT/steak-pi.tgz"

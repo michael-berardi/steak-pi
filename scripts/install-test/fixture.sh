@@ -8,7 +8,7 @@ make_base() { # make_base <dir> <version> <pin: yes|no>
   mkdir -p "$b" "$W/src-$v/package/bin"
   printf '{"name":"steak-pi","version":"%s","private":true,"bin":{"steak-pi":"bin/steak-pi"}}' "$v" > "$W/src-$v/package/package.json"
   if [ "$pin" = yes ]; then
-    printf '{"name":"steak-pi","version":"%s","lockfileVersion":3,"requires":true,"packages":{"":{"name":"steak-pi","version":"%s","devDependencies":{"@earendil-works/pi-coding-agent":"1.0.4"}}}}' "$v" "$v" > "$W/src-$v/package/package-lock.json"
+    printf '{"name":"steak-pi","version":"%s","lockfileVersion":3,"requires":true,"packages":{"":{"name":"steak-pi","version":"%s","devDependencies":{"@earendil-works/pi-coding-agent":"^1.0.0"}},"node_modules/@earendil-works/pi-coding-agent":{"version":"1.0.4"}}}' "$v" "$v" > "$W/src-$v/package/package-lock.json"
   else
     printf '{"name":"steak-pi","version":"%s","lockfileVersion":3,"requires":true,"packages":{"":{"name":"steak-pi","version":"%s"}}}' "$v" "$v" > "$W/src-$v/package/package-lock.json"
   fi
