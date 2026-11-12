@@ -24,8 +24,10 @@ export type EvidenceOutcome = "pass" | "fail" | "unknown";
 /** Where the outcome came from, weakest last: a reviewer's verdict, a test gate the worker reported, an
  * operator's explicit record, or only the worker's own final state. */
 export type EvidenceSource = "verification" | "test-gate" | "operator" | "worker-state";
-/** `content-filter`: the provider inspected the input and refused it (an HTTP 400 naming a content-inspection code). The route is not at fault. */
-export const FAILURE_KINDS = ["empty-output", "reasoning-exhausted", "tool-error", "http-4xx", "http-5xx", "quota", "rate-limit", "content-filter", "other"] as const;
+/** `content-filter`: the provider inspected the input and refused it (an HTTP 400 naming a content-inspection code). The route is not at fault.
+ * `budget`: the task ran out of its turn or time budget. It counts as a failure exactly like `other` (the router treats
+ * the two alike); it has its own name so a store can tell tasks that ran out of budget from tasks that broke. */
+export const FAILURE_KINDS = ["empty-output", "reasoning-exhausted", "tool-error", "http-4xx", "http-5xx", "quota", "rate-limit", "content-filter", "budget", "other"] as const;
 export type FailureKind = (typeof FAILURE_KINDS)[number];
 
 export interface TaskEvidence {
@@ -237,7 +239,7 @@ export class RouteEvidenceStore {
 export function classifyFailure(error: string | undefined): FailureKind {
   const message = error ?? "";
   // A budget stop says nothing about the route; its numbers must not read as an HTTP status.
-  if (/turn.limit|-turn|turn budget|time budget|deadline|timed out after/i.test(message) && !/\b402\b|insufficient[_ ]credits/i.test(message)) return "other";
+  if (/turn.limit|-turn|turn budget|time budget|deadline|timed out after/i.test(message) && !/\b402\b|insufficient[_ ]credits/i.test(message)) return "budget";
   // `insufficient_quota` and `Allocated quota exceeded` arrive as HTTP 429 bodies: spent quota, not a throttle, so they
   // hop to the next tier rather than being read as a transient rate limit.
   if (/\b402\b|insufficient[_ ]credits|insufficient[_ ]quota|allocated quota exceeded|requires more credits|no endpoints? (?:found|available)|endpoints? out of \d+ requested|subscription_quota_exceeded|usage limit|quota[_ -]?(?:exhausted|exceeded|reached)/i.test(message)) return "quota";

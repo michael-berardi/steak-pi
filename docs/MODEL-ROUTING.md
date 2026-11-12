@@ -430,7 +430,8 @@ dispatch note shows the numbers behind each pick, for example
 
 **What is recorded.** One `task` record per task of a classed wave when it settles: the class, the route (the
 chain entry that finished it), `outcome` (`pass`, `fail`, `unknown`), its `source`, wall seconds, dollars, tokens and,
-for a failure, a `failureKind`: `empty-output`, `reasoning-exhausted`, `tool-error`, `http-4xx`, `http-5xx`, `quota` or
+for a failure, a `failureKind`: `empty-output`, `reasoning-exhausted`, `tool-error`, `http-4xx`, `http-5xx`, `quota`,
+`rate-limit`, `content-filter`, `budget` (the task ran out of its turn or time budget; ranked exactly like `other`) or
 `other`. A route a task left on the way (a failover) gets its own `fail` record with the cause. Only a task that
 itself declared the class counts. The outcome's source, strongest first:
 

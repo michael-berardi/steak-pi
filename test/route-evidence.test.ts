@@ -153,7 +153,10 @@ describe("failure kinds", () => {
     ["Child produced no final output", "empty-output"],
     ["Child ran out of output tokens before a final answer (stopReason length)", "reasoning-exhausted"],
     ["Every attempted native tool call failed", "tool-error"],
-    ["Child exceeded the 500-turn limit; the partial report is evidence", "other"],
+    ["Child exceeded the 500-turn limit; the partial report is evidence", "budget"],
+    ["Turn budget reached after 64/64 turns", "budget"],
+    ["USAP run timed out after 600000 ms (time budget)", "budget"],
+    ["timed out after 402 s: insufficient credits", "quota"],
     ["something unforeseen", "other"],
     [undefined, "other"],
   ] as const)("names %s as %s", (message, kind) => {
