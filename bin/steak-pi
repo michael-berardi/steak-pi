@@ -313,9 +313,17 @@ run_env() {
   esac
 }
 
+# --lean (first argument only) runs a one-shot leaf: no dispatch tool and no todo tool, so their schemas and guidance
+# are not sent. Everything else (guards, working rules, compaction) stays on.
+LEAN_TOOLS="ultraterm_subagents,ultraterm_hub,todo"
+
 cmd_run() {
   need_pi
   run_env
+  if [ "${1:-}" = "--lean" ]; then
+    shift
+    exec pi --exclude-tools "$LEAN_TOOLS" "$@"
+  fi
   exec pi "$@"
 }
 
@@ -347,6 +355,7 @@ case "${1:-help}" in
   local) shift; cmd_local "$@";;
   routing) shift; cmd_routing "$@";;
   env) run_env; say "NODE_COMPILE_CACHE=$NODE_COMPILE_CACHE"; say "MALLOC_ARENA_MAX=$MALLOC_ARENA_MAX"; say "NODE_OPTIONS=$NODE_OPTIONS";;
+  lean-args) say "--exclude-tools $LEAN_TOOLS";;
   help|--help|-h|*)
     say "usage: steak-pi <install|update|status|version|remove|run|usap-api|local|routing|finish-guard-hook|env>"
     say "  install   add Steak Pi to the pi coding agent (or re-point at this copy)"
@@ -354,7 +363,7 @@ case "${1:-help}" in
     say "  status    show installed versions and management mode"
     say "  version   print the CLI/package version"
     say "  remove    remove the pi-side package"
-    say "  run       launch pi with Steak Pi's Node runtime defaults (args pass through)"
+    say "  run       launch pi with Steak Pi's Node runtime defaults (args pass through; --lean first runs without the dispatch and todo tools)"
     say "  usap-api  run explicit Claude API USAP waves: admit | dispatch <wave.json> | resume <run-id>"
     say "  local     slot in a local GGUF model: add <gguf|owner/repo:quant> | start | stop | status | ensure <id> | release <id>"
     say "  routing   check [file]: validate routing.json exactly as every Pi turn does (run it before saving an edit)"
