@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.29.0 (2026-11-12)
 
 Steak Pi is one package that adapts; there is no mode to choose.
 
@@ -24,6 +24,10 @@ tasks cost 0.75 times (0.66 to 0.85), better, all 60 runs correct in every arm; 
 1.12), no clear difference; against stock Pi 0.82 times (0.68 to 0.97), better. 11 long tasks: 33 of 33 correct (lean
 31 of 33), 0.83 times (0.69 to 1.00) the 0.28.5 default, no clear difference, and 0.77 times (0.62 to 0.95) stock Pi,
 better.
+
+Not shown: on these tasks no run called the dispatch or todo tools after they loaded, so the runs show that the light
+start costs nothing on long work, not that loading the tools helped. The terminal UI was checked by a unit test of the
+mode rule and `--mode rpc` by a byte comparison; the terminal UI itself was not driven. One model, one machine.
 
 ## 0.28.5 (2026-11-12)
 
