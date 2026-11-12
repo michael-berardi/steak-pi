@@ -373,6 +373,21 @@ completes the eight-file fixture without subagents, so its timing is not a
 parallel-worker comparison. Earlier measurements are in
 [`benchmarks/`](./benchmarks/usap/README.md).
 
+### One-shot leaves: run lean
+
+A session that will not delegate does not need the dispatch tool or the todo tool, and their schemas and guidance
+are most of what Steak Pi adds to every request. Pi's own flag leaves them out for one run:
+
+```sh
+pi -p --exclude-tools ultraterm_subagents,todo "fix the failing date test"
+```
+
+The guards, compaction, verify-after-edit and routing policy stay. When a tool is left out, the skill that explains
+it is left out of the catalog too, and no route notice is added. Measured November 11, 2026 on Pi 1.0.4 with the
+overhead benchmark (scripted local model, medians of 5, all 75 runs passed): the first request of a one-shot edit is
+6,114 bytes on stock Pi, 23,005 bytes on Steak Pi and 7,036 bytes on Steak Pi run lean. The default is unchanged.
+This measures request size, not task cost: compare cost on your own tasks before making it a habit.
+
 ### Against Claude Code
 
 Same small Claude model at medium effort, same eight small Python tasks, five
@@ -407,6 +422,7 @@ the Claude route, small tasks and one machine. Reproduce it with
 | `STEAK_PI_FINISH_GUARD=0` | on | Turn the finish guard off |
 | `STEAK_PI_WRITE_GUARD=off` | on | Allow `write` to replace a file the session has not read |
 | `STEAK_PI_DEFER_TOOLS=off` | on | Expose every tool from the first request |
+| `pi --exclude-tools ultraterm_subagents,todo` | off | Lean one-shot leaf: no dispatch or todo tool, their skills hidden (Performance, above) |
 | `STEAK_PI_WORKER_SDK=unbundled` | host bundle | Workers load their own Pi SDK copy |
 | `STEAK_PI_SKILL_CATALOG_LITE=off` | on | Keep Pi's stock skill catalog |
 | `STEAK_PI_SKILL_CATALOG_BYTES` | `8192` | Byte budget for the skill catalog |

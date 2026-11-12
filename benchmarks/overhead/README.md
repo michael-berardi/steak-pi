@@ -13,7 +13,9 @@ python3 benchmarks/overhead/run.py --n 5 \
 
 `stock` runs Pi with no extensions. A path loads that Steak Pi package root
 (all extensions, UltraCompress, skill-catalog-lite, skills). `+run` applies
-the `steak-pi run` Node defaults. `PI_BIN` selects the host Pi (default:
+the `steak-pi run` Node defaults. `+lean` leaves out the dispatch and todo
+tools (`--exclude-tools ultraterm_subagents,todo`) and skips the fanout case.
+Each row also records the first request's system-prompt and tool-schema bytes. `PI_BIN` selects the host Pi (default:
 `./node_modules/.bin/pi`); `MOCK_PORT` the local port.
 
 Cases: `direct` (one file), `modules` (four files), `gate` (eight files,
@@ -23,6 +25,33 @@ eight workers). A run passes when Pi exits 0 and every expected file exists.
 Idle multi-session memory uses PSS, following jcode's
 `scripts/bench_memory_cli.py`: N interactive TUI sessions in pseudo-terminals,
 summed `Pss` from `/proc/<pid>/smaps_rollup` over each process tree.
+
+## Lean one-shot arm, Steak Pi 0.27.3 on Pi 1.0.4 (macOS)
+
+November 11, 2026, Apple silicon, macOS. `+lean` runs the package without the dispatch and todo tools
+(`--exclude-tools ultraterm_subagents,todo`); the fanout case does not apply to it. Arms: stock Pi, the 0.27.3
+source before the skill-visibility change, the current source, and the current source run lean. Medians of five;
+all 75 synthetic runs passed. Two things were checked: the default arm is unchanged against the previous source
+(tool schemas byte-identical at 12,352 bytes; first request 23,014 and 23,005 bytes, the 9 bytes being the length of
+the package path), and the lean arm's first request is close to stock Pi's (7,036 against 6,114 bytes, 1.15 times).
+These checks were set down with the results, not before them.
+
+```sh
+python3 benchmarks/overhead/run.py --n 5 stock=stock main=/path/to/previous-source cur=. lean=.+lean
+```
+
+| One-shot edit (`direct`) | Stock Pi | 0.27.3 before | Current | Current `+lean` |
+| --- | ---: | ---: | ---: | ---: |
+| Tools on the first request | 4 | 6 | 6 | 4 |
+| First request, bytes | 6,114 | 23,014 | 23,005 | 7,036 |
+| of which system prompt | 3,007 | 10,840 | 10,831 | 3,932 |
+| of which tool schemas | 2,956 | 12,352 | 12,352 | 2,956 |
+| All requests of the run, bytes | 12,517 | 46,317 | 46,299 | 14,361 |
+| Wall time | 0.32 s | 0.88 s | 0.84 s | 0.63 s |
+
+Request bytes are exact and repeatable; wall times on a shared machine are indicative. This measures what is sent,
+not what a task costs: a lean session cannot delegate, so compare cost and correctness on real tasks before using it
+for anything but bounded one-shot work.
 
 ## Steak Pi 0.12.1 on Pi 1.0.4 (macOS)
 

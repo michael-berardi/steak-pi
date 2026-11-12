@@ -5,8 +5,10 @@ usage: run.py [--n 5] [--cases direct,modules,gate,fanout] ARM=SPEC ...
 
 ARM=SPEC pairs name each arm. SPEC is `stock` (Pi with no extensions) or a
 Steak Pi package root, optionally suffixed `+run` to apply the `steak-pi run`
-Node defaults. Example:
-  run.py stock=stock v060=../steak-pi-0.6.0 v070=. v070run=.+run
+Node defaults and/or `+lean` to run without the dispatch and todo tools
+(`--exclude-tools ultraterm_subagents,todo`: a one-shot leaf that keeps the
+guards and compaction). A lean arm skips the fanout case. Example:
+  run.py stock=stock v060=../steak-pi-0.6.0 v070=. v070run=.+run v070lean=.+lean
 Env: PI_BIN (default: ./node_modules/.bin/pi). Prints JSON rows and a summary.
 """
 import argparse, json, os, shutil, socket, statistics, subprocess, sys, tempfile, time
@@ -23,6 +25,19 @@ CASES = {
     "fanout": ("Fan out: create c1.ts through c8.ts, each exporting SLOT_i set to i*11.", [f"c{i}.ts" for i in range(1, 9)]),
 }
 RUN_ENV = {"MALLOC_ARENA_MAX": "2", "NODE_OPTIONS": "--max-semi-space-size=2"}
+LEAN_ARGS = ["--exclude-tools", "ultraterm_subagents,todo"]
+
+
+def parse_spec(spec):
+    """Split `root[+run][+lean]` into (root, tuned, lean). Suffixes may come in either order."""
+    tuned = lean = False
+    while True:
+        if spec.endswith("+run"):
+            spec, tuned = spec[:-4], True
+        elif spec.endswith("+lean"):
+            spec, lean = spec[:-5], True
+        else:
+            return spec, tuned, lean
 
 
 def package_args(root):
@@ -75,24 +90,29 @@ def main():
             for case in a.cases.split(","):
                 prompt, expect = CASES[case]
                 for name, spec in order:
+                    root, tuned, lean = parse_spec(spec)
+                    if lean and case == "fanout":
+                        continue  # no dispatch tool in a lean arm
                     fx = tempfile.mkdtemp(dir=work)
                     subprocess.run(["git", "init", "-q"], cwd=fx)
                     log = os.path.join(fx, ".mock.jsonl")
                     open(logpath, "w").write(log)
                     env = dict(os.environ, PI_CODING_AGENT_DIR=agent, PI_OFFLINE="1", PI_TELEMETRY="0",
                                STEAK_PI_USAP_SLOT_DIR=os.path.join(fx, ".slots"))
-                    tuned = spec.endswith("+run")
-                    root = spec[:-4] if tuned else spec
                     if tuned:
                         env.update(RUN_ENV, NODE_COMPILE_CACHE=os.path.join(work, "node-cc"))
                     pkg = [] if root == "stock" else package_args(os.path.abspath(root))
+                    if lean:
+                        pkg = [*pkg, *LEAN_ARGS]
                     m = measure([PI, *pkg, "--mode", "json", "--provider", "mock", "--model", "mock-coder", "-p", prompt], env, fx)
                     reqs = [json.loads(l) for l in open(log)] if os.path.exists(log) else []
                     row = {"arm": name, "case": case, "round": rnd,
                            "pass": m["rc"] == 0 and all(os.path.exists(os.path.join(fx, f)) for f in expect),
                            "wall_s": round(m["wall"], 3), "peak_rss_mb": round(m["rss_bytes"] / (1024 * 1024), 1),
                            "requests": len(reqs), "request_bytes": sum(r["bytes"] for r in reqs),
-                           "first_request_bytes": reqs[0]["bytes"] if reqs else 0, "tools": reqs[0]["tools"] if reqs else 0}
+                           "first_request_bytes": reqs[0]["bytes"] if reqs else 0, "tools": reqs[0]["tools"] if reqs else 0,
+                           "first_system_bytes": reqs[0].get("system_bytes", 0) if reqs else 0,
+                           "first_tools_bytes": reqs[0].get("tools_bytes", 0) if reqs else 0}
                     rows.append(row)
                     print(json.dumps(row), flush=True)
     finally:
@@ -103,11 +123,15 @@ def main():
     for name, _ in arms:
         for case in a.cases.split(","):
             rs = [r for r in rows if r["arm"] == name and r["case"] == case]
+            if not rs:
+                continue
             summary[f"{name}/{case}"] = {"pass": f"{sum(r['pass'] for r in rs)}/{len(rs)}",
                                           "median_wall_s": round(statistics.median(r["wall_s"] for r in rs), 3),
                                           "median_peak_rss_mb": round(statistics.median(r["peak_rss_mb"] for r in rs), 1),
                                           "request_bytes": int(statistics.median(r["request_bytes"] for r in rs)),
-                                          "first_request_bytes": rs[0]["first_request_bytes"], "tools": rs[0]["tools"]}
+                                          "first_request_bytes": rs[0]["first_request_bytes"], "tools": rs[0]["tools"],
+                                          "first_system_bytes": rs[0]["first_system_bytes"],
+                                          "first_tools_bytes": rs[0]["first_tools_bytes"]}
     print(json.dumps(summary, indent=2))
 
 
