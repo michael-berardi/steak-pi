@@ -7,3 +7,4 @@ steak-pi-*.tgz
 steak-pi-*.tgz.sha256
 docs/verification/
 dist/
+__pycache__/
