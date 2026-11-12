@@ -30,15 +30,15 @@ describe("steak-pi run runtime defaults", () => {
     const dir = mkdtempSync(join(tmpdir(), "steak-pi-lean-"));
     try {
       const fake = join(dir, "pi");
-      writeFileSync(fake, '#!/bin/sh\nprintf "%s\\n" "$@"\n');
+      writeFileSync(fake, '#!/bin/sh\nprintf "%s\\n" "$@"\nprintf "brief=%s\\n" "${STEAK_PI_WORK_RULES_BRIEF:-unset}"\n');
       chmodSync(fake, 0o755);
       const run = (...args: string[]) => execFileSync("sh", [cli, "run", ...args], {
         env: { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: dir }, encoding: "utf8",
       }).trim().split("\n");
-      expect(run("--lean", "-p", "do it")).toEqual(["--exclude-tools", "ultraterm_subagents,ultraterm_hub,todo", "-p", "do it"]);
-      expect(run("-p", "do it")).toEqual(["-p", "do it"]);
+      expect(run("--lean", "-p", "do it")).toEqual(["--exclude-tools", "ultraterm_subagents,ultraterm_hub,todo", "-p", "do it", "brief=1"]);
+      expect(run("-p", "do it")).toEqual(["-p", "do it", "brief=unset"]);
       // Only the first argument is the launcher's: a later --lean belongs to pi or the prompt.
-      expect(run("-p", "--lean")).toEqual(["-p", "--lean"]);
+      expect(run("-p", "--lean")).toEqual(["-p", "--lean", "brief=unset"]);
       expect(execFileSync("sh", [cli, "lean-args"], { env: { PATH: process.env.PATH ?? "", HOME: dir }, encoding: "utf8" }).trim())
         .toBe("--exclude-tools ultraterm_subagents,ultraterm_hub,todo");
     } finally { rmSync(dir, { recursive: true, force: true }); }

@@ -314,7 +314,8 @@ run_env() {
 }
 
 # --lean (first argument only) runs a one-shot leaf: no dispatch tool and no todo tool, so their schemas and guidance
-# are not sent. Everything else (guards, working rules, compaction) stays on.
+# are not sent, and the working rules gain the short-reasoning line (measured to help the lean run only). Everything
+# else (guards, working rules, compaction) stays on. STEAK_PI_WORK_RULES_BRIEF=0 keeps the line out.
 LEAN_TOOLS="ultraterm_subagents,ultraterm_hub,todo"
 
 cmd_run() {
@@ -322,6 +323,8 @@ cmd_run() {
   run_env
   if [ "${1:-}" = "--lean" ]; then
     shift
+    STEAK_PI_WORK_RULES_BRIEF="${STEAK_PI_WORK_RULES_BRIEF:-1}"
+    export STEAK_PI_WORK_RULES_BRIEF
     exec pi --exclude-tools "$LEAN_TOOLS" "$@"
   fi
   exec pi "$@"
