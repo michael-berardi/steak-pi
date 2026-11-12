@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.29.1 (2026-11-12)
 
+- **TUI smoke: the resume picker is switched to All scope before the fixture is selected.** The smoke was failing on main while the picker opened on Current Folder; this is a script fix, not an environment one.
 - **A read-only reviewer's shell request is refused at dispatch.** An explicit `claude-code` dispatch (a
   `claude-code/<model>` route or `harness: "claude-code"`) that gives a read-only reviewer `allowBash: true` now fails
   with the named `claude-review-shell-refused` error before any run, checkpoint or worker starts, instead of silently
