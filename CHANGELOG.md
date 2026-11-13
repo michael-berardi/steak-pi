@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.30.0 (2026-11-12)
+## 0.30.0 (2026-11-13)
 
 The task-class router can choose the harness per job, on the quality, speed and cost of verified outcomes; and one
 lost steer no longer blocks a pane's inbox.
