@@ -42,7 +42,7 @@ import { spawn as nodeSpawn, execFile, execFileSync } from "node:child_process";
 import type { RelayBroker } from "./relay.ts";
 import { ClaudeRelay, CLAUDE_RELAY_PROMPT, claudeUserMessage, stripClaudeRelayLines } from "./claude-relay.ts";
 import { claudeOwnedPathRules } from "./claude-owned-paths.ts";
-import { assertClaudeEscapesProven, type EscapeSelfTestOptions } from "./claude-rule-selftest.ts";
+import { assertClaudeRulesProven, resolveClaudeExecutable, type EscapeSelfTestOptions } from "./claude-rule-selftest.ts";
 import { claudeReviewReadDirs } from "./claude-review-read.ts";
 import { readPathPromptLines, readPathSpellings, verifyGrantedReadPath } from "./read-paths.ts";
 export { claudeOwnedPathRules } from "./claude-owned-paths.ts";
@@ -595,7 +595,8 @@ export interface ClaudeWorkerRunnerOptions {
   relay?: RelayBroker;
   /** Bounded wait between SIGTERM and SIGKILL on cancel/timeout. */
   abortGraceMs?: number;
-  /** Escape self-test seams (tests). Production (no injected `spawn`) always runs the real self-test. */
+  /** Escape self-test seams (tests). Production always runs the real self-test when a rule needs an escape; an injected
+   * `spawn` no longer skips it. Only the explicit test seam `{ skip: true }` does, and production code never sets it. */
   escapeSelfTest?: EscapeSelfTestOptions;
   /** Explicit API route only: approval-record location/clock seams (tests). */
   api?: ClaudeApiConfigOptions;
@@ -766,14 +767,6 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     }
     catch (error) { return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
     if (signal.aborted) return { state: isTimeoutSignal(signal) ? "timed_out" : "aborted", output: "", turns: 0, usage: emptyUsage(), error: "Cancelled before CLI launch" };
-    // A rule that needs a backslash escape is only exact if this CLI reads the escape literally: prove it on this
-    // machine (cached per CLI identity) before any worker starts. Paths that need no escape never run the test.
-    // The whole wave is judged, so one unprovable path refuses every worker of the wave, not just its owner.
-    if (task.mayEdit && (!options.spawn || options.escapeSelfTest !== undefined)) {
-      try { await assertClaudeEscapesProven([...new Set([...task.ownedPaths, ...run.tasks.filter((other) => other.mayEdit).flatMap((other) => other.ownedPaths)])], executable, undefined, options.escapeSelfTest ?? {}); }
-      catch (error) { return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
-      if (signal.aborted) return { state: isTimeoutSignal(signal) ? "timed_out" : "aborted", output: "", turns: 0, usage: emptyUsage(), error: "Cancelled before CLI launch" };
-    }
     // Resolve again at each launch: dispatch eligibility is not a permanent grant.
     // Use precisely the same sanitized environment for auth status and inference.
     let childEnv: NodeJS.ProcessEnv;
@@ -787,6 +780,25 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
       // A lent account's owner reserve also binds a worker that inherited the account from its parent session.
       if (!admission) await assertAccountReserve(childEnv, options.reserveRouter);
     } catch (error) { return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
+    // A rule that needs a backslash escape is only exact if this CLI reads the escape literally: prove it on this
+    // machine (cached per CLI identity) before any worker starts. The need is judged from the rules actually emitted:
+    // the wave's rules are computed once here, and the leaf's own launch arguments are scanned too, so a path that
+    // changed between the two computations can never launch escaped rules unproven. The whole wave is judged, so one
+    // unprovable path refuses every worker of the wave, not just its owner.
+    let launchCommand = executable;
+    if (task.mayEdit && options.escapeSelfTest?.skip !== true) {
+      try {
+        const waveRules = claudeOwnedPathRules([...new Set([...task.ownedPaths, ...run.tasks.filter((other) => other.mayEdit).flatMap((other) => other.ownedPaths)])]);
+        const emitted = [...waveRules, ...args.filter((arg) => arg.startsWith("Edit("))];
+        if (emitted.some((rule) => rule.includes("\\"))) {
+          // One absolute real path, found on the environment the worker spawns with: it is proven and it is launched.
+          const resolved = resolveClaudeExecutable(executable, childEnv);
+          await assertClaudeRulesProven(emitted, resolved, { ...options.escapeSelfTest, env: childEnv, signal });
+          launchCommand = resolved!;
+        }
+      } catch (error) { return { state: signal.aborted ? (isTimeoutSignal(signal) ? "timed_out" : "aborted") : "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
+      if (signal.aborted) return { state: isTimeoutSignal(signal) ? "timed_out" : "aborted", output: "", turns: 0, usage: emptyUsage(), error: "Cancelled before CLI launch" };
+    }
     let apiPreflight = false;
     if (admission) {
       // A production launch always asks the real CLI. Only a test-injected spawn
@@ -833,7 +845,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     const stopPromise = new Promise<void>((resolve) => { stopExpired = resolve; });
     let killed = false;
     let closed = false;
-    const child = spawn({ command: executable, args, env: childEnv, cwd: run.cwd });
+    const child = spawn({ command: launchCommand, args, env: childEnv, cwd: run.cwd });
     onProgress({ claudeSessionId: sessionId });
     // Captured process identity at launch; every kill/cleanup revalidates it so
     // a replaced or rebinding handle can never signal an unrelated process.

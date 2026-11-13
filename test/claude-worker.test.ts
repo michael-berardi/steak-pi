@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { homedir } from "node:os";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Coordinator, workerJournal } from "../src/subagents/coordinator.ts";
 import { Scheduler } from "../src/subagents/scheduler.ts";
@@ -1351,5 +1352,90 @@ describe("claude-code worker turn budget (hard bound and complete final report)"
     const text = buildClaudeWorkerPrompt(run({ maxTurns: 64 }), task());
     expect(text).toContain("You have at most 64 assistant requests");
     expect(text).toMatch(/stopped at request 64; there is no grace/);
+  });
+});
+
+describe("claude-code worker: escape self-test wiring", () => {
+  const escaped = ["/repo/app/[id]"];
+  const refusing = (calls: string[]) => async (executable: string) => { calls.push(executable); return { ok: false, version: "9.9", cause: "synthetic refusal" }; };
+  const launch = (options: Parameters<typeof createClaudeWorkerRunner>[0], leaf: TaskRecord, signal: AbortSignal = new AbortController().signal, wave: TaskRecord[] = [leaf]) =>
+    createClaudeWorkerRunner(options)({ run: run({ tasks: wave }), task: leaf, signal, onProgress: () => {} });
+
+  it("an injected spawn no longer skips the proof: an unproven escaped rule refuses the dispatch before any spawn", async () => {
+    const { spawn, calls } = fakeSpawn((child) => child.exit(0));
+    const proved: string[] = [];
+    const leaf = task({ mayEdit: true, ownedPaths: escaped });
+    const result = await launch({ ...runnerOptions(spawn), executable: "/bin/sh", escapeSelfTest: { prove: refusing(proved) } }, leaf);
+    expect(result.state).toBe("failed");
+    expect(result.error).toMatch(/did not pass the escape self-test: synthetic refusal/);
+    expect(calls).toHaveLength(0);
+    expect(proved).toHaveLength(1);
+  });
+
+  it("only the explicit test seam { skip: true } skips it", async () => {
+    const { spawn, calls } = fakeSpawn((child) => child.exit(0));
+    const proved: string[] = [];
+    await launch({ ...runnerOptions(spawn), escapeSelfTest: { skip: true, prove: refusing(proved) } }, task({ mayEdit: true, ownedPaths: escaped }));
+    expect(proved).toHaveLength(0);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("one unprovable sibling path refuses every worker of the wave; plain paths never run the proof", async () => {
+    const { spawn, calls } = fakeSpawn((child) => child.exit(0));
+    const proved: string[] = [];
+    const plain = task({ id: "t1", mayEdit: true, ownedPaths: ["/repo/plain"] });
+    const sibling = task({ id: "t2", mayEdit: true, ownedPaths: escaped });
+    const refused = await launch({ ...runnerOptions(spawn), executable: "/bin/sh", escapeSelfTest: { prove: refusing(proved) } }, plain, undefined, [plain, sibling]);
+    expect(refused.state).toBe("failed");
+    expect(calls).toHaveLength(0);
+    const fine = await launch({ ...runnerOptions(spawn), escapeSelfTest: { prove: refusing(proved) } }, plain);
+    expect(fine.error ?? "").not.toMatch(/escape self-test/);
+    expect(calls).toHaveLength(1);
+    expect(proved).toHaveLength(1);
+  });
+
+  it("an escape that appears only in a path's physical form still requires the proof", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "worker-escape-")));
+    try {
+      mkdirSync(join(root, "real[1]"));
+      symlinkSync(join(root, "real[1]"), join(root, "link"));
+      const { spawn, calls } = fakeSpawn((child) => child.exit(0));
+      const proved: string[] = [];
+      const result = await launch({ ...runnerOptions(spawn), executable: "/bin/sh", escapeSelfTest: { prove: refusing(proved) } }, task({ mayEdit: true, ownedPaths: [join(root, "link")] }));
+      expect(result.error).toMatch(/did not pass the escape self-test/);
+      expect(calls).toHaveLength(0);
+      expect(proved).toHaveLength(1);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("proves and spawns one absolute real path, found on the worker's own environment PATH", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "worker-exe-")));
+    try {
+      writeFileSync(join(root, "real-cli"), "#!/bin/sh\n"); chmodSync(join(root, "real-cli"), 0o755);
+      mkdirSync(join(root, "bin"));
+      symlinkSync(join(root, "real-cli"), join(root, "bin", "claude-x"));
+      const { spawn, calls } = fakeSpawn((child) => child.exit(0));
+      const proved: string[] = [];
+      const ok = async (executable: string) => { proved.push(executable); return { ok: true, version: "9.9" }; };
+      await launch({ ...runnerOptions(spawn), executable: "claude-x", env: { PATH: join(root, "bin"), HOME: root }, escapeSelfTest: { prove: ok } }, task({ mayEdit: true, ownedPaths: escaped }));
+      expect(proved).toEqual([join(root, "real-cli")]);
+      expect(calls.map((call) => call.command)).toEqual([join(root, "real-cli")]);
+      // A command the worker's PATH cannot find is not proven and not launched.
+      const missing = await launch({ ...runnerOptions(spawn), executable: "claude-x", env: { PATH: join(root, "none"), HOME: root }, escapeSelfTest: { prove: ok } }, task({ mayEdit: true, ownedPaths: escaped }));
+      expect(missing.state).toBe("failed");
+      expect(missing.error).toMatch(/not found/);
+      expect(calls).toHaveLength(1);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("an aborted run stops the proof and is not launched", async () => {
+    const { spawn, calls } = fakeSpawn((child) => child.exit(0));
+    const controller = new AbortController();
+    let seen: AbortSignal | undefined;
+    const result = await launch({ ...runnerOptions(spawn), executable: "/bin/sh", escapeSelfTest: { prove: async () => { controller.abort(new Error("Task aborted")); return { ok: false, version: "9", cause: "the escape self-test was cancelled" }; } } },
+      task({ mayEdit: true, ownedPaths: escaped }), controller.signal);
+    void seen;
+    expect(result.state).toBe("aborted");
+    expect(calls).toHaveLength(0);
   });
 });

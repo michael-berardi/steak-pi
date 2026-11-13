@@ -42,7 +42,7 @@ record_ownership() {
 # wrong. The waits scale with the load per core measured once at start (1x when idle, at most 8x); TUI_WAIT_SCALE pins it.
 wait_scale() {
   local pinned="${TUI_WAIT_SCALE:-}"
-  if [[ "$pinned" =~ ^[1-9][0-9]?$ ]]; then printf '%s\n' "$pinned"; return; fi
+  if [[ "$pinned" =~ ^[1-8]$ ]]; then printf '%s\n' "$pinned"; return; fi
   local load cores
   load="$(LC_ALL=C uptime 2>/dev/null | sed -n 's/.*load average[s]*: *\([0-9.]*\).*/\1/p')"
   cores="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"

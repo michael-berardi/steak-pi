@@ -1,18 +1,24 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { assertClaudeEscapesProven, proveClaudeEscapes } from "../src/subagents/claude-rule-selftest.ts";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { assertClaudeEscapesProven, assertClaudeRulesProven, proveClaudeEscapes, resolveClaudeExecutable } from "../src/subagents/claude-rule-selftest.ts";
 
 /** A fake CLI: answers --version, asks the local fake Messages server what to write, applies a permission matcher
  * that either honours backslash escapes or ignores them (reading `[id]` as a character class), and writes the target. */
-function fakeCli(mode: "honour" | "ignore" | "hang", version = "9.9.9 (Fake CLI)"): string {
+type Mode = "honour" | "ignore" | "hang" | "crash" | "noresult" | "silent" | "grandchild";
+function fakeCli(mode: Mode, version = "9.9.9 (Fake CLI)"): string {
   return `#!/usr/bin/env node
 const fs = require("node:fs"); const path = require("node:path");
 const args = process.argv.slice(2);
 if (args[0] === "--version") { console.log(${JSON.stringify(version)}); process.exit(0); }
 fs.appendFileSync(__filename + ".log", "run\\n");
-if (${JSON.stringify(mode)} === "hang") setInterval(() => {}, 1000);
+fs.writeFileSync(__filename + ".env", JSON.stringify(["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "DISABLE_TELEMETRY", "DISABLE_AUTOUPDATER", "DISABLE_ERROR_REPORTING", "ANTHROPIC_API_KEY"].map((k) => [k, process.env[k]])));
+if (${JSON.stringify(mode)} === "hang" || ${JSON.stringify(mode)} === "grandchild") {
+  fs.writeFileSync(__filename + ".pid", String(process.pid));
+  if (${JSON.stringify(mode)} === "grandchild") require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 9000)"], { detached: true, stdio: ["ignore", "inherit", "ignore"] }).unref();
+  setInterval(() => {}, 1000);
+} else if (${JSON.stringify(mode)} === "silent") process.exit(0);
 else (async () => {
   const rule = args[args.indexOf("--allowedTools") + 1];
   const res = await fetch(process.env.ANTHROPIC_BASE_URL + "/v1/messages", { method: "POST", body: JSON.stringify({ messages: [] }) });
@@ -24,14 +30,15 @@ else (async () => {
   const body = ${JSON.stringify(mode)} === "ignore" ? rawBody.replace(/\\\\/g, "") : rawBody;
   for (let i = 0; i < body.length; i++) {
     const c = body[i];
-    if (c === "\\\\" && ${JSON.stringify(mode)} === "honour") { re += (body[++i] || "").replace(/[.*+?^\${}()|[\\]\\\\]/g, "\\\\$&"); continue; }
+    if (c === "\\\\" && ${JSON.stringify(mode)} !== "ignore") { re += (body[++i] || "").replace(/[.*+?^\${}()|[\\]\\\\]/g, "\\\\$&"); continue; }
     if (c === "\\\\") continue;
     if (c === "[") { const end = body.indexOf("]", i); re += body.slice(i, end + 1); i = end; }
     else if (c === "*") re += "[^/]*";
     else re += c.replace(/[.*+?^\${}()|[\\]\\\\]/g, "\\\\$&");
   }
   if (new RegExp("^" + re + "(/.*)?$").test(target)) { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, "x"); }
-  process.exit(0);
+  if (${JSON.stringify(mode)} !== "noresult") await fetch(process.env.ANTHROPIC_BASE_URL + "/v1/messages", { method: "POST", body: JSON.stringify({ messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "t" }] }] }) }).then((r) => r.text());
+  process.exit(${JSON.stringify(mode)} === "crash" ? 1 : 0);
 })();
 `;
 }
@@ -40,7 +47,7 @@ describe("claude escape self-test", () => {
   const dirs: string[] = [];
   const temp = (): string => { const d = realpathSync(mkdtempSync(join(tmpdir(), "selftest-"))); dirs.push(d); return d; };
   afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
-  const install = (mode: "honour" | "ignore" | "hang", version?: string): { exe: string; cache: string } => {
+  const install = (mode: Mode, version?: string): { exe: string; cache: string } => {
     const dir = temp();
     const exe = join(dir, "fake-cli");
     writeFileSync(exe, fakeCli(mode, version));
@@ -131,9 +138,106 @@ describe("claude escape self-test", () => {
     expect(calls).toBe(1);
   });
 
+  const prove = (exe: string, cache: string, extra: Record<string, unknown> = {}) => proveClaudeEscapes(exe, { workDir: dirname(cache), cachePath: cache, ...extra });
+
+  it("a CLI that exits 1 (even after honouring the rule) or never reports a tool result is not proven", async () => {
+    for (const mode of ["crash", "noresult", "silent"] as const) {
+      const { exe, cache } = install(mode);
+      const verdict = await prove(exe, cache);
+      expect(verdict.ok, mode).toBe(false);
+      expect(verdict.cause, mode).toMatch(/could not run/);
+      const error = await assertClaudeEscapesProven(bracket, exe, () => undefined, { workDir: dirname(cache), cachePath: cache }).catch((e: Error) => e);
+      expect((error as Error).message, mode).toMatch(/did not pass the escape self-test: .*could not run/);
+    }
+  }, 120_000);
+
+  it("a deny case alone never passes on a crash: the first deny case is refused with a clean exit and a tool result required", async () => {
+    const { exe, cache } = install("crash");
+    expect((await prove(exe, cache)).cause).toMatch(/exited with code 1/);
+    const none = install("noresult");
+    expect((await prove(none.exe, none.cache)).cause).toMatch(/never reported a tool result/);
+  }, 60_000);
+
+  it("proves each escaped character class on its own (12 cases, brace, paren, exclamation and exact-file included)", async () => {
+    const { exe, cache } = install("honour");
+    expect((await prove(exe, cache)).ok).toBe(true);
+    const runs = readFileSync(`${exe}.log`, "utf8").split("\n").filter(Boolean).length;
+    expect(runs).toBe(12);
+  }, 120_000);
+
+  it("the self-test environment is quiet and private", async () => {
+    const { exe, cache } = install("honour");
+    await prove(exe, cache);
+    const seen = Object.fromEntries(JSON.parse(readFileSync(`${exe}.env`, "utf8")) as Array<[string, string]>);
+    expect(seen).toMatchObject({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", DISABLE_TELEMETRY: "1", DISABLE_AUTOUPDATER: "1", DISABLE_ERROR_REPORTING: "1", ANTHROPIC_API_KEY: "sk-fake-escape-selftest-key" });
+  }, 60_000);
+
+  it("a grandchild holding stdout open cannot hang the self-test; a later call is not blocked", async () => {
+    const { exe, cache } = install("grandchild");
+    const started = Date.now();
+    const verdict = await prove(exe, cache, { timeoutMs: 700 });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.cause).toMatch(/timed out/);
+    expect(Date.now() - started).toBeLessThan(7_000);
+    const second = install("honour");
+    expect((await prove(second.exe, second.cache)).ok).toBe(true);
+  }, 60_000);
+
+  it("an abort stops the run: child killed, temp dirs removed, not proven, nothing cached", async () => {
+    const { exe, cache } = install("hang");
+    const controller = new AbortController();
+    const started = Date.now();
+    const pending = prove(exe, cache, { signal: controller.signal });
+    await vi.waitFor(() => expect(existsSync(`${exe}.pid`)).toBe(true), { timeout: 15_000 });
+    controller.abort();
+    const verdict = await pending;
+    expect(verdict.ok).toBe(false);
+    expect(verdict.cause).toMatch(/cancelled/);
+    expect(Date.now() - started).toBeLessThan(15_000);
+    expect(existsSync(cache)).toBe(false);
+    expect(readdirSync(dirname(cache)).filter((n) => n.startsWith("escape-selftest-"))).toEqual([]);
+    const pid = Number(readFileSync(`${exe}.pid`, "utf8"));
+    expect(() => process.kill(pid, 0)).toThrow();
+    // The abort was not cached: the same CLI, not aborted, is still tested (and refused for hanging).
+    expect((await prove(exe, cache, { timeoutMs: 500 })).cause).toMatch(/timed out/);
+    // An already-aborted signal never starts anything.
+    const done = new AbortController(); done.abort();
+    expect((await prove(exe, cache, { signal: done.signal })).cause).toMatch(/cancelled/);
+  }, 90_000);
+
+  it("proveClaudeEscapes never throws", async () => {
+    const verdict = await proveClaudeEscapes(join(temp(), "absent"), { cachePath: join(temp(), "x", "\0bad") });
+    expect(verdict.ok).toBe(false);
+  });
+
+  it("resolves a command to one absolute real path on the given environment's PATH", () => {
+    const dir = temp();
+    const real = join(dir, "real-cli");
+    writeFileSync(real, "#!/bin/sh\n"); chmodSync(real, 0o755);
+    mkdirSync(join(dir, "bin"));
+    symlinkSync(real, join(dir, "bin", "tool"));
+    expect(resolveClaudeExecutable("tool", { PATH: join(dir, "bin") })).toBe(real);
+    expect(resolveClaudeExecutable("tool", { PATH: join(dir, "elsewhere") })).toBeUndefined();
+    expect(resolveClaudeExecutable("tool", {})).toBeUndefined();
+    expect(resolveClaudeExecutable(join(dir, "bin", "tool"))).toBe(real);
+    expect(resolveClaudeExecutable(join(dir, "nope"))).toBeUndefined();
+  });
+
+  it("is judged from the emitted rules: a backslash requires the proof; none does not; skip is explicit", async () => {
+    let calls = 0;
+    const proveSeam = async () => { calls += 1; return { ok: false, version: "x", cause: "refused" }; };
+    await assertClaudeRulesProven(["Edit(//repo/a)", "Edit(//repo/a/**)"], "/nonexistent", { prove: proveSeam });
+    expect(calls).toBe(0);
+    await expect(assertClaudeRulesProven(["Edit(//repo/a\\[1\\])"], "/nonexistent", { prove: proveSeam })).rejects.toThrow(/did not pass the escape self-test: refused/);
+    await expect(assertClaudeRulesProven(["Edit(//repo/a\\[1\\])"], undefined, { prove: proveSeam })).rejects.toThrow(/not found/);
+    expect(calls).toBe(1);
+    await expect(assertClaudeRulesProven(["Edit(//repo/a\\[1\\])"], "/nonexistent", { prove: proveSeam, skip: true })).resolves.toBeUndefined();
+    expect(calls).toBe(1);
+  });
+
   it.skipIf(process.env.STEAK_PI_REAL_CLI_SELFTEST !== "1")("the real CLI honours the escapes (opt-in: STEAK_PI_REAL_CLI_SELFTEST=1, needs `claude` on PATH)", async () => {
     const cache = join(temp(), "cache.json");
-    const verdict = await proveClaudeEscapes("claude", { cachePath: cache });
+    const verdict = await proveClaudeEscapes("claude", { cachePath: cache, ...(process.env.STEAK_PI_REAL_CLI_WORKDIR ? { workDir: process.env.STEAK_PI_REAL_CLI_WORKDIR } : {}) });
     console.log(`real CLI self-test: ${JSON.stringify(verdict)}`);
     expect(verdict.cause).toBeUndefined();
     expect(verdict.ok).toBe(true);

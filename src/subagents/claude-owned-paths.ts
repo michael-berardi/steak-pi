@@ -13,6 +13,10 @@ const PERMISSION_RULE_ESCAPED = /[*[\]{}()!]/g;
 const UNPRINTABLE = /[\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g;
 export const printablePath = (value: string): string => value.replace(UNPRINTABLE, "");
 
+/** Any whitespace other than the plain space (tab, vertical tab, form feed, no-break space, other Unicode spaces,
+ * line separators). Not measured on the CLI's matcher, so not allowed anywhere in a path. */
+const NON_PLAIN_WHITESPACE = /[^\S ]/u;
+
 /** A path segment that starts or ends with whitespace. Measured on the real CLI: the rule `Edit(//W/p5/src /**)`
  * allowed a write to `W/p5/src/x.ts` (the CLI drops the trailing space) and denied `W/p5/src /x.ts`, so the fence
  * would widen to a sibling. Refused for every segment, any Unicode whitespace. */
@@ -72,6 +76,9 @@ export function claudeOwnedPathRules(
       const unsafe = PERMISSION_RULE_UNSAFE.exec(form)?.[0];
       if (unsafe !== undefined) {
         throw new Error(`claude-code owned path contains a permission-rule metacharacter ${JSON.stringify(printablePath(unsafe))} and cannot be enforced exactly: ${shown}`);
+      }
+      if (NON_PLAIN_WHITESPACE.test(form)) {
+        throw new Error(`claude-code owned path contains whitespace other than a plain space (tab, no-break space or another Unicode space), which is not measured against the Claude Code permission rule matcher and so cannot be enforced exactly: ${shown}`);
       }
       // `//` marks an absolute filesystem path in Claude Code permission rules.
       const literal = literalRulePath(form);

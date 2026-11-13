@@ -414,11 +414,20 @@ relative `ownedPaths` entry it also says what the entry was resolved against
 absolute path or set the run cwd`). A path with a segment that begins or ends with
 whitespace is refused (the CLI drops it from the rule, which widens the fence: `Edit(//W/src /**)` allowed
 `W/src/x.ts`; a security fix), and so is a path with `(` or `)` together with whitespace or a comma (the rule
-splitter cannot be trusted with it); an inner space is fine. A rule that needs a backslash escape is only
+splitter cannot be trusted with it); an inner plain space is fine, but a tab, no-break space or any other whitespace
+character anywhere in a path is refused (not measured against the CLI). A rule that needs a backslash escape is only
 trusted after a machine-local self-test proves the installed CLI reads the escape literally (it runs the real CLI
-against a local fake Messages server, caches the verdict per CLI version, path, mtime and size, retests a failure
-after 24 h); an unproven CLI refuses the wave naming the path, the version and the cause. Paths that need no
-escaping never run it. Error text strips control and bidi characters. There is no automatic ownership
+against a local fake Messages server with a fake key, a throwaway config directory and telemetry, auto-update and error
+reporting off; it proves each escaped character class on its own: brackets, `* ( ) { } !`, braces, a leading `+(`,
+a negation and an exact-file rule; every case must exit 0 and report a tool result to the local server, so a crash
+or a CLI that never reached the permission check is "could not run", never a pass). The need is judged from the
+rules actually emitted for the wave. The CLI is resolved once to an absolute real path on the worker's own
+environment, and that same path is proven and launched. The verdict is cached per CLI version, path, mtime, size
+and self-test revision, and a failure is retested after 24 h; a cancelled run, a timeout that leaves a stray
+grandchild holding the pipe (the test gives up 3 s after the kill) and an unprovable CLI never cache a pass. An
+unproven CLI refuses the wave naming the path, the version and the cause. Paths that need no escaping never run it.
+Only the test option `escapeSelfTest: { skip: true }` skips it; an injected `spawn` alone no longer does. Error text
+strips control and bidi characters. There is no automatic ownership
 widening or harness fallback. The parent may explicitly choose Pi exact-path
 guarded writes or revise ownership within approved scope; never silently
 broaden ownership to the parent directory. Implicit privileged reviewer waves

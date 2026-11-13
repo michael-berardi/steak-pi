@@ -49,3 +49,19 @@ describe("owned-path error text", () => {
     expect(message).not.toMatch(/[\u007f-\u009f‪-‮⁦-⁩]/u);
   });
 });
+
+describe("claude-code owned paths: whitespace other than the plain space (not measured, so not allowed)", () => {
+  it("refuses a tab, vertical tab, form feed, no-break space and other Unicode spaces anywhere in the path", () => {
+    for (const space of ["\t", "\v", "\f", "\u00a0", "\u2003", "\u3000", "\u2028", "\ufeff"]) {
+      for (const owned of [`/repo/a${space}b/c.ts`, `/repo/a/b${space}c`, `/repo/x/y${space}`, `/repo/${space}x/y`]) {
+        expect(() => rules(owned), JSON.stringify(owned)).toThrow(/whitespace/);
+        expect(() => rules(owned), JSON.stringify(owned)).toThrow(/cannot be enforced exactly|cannot match it exactly|cannot be trusted/);
+      }
+    }
+  });
+
+  it("an inner plain space stays accepted, and the physical form is checked too", () => {
+    expect(rules("/repo/my dir/a b.ts")).toEqual(["Edit(//repo/my dir/a b.ts)", "Edit(//repo/my dir/a b.ts/**)"]);
+    expect(() => claudeOwnedPathRules(["/repo/link"], () => "/real/a\u00a0b")).toThrow(/whitespace other than a plain space/);
+  });
+});

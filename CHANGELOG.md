@@ -39,6 +39,14 @@ routing.json last (below).
   verdict is cached per CLI identity (version, real path, mtime, size) in `~/.pi/agent/usap/claude-escape-selftest.json`
   (a failure is retested after 24 h). Not proven: the wave is refused with the path, the CLI version and the cause. Paths
   that need no escaping never run it. A CLI update that changed how escapes are read can no longer widen the fence silently.
+- **The escape self-test is stricter.** Every check must see the CLI exit cleanly and report a tool result to the local
+  server, so a crashed or silent CLI is "could not run" instead of passing a "denied" check by leaving no file. Each
+  escaped character is now proven on its own (brackets, `*`, parentheses with a leading `+`, braces, `!`, and a rule for
+  one exact file). The test runs quietly (no telemetry, update check or error report), cannot hang on a stray child
+  process, stops when the dispatch is cancelled (nothing is cached), and proves the same executable path it then launches,
+  found on the worker's own environment. The need for it is judged from the rules actually emitted for the wave.
+- **An owned path with a tab, no-break space or other whitespace besides the plain space is refused** on the Claude tier
+  (not measured against the CLI's rule matcher). An inner plain space stays accepted.
 - **Turn budget: a follow-up cannot inherit an earlier "complete".** A relay follow-up query cut by the hard stop is
   failed even if the first query ended with a complete report; an over-budget complete result no longer starts a queued
   follow-up (the note says so); a native worker's budget stop counts as complete only when its last message was the final
