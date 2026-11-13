@@ -39,7 +39,7 @@ function fixture() {
   const state = { idle: false };
   const broken = new Set<string>();
   const context = (id: string) => ({
-    mode: "tui", hasUI: true, isIdle: () => state.idle, ui: { setStatus: vi.fn() },
+    mode: "tui", hasUI: true, isIdle: () => state.idle, hasPendingMessages: () => false, ui: { setStatus: vi.fn() },
     sessionManager: { getSessionId: () => id, getSessionFile: () => broken.has(id) ? join(root, "elsewhere.jsonl") : sessions.get(id)!.file,
       getEntries: () => sessions.get(id)!.entries },
   });

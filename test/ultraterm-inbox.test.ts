@@ -175,6 +175,63 @@ describe("native inbox state machine", () => {
     expect(lateRecorded).toEqual(Array.from({ length: 16 }, (_, i) => `receipt-${i + 1}`));
     h.consumer.stop();
   });
+  function lostSteerHarness() {
+    let idle = false, settles = 0, pending = false, evidence: string | undefined, accepted = false;
+    const calls: any[] = []; const send = vi.fn();
+    const transport = { request: vi.fn(async (r: any) => {
+      calls.push(r);
+      if (r.cmd === "inbox.register") return { token: "private", terminalId: "terminal" };
+      if (r.cmd === "inbox.poll") return { message: r.ready && !calls.some(c => c.cmd === "inbox.record") ? claim : null };
+      return {};
+    }) };
+    const consumer = new InboxConsumer({ host, transport, idle: () => idle, current: () => true, evidence: () => evidence, accepted: () => accepted,
+      settled: () => settles, pending: () => pending, send });
+    return { consumer, calls, send, idle: (v: boolean) => idle = v, settle: () => settles++, pending: (v: boolean) => pending = v,
+      evidence: (v?: string) => evidence = v, accepted: (v: boolean) => accepted = v };
+  }
+  it("tells UltraTerm it holds a busy steer, and re-sends a steer an abort dropped only after the agent settled", async () => {
+    // 2026-11-13: slot 1 sat inside one 30-minute build; the held note was released as failed after 300 s.
+    const h = lostSteerHarness();
+    await h.consumer.tick();
+    expect(h.send).toHaveBeenCalledTimes(1);
+    await h.consumer.tick();
+    expect(h.calls.filter(r => r.cmd === "inbox.poll").at(-1)).toMatchObject({ ready: false, holding: claim.receiptId });
+    // Idle but not yet settled since the send (a run about to start, a retry backoff): never re-sent.
+    h.idle(true); await h.consumer.tick(); await h.consumer.tick();
+    expect(h.send).toHaveBeenCalledTimes(1);
+    expect(h.calls.filter(r => r.cmd === "inbox.poll").at(-1).holding).toBeUndefined();
+    // Settled, but Pi still has it queued: never re-sent.
+    h.settle(); h.pending(true); await h.consumer.tick();
+    expect(h.send).toHaveBeenCalledTimes(1);
+    // Settled, queue empty, not in the file or memory: Escape dropped it. Sent again, once.
+    h.pending(false); await h.consumer.tick(); await h.consumer.tick();
+    expect(h.send).toHaveBeenCalledTimes(2);
+    h.evidence("entry"); await h.consumer.tick(); await h.consumer.tick();
+    expect(h.send).toHaveBeenCalledTimes(2);
+    expect(h.calls.filter(r => r.cmd === "inbox.record")).toHaveLength(1);
+    h.consumer.stop();
+  });
+  it("never re-sends a steer that session memory already accepted", async () => {
+    const h = lostSteerHarness();
+    await h.consumer.tick(); h.accepted(true); h.idle(true); h.settle();
+    for (let i = 0; i < 4; i += 1) await h.consumer.tick();
+    expect(h.send).toHaveBeenCalledTimes(1);
+    h.consumer.stop();
+  });
+  it("stops re-sending a steer that keeps getting lost, with a named status", async () => {
+    const h = lostSteerHarness();
+    await h.consumer.tick(); h.idle(true);
+    for (let i = 0; i < 6; i += 1) { h.settle(); await h.consumer.tick(); }
+    expect(h.send).toHaveBeenCalledTimes(4);
+    expect(h.consumer.status).toContain("steer lost 3 times");
+    h.consumer.stop();
+  });
+  it("without a settle hook a lost steer is never re-sent", async () => {
+    const h = harness(); h.idle(false); await h.consumer.tick(); h.idle(true);
+    for (let i = 0; i < 4; i += 1) await h.consumer.tick();
+    expect(h.send).toHaveBeenCalledTimes(1);
+    h.consumer.stop();
+  });
   it("withholds delivery whenever primary ownership proof is already lost", async () => {
     for (const ownership of ["pid", "generation", "session-file"]) {
       const h = harness(); h.idle(false); h.valid(false);

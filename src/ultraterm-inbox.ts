@@ -23,6 +23,10 @@ const PERMANENT_RECORD_REFUSAL = /claim identity mismatch|unknown bound receipt|
 export const LATE_RECORD_ATTEMPTS = 3;
 /** Released claims kept for a late record: the size of UltraTerm's released list. */
 export const LATE_LIMIT = 16;
+/** Re-sends of one claim whose steer was dropped before it persisted (an Escape
+ * abort clears Pi's steering queue). Bounded so a host that can never persist
+ * stops with a named status instead of looping. */
+export const LOST_STEER_RESENDS = 3;
 
 /** No request, response, token, or transcript is logged. One bounded LF frame per connection. */
 export function unixTransport(path = join(homedir(), ".ultraterm/utp.sock")): Transport {
@@ -181,6 +185,12 @@ export interface InboxDependencies {
   send(message: ReturnType<typeof customMessage>, options: NativeDelivery): void;
   evidence(claim?: Claim): string | PersistedEvidence | undefined;
   accepted?(claim: Claim): boolean;
+  /** Times the agent has settled (run finished, steering queue drained). A
+   * steer counts as lost only after a settle since it was sent; without this
+   * hook a lost steer is never re-sent. */
+  settled?(): number;
+  /** Peer notes still waiting in the agent's own queues. */
+  pending?(): boolean;
   transport: Transport;
   instanceId?: string;
 }
@@ -192,6 +202,10 @@ export class InboxConsumer {
    * lost steer). Never dispatched again; recorded if they still persist late. */
   private late: Array<{ claim: Claim; failures: number }> = [];
   private invoked = new Set<string>();
+  /** Re-sends per receipt after a lost steer (see LOST_STEER_RESENDS). */
+  private resent = new Map<string, number>();
+  /** Receipts steered while the agent was busy and not yet persisted. */
+  private steeredBusy = new Map<string, number>();
   private controller = new AbortController();
   private timer?: ReturnType<typeof setTimeout>;
   private running = false;
@@ -230,7 +244,11 @@ export class InboxConsumer {
       // custom message is queued natively while the agent runs and is injected
       // at the between-tools boundary, so a busy agent is ready. Only a claim
       // already injected and awaiting persisted evidence blocks the next lease.
-      const r = await this.request("inbox.poll", { ready: !this.pending });
+      // A busy host that holds an injected claim says so: UltraTerm keeps that
+      // note queued (the recipient sees it at its next tool boundary) instead of
+      // releasing it as a failure because one tool call ran long (2026-11-13).
+      const holding = this.pending && this.invoked.has(this.pending.receiptId) && !this.d.idle() ? { holding: this.pending.receiptId } : {};
+      const r = await this.request("inbox.poll", { ready: !this.pending, ...holding });
       if (!this.valid()) return;
       // A just-released claim: the next poll is ready and takes the next note.
       // A late record runs last and never throws, so it cannot hold the queue.
@@ -266,6 +284,23 @@ export class InboxConsumer {
       if (!this.invoked.has(m.receiptId) && this.invoked.size >= 4096) { this.set("withheld", "capacity exhausted"); return; }
       this.invoked.add(m.receiptId);
     }
+    // A steer that never persisted although the agent is idle again was dropped
+    // (an Escape abort clears Pi's steering queue, including peer notes). Neither
+    // the file nor session memory holds it, so sending it again cannot duplicate
+    // it; the idle path persists at once. Bounded, with a named status.
+    // Only a note steered while busy qualifies (an idle send persists on its own),
+    // and only once the agent has settled since that send with nothing queued:
+    // a run that has not yet started, a retry backoff or a compaction can still
+    // hold the steer, and sending again then would show the note twice.
+    const sentAt = this.steeredBusy.get(m.receiptId);
+    const settledSince = sentAt !== undefined && this.d.settled !== undefined && this.d.accepted !== undefined && this.d.settled() > sentAt;
+    if (!evidence && !memoryAccepted && settledSince && this.d.idle() && this.d.pending?.() !== true && this.valid()) {
+      const count = this.resent.get(m.receiptId) ?? 0;
+      if (count >= LOST_STEER_RESENDS) { this.set("delivery-pending", `delivery pending: steer lost ${count} times while idle; not resent again (receipt ${m.receiptId})`); return; }
+      this.resent.set(m.receiptId, count + 1);
+      this.steeredBusy.delete(m.receiptId);
+      this.invoked.delete(m.receiptId);
+    }
     // Busy runs steer at the native between-tools boundary; they do not wait
     // for every tool to stop and never abort one.
     if (!evidence && !this.invoked.has(m.receiptId) && this.valid()) {
@@ -273,6 +308,8 @@ export class InboxConsumer {
       // Mark BEFORE calling: void/throw cannot establish non-acceptance.
       this.invoked.add(m.receiptId);
       this.set("delivery-pending", this.pendingStatus());
+      // A re-send stays watched too, so a host that never persists stops at the bound.
+      if (!this.d.idle() || this.resent.has(m.receiptId)) this.steeredBusy.set(m.receiptId, this.d.settled?.() ?? 0);
       this.d.send(customMessage(m), { deliverAs: "steer", triggerTurn: true });
       evidence = this.d.evidence(m);
     }
@@ -282,6 +319,7 @@ export class InboxConsumer {
       await this.request("inbox.record", { receiptId: m.receiptId, claimId: m.claimId, ...proof });
       if (this.valid()) {
         this.receipt = { claimId: m.claimId, entryId: proof.entryId };
+        this.resent.delete(m.receiptId); this.steeredBusy.delete(m.receiptId);
         this.pending = undefined; this.set("persisted-history", "recorded (model-read unknown)");
       }
     } else if (memoryAccepted) this.set("delivery-pending", "delivery pending: session memory shows the canonical entry; awaiting durable receipt evidence");
@@ -301,6 +339,7 @@ export class InboxConsumer {
     const overflow = kept.slice(0, Math.max(0, kept.length - LATE_LIMIT));
     this.late = kept.slice(-LATE_LIMIT);
     this.pending = undefined;
+    this.resent.delete(m.receiptId); this.steeredBusy.delete(m.receiptId);
     const cause = typeof notice.cause === "string" ? notice.cause.slice(0, 64) : "released";
     const drops = overflow.length ? `; late list full (${LATE_LIMIT}), dropped unrecorded: ${overflow.map(x => x.claim.receiptId).join(", ")}` : "";
     this.set("durable-queue", `released held claim ${m.receiptId} (${cause}); taking the next note${drops}`);

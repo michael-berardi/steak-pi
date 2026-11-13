@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.30.3 (2026-11-13)
+
+A note from another agent reaches a busy pane and is never reported as failed.
+
+- **A busy recipient keeps the note.** While the agent works, the inbox tells UltraTerm it is still holding the note it steered in, so the note waits for the next tool boundary however long one tool call runs. Before, a note sent to a pane inside a 30-minute build was released after five minutes and the sender's receipt said it had failed. Needs UltraTerm with the matching mailbox change; an older UltraTerm ignores the hold and keeps its five-minute release.
+- **A note an Escape dropped is sent again.** Escape clears Pi's steering queue, peer notes included. Once the agent has settled with nothing queued and the note is in neither the session file nor session memory, it is sent again, at most three times, with the reason in the inbox status.
+- **A reload keeps the inbox's identity.** The inbox instance id is kept per session across extension reloads, so a note claimed before `/reload` can still be held and recorded.
+
 ## 0.30.2 (2026-11-13)
 
 `steak-pi update --models` works when Steak Pi is installed with Homebrew, and a provider with a fixed model list is no longer reported as failed.
