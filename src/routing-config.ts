@@ -124,10 +124,10 @@ export interface TaskClassConfig {
   /** "small": the class is for small, bounded tasks; a wave with a task that may both edit and run a shell skips it. */
   maxScope?: "small";
   /** Credible level of the quality gate: a route whose pass-rate upper bound falls under the best route's lower bound
-   * at this level is held out whatever it costs (default 0.95; 0 turns the gate off). */
+   * at this level is held out whatever it costs (default 0: off). */
   qualityGate?: number;
-  /** Weight of a pass that only the worker's own final state reports, against one a verification, a test gate or the
-   * operator confirmed (default 0.5). A failure counts fully whatever its source. */
+  /** Weight of an outcome that only the worker's own final state reports, against one a verification, a test gate or the
+   * operator confirmed (default 1). It applies to self-reported passes and fails alike. */
   selfReportWeight?: number;
   /** Starting estimates per chain entry: `pass` of `n` earlier trials, and the mean cost and seconds of a trial. */
   priors?: Readonly<Record<string, { pass: number; n: number; costUsd?: number; seconds?: number }>>;

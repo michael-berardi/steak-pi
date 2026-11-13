@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { findPackageJSON } from 'node:module';
 import { dirname, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, expect, it, vi } from 'vitest';
 import { sdkPiAiUrl, sdkPiAiInternalUrl } from './helpers/pi-sdk-dependencies.ts';
 
@@ -26,7 +26,7 @@ it('explicit opt-in preserves other built-ins and auth methods without configuri
   const credentials = new InMemoryCredentialStore();
   const options = { credentials, modelsStore: new InMemoryModelsStore(), allowModelNetwork: false, refreshOnCreate: false };
   const baseline = await ModelRuntime.create({ ...options, modelsPath: null });
-  const runtime = await ModelRuntime.create({ ...options, modelsPath: fragmentPath.pathname });
+  const runtime = await ModelRuntime.create({ ...options, modelsPath: fileURLToPath(fragmentPath) });
   expect(runtime.getError()).toBeUndefined();
   for (const previous of baseline.getModels()) {
     // Pi 0.87.1 already includes this ID. Explicitly loading a legacy fragment

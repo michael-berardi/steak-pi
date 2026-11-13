@@ -183,7 +183,7 @@ export interface TaskClassDecision {
   explore: number;
   /** Credible level of the quality gate (0: off). Absent on decisions recorded before the gate existed. */
   qualityGate?: number;
-  /** Weight of a self-reported pass against a verified one. Absent on older decisions. */
+  /** Weight of a self-reported outcome (pass or fail) against a verified one. Absent on older decisions. */
   selfReportWeight?: number;
 }
 

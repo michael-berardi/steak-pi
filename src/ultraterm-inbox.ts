@@ -327,7 +327,7 @@ export class InboxConsumer {
         const permanent = PERMANENT_RECORD_REFUSAL.test(reason);
         if (permanent || item.failures >= LATE_RECORD_ATTEMPTS) {
           this.late = this.late.filter(x => x !== item);
-          this.status = `${this.status}; late record of ${m.receiptId} dropped after ${permanent ? "a permanent refusal" : `${item.failures} attempts`} (${reason})`;
+          this.set(this.phase, `${this.status}; late record of ${m.receiptId} dropped after ${permanent ? "a permanent refusal" : `${item.failures} attempts`} (${reason})`);
         }
       }
     }

@@ -44,6 +44,11 @@ validates it strictly, and releases before 0.30.0 refuse these keys as unknown, 
 file. (1) Release 0.30.0 with no routing.json change. (2) Confirm every pane, coordinator and `steak-pi` CLI runs 0.30.0
 or later. (3) Add the keys to a copy, run `steak-pi routing check <copy>`, and move it into place only on `ok`.
 Downgrading below 0.30.0 with the keys in the file stops those sessions: remove the keys first.
+- **`/model` lists every Claude model the login offers.** Claude Code model discovery ran with the quiet-network
+  switches set, and the CLI then answered from a stale built-in list (5 rows instead of the login's 14), so the newest
+  model was missing from the picker. Discovery now runs without those two switches; requests keep them.
+- **A dropped late inbox record shows in the pane status.** The notice is now set through the same path as every other
+  inbox status.
 
 ## 0.29.2 (2026-11-12)
 
