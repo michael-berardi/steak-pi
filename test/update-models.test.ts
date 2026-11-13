@@ -117,10 +117,42 @@ describe("refreshModelCatalogs", () => {
     expect(failed.providers).toEqual([{ provider: "ext-a", status: "failed", detail: "the refresh did not complete" }]);
   });
 
+  it("a configured provider with a fixed model list is not a failure: it has nothing to fetch", async () => {
+    // Measured 2026-11-13: providers declared in models.json (no refresh hook) were reported "FAILED: the refresh did
+    // not complete" because they never write a catalog row, and the command exited 1 although every catalog was current.
+    const r = registry([{ write: { "ext-a": 7 } }], ["ext-a", "builtin-b"]);
+    r.fake.getProvider = (provider) => (provider === "ext-a" ? { refreshModels: async () => {} } : {});
+    const report = await refreshModelCatalogs(r.fake, r.read);
+    expect(r.calls).toHaveLength(1);
+    expect(report.ok).toBe(true);
+    expect(formatModelRefreshReport(report)).toContain("builtin-b: skipped (fixed list of 1 model, nothing to fetch)");
+    expect(formatModelRefreshReport(report)).toContain("ext-a: refreshed with 7 models");
+  });
+
   it("reports a timeout as a failure", async () => {
     const r = registry([{ aborted: true }], ["ext-a"]);
     const report = await refreshModelCatalogs(r.fake, r.read);
     expect(report.ok).toBe(false);
     expect(report.providers).toEqual([{ provider: "ext-a", status: "failed", detail: "the refresh timed out" }]);
+  });
+});
+
+describe("isMainModule", () => {
+  it("matches the program through a symlinked install path (Homebrew opt -> Cellar)", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, realpathSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { pathToFileURL } = await import("node:url");
+    const { isMainModule } = await import("../src/update-models.ts");
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "spi-main-")));
+    mkdirSync(join(root, "Cellar", "src"), { recursive: true });
+    const real = join(root, "Cellar", "src", "update-models.ts");
+    writeFileSync(real, "");
+    symlinkSync(join(root, "Cellar"), join(root, "opt"));
+    const viaLink = join(root, "opt", "src", "update-models.ts");
+    expect(isMainModule(pathToFileURL(real).href, viaLink)).toBe(true);
+    expect(isMainModule(pathToFileURL(real).href, real)).toBe(true);
+    expect(isMainModule(pathToFileURL(real).href, join(root, "other.ts"))).toBe(false);
+    expect(isMainModule(pathToFileURL(real).href, undefined)).toBe(false);
   });
 });

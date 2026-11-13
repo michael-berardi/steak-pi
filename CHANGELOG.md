@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.30.2 (2026-11-13)
+
+`steak-pi update --models` works when Steak Pi is installed with Homebrew, and a provider with a fixed model list is no longer reported as failed.
+
+- **The Homebrew install refreshed nothing.** Homebrew runs the command from its `opt` link while the program resolves to the `Cellar` folder, so the check that it was the program being run compared two different paths, did nothing, and exited 0 with no output. Both paths are now resolved before they are compared.
+- **A provider with a fixed model list is not a failure.** Providers declared in `models.json`, or by an extension with a static table, have no catalog to fetch and never write a row; they were reported `FAILED: the refresh did not complete` and the command exited 1 although every catalog was current. They are now listed as `skipped (fixed list of N models, nothing to fetch)`.
+
 ## 0.30.1 (2026-11-13)
 
 A stale model list is fixed with one command, and an older Steak Pi no longer shortens a newer one's catalog.

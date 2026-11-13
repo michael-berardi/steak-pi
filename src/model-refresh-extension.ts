@@ -30,6 +30,8 @@ export interface RefreshRegistry {
   getAll(): readonly { provider: string }[];
   getRegisteredProviderIds(): readonly string[];
   getProviderAuthStatus(provider: string): { configured: boolean };
+  /** The registered provider, to tell one with a refreshable catalog (refreshModels) from one with a fixed list. */
+  getProvider?(provider: string): { refreshModels?: unknown } | undefined;
 }
 
 type Store = Record<string, { models?: unknown; checkedAt?: unknown } | undefined>;
@@ -65,9 +67,15 @@ export async function refreshModelCatalogs(
     const checkedAt = store[provider]?.checkedAt;
     return typeof checkedAt === "number" && checkedAt >= startedAt;
   };
+  // Only a provider with a refreshable catalog writes a row; one whose models are a fixed list (models.json, a static
+  // extension table) has nothing to fetch, so its missing row is not a failure (it is reported as a fixed list).
+  const refreshable = (provider: string) => {
+    const entry = registry.getProvider?.(provider);
+    return entry === undefined ? true : typeof entry.refreshModels === "function";
+  };
   const registered = [...registry.getRegisteredProviderIds()];
   // Pi starts its own catalog refresh at launch; whichever starts later supersedes the other without an error.
-  const unsettled = () => registered.filter((provider) => !errors.has(provider) && !checked(provider) && registry.getProviderAuthStatus(provider).configured);
+  const unsettled = () => registered.filter((provider) => refreshable(provider) && !errors.has(provider) && !checked(provider) && registry.getProviderAuthStatus(provider).configured);
   if (!aborted && unsettled().length > 0) {
     const retry = await registry.refresh({ allowNetwork: true, force: true, providers: unsettled(), signal });
     for (const [provider, error] of retry.errors) errors.set(provider, error);
@@ -87,6 +95,8 @@ export async function refreshModelCatalogs(
       const stored = store[provider]?.models;
       const models = Array.isArray(stored) && stored.length > 0 ? stored.length : (counts.get(provider) ?? 0);
       providers.push({ provider, status: "refreshed", models });
+    } else if (registered.includes(provider) && !refreshable(provider)) {
+      providers.push({ provider, status: "skipped", detail: `fixed list of ${counts.get(provider) ?? 0} model${counts.get(provider) === 1 ? "" : "s"}, nothing to fetch` });
     } else if (registered.includes(provider) && registry.getProviderAuthStatus(provider).configured) {
       providers.push({ provider, status: "failed", detail: aborted ? "the refresh timed out" : "the refresh did not complete" });
     } else if (registered.includes(provider)) {

@@ -2,7 +2,7 @@
 // Runs the installed Pi headless (RPC mode, no prompt, no session file) with the operator's own packages loaded
 // plus src/model-refresh-extension.ts, which forces the refresh once every provider is registered.
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -76,6 +76,15 @@ export async function updateModels(options: UpdateModelsOptions = {}): Promise<n
   }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+/** Whether this module is the program node was asked to run. Both sides are resolved through symlinks: Homebrew runs it
+ * as .../opt/steak-pi/libexec/src/update-models.ts while the module resolves to .../Cellar/steak-pi/<v>/..., and a plain
+ * string comparison made `steak-pi update --models` exit 0 having done nothing (2026-11-13). */
+export function isMainModule(moduleUrl: string, argv1: string | undefined): boolean {
+  if (!argv1) return false;
+  const real = (path: string) => { try { return realpathSync(path); } catch { return path; } };
+  return real(fileURLToPath(moduleUrl)) === real(argv1);
+}
+
+if (isMainModule(import.meta.url, process.argv[1])) {
   process.exitCode = await updateModels();
 }
