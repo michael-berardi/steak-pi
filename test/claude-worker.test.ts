@@ -896,7 +896,7 @@ describe("claude-code worker stream handling", () => {
   it("refuses ownership it cannot express exactly, without spawning anything", async () => {
     const { spawn, calls } = fakeSpawn((child) => child.exit(0));
     const runner: WorkerRunner = createClaudeWorkerRunner(runnerOptions(spawn));
-    for (const hostile of [task({ mayEdit: true, ownedPaths: ["/repo/a*"] }), task({ mayEdit: true, ownedPaths: ["relative"] }),
+    for (const hostile of [task({ mayEdit: true, ownedPaths: ["/repo/a?"] }), task({ mayEdit: true, ownedPaths: ["relative"] }),
       task({ mayEdit: true, ownedPaths: [] }), task({ ownedPaths: ["/repo/a"] }), task({ sessionFile: "/x.jsonl" })]) {
       const result = await runner({ run: run(), task: hostile, signal: new AbortController().signal, onProgress: () => {} });
       expect(result.state).toBe("failed");
@@ -1290,5 +1290,66 @@ describe("claude-code first-turn signal and the Haiku fallback tier (offline str
     const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run({ model: `claude-code-api/${haiku}` }), task: task(), signal: new AbortController().signal, onProgress() {} });
     expect(result.state).toBe("failed");
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("claude-code worker turn budget (hard bound and complete final report)", () => {
+  const report = "FINAL REPORT body: findings, changed paths, checks, risks.";
+  const finalResult = (turns: number) => line({ ...JSON.parse(successResult(report, {})), num_turns: turns });
+
+  it("synthetic: a worker that ran past its budget but returned a complete final report is done, with a note", async () => {
+    const { spawn } = fakeSpawn((child) => {
+      for (let i = 0; i < 3; i++) child.stdout(line({ type: "assistant", message: { content: [{ type: "text", text: `step ${i}` }] } }));
+      child.stdout(finalResult(71)); child.exit(0);
+    });
+    const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run({ maxTurns: 64 }), task: task(), signal: new AbortController().signal, onProgress: () => {} });
+    expect(result.state).toBe("done");
+    expect(result.error).toBeUndefined();
+    expect(result.note).toBe("turn budget reached (71 of 64); final report complete");
+    expect(result.output).toContain(report);
+    expect(result.turns).toBe(71);
+  });
+
+  it("synthetic: hitting the budget without a complete report stays failed and names the cause", async () => {
+    const { spawn } = fakeSpawn((child) => {
+      child.stdout(line({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Read", input: {} }] } }));
+      child.stdout(line({ type: "result", subtype: "error_max_turns", is_error: true, num_turns: 3 }));
+      child.exit(0);
+    });
+    const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run({ maxTurns: 2 }), task: task(), signal: new AbortController().signal, onProgress: () => {} });
+    expect(result.state).toBe("failed");
+    expect(result.error).toMatch(/exhausted the 2-turn limit/);
+    expect(result.note).toBeUndefined();
+    expect(result.turns).toBeLessThanOrEqual(2);
+  });
+
+  it("synthetic: the stop is at the budget, not later: extra assistant messages are neither counted nor read", async () => {
+    const { spawn, calls } = fakeSpawn((child) => {
+      let burst = "";
+      for (let i = 0; i < 10; i++) burst += line({ type: "assistant", message: { content: [{ type: "tool_use", id: `t${i}`, name: "Read", input: {} }] } });
+      child.stdout(burst); child.exit(null, "SIGTERM");
+    });
+    const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run({ maxTurns: 3 }), task: task(), signal: new AbortController().signal, onProgress: () => {} });
+    expect(result.state).toBe("failed");
+    expect(result.turns).toBe(3);
+    expect(calls[0].child.signals).toContain("SIGTERM");
+    expect(result.error).toMatch(/exhausted the 3-turn limit/);
+  });
+
+  it("synthetic: the CLI's own stop marker (num_turns = budget + 1 on error_max_turns) is not reported as an overrun", async () => {
+    const { spawn } = fakeSpawn((child) => {
+      child.stdout(line({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Read", input: {} }] } }));
+      child.stdout(line({ type: "result", subtype: "error_max_turns", is_error: true, num_turns: 4 }));
+      child.exit(0);
+    });
+    const result = await createClaudeWorkerRunner(runnerOptions(spawn))({ run: run({ maxTurns: 3 }), task: task(), signal: new AbortController().signal, onProgress: () => {} });
+    expect(result.state).toBe("failed");
+    expect(result.turns).toBe(3);
+  });
+
+  it("synthetic: the prompt states the hard stop and that no grace requests exist", () => {
+    const text = buildClaudeWorkerPrompt(run({ maxTurns: 64 }), task());
+    expect(text).toContain("You have at most 64 assistant requests");
+    expect(text).toMatch(/stopped at request 64; there is no grace/);
   });
 });

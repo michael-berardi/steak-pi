@@ -160,11 +160,14 @@ Image review is admitted only as staged files read by the CLI's native Read tool
 Scheduling, bounded waits/cancel, usage and reports use the same USAP coordinator.
 
 Unsupported Claude `ownedPaths` fail at dispatch before the wave is registered,
-checkpointed, or started. Forbidden permission-rule characters are `*`, `?`,
-`[`, `]`, `{`, `}`, `(`, `)`, `!`, backslash (`\`), LF, and CR in either the
-normalized lexical path or its physical projection (including missing children
-beneath symlinks). Astro `src/pages/[slug].astro` and
-`src/pages/[...slug].astro` are therefore rejected. No automatic widening or
+checkpointed, or started. The characters `*`, `[`, `]`, `{`, `}`, `(`, `)`, `!` are
+written escaped in the CLI rule, so dynamic-route paths such as
+`src/app/[id]/route.ts` or Astro `src/pages/[...slug].astro` are accepted and own
+exactly that file (an owned directory owns only its descendants). Forbidden
+characters, which the CLI matcher cannot make literal, are `?`, backslash (`\`), LF,
+and CR in either the normalized lexical path or its physical projection (including
+missing children beneath symlinks); the error prints the full path and, for a
+relative one, what it was resolved against. No automatic widening or
 harness fallback occurs: the parent may explicitly choose Pi exact-path guarded
 writes or revise ownership within approved scope, never silently broaden it to
 the parent directory.
@@ -321,7 +324,9 @@ consequential decisions. Requests must not wait without a bound.
 
 Every run enforces finite time, child-turn, output, and relay-message budgets.
 `timeoutMs` defaults to 10 minutes (1 second–8 hours); per-child `maxTurns`
-defaults to 64 (1–2,048 assistant turns, including relay follow-ups). Native
+defaults to 64 (1–2,048 assistant turns, including relay follow-ups; a hard stop with
+no grace). A task that reaches it with a complete final report is `done` with a note; without
+one it stays failed/PARTIAL. Native
 worker compaction is enabled and native retries are capped at one.
 Before launch, inspect `status`/`diagnose` for the queue reason, queue deadline and
 machine capacity holders. Reviewer tasks have a 60-second launch queue budget across

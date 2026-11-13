@@ -367,6 +367,8 @@ export interface TaskRecord extends NormalizedTask {
   partialSummary?: string;
   /** Predecessor task this attempt continues; set only by an explicit bounded resume. */
   resumedFrom?: string;
+  /** Why a `done` task is worth a second look (for example a turn budget reached with a complete final report). */
+  note?: string;
 }
 
 export interface RunRecord {
@@ -435,6 +437,8 @@ export interface WorkerResult {
   state: Extract<TaskState, "done" | "failed" | "aborted" | "timed_out">;
   output: string;
   error?: string;
+  /** Set on a `done` result that reached its turn budget but ended with a complete final report. */
+  note?: string;
   toolErrors?: number;
   toolSuccesses?: number;
   turns: number;

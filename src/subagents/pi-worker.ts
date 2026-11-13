@@ -870,8 +870,12 @@ export function classifyPiWorkerState(input: {
   /** Set when the stalled-stream watchdog aborted the session. */
   stalledAfterMs?: number;
   finalAssistant?: AssistantSnapshot;
+  /** Turns used when the budget stopped the worker. */
+  turns?: number;
+  /** A complete final answer (isFinalAnswer) was already emitted before the budget stop. */
+  finalReportComplete?: boolean;
   error?: unknown;
-}): Pick<WorkerResult, "state" | "error"> {
+}): Pick<WorkerResult, "state" | "error" | "note"> {
   if (isTimeoutSignal(input.signal)) {
     return { state: "timed_out", error: errorText(input.signal.reason ?? "Run deadline exceeded") };
   }
@@ -887,6 +891,9 @@ export function classifyPiWorkerState(input: {
   }
   if (input.turnLimitReached) {
     const limit = typeof input.maxTurns === "number" ? input.maxTurns : MAX_PI_WORKER_TURNS;
+    if (input.finalReportComplete === true) {
+      return { state: "done", note: `turn budget reached (${input.turns ?? limit} of ${limit}); final report complete` };
+    }
     return {
       state: "failed",
       error: `Child exceeded the ${limit}-turn limit; the partial report above is evidence, not acceptance`,
@@ -1409,6 +1416,8 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       signal,
       turnLimitReached,
       maxTurns,
+      turns,
+      finalReportComplete: finalReport !== undefined && finalReport.trim().length > 0,
       ...(stalled ? { stalledAfterMs: stallMs } : {}),
       finalAssistant,
       ...(promptError === undefined ? {} : { error: promptError }),
@@ -1416,9 +1425,10 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
     if (classification.state === "done" && toolErrors > 0 && toolSuccesses === 0) {
       classification.state = "failed";
       classification.error = "Every attempted native tool call failed; task output is evidence, not acceptance.";
+      delete classification.note;
     }
     const bounded = truncatePiWorkerOutput(finalWorkerReport(
-      task, classification.state, finalReport ?? finalAssistant?.text ?? "", classification.error,
+      task, classification.state, finalReport ?? finalAssistant?.text ?? "", classification.error, classification.note,
     ));
     return {
       ...classification,

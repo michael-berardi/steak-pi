@@ -327,7 +327,7 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
         goal: "Validate the whole wave", harness: "claude-code", background,
         tasks: [
           { label: "Safe leaf", task: "Edit safe file", mayEdit: true, ownedPaths: ["safe.ts"] },
-          { label: "Astro leaf", task: "Edit route", mayEdit: true, ownedPaths: ["src/pages/[slug].astro"] },
+          { label: "Astro leaf", task: "Edit route", mayEdit: true, ownedPaths: ["src/pages/slug?.astro"] },
         ],
       }, undefined, undefined, h.ctx);
       expect(result.isError).toBe(true);
@@ -335,7 +335,7 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
       expect(text).toContain("Dispatch validation failed");
       expect(text).toContain("tasks[1].ownedPaths[0]");
       expect(text).toContain("Astro leaf");
-      expect(text).toContain('metacharacter "["');
+      expect(text).toContain('metacharacter "?"');
       expect(text).not.toContain("Started USAP run");
       expect(runner).not.toHaveBeenCalled();
       expect(save).not.toHaveBeenCalled();
@@ -344,6 +344,26 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
       expect(h.messages).toEqual([]);
       expect(h.entries).toEqual([]);
     } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); save.mockRestore(); }
+  });
+
+  it("synthetic: a refused owned path is shown whole, past the old 200-character cut, with the relative-path hint", async () => {
+    const root = mkdtempSync(join(tmpdir(), "usap-owned-path-long-")); dirs.push(root);
+    const runner = vi.fn(async () => ({ state: "done" as const, output: "unexpected", turns: 1, usage: emptyUsage() }));
+    const h = harness(() => runner);
+    const deep = `${"nested-directory-name/".repeat(12)}last?.ts`;
+    try {
+      const result = await h.tools.get("ultraterm_subagents").execute("long", {
+        goal: "Show the whole path", harness: "claude-code",
+        tasks: [{ label: "Long path", task: "Edit", mayEdit: true, ownedPaths: [deep] }],
+      }, undefined, undefined, h.ctx);
+      expect(result.isError).toBe(true);
+      const text = result.content[0].text as string;
+      expect(deep.length).toBeGreaterThan(200);
+      expect(text).toContain(JSON.stringify(join(h.ctx.cwd, deep)));
+      expect(text).toContain(`owned path ${JSON.stringify(deep)} resolved to`);
+      expect(text).toContain("pass an absolute path or set the run cwd");
+      expect(runner).not.toHaveBeenCalled();
+    } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
   });
 
   const claudeUnavailable = () => vi.fn(async () => ({ ok: true, providers: { claude: { accounts: [{ eligible: false }] } } }));
@@ -358,10 +378,10 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
     try {
       const result = await h.tools.get("ultraterm_subagents").execute("invalid", {
         goal: "Keep exact ownership", background,
-        tasks: [{ label: "Mutating review", task: "Edit route", role: "reviewer", mayEdit: true, ownedPaths: ["src/pages/[slug].astro"] }],
+        tasks: [{ label: "Mutating review", task: "Edit route", role: "reviewer", mayEdit: true, ownedPaths: ["src/pages/slug?.astro"] }],
       }, undefined, undefined, h.ctx);
       expect(result.isError).toBe(true);
-      expect(result.content[0].text).toContain('metacharacter "["');
+      expect(result.content[0].text).toContain('metacharacter "?"');
       expect(result.content[0].text).not.toContain("Started USAP run");
       expect(accountCommand).not.toHaveBeenCalled();
       expect(runner).not.toHaveBeenCalled();

@@ -398,11 +398,20 @@ acceptance.
 
 **Claude owned-path admission.** Unsupported `ownedPaths` for `claude-code`
 fail at dispatch, before the wave is registered, checkpointed, or started.
-Permission-rule metacharacters `*`, `?`, `[`, `]`, `{`, `}`, `(`, `)`, `!`,
-backslash (`\`), LF, and CR are forbidden in either the normalized lexical
-path or its physical projection, including missing children beneath symlinks.
-Thus Astro paths such as `src/pages/[slug].astro` and
-`src/pages/[...slug].astro` are rejected. There is no automatic ownership
+The CLI's rule matcher treats `[abc]`, `*` and `{a,b}` as patterns, so each of
+`*`, `[`, `]`, `{`, `}`, `(`, `)`, `!` is written backslash-escaped in the
+`Edit(...)` rule (measured against the CLI: an escaped character matches only
+itself, so `src/app/[id]/route.ts` never also allows `src/app/i/route.ts`, and an
+owned directory `pages/[slug]` allows only its own descendants). Dynamic-route
+files such as `src/app/api/os/records/[recordType]/route.ts` and
+`src/pages/[...slug].astro` are therefore accepted. Three characters cannot be made
+literal in the CLI matcher (`\?` does not match `?`; `\\` collapses and would allow a
+different file) and stay forbidden: `?`, backslash (`\`), LF and CR, in either the
+normalized lexical path or its physical projection, including missing children
+beneath symlinks. The refusal prints the full path (up to 2,000 characters); for a
+relative `ownedPaths` entry it also says what the entry was resolved against
+(`owned path "src/x" resolved to "/abs/src/x" (relative to the run cwd /abs); pass an
+absolute path or set the run cwd`). There is no automatic ownership
 widening or harness fallback. The parent may explicitly choose Pi exact-path
 guarded writes or revise ownership within approved scope; never silently
 broaden ownership to the parent directory. Implicit privileged reviewer waves
@@ -637,7 +646,18 @@ and a request is left to act on it) asking it to stop gathering evidence and wri
 its findings so far plus a precise remaining-work list as its final answer, so the
 retained partial is useful. A headless Claude child cannot be interrupted mid-run
 (its stdin closes after the prompt), so its request budget and the same instruction
-are part of the up-front prompt instead.
+are part of the up-front prompt instead. The budget is a hard stop with no grace:
+the prompt says so ("the run is stopped at request N; there is no grace"), the native
+worker stops when a request beyond `maxTurns` would start, and the Claude worker
+stops when an assistant message beyond `maxTurns` arrives (it is neither counted nor
+read). The CLI itself reports `num_turns` as budget + 1 when it stops on
+`--max-turns`; that marker is capped at the budget. A task that reached the budget
+but whose success result carries a complete final report (non-empty, success
+subtype, pinned model verified, exit 0; for a native worker a final answer that was
+already emitted) is recorded `done` with the note `turn budget reached (N of M);
+final report complete` (shown as `note:` beside the task, and as the `Status:` reason
+in the report). A task that reached the budget without a complete report stays
+`failed` and `PARTIAL`, with the turn-limit cause named.
 
 `ultraterm_hub` provides these canonical management and relay operations:
 

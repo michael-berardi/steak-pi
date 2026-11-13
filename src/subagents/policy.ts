@@ -156,6 +156,17 @@ function isDeclaredOverflowMirror(lexical: string, physical: string, field: stri
   }
 }
 
+/** Longest path an ownedPath error prints in full (the dispatcher bounds the whole message at the same order). */
+const OWNED_PATH_ERROR_LIMIT = 2000;
+
+/** When a relative ownedPath is refused, say what it was resolved against and how to fix it. Empty for absolute input. */
+function relativeOwnedPathHint(supplied: unknown, cwd: string, resolved?: string): string {
+  if (typeof supplied !== "string" || supplied.trim() === "" || isAbsolute(supplied.trim()) || supplied.includes("\0")) return "";
+  const input = supplied.trim();
+  const full = resolved ?? resolve(cwd, input);
+  return ` [owned path ${JSON.stringify(input.slice(0, OWNED_PATH_ERROR_LIMIT))} resolved to ${JSON.stringify(full.slice(0, OWNED_PATH_ERROR_LIMIT))} (relative to the run cwd ${JSON.stringify(cwd.slice(0, OWNED_PATH_ERROR_LIMIT))}); pass an absolute path or set the run cwd]`;
+}
+
 function pathUnderCwd(cwd: { lexical: string; physical: string }, inputPath: unknown, field: string): {
   lexical: string;
   physical: string;
@@ -360,7 +371,13 @@ export function normalizeDispatch(
 
     const ownedPaths = suppliedPaths.map((ownedPath, ownedIndex) => {
       const ownedField = `${field}.ownedPaths[${ownedIndex}]`;
-      const normalized = pathUnderCwd(root, ownedPath, ownedField);
+      let normalized: { lexical: string; physical: string };
+      try {
+        normalized = pathUnderCwd(root, ownedPath, ownedField);
+      } catch (error) {
+        if (error instanceof SubagentPolicyError) fail(`${error.message}${relativeOwnedPathHint(ownedPath, root.lexical)}`);
+        throw error;
+      }
       if (harness === "claude-code") {
         // Validate the entire wave before any checkpoint, registration or worker
         // launch. Use the projection even if the final path does not yet exist.
@@ -368,7 +385,7 @@ export function normalizeDispatch(
           claudeOwnedPathRules([normalized.lexical], () => normalized.physical);
         } catch (error) {
           const reason = error instanceof Error ? error.message : "claude-code owned path cannot be enforced exactly";
-          fail(`${ownedField} (task ${JSON.stringify(label.slice(0, 40))}): ${reason}`);
+          fail(`${ownedField} (task ${JSON.stringify(label.slice(0, 40))}): ${reason}${relativeOwnedPathHint(ownedPath, root.lexical, normalized.lexical)}`);
         }
       }
       for (const existing of ownership) {

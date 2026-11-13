@@ -123,7 +123,7 @@ describe("API argv and environment", () => {
     expect(reviewer).not.toContain("Bash");
     expect(() => claudeApiWorkerArgs(8, { mayEdit: true, ownedPaths: [] }, undefined, "claude-sonnet-5-5", undefined, { settingsPath: "/s.json", maxBudgetUsd: 1 })).toThrow(/require at least one owned path/);
     expect(() => claudeApiWorkerArgs(8, { mayEdit: false, ownedPaths: ["/repo/a"] }, undefined, "claude-sonnet-5-5", undefined, { settingsPath: "/s.json", maxBudgetUsd: 1 })).toThrow(/read-only leaves cannot own writable paths/);
-    expect(() => claudeApiWorkerArgs(8, { mayEdit: true, ownedPaths: ["/repo/a*"] }, undefined, "claude-sonnet-5-5", undefined, { settingsPath: "/s.json", maxBudgetUsd: 1 })).toThrow(/metacharacter/);
+    expect(() => claudeApiWorkerArgs(8, { mayEdit: true, ownedPaths: ["/repo/a?"] }, undefined, "claude-sonnet-5-5", undefined, { settingsPath: "/s.json", maxBudgetUsd: 1 })).toThrow(/metacharacter/);
   });
 
   it("session id and resume flags work behind --bare", () => {

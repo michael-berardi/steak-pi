@@ -617,6 +617,8 @@ interface RunState {
   toolSuccesses: number;
   turns: number;
   turnLimitReached: boolean;
+  /** The CLI's own success result carried a non-empty final report (the same test a normal finish uses). */
+  finalReportComplete?: boolean;
   usage: UsageTotals;
   sawResult: boolean;
   modelVerified?: boolean;
@@ -663,7 +665,7 @@ export function classifyClaudeWorkerState(input: {
   /** Explicit API route: a result without CLI-attested API auth is never "done". */
   apiRequired?: boolean;
   apiAttested?: boolean;
-}): Pick<WorkerResult, "state" | "error"> {
+}): Pick<WorkerResult, "state" | "error" | "note"> {
   const { signal, state, maxTurns, exitCode, exitSignal, spawnError } = input;
   if (spawnError !== undefined) return { state: "failed", error: `claude-code CLI could not start: ${spawnError.message}` };
   if (state.failure !== undefined) return { state: "failed", error: state.failure };
@@ -671,7 +673,10 @@ export function classifyClaudeWorkerState(input: {
   if (signal.aborted) return { state: "aborted", error: errorText(signal.reason ?? "Task aborted") };
   // A stable terminal condition: a budget-exceeded child never becomes "done",
   // even if the CLI managed to flush a success result during the abort grace.
-  if (state.turnLimitReached) {
+  // A budget stop whose CLI result is a success carrying a complete final report is a finished leaf: it falls
+  // through to the normal completeness checks below and is recorded with a note. Anything else stays failed.
+  const overBudgetComplete = state.turnLimitReached && state.finalReportComplete === true && state.result?.subtype === "success";
+  if (state.turnLimitReached && !overBudgetComplete) {
     return { state: "failed", error: `Child exhausted the ${maxTurns}-turn limit${state.result?.subtype === "error_max_turns" ? " (error_max_turns)" : ""}; the partial report above is evidence, not acceptance` };
   }
   // A cut stream is retryable only when no terminal policy/protocol failure
@@ -689,7 +694,9 @@ export function classifyClaudeWorkerState(input: {
     if (input.apiRequired && !input.apiAttested) return { state: "failed", error: "Claude CLI did not attest apiKeyHelper API authentication for this leaf" };
     const output = state.outputParts.join("").trim();
     if (!output || output === "(no output)") return { state: "failed", error: "Claude CLI produced no final output" };
-    return { state: "done" };
+    return overBudgetComplete
+      ? { state: "done", note: `turn budget reached (${state.turns} of ${maxTurns}); final report complete` }
+      : { state: "done" };
   }
   if (exitCode !== null && exitCode !== 0) {
     return { state: "failed", error: `claude-code CLI exited with code ${exitCode}${exitSignal ? ` (signal ${exitSignal})` : ""} without a result` };
@@ -991,6 +998,12 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
           }
           // Thinking, tool and text frames can share ONE API response ID.
           if (!messages.has(event.messageId)) {
+            // The budget is a hard stop: a message that would be request budget+1 is neither counted nor read.
+            if (state.turns >= maxTurns) {
+              state.turnLimitReached = true;
+              killOnce(true);
+              return;
+            }
             if (messages.size === 0 && state.sawResult) {
               state.outputParts = []; state.outputLength = 0;
             }
@@ -1019,11 +1032,6 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
           for (const call of event.toolCalls) pendingCalls.set(call.id, call);
           const tool = event.toolUses[event.toolUses.length - 1];
           if (tool !== undefined) onProgress({ state: "running", currentTool: tool.slice(0, 80) });
-          if (state.turns > maxTurns) {
-            state.turnLimitReached = true;
-            killOnce(true);
-            return;
-          }
           continue;
         }
         if (event.kind === "tool_result") {
@@ -1061,11 +1069,17 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
             } else {
               // num_turns describes this query, not the whole realtime stdin
               // session. Never let another result reset the host's budget.
-              state.turns = Math.max(state.turns, completedTurns + event.numTurns);
+              // On error_max_turns the CLI reports budget + 1 (its stop marker, not a request): cap it at the budget.
+              const reported = completedTurns + event.numTurns;
+              state.turns = Math.max(state.turns, event.subtype === "error_max_turns" ? Math.min(reported, maxTurns) : reported);
               if (state.turns > maxTurns) state.turnLimitReached = true;
             }
           }
           if (event.subtype === "error_max_turns") state.turnLimitReached = true;
+          const reportText = typeof event.result === "string" ? event.result.trim() : "";
+          // Only the first query's result can excuse a budget overrun: a relay follow-up that pushes the aggregate
+          // past the budget (the per-query CLI limit resets for it) is the overrun the aggregate budget exists to stop.
+          state.finalReportComplete = completedTurns === 0 && event.subtype === "success" && !event.isError && reportText !== "" && reportText !== "(no output)";
           completedTurns = state.turns;
           // Usage is per query; total_cost_usd is cumulative for the CLI session.
           if (event.usage !== undefined) state.usage = addUsage(sanitizeUsage(completedUsage), claudeUsage(event.usage));
@@ -1073,7 +1087,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
           completedUsage = sanitizeUsage(state.usage);
           messages.clear();
           relay?.flushText();
-          if (state.failure !== undefined || state.turnLimitReached) {
+          if (state.failure !== undefined || (state.turnLimitReached && !state.finalReportComplete)) {
             killOnce(true);
             return;
           }

@@ -21,6 +21,16 @@ routing.json last (below).
   operator confirmed. Both sides are weighted, so the pass-rate estimate stays unbiased and only its interval widens.
 - **A timeout is named.** A task that hits its deadline is recorded as a `timeout` failure with its whole wall time,
   so it counts against both quality and speed. Each evidence record also names the harness that ran it.
+- **Dynamic-route files can be owned on the Claude tier.** A wave owning `src/app/api/records/[recordType]/route.ts`
+  or an Astro `pages/[slug]` folder is no longer refused. The CLI rule is written with the brackets (and `*`, `{`, `}`,
+  `(`, `)`, `!`) escaped, so it allows exactly that file or folder and not `[id]`'s look-alikes such as `i` or `d`.
+  `?` and backslash still cannot be made exact and are still refused.
+- **A refused owned path is shown whole.** The error prints the full resolved path (it was cut at 200 characters)
+  and, for a relative path, says it was resolved against the run cwd and to pass an absolute path or set the cwd.
+- **A finished report is not failed for hitting the turn budget.** A worker that reaches its turn budget with a
+  complete final report is `done` with the note `turn budget reached (N of M); final report complete`. Without a
+  complete report it stays failed/PARTIAL. The budget is a hard stop with no grace (the prompt says so), and the
+  CLI's own `budget + 1` stop marker is no longer shown as an overrun.
 - **The dispatch note says which harness and why.** A classed wave's note starts with `Harness: <id>, chosen by task
   class <class> with <entry>: <reason>; p(pass) …, E[cost] …, E[s] …`, and each estimate names its harness.
 - **A noClaude project's class never picks a Claude candidate.** An implicit classed wave in a project under

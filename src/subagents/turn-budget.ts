@@ -19,5 +19,5 @@ export function turnBudgetNotice(remaining: number): string {
 
 /** Up-front equivalent for harnesses whose stdin closes after the prompt. */
 export function turnBudgetPromptLine(maxTurns: number): string {
-  return `You have at most ${maxTurns} assistant requests. Keep count: when about ${TURN_BUDGET_NOTICE_REMAINING} remain, stop gathering evidence and write your findings so far plus a precise remaining-work list (what is not yet done or verified, with exact paths or commands) as your final answer. This harness cannot interrupt you mid-run.`;
+  return `You have at most ${maxTurns} assistant requests (the run is stopped at request ${maxTurns}; there is no grace). Keep count: when about ${TURN_BUDGET_NOTICE_REMAINING} remain, stop gathering evidence and write your findings so far plus a precise remaining-work list (what is not yet done or verified, with exact paths or commands) as your final answer. This harness cannot interrupt you mid-run.`;
 }

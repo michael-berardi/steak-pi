@@ -1180,7 +1180,7 @@ export function renderRunResult(run: RunRecord, limit = MAX_TOOL_CONTENT): strin
     // A budget stop is named explicitly (with its role) so it cannot be mistaken for a finished leaf.
     const partial = task.outcome ? ` · PARTIAL ${task.partialReason ?? "budget"} (${task.role}; not complete)` : "";
     const suffix = `${partial}${task.toolErrors ? ` · ${task.toolErrors} tool errors` : ""}${task.truncated ? " · worker output truncated" : ""}`;
-    const error = task.error ? `\nerror: ${task.error}` : "";
+    const error = task.error ? `\nerror: ${task.error}` : task.note ? `\nnote: ${task.note}` : "";
     const apiReceipt = task.apiReceipt ? `\n${formatClaudeApiReceipt(task.apiReceipt)}` : "";
     const routeReceipt = task.reviewFallback ? `\nactual review route: ${task.reviewFallback.to} (automatic fallback: ${task.reviewFallback.reason}; not Opus approval)` : "";
     const accountReceipt = task.providerAccount ? `\naccount: ${task.providerAccount.label} (${task.providerAccount.provider}/${task.providerAccount.id}); lease=${task.providerAccount.lease}` : "";
@@ -2562,8 +2562,9 @@ export function createUltratermSubagentsExtension(
       } catch (error) {
         if (!(error instanceof SubagentPolicyError)) throw error;
         // Never throw policy failures to a host formatter that may echo raw arguments.
-        // Bound even labels and error messages: both can contain untrusted input.
-        const reason = error.message.slice(0, 200);
+        // Bound even labels and error messages: both can contain untrusted input. A path in an ownedPaths
+        // error is printed whole (up to 2000 characters) so the operator can see exactly what was refused.
+        const reason = error.message.slice(0, 2000);
         const field = /^(?:tasks\[\d+\](?:\.[A-Za-z]+(?:\[\d+\])?)?|[A-Za-z]+)/.exec(reason)?.[0] ?? "input";
         const labels = Array.isArray(params.tasks)
           ? params.tasks.slice(0, MAX_TASKS).map((task) =>

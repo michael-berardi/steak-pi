@@ -6,14 +6,13 @@ import { normalizeDispatch, SubagentPolicyError } from "../src/subagents/policy.
 import type { DispatchInput } from "../src/subagents/types.ts";
 
 const temporaryDirectories: string[] = [];
+// Characters the Claude Code CLI's rule matcher cannot make literal (measured, see claude-owned-paths.ts): still refused.
 const metacharacters = [
-  ["asterisk", "*"], ["question mark", "?"],
-  ["opening bracket", "["], ["closing bracket", "]"],
-  ["opening brace", "{"], ["closing brace", "}"],
-  ["opening parenthesis", "("], ["closing parenthesis", ")"],
-  ["exclamation mark", "!"], ["backslash", "\\"],
+  ["question mark", "?"], ["backslash", "\\"],
   ["LF", "\n"], ["CR", "\r"],
 ] as const;
+// Characters a backslash escape makes literal: accepted, ownership stays exact (see test/usap-bracket-paths.test.ts).
+const escapableCharacters = ["*", "[", "]", "{", "}", "(", ")", "!"] as const;
 
 function fixture(): { base: string; cwd: string } {
   const base = realpathSync.native(mkdtempSync(join(tmpdir(), "steak-claude-path-dispatch-")));
@@ -84,6 +83,12 @@ describe("synthetic: Claude owned-path dispatch permission validation", () => {
     expect(run.tasks[0].ownedPaths).toEqual([join(cwd, "src/[route]/page.ts")]);
   });
 
+  it.each(escapableCharacters)("accepts %s in an owned path (the rule is escaped, never widened)", (character) => {
+    const { cwd } = fixture();
+    const run = normalize(dispatch([writer("Escapable writer", [`dir${character}x/file.ts`])]), cwd);
+    expect(run.tasks[0].ownedPaths).toEqual([join(cwd, `dir${character}x/file.ts`)]);
+  });
+
   it("accepts plain, spaced, and absolute paths without granting their parents", () => {
     const { cwd } = fixture();
     const paths = ["src/plain.ts", "folder with spaces/file name.ts", join(cwd, "absolute/file.ts")];
@@ -93,10 +98,10 @@ describe("synthetic: Claude owned-path dispatch permission validation", () => {
     expect(run.tasks[0].ownedPaths).not.toContain(join(cwd, "src"));
   });
 
-  it("rejects an absolute bracket alias even when its physical target is safe", () => {
+  it("rejects an absolute question-mark alias even when its physical target is safe", () => {
     const { cwd } = fixture();
     const target = join(cwd, "safe-target");
-    const alias = join(cwd, "[alias]");
+    const alias = join(cwd, "?alias");
     mkdirSync(target);
     symlinkSync(target, alias, "dir");
     expectPermissionRejection(dispatch([
@@ -104,18 +109,18 @@ describe("synthetic: Claude owned-path dispatch permission validation", () => {
     ]), cwd, "tasks[0].ownedPaths[0]", "Absolute alias writer");
   });
 
-  it("rejects brackets inherited from the lexical cwd, not just the supplied relative path", () => {
+  it("rejects metacharacters inherited from the lexical cwd, not just the supplied relative path", () => {
     const { base, cwd } = fixture();
-    const aliasCwd = join(base, "[cwd-alias]");
+    const aliasCwd = join(base, "?cwd-alias");
     symlinkSync(cwd, aliasCwd, "dir");
     expectPermissionRejection(dispatch([
       writer("Bracket cwd writer", ["plain.ts"]),
     ]), aliasCwd, "tasks[0].ownedPaths[0]", "Bracket cwd writer");
   });
 
-  it("rejects brackets inherited only from the physical cwd", () => {
+  it("rejects metacharacters inherited only from the physical cwd", () => {
     const { base } = fixture();
-    const target = join(base, "[physical-cwd]");
+    const target = join(base, "?physical-cwd");
     const aliasCwd = join(base, "safe-cwd-alias");
     mkdirSync(target);
     symlinkSync(target, aliasCwd, "dir");

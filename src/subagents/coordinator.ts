@@ -189,11 +189,11 @@ export function workerJournal(task: TaskRecord): WorkerJournal {
   return journal;
 }
 
-export function finalWorkerReport(task: TaskRecord, state: WorkerResult["state"], output: string, error?: string): string {
+export function finalWorkerReport(task: TaskRecord, state: WorkerResult["state"], output: string, error?: string, note?: string): string {
   const journal = workerJournal(task);
   const exhausted = TURN_BUDGET_ERROR.test(error ?? "");
   const status = state === "done" ? "done" : state === "aborted" || state === "timed_out" || exhausted ? "incomplete" : "failed";
-  const reason = exhausted ? "turn budget exhausted" : error ?? (state === "done" ? "completed" : state);
+  const reason = exhausted ? "turn budget exhausted" : error ?? (state === "done" ? note ?? "completed" : state);
   return [
     "FINAL REPORT",
     `Status: ${status}: ${reason}`,
@@ -788,7 +788,7 @@ export class SubagentCoordinator {
     runtime: RunRuntime,
     task: TaskRecord,
     state: TerminalTaskState,
-    result: Pick<WorkerResult, "output" | "error" | "turns" | "usage" | "truncated" | "toolErrors" | "toolSuccesses" | "apiReceipt" | "subscriptionReceipt">,
+    result: Pick<WorkerResult, "output" | "error" | "note" | "turns" | "usage" | "truncated" | "toolErrors" | "toolSuccesses" | "apiReceipt" | "subscriptionReceipt">,
   ): void {
     if (isTerminal(task.state)) return;
 
@@ -809,7 +809,7 @@ export class SubagentCoordinator {
     runtime.tasks.get(task.id)!.launchDeadline = undefined;
     task.output = result.output.startsWith("FINAL REPORT\n")
       ? result.output
-      : finalWorkerReport(task, state, result.output, result.error);
+      : finalWorkerReport(task, state, result.output, result.error, result.note);
     task.turns = safeTurns(result.turns, task.turns);
     task.toolErrors = safeTurns(result.toolErrors, task.toolErrors ?? 0);
     task.toolSuccesses = safeTurns(result.toolSuccesses, task.toolSuccesses ?? 0);
@@ -819,6 +819,8 @@ export class SubagentCoordinator {
     task.truncated = result.truncated ?? task.truncated;
     if (result.error !== undefined) task.error = result.error;
     else delete task.error;
+    if (state === "done" && result.note !== undefined) task.note = result.note;
+    else delete task.note;
     delete task.currentTool;
     task.endedAt = this.now();
     // A budget stop is explicit partial work: never a completed leaf, never a bare failure.
