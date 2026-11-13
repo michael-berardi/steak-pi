@@ -80,6 +80,9 @@ Downgrading below 0.30.0 with the keys in the file stops those sessions: remove 
   model was missing from the picker. Discovery now runs without those two switches; requests keep them.
 - **A dropped late inbox record shows in the pane status.** The notice is now set through the same path as every other
   inbox status.
+- **The TUI smoke tests no longer fail on a busy machine.** Their waits were fixed counts sized for an idle machine, so a
+  release build running next to them ended with "Timed out waiting for STEAK PI". The waits now scale with the measured
+  load (`TUI_WAIT_SCALE` pins the factor).
 
 ## 0.29.2 (2026-11-12)
 

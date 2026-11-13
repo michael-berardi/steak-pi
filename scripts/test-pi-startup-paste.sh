@@ -35,6 +35,18 @@ record_ownership() {
   PANE_STARTS+=("$(ps -p "$pane" -o lstart=)")
   printf 'TUI ownership: server=%s; pane=%s; cwd=%s; socket=%s\n' "$SERVER_IDENTITY" "$(process_identity "$pane")" "$ROOT" "$TMUX_SOCKET"
 }
+# Every wait in this script is a count of 0.1 s polls sized for an idle machine. On a busy one (a release build, other
+# agents) Pi's start alone can pass 8 s and the run failed with "Timed out waiting for STEAK PI" although nothing was
+# wrong. The waits scale with the load per core measured once at start (1x when idle, at most 8x); TUI_WAIT_SCALE pins it.
+wait_scale() {
+  local pinned="${TUI_WAIT_SCALE:-}"
+  if [[ "$pinned" =~ ^[1-9][0-9]?$ ]]; then printf '%s\n' "$pinned"; return; fi
+  local load cores
+  load="$(LC_ALL=C uptime 2>/dev/null | sed -n 's/.*load average[s]*: *\([0-9.]*\).*/\1/p')"
+  cores="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+  awk -v l="${load:-0}" -v c="${cores:-4}" 'BEGIN { s = int(l / (c > 0 ? c : 4) * 2 + 0.999); if (s < 1) s = 1; if (s > 8) s = 8; print s }'
+}
+WAIT_SCALE="$(wait_scale)"
 cleanup() {
   local i alive=0
   if [[ -n "$SERVER_PID" && -n "$(process_identity "$SERVER_PID")" ]]; then
@@ -45,7 +57,7 @@ cleanup() {
     tmux_private kill-server >/dev/null 2>&1 || true
   fi
   # The private server owns the pane shutdown; never signal a name/port match.
-  for _ in {1..30}; do
+  for ((_w = 0; _w < 30 * WAIT_SCALE; _w++)); do
     alive=0
     for ((i=0; i<${#PANE_PIDS[@]}; i++)); do
       if [[ "$(ps -p "${PANE_PIDS[$i]}" -o lstart= 2>/dev/null || true)" == "${PANE_STARTS[$i]}" ]]; then alive=1; fi
@@ -112,7 +124,7 @@ NODE
 
 wait_for() {
   local needle="$1"
-  local attempts="${2:-80}"
+  local attempts=$(( ${2:-80} * WAIT_SCALE ))
   for ((i = 0; i < attempts; i++)); do
     if capture 2>/dev/null | grep -Fq -- "$needle"; then return 0; fi
     sleep 0.1
@@ -124,7 +136,7 @@ wait_for() {
 
 wait_for_current() {
   local needle="$1"
-  local attempts="${2:-80}"
+  local attempts=$(( ${2:-80} * WAIT_SCALE ))
   for ((i = 0; i < attempts; i++)); do
     if capture_current 2>/dev/null | grep -Fq -- "$needle"; then return 0; fi
     sleep 0.1
