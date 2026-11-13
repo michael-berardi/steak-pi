@@ -83,6 +83,13 @@ export class ClaudeRelay {
     return this.pending.size === 0;
   }
 
+  /** The run ended at its turn budget with a complete report: queued input is dropped, never started. Returns whether any was. */
+  discardPending(): boolean {
+    const had = this.pending.size > 0;
+    this.pending.clear();
+    return had;
+  }
+
   get hasPending(): boolean { return this.pending.size > 0; }
 
   text(messageId: string, text: string): void {

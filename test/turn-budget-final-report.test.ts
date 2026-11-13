@@ -34,3 +34,26 @@ describe("native worker turn budget", () => {
     expect(text).toContain("Status: done: turn budget reached (64 of 64); final report complete");
   });
 });
+
+describe("native worker turn budget: the last message must be the final answer", () => {
+  it("synthetic: a final answer followed by tool-calling turns that hit the budget is NOT complete", () => {
+    const result = classifyPiWorkerState({
+      signal, turnLimitReached: true, maxTurns: 64, turns: 64, finalReportComplete: true,
+      finalAssistant: { text: "now checking one more thing", toolCalls: true, stopReason: "toolUse" },
+    });
+    expect(result.state).toBe("failed");
+    expect(result.error).toMatch(/64-turn limit/);
+    expect(result.note).toBeUndefined();
+  });
+
+  it("synthetic: no last assistant message at all is not complete", () => {
+    expect(classifyPiWorkerState({ signal, turnLimitReached: true, maxTurns: 64, turns: 64, finalReportComplete: true }).state).toBe("failed");
+  });
+
+  it("synthetic: a cut-off (length) last message is not complete", () => {
+    expect(classifyPiWorkerState({
+      signal, turnLimitReached: true, maxTurns: 64, turns: 64, finalReportComplete: true,
+      finalAssistant: { text: "partial", toolCalls: false, stopReason: "length" },
+    }).state).toBe("failed");
+  });
+});

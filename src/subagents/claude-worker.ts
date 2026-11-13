@@ -42,6 +42,7 @@ import { spawn as nodeSpawn, execFile, execFileSync } from "node:child_process";
 import type { RelayBroker } from "./relay.ts";
 import { ClaudeRelay, CLAUDE_RELAY_PROMPT, claudeUserMessage, stripClaudeRelayLines } from "./claude-relay.ts";
 import { claudeOwnedPathRules } from "./claude-owned-paths.ts";
+import { assertClaudeEscapesProven, type EscapeSelfTestOptions } from "./claude-rule-selftest.ts";
 import { claudeReviewReadDirs } from "./claude-review-read.ts";
 import { readPathPromptLines, readPathSpellings, verifyGrantedReadPath } from "./read-paths.ts";
 export { claudeOwnedPathRules } from "./claude-owned-paths.ts";
@@ -594,6 +595,8 @@ export interface ClaudeWorkerRunnerOptions {
   relay?: RelayBroker;
   /** Bounded wait between SIGTERM and SIGKILL on cancel/timeout. */
   abortGraceMs?: number;
+  /** Escape self-test seams (tests). Production (no injected `spawn`) always runs the real self-test. */
+  escapeSelfTest?: EscapeSelfTestOptions;
   /** Explicit API route only: approval-record location/clock seams (tests). */
   api?: ClaudeApiConfigOptions;
   /** Explicit API route only: replaces the CLI `auth status` probe (tests). */
@@ -619,6 +622,8 @@ interface RunState {
   turnLimitReached: boolean;
   /** The CLI's own success result carried a non-empty final report (the same test a normal finish uses). */
   finalReportComplete?: boolean;
+  /** Relay input that was queued when the run ended at its budget (dropped, never started). */
+  relayDiscarded?: boolean;
   usage: UsageTotals;
   sawResult: boolean;
   modelVerified?: boolean;
@@ -695,7 +700,7 @@ export function classifyClaudeWorkerState(input: {
     const output = state.outputParts.join("").trim();
     if (!output || output === "(no output)") return { state: "failed", error: "Claude CLI produced no final output" };
     return overBudgetComplete
-      ? { state: "done", note: `turn budget reached (${state.turns} of ${maxTurns}); final report complete` }
+      ? { state: "done", note: `turn budget reached (${state.turns} of ${maxTurns}); final report complete${state.relayDiscarded ? "; queued relay input was not started" : ""}` }
       : { state: "done" };
   }
   if (exitCode !== null && exitCode !== 0) {
@@ -761,6 +766,14 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     }
     catch (error) { return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
     if (signal.aborted) return { state: isTimeoutSignal(signal) ? "timed_out" : "aborted", output: "", turns: 0, usage: emptyUsage(), error: "Cancelled before CLI launch" };
+    // A rule that needs a backslash escape is only exact if this CLI reads the escape literally: prove it on this
+    // machine (cached per CLI identity) before any worker starts. Paths that need no escape never run the test.
+    // The whole wave is judged, so one unprovable path refuses every worker of the wave, not just its owner.
+    if (task.mayEdit && (!options.spawn || options.escapeSelfTest !== undefined)) {
+      try { await assertClaudeEscapesProven([...new Set([...task.ownedPaths, ...run.tasks.filter((other) => other.mayEdit).flatMap((other) => other.ownedPaths)])], executable, undefined, options.escapeSelfTest ?? {}); }
+      catch (error) { return { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
+      if (signal.aborted) return { state: isTimeoutSignal(signal) ? "timed_out" : "aborted", output: "", turns: 0, usage: emptyUsage(), error: "Cancelled before CLI launch" };
+    }
     // Resolve again at each launch: dispatch eligibility is not a permanent grant.
     // Use precisely the same sanitized environment for auth status and inference.
     let childEnv: NodeJS.ProcessEnv;
@@ -1001,10 +1014,14 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
             // The budget is a hard stop: a message that would be request budget+1 is neither counted nor read.
             if (state.turns >= maxTurns) {
               state.turnLimitReached = true;
+              // An earlier query's "complete" never excuses a later query that was cut by the hard stop.
+              state.finalReportComplete = false;
               killOnce(true);
               return;
             }
             if (messages.size === 0 && state.sawResult) {
+              // A new query starts: the previous query's completeness does not carry over to it.
+              state.finalReportComplete = false;
               state.outputParts = []; state.outputLength = 0;
             }
             messages.set(event.messageId, emptyUsage());
@@ -1091,6 +1108,8 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
             killOnce(true);
             return;
           }
+          // A budget-exceeded (but complete) final report ends the run: a pending relay follow-up is not started.
+          if (state.turnLimitReached && relay?.discardPending()) state.relayDiscarded = true;
           const consumed = relay?.result() ?? true;
           if (consumed) {
             // Synchronously revoke steering BEFORE publishing final output or

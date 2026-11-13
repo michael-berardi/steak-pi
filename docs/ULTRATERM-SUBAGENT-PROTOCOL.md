@@ -411,7 +411,14 @@ normalized lexical path or its physical projection, including missing children
 beneath symlinks. The refusal prints the full path (up to 2,000 characters); for a
 relative `ownedPaths` entry it also says what the entry was resolved against
 (`owned path "src/x" resolved to "/abs/src/x" (relative to the run cwd /abs); pass an
-absolute path or set the run cwd`). There is no automatic ownership
+absolute path or set the run cwd`). A path with a segment that begins or ends with
+whitespace is refused (the CLI drops it from the rule, which widens the fence: `Edit(//W/src /**)` allowed
+`W/src/x.ts`; a security fix), and so is a path with `(` or `)` together with whitespace or a comma (the rule
+splitter cannot be trusted with it); an inner space is fine. A rule that needs a backslash escape is only
+trusted after a machine-local self-test proves the installed CLI reads the escape literally (it runs the real CLI
+against a local fake Messages server, caches the verdict per CLI version, path, mtime and size, retests a failure
+after 24 h); an unproven CLI refuses the wave naming the path, the version and the cause. Paths that need no
+escaping never run it. Error text strips control and bidi characters. There is no automatic ownership
 widening or harness fallback. The parent may explicitly choose Pi exact-path
 guarded writes or revise ownership within approved scope; never silently
 broaden ownership to the parent directory. Implicit privileged reviewer waves

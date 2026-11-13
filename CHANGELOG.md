@@ -27,6 +27,27 @@ routing.json last (below).
   `?` and backslash still cannot be made exact and are still refused.
 - **A refused owned path is shown whole.** The error prints the full resolved path (it was cut at 200 characters)
   and, for a relative path, says it was resolved against the run cwd and to pass an absolute path or set the cwd.
+- **Security fix: an owned path that begins or ends a segment with whitespace is refused on the Claude tier.** Measured
+  on the real Claude Code CLI (2.1.322, also true of 0.29.2): the rule `Edit(//W/src /**)` allowed a write to `W/src/x.ts`
+  and denied `W/src /x.ts`, because the CLI drops a trailing space, so the write fence widened to a sibling the worker
+  did not own. Any segment starting or ending with whitespace (any Unicode whitespace) is now refused at dispatch, naming
+  the full path; an inner space (`my dir/a.ts`) stays accepted. A path with `(` or `)` together with whitespace or a
+  comma is refused too: the CLI's rule splitter cannot be trusted with it (the rule did not match its own file).
+- **Escaped owned-path rules are proven on this machine first.** When a wave's rule needs a backslash escape (`[id]`),
+  the dispatch runs a self-test of the installed CLI against a local fake server (no model, no quota, a fake key, a
+  throwaway config dir): `\[id\]` must deny `i/f.txt` and allow `[id]/f.txt`, and the other escapes must hold too. The
+  verdict is cached per CLI identity (version, real path, mtime, size) in `~/.pi/agent/usap/claude-escape-selftest.json`
+  (a failure is retested after 24 h). Not proven: the wave is refused with the path, the CLI version and the cause. Paths
+  that need no escaping never run it. A CLI update that changed how escapes are read can no longer widen the fence silently.
+- **Turn budget: a follow-up cannot inherit an earlier "complete".** A relay follow-up query cut by the hard stop is
+  failed even if the first query ended with a complete report; an over-budget complete result no longer starts a queued
+  follow-up (the note says so); a native worker's budget stop counts as complete only when its last message was the final
+  answer, not a tool-calling turn after it.
+- **Owned-path errors are printable.** C1 controls, DEL and bidi overrides are removed from paths in the message, and the
+  relative-path hint is kept whole within the 2000-character bound.
+- Model discovery still drops `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` and `DISABLE_TELEMETRY` even when the operator
+  set them on purpose: either one makes the CLI answer from a stale model list (measured), so discovery needs both
+  unset. Requests keep them.
 - **A finished report is not failed for hitting the turn budget.** A worker that reaches its turn budget with a
   complete final report is `done` with the note `turn budget reached (N of M); final report complete`. Without a
   complete report it stays failed/PARTIAL. The budget is a hard stop with no grace (the prompt says so), and the

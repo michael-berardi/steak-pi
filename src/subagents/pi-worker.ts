@@ -891,7 +891,9 @@ export function classifyPiWorkerState(input: {
   }
   if (input.turnLimitReached) {
     const limit = typeof input.maxTurns === "number" ? input.maxTurns : MAX_PI_WORKER_TURNS;
-    if (input.finalReportComplete === true) {
+    // Complete means the LAST assistant message was itself a final answer with no tool calls pending: a final
+    // answer followed by more tool-calling turns that hit the budget is mid-work, not a finished leaf.
+    if (input.finalReportComplete === true && input.finalAssistant !== undefined && isFinalAnswer(input.finalAssistant)) {
       return { state: "done", note: `turn budget reached (${input.turns ?? limit} of ${limit}); final report complete` };
     }
     return {

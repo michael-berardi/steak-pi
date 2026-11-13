@@ -163,7 +163,7 @@ Unsupported Claude `ownedPaths` fail at dispatch before the wave is registered,
 checkpointed, or started. The characters `*`, `[`, `]`, `{`, `}`, `(`, `)`, `!` are
 written escaped in the CLI rule, so dynamic-route paths such as
 `src/app/[id]/route.ts` or Astro `src/pages/[...slug].astro` are accepted and own
-exactly that file (an owned directory owns only its descendants). Forbidden
+exactly that file (an owned directory owns only its descendants), once a machine-local self-test has proven the installed CLI reads those escapes literally (otherwise the wave is refused naming the CLI version and cause). A segment that begins or ends with whitespace, or parentheses together with whitespace or a comma, is refused (the CLI rule cannot match it exactly). Forbidden
 characters, which the CLI matcher cannot make literal, are `?`, backslash (`\`), LF,
 and CR in either the normalized lexical path or its physical projection (including
 missing children beneath symlinks); the error prints the full path and, for a

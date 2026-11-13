@@ -108,3 +108,37 @@ describe("dispatch of bracket and glob owned paths", () => {
     expect(message).not.toContain("relative to the run cwd");
   });
 });
+
+describe("dispatch error text for refused owned paths (review r2)", () => {
+  const dirs: string[] = [];
+  afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
+  const fixture = (): string => { const d = realpathSync.native(mkdtempSync(join(tmpdir(), "usap-r2-"))); dirs.push(d); return d; };
+  const refuse = (ownedPaths: string[], cwd: string): string => {
+    try {
+      normalizeDispatch({ goal: "g", harness: "claude-code", tasks: [{ label: "W", task: "t", mayEdit: true, ownedPaths }] } as DispatchInput, cwd, "m", "high", 0, () => "r");
+    } catch (error) { return (error as Error).message; }
+    return "";
+  };
+
+  it("synthetic: a trailing-space owned path is refused at dispatch with the reason and the full path", () => {
+    const cwd = fixture();
+    const message = refuse(["src /a.ts"], cwd);
+    expect(message).toMatch(/begins or ends with whitespace/);
+    expect(message).toContain(JSON.stringify(join(cwd, "src /a.ts")));
+  });
+
+  it("synthetic: control and bidi characters are stripped from the message and the relative-path hint", () => {
+    const cwd = fixture();
+    const message = refuse(["a\u0085b‮/x?y"], cwd);
+    expect(message).not.toMatch(/[\u007f-\u009f‪-‮⁦-⁩]/u);
+    expect(message).toContain("pass an absolute path or set the run cwd]");
+  });
+
+  it("synthetic: reason plus hint stay within 2000 characters and the hint stays whole", () => {
+    const cwd = fixture();
+    const message = refuse([`${"d".repeat(1500)}/x?y`], cwd);
+    expect(message.length).toBeLessThanOrEqual(2000);
+    expect(message.endsWith("pass an absolute path or set the run cwd]")).toBe(true);
+    expect(message).toContain("[owned path ");
+  });
+});

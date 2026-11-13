@@ -1,7 +1,7 @@
 import { assertActiveModelSelector } from "../retired-model-selection.ts";
 import { TASK_CLASS_MAX_LENGTH, TASK_CLASS_PATTERN } from "../routing-config.ts";
 import { isClaudeAccountId } from "./claude-account.ts";
-import { claudeOwnedPathRules } from "./claude-owned-paths.ts";
+import { claudeOwnedPathRules, printablePath } from "./claude-owned-paths.ts";
 import { normalizeReadPath } from "./read-paths.ts";
 import { claudeApiModelOf } from "./claude-api-route.ts";
 import { claudeCodeModelOf } from "./model-selection.ts";
@@ -158,13 +158,23 @@ function isDeclaredOverflowMirror(lexical: string, physical: string, field: stri
 
 /** Longest path an ownedPath error prints in full (the dispatcher bounds the whole message at the same order). */
 const OWNED_PATH_ERROR_LIMIT = 2000;
+/** The relative-path hint is kept whole: each path part in it is bounded so the hint stays near 1 KB and the
+ * reason in front of it is the part that gives way when the 2000-character message bound is reached. */
+const OWNED_PATH_HINT_PART_LIMIT = 300;
 
 /** When a relative ownedPath is refused, say what it was resolved against and how to fix it. Empty for absolute input. */
 function relativeOwnedPathHint(supplied: unknown, cwd: string, resolved?: string): string {
   if (typeof supplied !== "string" || supplied.trim() === "" || isAbsolute(supplied.trim()) || supplied.includes("\0")) return "";
   const input = supplied.trim();
   const full = resolved ?? resolve(cwd, input);
-  return ` [owned path ${JSON.stringify(input.slice(0, OWNED_PATH_ERROR_LIMIT))} resolved to ${JSON.stringify(full.slice(0, OWNED_PATH_ERROR_LIMIT))} (relative to the run cwd ${JSON.stringify(cwd.slice(0, OWNED_PATH_ERROR_LIMIT))}); pass an absolute path or set the run cwd]`;
+  const part = (value: string): string => JSON.stringify(printablePath(value).slice(0, OWNED_PATH_HINT_PART_LIMIT));
+  return ` [owned path ${part(input)} resolved to ${part(full)} (relative to the run cwd ${part(cwd)}); pass an absolute path or set the run cwd]`;
+}
+
+/** Reason plus hint within the message bound, hint whole: the reason is shortened instead. */
+function boundedOwnedPathMessage(reason: string, hint: string): string {
+  const room = OWNED_PATH_ERROR_LIMIT - hint.length;
+  return (reason.length <= room ? reason : `${reason.slice(0, Math.max(0, room - 1))}…`) + hint;
 }
 
 function pathUnderCwd(cwd: { lexical: string; physical: string }, inputPath: unknown, field: string): {
@@ -375,7 +385,7 @@ export function normalizeDispatch(
       try {
         normalized = pathUnderCwd(root, ownedPath, ownedField);
       } catch (error) {
-        if (error instanceof SubagentPolicyError) fail(`${error.message}${relativeOwnedPathHint(ownedPath, root.lexical)}`);
+        if (error instanceof SubagentPolicyError) fail(boundedOwnedPathMessage(printablePath(error.message), relativeOwnedPathHint(ownedPath, root.lexical)));
         throw error;
       }
       if (harness === "claude-code") {
@@ -385,7 +395,7 @@ export function normalizeDispatch(
           claudeOwnedPathRules([normalized.lexical], () => normalized.physical);
         } catch (error) {
           const reason = error instanceof Error ? error.message : "claude-code owned path cannot be enforced exactly";
-          fail(`${ownedField} (task ${JSON.stringify(label.slice(0, 40))}): ${reason}${relativeOwnedPathHint(ownedPath, root.lexical, normalized.lexical)}`);
+          fail(boundedOwnedPathMessage(`${ownedField} (task ${JSON.stringify(printablePath(label).slice(0, 40))}): ${printablePath(reason)}`, relativeOwnedPathHint(ownedPath, root.lexical, normalized.lexical)));
         }
       }
       for (const existing of ownership) {

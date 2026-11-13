@@ -548,6 +548,10 @@ function conflictingEnvironment(env: Record<string, string>): string[] {
  * initialize request from a stale built-in list (5 rows instead of the login's 14, measured 2026-11-12), so the newest model the
  * login could use was missing from Pi's /model picker. Discovery sends no prompt, so letting the
  * catalog fetch run costs nothing on the plan; requests keep the full quiet environment.
+ *
+ * Both switches are dropped even when the operator set them on purpose: processEnvironment passes an operator's own value
+ * through, but either one makes discovery answer from the stale list, so only the live-catalog behaviour is useful here.
+ * Nothing else is removed from the environment.
  */
 export function discoveryEnvironment(input: Record<string, string | undefined> | undefined): Record<string, string> {
   const env = processEnvironment(input, {});
