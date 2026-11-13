@@ -142,7 +142,15 @@ function fromBuiltin(info: DiscoveredClaudeModel, id: string, builtin: Model<"an
 }
 
 /** Convert a Claude Code catalog row into Pi's built-in Anthropic naming and pricing. */
-export function modelFromDiscovery(info: DiscoveredClaudeModel): ClaudeCodeModel {
+export function modelFromDiscovery(discovered: DiscoveredClaudeModel): ClaudeCodeModel {
+  // A live row that states no window takes the shipped row's for the same model (the CLI's own catalog shape), never a
+  // 200K guess: the newest model has no built-in Anthropic entry yet, and a too-small window compacts long sessions early.
+  const shipped = discovered.contextWindow === undefined || discovered.maxTokens === undefined
+    ? FALLBACK_DISCOVERY.find((row) => row !== discovered && canonicalModelId(row) === canonicalModelId(discovered))
+    : undefined;
+  const info: DiscoveredClaudeModel = shipped
+    ? { ...discovered, contextWindow: discovered.contextWindow ?? shipped.contextWindow, maxTokens: discovered.maxTokens ?? shipped.maxTokens }
+    : discovered;
   const id = canonicalModelId(info);
   const builtinId = id === "default" ? withoutContextSuffix(info.resolvedModel || "") : id;
   const builtin = BUILTIN_ANTHROPIC_MODELS[builtinId];

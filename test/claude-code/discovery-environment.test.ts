@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { discoveryEnvironment, processEnvironment } from "../../extensions/claude-code/claude-cli.ts";
+import { FALLBACK_DISCOVERY, modelFromDiscovery } from "../../extensions/claude-code/model-catalog.ts";
 
 // With CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC or DISABLE_TELEMETRY set, Claude Code answers the initialize request from a stale
 // built-in model list: the newest model the login could use was missing from /model (2026-11-12). Discovery runs without
@@ -19,4 +20,14 @@ test("model discovery lets the CLI fetch its live model catalog; requests stay q
 
 test("discovery still refuses an inherited API key or backend override", () => {
   assert.throws(() => discoveryEnvironment({ ANTHROPIC_API_KEY: "x" }), /refuses conflicting auth/);
+});
+
+test("a live row without a stated window keeps the shipped row's window for the same model", () => {
+  for (const shipped of FALLBACK_DISCOVERY.filter((row) => row.contextWindow !== undefined)) {
+    const live = modelFromDiscovery({ value: shipped.value.replace(/\[1m\]$/u, ""), resolvedModel: shipped.resolvedModel, displayName: shipped.displayName, description: "no window stated" });
+    assert.equal(live.contextWindow, shipped.contextWindow, shipped.value);
+    assert.equal(live.maxTokens, shipped.maxTokens, shipped.value);
+  }
+  // A model the shipped catalog does not know keeps the plain default.
+  assert.equal(modelFromDiscovery({ value: "some-future-model", displayName: "Future", description: "x" }).contextWindow, 200_000);
 });
