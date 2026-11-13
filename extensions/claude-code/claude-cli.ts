@@ -297,7 +297,7 @@ export async function discoverClaudeModels(
   timeoutMs = 20_000,
 ): Promise<DiscoveredClaudeModel[]> {
   signal?.throwIfAborted();
-  const env = processEnvironment(envInput, {});
+  const env = discoveryEnvironment(envInput);
   const command = await resolveClaudeExecutable(env);
   if (!command) throw new Error(INSTALL_HINT);
 
@@ -540,6 +540,20 @@ function conflictingEnvironment(env: Record<string, string>): string[] {
     if (envFlagEnabled(env[key])) conflicts.push(key);
   }
   return conflicts;
+}
+
+/**
+ * The environment for model discovery only. It is the request environment without the two switches that make the CLI skip its
+ * live model catalog: with CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC or DISABLE_TELEMETRY set, Claude Code 2.1.322 answers the
+ * initialize request from a stale built-in list (5 rows instead of the login's 14, measured 2026-11-12), so the newest model the
+ * login could use was missing from Pi's /model picker. Discovery sends no prompt, so letting the
+ * catalog fetch run costs nothing on the plan; requests keep the full quiet environment.
+ */
+export function discoveryEnvironment(input: Record<string, string | undefined> | undefined): Record<string, string> {
+  const env = processEnvironment(input, {});
+  delete env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+  delete env.DISABLE_TELEMETRY;
+  return env;
 }
 
 export function processEnvironment(
