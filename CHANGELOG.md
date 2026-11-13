@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.30.1 (2026-11-13)
+
+A stale model list is fixed with one command, and an older Steak Pi no longer shortens a newer one's catalog.
+
+- **`steak-pi update --models` refreshes every provider's model catalog, extension providers included.** It ran the
+  ordinary update and printed `Steak Pi is up to date`. `pi update --models` refreshes without loading extensions, so
+  the row of a provider an extension registers (the Claude Code provider's, for one) stayed as cached while it printed
+  `Model catalogs refreshed`. The command now runs the installed Pi headless with your packages loaded and forces a
+  network refresh of every provider. It prints one line per provider, `refreshed with N models` or `FAILED:` with the
+  provider's own error, counts the providers that have no credential and so were not fetched, and exits non-zero if
+  any provider failed or Pi did not finish. It refreshes the selected Pi agent directory (`PI_CODING_AGENT_DIR`,
+  default `~/.pi/agent`) and installs nothing; other agent directories each need their own run.
+- **An older Steak Pi does not replace a newer one's Claude Code catalog with a shorter one.** Every running Pi writes
+  its own discovery result to the shared `models-store.json`, so a pane still on the previous release could put its
+  shorter list back after an upgrade. The stored row now carries the Steak Pi version that wrote it
+  (`steakPiVersion`). Rule: a discovery that would store fewer models than the stored row is not written when the
+  stored row was written by a newer Steak Pi; that pane logs one `[claude-code] kept the stored model catalog` line
+  and lists the stored models. The same or a newer version may shorten the row, and any version may lengthen it.
+- **A session keeps its own discovery when an older writer shortens the stored row.** A row written by an older
+  Steak Pi, or by one from before the marker, that lacks a model this session discovered itself no longer replaces
+  the session's list in memory.
+- Releases before 0.30.1 do not have the guard and still write their own list: after upgrading, reload those panes,
+  then run `steak-pi update --models` once.
+
 ## 0.30.0 (2026-11-13)
 
 The task-class router can choose the harness per job, on the quality, speed and cost of verified outcomes; and one

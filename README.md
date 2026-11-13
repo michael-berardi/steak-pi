@@ -21,7 +21,7 @@ serious sessions need: parallel subagents with hard limits, compaction that
 costs no model calls, checks that run after every edit, and a status line that
 tells you what the agent is doing.
 
-Current release: **0.30.0**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
+Current release: **0.30.1**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
 [UltraTerm](https://paretocybernetics.com/software/).
 
 ## Install
@@ -58,14 +58,14 @@ Overrides: `STEAK_PI_HOME`, `STEAK_PI_BIN_DIR`, `STEAK_PI_VERSION` (pin a versio
 Or install manually with the Pi CLI:
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.30.0
+pi install git:github.com/michael-berardi/steak-pi@v0.30.1
 ```
 
 Or from the release archive, without Git:
 
 ```sh
-shasum -a 256 -c steak-pi-0.30.0.tgz.sha256
-tar -xzf steak-pi-0.30.0.tgz
+shasum -a 256 -c steak-pi-0.30.1.tgz.sha256
+tar -xzf steak-pi-0.30.1.tgz
 npm install --ignore-scripts --prefix "$PWD/package"
 pi install "$PWD/package"
 ```
@@ -83,7 +83,14 @@ steak-pi run --lean   # still accepted; no longer needed (see "One package, no m
 steak-pi env          # show what it sets
 steak-pi status       # installed version, selected Pi settings file and integration
 steak-pi update       # install the latest release (--check only reports)
+steak-pi update --models  # refresh Pi's cached model catalogs, extension providers included
 ```
+
+`steak-pi update --models` runs the installed Pi with your packages loaded and forces a catalog refresh for every
+provider, then prints one line per provider (`refreshed with N models`, or `FAILED:` with the provider's error) and
+exits non-zero if any failed. Use it when `/model` shows an old list: `pi update --models` refreshes only Pi's built-in
+providers and leaves a provider an extension registers as cached. It refreshes the selected Pi agent directory
+(`PI_CODING_AGENT_DIR`, default `~/.pi/agent`) and installs nothing.
 
 For release-folder installations, `steak-pi update` re-points the default `~/.pi/agent` and every UltraTerm provider-account agent directory that pins a release in the same releases folder, and retains existing releases because running sessions may still use them.
 

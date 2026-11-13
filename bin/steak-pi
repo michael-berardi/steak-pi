@@ -5,6 +5,8 @@
 #   steak-pi update    First-class update: Homebrew upgrade + Pi re-pin (brew), a new
 #                      versioned folder for release-folder installs, or the latest
 #                      GitHub release re-pin (git/npm installs). --check only reports.
+#                      --models refreshes Pi's cached model catalogs instead, including the
+#                      providers extensions register (which `pi update --models` leaves as cached).
 #   steak-pi status    Show what is installed and how it is managed.
 #   steak-pi version   Print the CLI/package version.
 #   steak-pi remove    Remove the Pi-side package.
@@ -201,7 +203,19 @@ update_release_folder() {
   say "Steak Pi updated: $pinned -> $ver (existing releases retained). Restart Pi or run /reload."
 }
 
+# Refresh Pi's cached model catalogs (models-store.json in the Pi agent directory) with every extension loaded.
+# `pi update --models` builds its model runtime without extensions, so a provider an extension registers keeps its
+# cached row and the command still reports success. This runs the installed pi with the operator's packages loaded.
+cmd_update_models() {
+  need_pi
+  command -v node >/dev/null 2>&1 || die "node not found on PATH."
+  exec node --no-warnings "$PKG_ROOT/src/update-models.ts"
+}
+
 cmd_update() {
+  for arg in "$@"; do
+    [ "$arg" = "--models" ] && cmd_update_models
+  done
   if [ "${1:-}" = "--check" ]; then
     TAG=$(latest_tag) || die "cannot reach GitHub to check for updates."
     [ -n "$TAG" ] || die "no published release found."
@@ -370,7 +384,7 @@ case "${1:-help}" in
   help|--help|-h|*)
     say "usage: steak-pi <install|update|status|version|remove|run|usap-api|local|routing|routes|finish-guard-hook|env>"
     say "  install   add Steak Pi to the pi coding agent (or re-point at this copy)"
-    say "  update    install the latest release (--check only reports whether one is available)"
+    say "  update    install the latest release (--check only reports whether one is available; --models refreshes Pi's model catalogs, extension providers included)"
     say "  status    show installed versions and management mode"
     say "  version   print the CLI/package version"
     say "  remove    remove the pi-side package"

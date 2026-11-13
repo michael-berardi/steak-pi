@@ -1,5 +1,6 @@
 import { createProvider, type AuthContext, type ProviderEnv } from "@earendil-works/pi-ai";
-import { discoverClaudeModels, getClaudeStatus, LOGIN_HINT } from "./claude-cli.ts";
+import { keepsStoredRow, rowVersion, steakPiVersion, storedRowIsOlderAndShorter, VERSION_MARKER, type CatalogRow } from "./catalog-guard.ts";
+import { discoverClaudeModels, getClaudeStatus, LOGIN_HINT, reportClaudeCodeDiagnostic } from "./claude-cli.ts";
 import { API_ID, CLAUDE_CODE_MODELS, modelFromDiscovery, PROVIDER_ID } from "./model-catalog.ts";
 import { streamClaudeCode } from "./stream.ts";
 
@@ -26,15 +27,26 @@ export function claudeCodeEnv(): Record<string, string | undefined> {
   return { ...process.env, ...lastProviderEnv };
 }
 
-export function createClaudeCodeProvider() {
+export interface ClaudeCodeProviderOptions {
+  /** The Steak Pi version stamped on the stored catalog row. Defaults to this package's version. */
+  version?: string;
+  /** Receives the one line written when a stored catalog row is kept. Defaults to the session's notifier, or stderr when headless. */
+  log?: (line: string) => void;
+}
+
+export function createClaudeCodeProvider(options: ClaudeCodeProviderOptions = {}) {
   let discoveredIds: Set<string> | undefined;
+  const version = options.version ?? steakPiVersion();
+  const log = options.log ?? reportClaudeCodeDiagnostic;
+  // The catalog this session last stored from its own discovery.
+  let ownRow: CatalogRow | undefined;
   const externalOAuthMarker = () => ({
     type: "oauth" as const,
     access: "claude-code-external",
     refresh: "claude-code-external",
     expires: Date.now() + 365 * 24 * 60 * 60 * 1_000,
   });
-  return createProvider({
+  const provider = createProvider({
     id: PROVIDER_ID,
     name: "Claude Code Subscription (Experimental)",
     baseUrl: "process://claude-code",
@@ -104,6 +116,49 @@ export function createClaudeCodeProvider() {
       streamSimple: streamClaudeCode,
     },
   });
+  const refreshModels = provider.refreshModels;
+  if (!refreshModels) return provider;
+  return {
+    ...provider,
+    // Pi stores what fetchModels returns as the provider's row in models-store.json, which every running Pi shares.
+    // The row is stamped with this Steak Pi version, and an older Steak Pi never replaces a newer one's row with a
+    // shorter catalog (rule in catalog-guard.ts).
+    refreshModels: async (context) => {
+      const stored = context.stored;
+      // A row an older Steak Pi wrote over this session's own discovery does not replace it in memory either.
+      const restore = stored && ownRow && storedRowIsOlderAndShorter(stored, ownRow, version) ? ownRow : stored;
+      await refreshModels({
+        ...context,
+        stored: restore as typeof stored,
+        publish: (publication) => {
+          const fetched = publication.persist;
+          if (!fetched) return context.publish(publication);
+          if (stored && keepsStoredRow(stored, fetched.models.length, version)) {
+            log(
+              `[claude-code] kept the stored model catalog (${stored.models.length} models, written by Steak Pi ${rowVersion(stored)}): ` +
+                `this Steak Pi ${version} discovered ${fetched.models.length}. Reload this session to run the newer release.`,
+            );
+            // Only the check time moves; the models and the writer's version stay as stored.
+            return context.publish({
+              persist: { ...stored, checkedAt: fetched.checkedAt },
+              update: () => {
+                discoveredIds = new Set(stored.models.map((model) => model.id));
+                ownRow = undefined;
+              },
+            });
+          }
+          const row = version ? { ...fetched, [VERSION_MARKER]: version } : fetched;
+          return context.publish({
+            persist: row,
+            update: () => {
+              publication.update?.();
+              ownRow = row;
+            },
+          });
+        },
+      });
+    },
+  } satisfies typeof provider;
 }
 
 export { API_ID, PROVIDER_ID };

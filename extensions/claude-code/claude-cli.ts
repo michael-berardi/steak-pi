@@ -975,6 +975,12 @@ export function setClaudeCodeDiagnosticReporter(reporter: ((message: string) => 
   diagnosticReporter = reporter;
 }
 
+/** One named line for the operator: the TUI-safe sink when a session supplied one, else stderr unless it is a terminal. */
+export function reportClaudeCodeDiagnostic(message: string): void {
+  if (diagnosticReporter) diagnosticReporter(message);
+  else if (!process.stderr.isTTY) process.stderr.write(`${message}\n`);
+}
+
 /// Report that markers were dropped, once per process and with a count only.
 function reportCacheCap(dropped: number): void {
   if (dropped <= 0 || cacheCapReported || !diagnosticReporter) return;
