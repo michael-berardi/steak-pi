@@ -308,7 +308,9 @@ describe("budgets and cancellation", () => {
     writeFileSync(heartbeatScript, `setInterval(() => require("node:fs").appendFileSync(${JSON.stringify(heartbeat)}, "x"), 20);\n`);
     const { cli } = fakeCli(`
 const child = require("node:child_process").spawn(process.execPath, [${JSON.stringify(heartbeatScript)}]);
-require("node:fs").writeFileSync(${JSON.stringify(pidsFile)}, JSON.stringify({ parent: process.pid, child: child.pid }));
+// Written whole, then renamed: the test waits for the file to exist, and a plain write exists (empty) before it has content.
+require("node:fs").writeFileSync(${JSON.stringify(pidsFile)} + ".tmp", JSON.stringify({ parent: process.pid, child: child.pid }));
+require("node:fs").renameSync(${JSON.stringify(pidsFile)} + ".tmp", ${JSON.stringify(pidsFile)});
 setInterval(() => {}, 1000);
 `);
     const controller = new AbortController();
