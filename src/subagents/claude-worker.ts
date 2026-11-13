@@ -791,7 +791,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
         const waveRules = claudeOwnedPathRules([...new Set([...task.ownedPaths, ...run.tasks.filter((other) => other.mayEdit).flatMap((other) => other.ownedPaths)])]);
         const emitted = [...waveRules, ...args.filter((arg) => arg.startsWith("Edit("))];
         if (emitted.some((rule) => rule.includes("\\"))) {
-          // One absolute real path, found on the environment the worker spawns with: it is proven and it is launched.
+          // One absolute PATH candidate (as found, so a shim keeps its name), found on the environment the worker spawns with: it is proven and it is launched.
           const resolved = resolveClaudeExecutable(executable, childEnv);
           await assertClaudeRulesProven(emitted, resolved, { ...options.escapeSelfTest, env: childEnv, signal });
           launchCommand = resolved!;

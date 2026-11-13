@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { homedir, tmpdir } from "node:os";
-import { delimiter, dirname, isAbsolute, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { claudeEscapedOwnedPath, printablePath } from "./claude-owned-paths.ts";
 
 /**
@@ -19,11 +19,14 @@ import { claudeEscapedOwnedPath, printablePath } from "./claude-owned-paths.ts";
 
 export const ESCAPE_SELFTEST_CACHE_ENV = "STEAK_PI_ESCAPE_SELFTEST_CACHE";
 export const ESCAPE_SELFTEST_RUN_TIMEOUT_MS = 30_000;
+/** A real failure (the CLI allowed a write the rule should deny, or refused one it should allow) is reused for this long. */
 export const ESCAPE_SELFTEST_RETRY_AFTER_MS = 24 * 60 * 60 * 1000;
+/** An inconclusive failure (could not run, timed out, could not start) is reused for this long only: a busy machine can cause it. */
+export const ESCAPE_SELFTEST_INCONCLUSIVE_RETRY_AFTER_MS = 10 * 60 * 1000;
 const CACHE_ENTRY_LIMIT = 16;
 const KILL_SETTLE_MS = 3_000;
 /** Bumped whenever the case set changes, so a verdict earned with fewer cases is never reused. */
-const SELFTEST_REVISION = 2;
+const SELFTEST_REVISION = 3;
 
 export const escapeSelfTestCachePath = (): string =>
   process.env[ESCAPE_SELFTEST_CACHE_ENV] ?? join(homedir(), ".pi", "agent", "usap", "claude-escape-selftest.json");
@@ -40,7 +43,7 @@ export interface EscapeSelfTestOptions {
    * denied there), so the default must not be a system temp path. */
   workDir?: string;
   /** Test seam for callers: replaces the proof itself. */
-  prove?: (executable: string) => Promise<EscapeVerdict>;
+  prove?: (executable: string, options: EscapeSelfTestOptions) => Promise<EscapeVerdict>;
   /** Stops the proof when aborted: the child is killed, the server closed, the temp dirs removed, the result is "not
    * proven" and nothing is cached. */
   signal?: AbortSignal;
@@ -55,7 +58,7 @@ const CANCELLED = "the escape self-test was cancelled";
 
 interface CliIdentity { version: string; key: string }
 
-interface CacheEntry { ok: boolean; cause?: string; at: number }
+interface CacheEntry { ok: boolean; cause?: string; at: number; conclusive?: boolean }
 
 function readCache(path: string): Record<string, CacheEntry> {
   try {
@@ -66,7 +69,7 @@ function readCache(path: string): Record<string, CacheEntry> {
     for (const [key, value] of Object.entries(entries)) {
       const v = value as Partial<CacheEntry> | null;
       if (v && typeof v.ok === "boolean" && typeof v.at === "number" && Number.isFinite(v.at) && (v.cause === undefined || typeof v.cause === "string")) {
-        out[key] = { ok: v.ok, at: v.at, ...(v.cause === undefined ? {} : { cause: v.cause }) };
+        out[key] = { ok: v.ok, at: v.at, ...(v.cause === undefined ? {} : { cause: v.cause }), ...(v.conclusive === true ? { conclusive: true } : {}) };
       }
     }
     return out;
@@ -149,8 +152,9 @@ function runProcess(command: string, args: string[], options: { env: NodeJS.Proc
 }
 
 /**
- * The one absolute real path a command name resolves to on `env`'s PATH (the environment the worker spawns with), or
- * undefined when it cannot be resolved to an executable file. The proof and the launch both use this path.
+ * The absolute PATH candidate a command name resolves to on `env`'s PATH (the environment the worker spawns with), as
+ * found and not its realpath (a shim may dispatch on its own name), or undefined when no candidate's realpath is a
+ * regular file. The proof and the launch both use this path; the cache identity is keyed on its realpath.
  */
 export function resolveClaudeExecutable(command: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
   const candidates: string[] = [];
@@ -159,7 +163,7 @@ export function resolveClaudeExecutable(command: string, env: NodeJS.ProcessEnv 
   for (const candidate of candidates) {
     try {
       const real = realpathSync(candidate);
-      if (isAbsolute(real) && statSync(real).isFile()) return real;
+      if (isAbsolute(real) && statSync(real).isFile()) return resolve(candidate);
     } catch { /* next */ }
   }
   return undefined;
@@ -232,14 +236,19 @@ const ESCAPE_CASES: EscapeCase[] = [
   ...pair("pattern characters", (t) => `Edit(/${t}/d\\*x\\(1\\)\\{a\\}\\!/**)`, (t) => `${t}/dzzx(1){a}!/f.txt`, (t) => `${t}/d*x(1){a}!/f.txt`),
   ...pair("braces", (t) => `Edit(/${t}/x\\{a,b\\}/**)`, (t) => `${t}/xa/f.txt`, (t) => `${t}/x{a,b}/f.txt`),
   ...pair("parentheses with a leading plus", (t) => `Edit(/${t}/+\\(a\\)/**)`, (t) => `${t}/aa/f.txt`, (t) => `${t}/+(a)/f.txt`),
-  ...pair("exclamation", (t) => `Edit(/${t}/\\!n/**)`, (t) => `${t}/m/f.txt`, (t) => `${t}/!n/f.txt`),
+  // An unescaped `!(a)` is a negation: it would allow `b/f.txt` and refuse the literal `!(a)/f.txt`.
+  ...pair("exclamation", (t) => `Edit(/${t}/\\!\\(a\\)/**)`, (t) => `${t}/b/f.txt`, (t) => `${t}/!(a)/f.txt`),
   ...pair("exact file with brackets", (t) => `Edit(/${t}/\\[id\\].txt)`, (t) => `${t}/i.txt`, (t) => `${t}/[id].txt`),
 ];
 
 /** Thrown inside a case when the caller's signal aborts: the run is abandoned and nothing is cached. */
 class SelfTestCancelled extends Error {}
 
-async function runCase(executable: string, test: EscapeCase, timeoutMs: number, workDir: string, signal?: AbortSignal): Promise<string | undefined> {
+/** `conclusive` is true only for a real failure (the CLI ran to the permission check and decided wrongly). */
+interface CaseFailure { cause: string; conclusive: boolean }
+const inconclusive = (cause: string): CaseFailure => ({ cause, conclusive: false });
+
+async function runCase(executable: string, test: EscapeCase, timeoutMs: number, workDir: string, signal?: AbortSignal): Promise<CaseFailure | undefined> {
   let temp: string | undefined;
   let server: Server | undefined;
   try {
@@ -251,7 +260,7 @@ async function runCase(executable: string, test: EscapeCase, timeoutMs: number, 
     const root = join(work, "T");
     const config = join(temp, "cfg");
     for (const dir of [root, work, config]) mkdirSync(dir, { recursive: true, mode: 0o700 });
-    if (/[\s*[\]{}()!?\\,]/u.test(root)) return "the temporary directory path contains characters that need escaping";
+    if (/[\s*[\]{}()!?\\,]/u.test(root)) return inconclusive("the temporary directory path contains characters that need escaping");
     const target = test.target(root);
     const api = await startFakeApi(target);
     server = api.server;
@@ -260,22 +269,25 @@ async function runCase(executable: string, test: EscapeCase, timeoutMs: number, 
     const env = minimalEnv({ CLAUDE_CONFIG_DIR: config, ANTHROPIC_BASE_URL: `http://127.0.0.1:${api.port}`, ANTHROPIC_API_KEY: "sk-fake-escape-selftest-key" });
     const result = await runProcess(executable, args, { env, cwd: work, input: "go\n", timeoutMs, ...(signal ? { signal } : {}) });
     if (result.aborted || signal?.aborted) throw new SelfTestCancelled();
-    if (result.spawnError !== undefined) return `the CLI could not be started (${printablePath(result.spawnError).slice(0, 120)})`;
-    if (result.timedOut) return `the check "${test.name}" timed out after ${Math.round(timeoutMs / 1000)} s`;
+    if (result.spawnError !== undefined) return inconclusive(`the CLI could not be started (${printablePath(result.spawnError).slice(0, 120)})`);
+    if (result.timedOut) return inconclusive(`the check "${test.name}" timed out after ${Math.round(timeoutMs / 1000)} s`);
     // Every case, deny or allow, must prove the CLI ran to the permission check: a clean exit AND a follow-up request
     // carrying the tool result. An absent file alone proves nothing (a crash also leaves it absent).
-    if (result.code !== 0) return `the check "${test.name}" could not run: the CLI exited with code ${result.code === null ? "none" : result.code}`;
-    if (api.toolResults() < 1) return `the check "${test.name}" could not run: the CLI never reported a tool result to the local server`;
+    if (result.code !== 0) return inconclusive(`the check "${test.name}" could not run: the CLI exited with code ${result.code === null ? "none" : result.code}`);
+    if (api.toolResults() < 1) return inconclusive(`the check "${test.name}" could not run: the CLI never reported a tool result to the local server`);
     const written = existsSync(target);
     if (written !== test.expectWritten) {
-      return test.expectWritten
-        ? `the check "${test.name}" failed: the CLI refused a write the escaped rule should allow`
-        : `the check "${test.name}" failed: the CLI allowed a write the escaped rule should deny (it does not read the escape literally)`;
+      return {
+        conclusive: true,
+        cause: test.expectWritten
+          ? `the check "${test.name}" failed: the CLI refused a write the escaped rule should allow`
+          : `the check "${test.name}" failed: the CLI allowed a write the escaped rule should deny (it does not read the escape literally)`,
+      };
     }
     return undefined;
   } catch (error) {
     if (error instanceof SelfTestCancelled) throw error;
-    return `the check "${test.name}" could not run (${printablePath(error instanceof Error ? error.message : String(error)).slice(0, 120)})`;
+    return inconclusive(`the check "${test.name}" could not run (${printablePath(error instanceof Error ? error.message : String(error)).slice(0, 120)})`);
   } finally {
     if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections?.(); });
     if (temp) rmSync(temp, { recursive: true, force: true });
@@ -294,8 +306,21 @@ export async function proveClaudeEscapes(command: string, options: EscapeSelfTes
   }
 }
 
+/** The flight's result, or undefined when `signal` aborts first. The abort listener is removed once either settles. */
+function raceAbort(flight: Promise<FlightResult>, signal?: AbortSignal): Promise<FlightResult | undefined> {
+  if (signal === undefined) return flight;
+  if (signal.aborted) return Promise.resolve(undefined);
+  return new Promise((resolveRace, rejectRace) => {
+    const onAbort = (): void => resolveRace(undefined);
+    signal.addEventListener("abort", onAbort, { once: true });
+    flight.then(resolveRace, rejectRace).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
 async function proveUnchecked(command: string, options: EscapeSelfTestOptions): Promise<EscapeVerdict> {
-  const executable = resolveClaudeExecutable(command, options.env) ?? command;
+  // No fallback to the bare command: a name that cannot be resolved on the caller's PATH is never proven.
+  const executable = resolveClaudeExecutable(command, options.env);
+  if (executable === undefined) return { ok: false, version: "unknown", cause: "the Claude Code CLI was not found" };
   const cachePath = options.cachePath ?? escapeSelfTestCachePath();
   const now = options.now ?? Date.now;
   const timeoutMs = options.timeoutMs ?? ESCAPE_SELFTEST_RUN_TIMEOUT_MS;
@@ -308,6 +333,7 @@ async function proveUnchecked(command: string, options: EscapeSelfTestOptions): 
     if ("error" in identity) return { ok: false, version: "unknown", cause: identity.error };
     const flightKey = `${cachePath}\0${identity.key}`;
     let flight = inFlight.get(flightKey);
+    const joined = flight !== undefined;
     if (!flight) {
       // The run belongs to the caller that started it; its abort stops it. A joiner whose own signal is still live
       // retries (below) instead of inheriting someone else's cancellation.
@@ -315,27 +341,31 @@ async function proveUnchecked(command: string, options: EscapeSelfTestOptions): 
         const entries = readCache(cachePath);
         const hit = entries[identity.key];
         if (hit?.ok === true) return { verdict: { ok: true, version: identity.version }, cancelled: false };
-        if (hit !== undefined && now() - hit.at >= 0 && now() - hit.at < ESCAPE_SELFTEST_RETRY_AFTER_MS) {
+        const reuseFor = hit?.conclusive === true ? ESCAPE_SELFTEST_RETRY_AFTER_MS : ESCAPE_SELFTEST_INCONCLUSIVE_RETRY_AFTER_MS;
+        if (hit !== undefined && now() - hit.at >= 0 && now() - hit.at < reuseFor) {
           return { verdict: { ok: false, version: identity.version, cause: hit.cause ?? "an earlier self-test failed" }, cancelled: false };
         }
-        let cause: string | undefined;
+        let failure: CaseFailure | undefined;
         try {
           for (const test of ESCAPE_CASES) {
-            cause = await runCase(executable, test, timeoutMs, workDir, signal);
-            if (cause !== undefined) break;
+            failure = await runCase(executable, test, timeoutMs, workDir, signal);
+            if (failure !== undefined) break;
           }
         } catch (error) {
           if (error instanceof SelfTestCancelled) return { verdict: { ...cancelled, version: identity.version }, cancelled: true };
           throw error;
         }
         const fresh = readCache(cachePath);
-        fresh[identity.key] = cause === undefined ? { ok: true, at: now() } : { ok: false, at: now(), cause };
+        fresh[identity.key] = failure === undefined ? { ok: true, at: now() } : { ok: false, at: now(), cause: failure.cause, ...(failure.conclusive ? { conclusive: true } : {}) };
         writeCache(cachePath, fresh);
-        return { verdict: cause === undefined ? { ok: true, version: identity.version } : { ok: false, version: identity.version, cause }, cancelled: false };
+        return { verdict: failure === undefined ? { ok: true, version: identity.version } : { ok: false, version: identity.version, cause: failure.cause }, cancelled: false };
       })().finally(() => inFlight.delete(flightKey));
       inFlight.set(flightKey, flight);
     }
-    const result = await flight;
+    // The run belongs to its owner; a joiner stops waiting the moment its own signal aborts (the owner's run goes on).
+    // The owner always waits for its own flight: that is where its child is killed and its temporary directories removed.
+    const result = joined ? await raceAbort(flight, signal) : await flight;
+    if (result === undefined) return cancelled;
     if (result.cancelled && !signal?.aborted) continue;
     return result.verdict;
   }
@@ -350,7 +380,7 @@ async function assertProven(needsProof: boolean, what: string, executable: strin
   const refuse = (version: string, cause: string): Error => new Error(
     `claude-code owned path ${JSON.stringify(printablePath(what).slice(0, 1000))} needs an escaped permission rule, and this Claude Code CLI (${printablePath(version).slice(0, 80)}) did not pass the escape self-test: ${cause}`);
   if (executable === undefined) throw refuse("not found", "the Claude Code CLI was not found");
-  const verdict = await (options.prove ?? ((command: string) => proveClaudeEscapes(command, options)))(executable);
+  const verdict = await (options.prove ?? ((command: string) => proveClaudeEscapes(command, options)))(executable, options);
   if (!verdict.ok) throw refuse(verdict.version, verdict.cause ?? "not proven");
 }
 

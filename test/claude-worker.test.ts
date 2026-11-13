@@ -1408,7 +1408,7 @@ describe("claude-code worker: escape self-test wiring", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it("proves and spawns one absolute real path, found on the worker's own environment PATH", async () => {
+  it("proves and spawns one absolute PATH candidate (a shim keeps its own name), found on the worker's own environment PATH", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "worker-exe-")));
     try {
       writeFileSync(join(root, "real-cli"), "#!/bin/sh\n"); chmodSync(join(root, "real-cli"), 0o755);
@@ -1418,8 +1418,8 @@ describe("claude-code worker: escape self-test wiring", () => {
       const proved: string[] = [];
       const ok = async (executable: string) => { proved.push(executable); return { ok: true, version: "9.9" }; };
       await launch({ ...runnerOptions(spawn), executable: "claude-x", env: { PATH: join(root, "bin"), HOME: root }, escapeSelfTest: { prove: ok } }, task({ mayEdit: true, ownedPaths: escaped }));
-      expect(proved).toEqual([join(root, "real-cli")]);
-      expect(calls.map((call) => call.command)).toEqual([join(root, "real-cli")]);
+      expect(proved).toEqual([join(root, "bin", "claude-x")]);
+      expect(calls.map((call) => call.command)).toEqual([join(root, "bin", "claude-x")]);
       // A command the worker's PATH cannot find is not proven and not launched.
       const missing = await launch({ ...runnerOptions(spawn), executable: "claude-x", env: { PATH: join(root, "none"), HOME: root }, escapeSelfTest: { prove: ok } }, task({ mayEdit: true, ownedPaths: escaped }));
       expect(missing.state).toBe("failed");
@@ -1428,13 +1428,20 @@ describe("claude-code worker: escape self-test wiring", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it("an aborted run stops the proof and is not launched", async () => {
+  it("an aborted run stops the proof and is not launched: the self-test receives the run's own signal", async () => {
     const { spawn, calls } = fakeSpawn((child) => child.exit(0));
     const controller = new AbortController();
     let seen: AbortSignal | undefined;
-    const result = await launch({ ...runnerOptions(spawn), executable: "/bin/sh", escapeSelfTest: { prove: async () => { controller.abort(new Error("Task aborted")); return { ok: false, version: "9", cause: "the escape self-test was cancelled" }; } } },
+    const prove = (_executable: string, received: { signal?: AbortSignal }) => new Promise<{ ok: boolean; version: string; cause: string }>((resolve) => {
+      seen = received.signal;
+      received.signal?.addEventListener("abort", () => resolve({ ok: false, version: "9", cause: "the escape self-test was cancelled" }), { once: true });
+    });
+    const pending = launch({ ...runnerOptions(spawn), executable: "/bin/sh", escapeSelfTest: { prove } },
       task({ mayEdit: true, ownedPaths: escaped }), controller.signal);
-    void seen;
+    await vi.waitFor(() => expect(seen).toBeDefined());
+    expect(seen).toBe(controller.signal);
+    controller.abort(new Error("Task aborted"));
+    const result = await pending;
     expect(result.state).toBe("aborted");
     expect(calls).toHaveLength(0);
   });

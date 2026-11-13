@@ -4,39 +4,63 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertClaudeEscapesProven, assertClaudeRulesProven, proveClaudeEscapes, resolveClaudeExecutable } from "../src/subagents/claude-rule-selftest.ts";
 
+/** The fake CLI's permission matcher, embedded into the fake CLI's source. `ignore` lists the escaped characters whose
+ * backslash is ignored ("all" for every one); an unescaped character then keeps its pattern meaning: `[` opens a class,
+ * `*` is a wildcard, `{a,b}` (with a comma) is a brace expansion, `+(a)` is an extglob, `!(a)` is a negation. */
+function fakeMatch(rule: string, target: string, ignore: string): boolean {
+  const body = rule.slice(5, -1).replace(/^\//, "").replace(/\/\*\*$/, "");
+  const tokens: Array<{ ch: string; esc: boolean }> = [];
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] === "\\") { const n = body[++i] ?? ""; tokens.push({ ch: n, esc: !(ignore === "all" || ignore.includes(n)) }); } else tokens.push({ ch: body[i]!, esc: false });
+  }
+  const lit = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const find = (from: number, ch: string): number => { for (let j = from; j < tokens.length; j++) if (tokens[j]!.ch === ch && !tokens[j]!.esc) return j; return -1; };
+  const text = (from: number, to: number): string => tokens.slice(from, to).map((t) => t.ch).join("");
+  let re = "";
+  for (let i = 0; i < tokens.length; i++) {
+    const { ch, esc } = tokens[i]!;
+    if (esc) { re += lit(ch); continue; }
+    if (ch === "[" && find(i + 1, "]") > 0) { const end = find(i + 1, "]"); re += text(i, end + 1); i = end; continue; }
+    if (ch === "*") { re += "[^/]*"; continue; }
+    if (ch === "{" && find(i + 1, "}") > 0 && text(i, find(i + 1, "}")).includes(",")) { const end = find(i + 1, "}"); re += "(?:" + text(i + 1, end).split(",").map(lit).join("|") + ")"; i = end; continue; }
+    if ((ch === "+" || ch === "!") && tokens[i + 1]?.ch === "(" && !tokens[i + 1]!.esc && find(i + 2, ")") > 0) {
+      const end = find(i + 2, ")");
+      re += ch === "+" ? "(?:" + lit(text(i + 2, end)) + ")+" : "(?!" + lit(text(i + 2, end)) + "(?:/|$))[^/]+";
+      i = end; continue;
+    }
+    re += lit(ch);
+  }
+  return new RegExp("^" + re + "(/.*)?$").test(target);
+}
+
 /** A fake CLI: answers --version, asks the local fake Messages server what to write, applies a permission matcher
- * that either honours backslash escapes or ignores them (reading `[id]` as a character class), and writes the target. */
-type Mode = "honour" | "ignore" | "hang" | "crash" | "noresult" | "silent" | "grandchild";
-function fakeCli(mode: Mode, version = "9.9.9 (Fake CLI)"): string {
+ * that either honours backslash escapes or ignores them (all, or exactly one kind), and writes the target. `slow`
+ * honours them but takes about 0.4 s per run. `requireName` makes it a shim: it exits 1 unless started under that name. */
+type Mode = "honour" | "ignore" | "ignore-braces" | "ignore-plus-paren" | "slow" | "hang" | "crash" | "noresult" | "silent" | "grandchild";
+const IGNORED: Partial<Record<Mode, string>> = { ignore: "all", "ignore-braces": "{}", "ignore-plus-paren": "()" };
+function fakeCli(mode: Mode, version = "9.9.9 (Fake CLI)", requireName?: string): string {
   return `#!/usr/bin/env node
 const fs = require("node:fs"); const path = require("node:path");
 const args = process.argv.slice(2);
+if (${JSON.stringify(requireName ?? null)} !== null && path.basename(process.argv[1]) !== ${JSON.stringify(requireName ?? null)}) { console.error("invoked under the wrong name"); process.exit(1); }
 if (args[0] === "--version") { console.log(${JSON.stringify(version)}); process.exit(0); }
 fs.appendFileSync(__filename + ".log", "run\\n");
 fs.writeFileSync(__filename + ".env", JSON.stringify(["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "DISABLE_TELEMETRY", "DISABLE_AUTOUPDATER", "DISABLE_ERROR_REPORTING", "ANTHROPIC_API_KEY"].map((k) => [k, process.env[k]])));
+const fakeMatch = ${fakeMatch.toString()};
 if (${JSON.stringify(mode)} === "hang" || ${JSON.stringify(mode)} === "grandchild") {
   fs.writeFileSync(__filename + ".pid", String(process.pid));
   if (${JSON.stringify(mode)} === "grandchild") require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 9000)"], { detached: true, stdio: ["ignore", "inherit", "ignore"] }).unref();
   setInterval(() => {}, 1000);
 } else if (${JSON.stringify(mode)} === "silent") process.exit(0);
 else (async () => {
+  if (${JSON.stringify(mode)} === "slow") await new Promise((r) => setTimeout(r, 400));
   const rule = args[args.indexOf("--allowedTools") + 1];
+  fs.appendFileSync(__filename + ".rules", rule + "\\n");
   const res = await fetch(process.env.ANTHROPIC_BASE_URL + "/v1/messages", { method: "POST", body: JSON.stringify({ messages: [] }) });
   const text = await res.text();
   const partial = /"partial_json":("(?:[^"\\\\]|\\\\.)*")/.exec(text);
   const target = JSON.parse(JSON.parse(partial[1])).file_path;
-  const rawBody = rule.slice(5, -1).replace(/^\\//, "").replace(/\\/\\*\\*$/, "");
-  let re = "";
-  const body = ${JSON.stringify(mode)} === "ignore" ? rawBody.replace(/\\\\/g, "") : rawBody;
-  for (let i = 0; i < body.length; i++) {
-    const c = body[i];
-    if (c === "\\\\" && ${JSON.stringify(mode)} !== "ignore") { re += (body[++i] || "").replace(/[.*+?^\${}()|[\\]\\\\]/g, "\\\\$&"); continue; }
-    if (c === "\\\\") continue;
-    if (c === "[") { const end = body.indexOf("]", i); re += body.slice(i, end + 1); i = end; }
-    else if (c === "*") re += "[^/]*";
-    else re += c.replace(/[.*+?^\${}()|[\\]\\\\]/g, "\\\\$&");
-  }
-  if (new RegExp("^" + re + "(/.*)?$").test(target)) { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, "x"); }
+  if (fakeMatch(rule, target, ${JSON.stringify(IGNORED[mode] ?? "")})) { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, "x"); }
   if (${JSON.stringify(mode)} !== "noresult") await fetch(process.env.ANTHROPIC_BASE_URL + "/v1/messages", { method: "POST", body: JSON.stringify({ messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "t" }] }] }) }).then((r) => r.text());
   process.exit(${JSON.stringify(mode)} === "crash" ? 1 : 0);
 })();
@@ -210,16 +234,21 @@ describe("claude escape self-test", () => {
     expect(verdict.ok).toBe(false);
   });
 
-  it("resolves a command to one absolute real path on the given environment's PATH", () => {
+  it("resolves a command to the absolute PATH candidate as found (its real path must be a file) on the given environment's PATH", () => {
     const dir = temp();
     const real = join(dir, "real-cli");
     writeFileSync(real, "#!/bin/sh\n"); chmodSync(real, 0o755);
     mkdirSync(join(dir, "bin"));
     symlinkSync(real, join(dir, "bin", "tool"));
-    expect(resolveClaudeExecutable("tool", { PATH: join(dir, "bin") })).toBe(real);
+    expect(resolveClaudeExecutable("tool", { PATH: join(dir, "bin") })).toBe(join(dir, "bin", "tool"));
     expect(resolveClaudeExecutable("tool", { PATH: join(dir, "elsewhere") })).toBeUndefined();
     expect(resolveClaudeExecutable("tool", {})).toBeUndefined();
-    expect(resolveClaudeExecutable(join(dir, "bin", "tool"))).toBe(real);
+    expect(resolveClaudeExecutable(join(dir, "bin", "tool"))).toBe(join(dir, "bin", "tool"));
+    expect(resolveClaudeExecutable(real)).toBe(real);
+    mkdirSync(join(dir, "bin", "adir"));
+    expect(resolveClaudeExecutable("adir", { PATH: join(dir, "bin") })).toBeUndefined(); // a directory is not an executable file
+    symlinkSync(join(dir, "gone"), join(dir, "bin", "dangling"));
+    expect(resolveClaudeExecutable("dangling", { PATH: join(dir, "bin") })).toBeUndefined();
     expect(resolveClaudeExecutable(join(dir, "nope"))).toBeUndefined();
   });
 
@@ -234,6 +263,152 @@ describe("claude escape self-test", () => {
     await expect(assertClaudeRulesProven(["Edit(//repo/a\\[1\\])"], "/nonexistent", { prove: proveSeam, skip: true })).resolves.toBeUndefined();
     expect(calls).toBe(1);
   });
+
+  const runLog = (exe: string): number => (existsSync(`${exe}.log`) ? readFileSync(`${exe}.log`, "utf8").split("\n").filter(Boolean).length : 0);
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it("M1: when the first caller aborts, a live joiner still ends with a real verdict (the retry loop)", async () => {
+    const { exe, cache } = install("slow");
+    const first = new AbortController();
+    const owner = prove(exe, cache, { signal: first.signal });
+    await vi.waitFor(() => expect(runLog(exe)).toBeGreaterThan(0), { timeout: 15_000 });
+    const joiner = prove(exe, cache, { signal: new AbortController().signal });
+    await sleep(700);
+    first.abort();
+    expect((await owner).cause).toMatch(/cancelled/);
+    const verdict = await joiner;
+    expect(verdict.cause).toBeUndefined();
+    expect(verdict.ok).toBe(true);
+  }, 120_000);
+
+  it("M1: a joiner that aborts returns cancelled at once while the owner still gets its real verdict, and no listener leaks", async () => {
+    const { exe, cache } = install("slow");
+    const owner = prove(exe, cache, { signal: new AbortController().signal });
+    await vi.waitFor(() => expect(runLog(exe)).toBeGreaterThan(0), { timeout: 15_000 });
+    const second = new AbortController();
+    const add = vi.spyOn(second.signal, "addEventListener");
+    const remove = vi.spyOn(second.signal, "removeEventListener");
+    const joined = prove(exe, cache, { signal: second.signal });
+    await sleep(700);
+    const started = Date.now();
+    second.abort();
+    const cancelled = await joined;
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(cancelled.ok).toBe(false);
+    expect(cancelled.cause).toMatch(/cancelled/);
+    const verdict = await owner;
+    expect(verdict.cause).toBeUndefined();
+    expect(verdict.ok).toBe(true);
+    // Every listener the joiner added to its own signal is gone again.
+    const added = add.mock.calls.filter((c) => c[0] === "abort").length;
+    const removed = remove.mock.calls.filter((c) => c[0] === "abort").length;
+    expect(removed).toBeGreaterThanOrEqual(added);
+  }, 120_000);
+
+  it("M1: a joiner that finishes normally leaves no abort listener behind", async () => {
+    const { exe, cache } = install("slow");
+    const owner = prove(exe, cache);
+    await vi.waitFor(() => expect(runLog(exe)).toBeGreaterThan(0), { timeout: 15_000 });
+    const live = new AbortController();
+    const add = vi.spyOn(live.signal, "addEventListener");
+    const remove = vi.spyOn(live.signal, "removeEventListener");
+    expect((await prove(exe, cache, { signal: live.signal })).ok).toBe(true);
+    expect((await owner).ok).toBe(true);
+    expect(remove.mock.calls.filter((c) => c[0] === "abort").length).toBeGreaterThanOrEqual(add.mock.calls.filter((c) => c[0] === "abort").length);
+  }, 120_000);
+
+  it("M2: a shim that dispatches on its own name is proven through the link and launched by the link path", async () => {
+    const dir = temp();
+    const real = join(dir, "multiplexer");
+    writeFileSync(real, fakeCli("honour", "9.9.9 (Fake CLI)", "claude-shim"));
+    chmodSync(real, 0o755);
+    mkdirSync(join(dir, "bin"));
+    const link = join(dir, "bin", "claude-shim");
+    symlinkSync(real, link);
+    const env = { PATH: join(dir, "bin") };
+    const resolved = resolveClaudeExecutable("claude-shim", env);
+    expect(resolved).toBe(link);
+    const cache = join(dir, "state", "cache.json");
+    const verdict = await prove(resolved!, cache);
+    expect(verdict.cause).toBeUndefined();
+    expect(verdict.ok).toBe(true);
+    expect(runLog(real)).toBe(12);
+    // The bare command name goes through the same resolution, and the real path (a different name) is refused by the shim.
+    expect((await prove("claude-shim", cache, { env })).ok).toBe(true);
+    expect((await prove(real, join(dir, "state", "other.json"))).ok).toBe(false);
+    // The cache identity is the real path, its mtime and size, plus the version: two link names share one entry.
+    expect(Object.keys(JSON.parse(readFileSync(cache, "utf8")).entries)).toHaveLength(1);
+  }, 120_000);
+
+  it("M4: an unresolvable command is not proven, and never falls back to the bare name", async () => {
+    const dir = temp();
+    const exe = join(dir, "bare-fake-cli");
+    writeFileSync(exe, fakeCli("honour")); chmodSync(exe, 0o755);
+    vi.stubEnv("PATH", `${dir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? ""}`);
+    try {
+      const cache = join(dir, "state", "cache.json");
+      const verdict = await prove("bare-fake-cli", cache, { env: { PATH: join(dir, "elsewhere") } });
+      expect(verdict.ok).toBe(false);
+      expect(verdict.cause).toBe("the Claude Code CLI was not found");
+      expect(runLog(exe)).toBe(0);
+      expect(existsSync(cache)).toBe(false);
+    } finally { vi.unstubAllEnvs(); }
+  }, 60_000);
+
+  it("M5: an inconclusive failure is reused for 10 minutes and then re-run; a conclusive one for 24 hours", async () => {
+    for (const mode of ["crash", "hang"] as const) {
+      const { exe, cache } = install(mode);
+      let now = 1_000_000;
+      const run = () => prove(exe, cache, { now: () => now, timeoutMs: 700 });
+      expect((await run()).ok, mode).toBe(false);
+      expect(runLog(exe), mode).toBe(1);
+      now += 9 * 60_000;
+      expect((await run()).ok, mode).toBe(false);
+      expect(runLog(exe), `${mode} reused at 9 minutes`).toBe(1);
+      now += 2 * 60_000;
+      expect((await run()).ok, mode).toBe(false);
+      expect(runLog(exe), `${mode} re-run at 11 minutes`).toBe(2);
+    }
+    const { exe, cache } = install("ignore");
+    let now = 1_000_000;
+    const run = () => prove(exe, cache, { now: () => now });
+    expect((await run()).ok).toBe(false);
+    const first = runLog(exe);
+    now += 23 * 3600_000;
+    expect((await run()).ok).toBe(false);
+    expect(runLog(exe), "reused at 23 hours").toBe(first);
+    now += 2 * 3600_000;
+    expect((await run()).ok).toBe(false);
+    expect(runLog(exe), "re-run at 25 hours").toBeGreaterThan(first);
+  }, 120_000);
+
+  it("T3: a CLI that ignores exactly one escape is refused naming that case", async () => {
+    const braces = install("ignore-braces");
+    const b = await prove(braces.exe, braces.cache);
+    expect(b.ok).toBe(false);
+    expect(b.cause).toMatch(/the check "braces stays denied" failed: the CLI allowed a write/);
+    const paren = install("ignore-plus-paren");
+    const p = await prove(paren.exe, paren.cache);
+    expect(p.ok).toBe(false);
+    expect(p.cause).toMatch(/the check "parentheses with a leading plus stays denied" failed: the CLI allowed a write/);
+  }, 120_000);
+
+  it("M3: the exclamation pair uses a rule where an unescaped ! would change the match", async () => {
+    const { exe, cache } = install("honour");
+    expect((await prove(exe, cache)).ok).toBe(true);
+    const seen = readFileSync(`${exe}.log`, "utf8").split("\n").filter(Boolean).length;
+    expect(seen).toBe(12);
+    expect(readFileSync(`${exe}.rules`, "utf8")).toMatch(/Edit\(\/\/.*\/T\/\\!\\\(a\\\)\/\*\*\)/);
+    // The fake treats an unescaped `!(a)` as a negation: written as a plain rule it would allow `b/f.txt` and refuse `a/f.txt`.
+    const dir = temp();
+    const body = `Edit(/${dir}/!(a)/**)`;
+    const escaped = `Edit(/${dir}/\\!\\(a\\)/**)`;
+    const fn = new Function("rule", "target", "ignore", `return (${fakeMatch.toString()})(rule, target, ignore)`) as (r: string, t: string, i: string) => boolean;
+    expect(fn(body, `${dir}/b/f.txt`, "")).toBe(true);
+    expect(fn(body, `${dir}/a/f.txt`, "")).toBe(false);
+    expect(fn(escaped, `${dir}/b/f.txt`, "")).toBe(false);
+    expect(fn(escaped, `${dir}/!(a)/f.txt`, "")).toBe(true);
+  }, 120_000);
 
   it.skipIf(process.env.STEAK_PI_REAL_CLI_SELFTEST !== "1")("the real CLI honours the escapes (opt-in: STEAK_PI_REAL_CLI_SELFTEST=1, needs `claude` on PATH)", async () => {
     const cache = join(temp(), "cache.json");

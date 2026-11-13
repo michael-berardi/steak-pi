@@ -37,7 +37,7 @@ routing.json last (below).
   the dispatch runs a self-test of the installed CLI against a local fake server (no model, no quota, a fake key, a
   throwaway config dir): `\[id\]` must deny `i/f.txt` and allow `[id]/f.txt`, and the other escapes must hold too. The
   verdict is cached per CLI identity (version, real path, mtime, size) in `~/.pi/agent/usap/claude-escape-selftest.json`
-  (a failure is retested after 24 h). Not proven: the wave is refused with the path, the CLI version and the cause. Paths
+  (a real failure is retested after 24 h; an inconclusive one, such as a timeout on a busy machine, after 10 minutes). Not proven: the wave is refused with the path, the CLI version and the cause. Paths
   that need no escaping never run it. A CLI update that changed how escapes are read can no longer widen the fence silently.
 - **The escape self-test is stricter.** Every check must see the CLI exit cleanly and report a tool result to the local
   server, so a crashed or silent CLI is "could not run" instead of passing a "denied" check by leaving no file. Each
@@ -45,6 +45,9 @@ routing.json last (below).
   one exact file). The test runs quietly (no telemetry, update check or error report), cannot hang on a stray child
   process, stops when the dispatch is cancelled (nothing is cached), and proves the same executable path it then launches,
   found on the worker's own environment. The need for it is judged from the rules actually emitted for the wave.
+  A `claude` that is a shim dispatching on its own name (a symlink to another binary) works: the command is launched
+  and proven under the name found on PATH, not its resolved target, and a command not found on PATH is refused instead
+  of being tried by its bare name.
 - **An owned path with a tab, no-break space or other whitespace besides the plain space is refused** on the Claude tier
   (not measured against the CLI's rule matcher). An inner plain space stays accepted.
 - **Turn budget: a follow-up cannot inherit an earlier "complete".** A relay follow-up query cut by the hard stop is

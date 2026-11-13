@@ -421,9 +421,13 @@ against a local fake Messages server with a fake key, a throwaway config directo
 reporting off; it proves each escaped character class on its own: brackets, `* ( ) { } !`, braces, a leading `+(`,
 a negation and an exact-file rule; every case must exit 0 and report a tool result to the local server, so a crash
 or a CLI that never reached the permission check is "could not run", never a pass). The need is judged from the
-rules actually emitted for the wave. The CLI is resolved once to an absolute real path on the worker's own
-environment, and that same path is proven and launched. The verdict is cached per CLI version, path, mtime, size
-and self-test revision, and a failure is retested after 24 h; a cancelled run, a timeout that leaves a stray
+rules actually emitted for the wave. The CLI is resolved once to the absolute PATH candidate as found on the worker's
+own environment (not its realpath, so a shim that dispatches on its own name works; the realpath must be a regular
+file), and that same path is proven and launched; a command that cannot be resolved is never proven. The verdict is
+cached per CLI version, real path, mtime, size and self-test revision. A real failure (the CLI allowed a write the
+rule should deny, or refused one it should allow) is retested after 24 h; an inconclusive one (could not run, timed
+out, could not start) after 10 minutes. A caller that joins another caller's run in flight stops waiting when its own
+signal aborts; a cancelled run, a timeout that leaves a stray
 grandchild holding the pipe (the test gives up 3 s after the kill) and an unprovable CLI never cache a pass. An
 unproven CLI refuses the wave naming the path, the version and the cause. Paths that need no escaping never run it.
 Only the test option `escapeSelfTest: { skip: true }` skips it; an injected `spawn` alone no longer does. Error text
