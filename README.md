@@ -121,6 +121,7 @@ command). The check runs at most every 6 hours, in the background; `STEAK_PI_NO_
 | **Phased todo** | A plan pinned in the terminal, saved per session |
 | **Write guard** | `write` refuses to replace an existing file the session has not read; the error says to read it first. A file a successful `cat`, `head`, `tail`, `nl`, `sed` or `awk` command printed counts as read |
 | **Working rules** | Six short lines in the system prompt: batch independent calls, gather context once, compute on large files, check a change once, finish every part, keep the final reply short |
+| **Full access** | Long coding sessions finish without stalling: commands run with full access to your machine and nothing stops to ask. The agent can run any command you could |
 | **Finish guard** | A turn cannot end while todo items are open or the final reply lists unfinished work; capped, never after an abort, error or stop request, on by default |
 | **Companion UI** | One status line for state, model, context pressure, cache use and cost, in your Pi theme |
 | **Skill catalog lite** | Keeps large skill catalogs inside a byte budget without dropping any skill |

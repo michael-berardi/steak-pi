@@ -356,7 +356,7 @@ text under `~/.cache/ut-overseer/<job>/`, even outside cwd. Name the absolute or
 or writes; Grep/Find/Ls remain cwd-only. Claude CLI inputs still belong under cwd.
 
 Writable work on a route the operator listed in `verificationGates` receives a
-parent-requested verification on the gate's reviewer route. Ungated routes and
+verification requested in the final report for the parent to run. Requested commits and pushes proceed; production deploys and public releases wait unless the leaf says review is arranged or to proceed without waiting, otherwise the exact remaining command is reported. Finish actions require edit and shell access and a request in the parent's leaf, constraints or contract, limited to named or owned repositories and paths. Ungated routes and
 read-only leaves receive no automatic end-gate. An explicit leaf/shared-contract output
 format wins over default headings; JSON-only tasks return JSON only. A leaf with
 empty or placeholder-only output fails even if its transport exits successfully.

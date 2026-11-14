@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.31.2 (2026-11-14)
+
+Delegated workers finish what their task asks, and the README states the default access plainly.
+
+- **The README says what the agent may do by default.** Commands run with full access and nothing stops to ask, which is what keeps a long session moving; the feature table now says so in one line.
+- Workers with edit and shell access now follow their parent's explicit commit, push, release or deploy request within their assigned scope. Gated workers finish requested commits and pushes and request verification in their final report; production deploys and public releases wait for the leaf's explicit review arrangement or instruction to proceed without waiting.
+
 ## 0.31.1 (2026-11-14)
 
 Model labels in subagent rows are provider-neutral, and a tiny pane no longer overflows.

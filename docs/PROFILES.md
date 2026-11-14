@@ -68,7 +68,7 @@ Writable work on a route listed in `verificationGates` is told to request one
 bounded verification on the gate's reviewer route through the parent; other
 routes and read-only leaves receive no automatic end-gate. Explicit task or
 contract output formats override default report headings. USAP never grants
-permission to release. Explicit native Pi model/profile selections remain exact,
+permission by itself: edit-and-shell leaves follow their parent's explicit finish request, within named or owned repositories and paths. Gated commits and pushes proceed; production deploys and public releases wait unless the leaf says review is arranged or to proceed without waiting. Explicit native Pi model/profile selections remain exact,
 including image-capable routes selected with `requireImages: true`. The
 automatic chain hop applies only to eligible failures before content or tool
 activity, never authentication/permission/region errors.
