@@ -43,14 +43,21 @@ function stateStyle(state: string): Pick<Row, "tone"> & { icon: string } {
     : state === "queued" ? { icon: "○", tone: "muted" }
     : { icon: "·", tone: "accent" };
 }
-/** Registry route -> the part that identifies the model: harness/provider prefixes, a vendor prefix and a date suffix are trimmed. */
+/** Registry route -> the part that identifies the model: the last route segment, without a date suffix and without
+ * the leading `<provider>-` (or the provider's first word) when the route's own provider segment names it. */
 export function modelLabel(route: unknown): string {
   const raw = sanitize(route).replace(/\s*\(.*\)\s*$/, "");
-  const last = raw.split("/").filter(Boolean).pop() ?? "";
-  return last.replace(/^claude-/i, "").replace(/-\d{8}$/, "");
+  const parts = raw.split("/").filter(Boolean);
+  const last = parts.pop() ?? "";
+  const provider = (parts.pop() ?? "").toLowerCase();
+  const lower = last.toLowerCase();
+  const prefix = [provider, provider.split("-")[0]].find((candidate) => candidate && lower.startsWith(`${candidate}-`) && last.length > candidate.length + 1);
+  return (prefix ? last.slice(prefix.length + 1) : last).replace(/-\d{8}$/, "");
 }
-/** The route this task actually runs on: a review fallback or the last fallback hop beats the run's own route. */
+/** The route this task actually runs on: the last fallback hop's destination (carried whole as `actualRoute`) or a
+ * review fallback beats the run's own route. */
 function taskRoute(task: RecordLike, run: RecordLike): string {
+  if (typeof task.actualRoute === "string" && task.actualRoute) return task.actualRoute;
   const review = record(task.reviewFallback).to;
   if (typeof review === "string" && review) return review;
   const hops = array(task.routeFallbacks, 8).filter((hop): hop is string => typeof hop === "string" && hop.includes("->"));
@@ -89,6 +96,7 @@ function fitCells(cells: TaskCells, available: number): { icon: string; name: st
   }
   return { icon, name: nameWidth <= room ? name : truncate(name, room), meta: "" };
 }
+const padTo = (text: string, columns: number) => text + " ".repeat(Math.max(0, columns - visibleWidth(text)));
 function component(build: (columns: number) => Row[], theme?: Theme): Component {
   return { invalidate() {}, render(columns) {
     const size = Number.isFinite(columns) ? Math.max(0, Math.floor(columns)) : 80;
@@ -106,7 +114,7 @@ function component(build: (columns: number) => Row[], theme?: Theme): Component 
       const rhs = right ? truncate(right, Math.floor(inner / 2)) : "";
       const available = Math.max(0, inner - (rhs ? visibleWidth(rhs) + 2 : 0));
       const wrap = (line: string) => framed ? border("│ ") + line + border(" │") : line;
-      if (cells && available < visibleWidth(cells.icon) + 2) return wrap(paint(cells.iconTone ?? tone, truncate(`${cells.icon} ${cells.name}`, inner).padEnd(inner)) );
+      if (cells && available < visibleWidth(cells.icon) + 2) return wrap(paint(cells.iconTone ?? tone, padTo(truncate(`${cells.icon} ${cells.name}`, inner), inner)));
       if (cells) {
         const fit = fitCells(cells, available);
         const used = visibleWidth(fit.icon) + 1 + visibleWidth(fit.name) + (fit.meta ? 2 + visibleWidth(fit.meta) : 0);

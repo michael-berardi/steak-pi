@@ -20,9 +20,14 @@ const runB = { id: "run-b", model: "claude-code/claude-alpha-9", thinkingLevel: 
 
 describe("subagent panel rows", () => {
   it("trims harness, vendor, claude- and date affixes to the model", () => {
+    // The prefix trimmed is the route's own provider segment, never a literal name.
     expect(modelLabel("claude-code/claude-alpha-9")).toBe("alpha-9");
+    expect(modelLabel("vendor-x/vendor-x-model-one")).toBe("model-one");
+    expect(modelLabel("vendor-x/vendor-large-2")).toBe("large-2");
     expect(modelLabel("harness-a/vendor-x/model-one-2")).toBe("model-one-2");
-    expect(modelLabel("claude-beta-3-20251101")).toBe("beta-3");
+    // With no provider segment nothing is stripped: no vendor name is special.
+    expect(modelLabel("claude-beta-3-20251101")).toBe("claude-beta-3");
+    expect(modelLabel("vendor-x-model")).toBe("vendor-x-model");
     expect(modelLabel("")).toBe("");
   });
 
@@ -106,5 +111,48 @@ describe("subagent panel rows", () => {
     const text = renderSubagentResult({ details: { runs: [{ ...runA, runId: "run-a" }, { ...runB, runId: "run-b" }] } }).render(100).map(strip).join("\n");
     expect(text).toMatch(/run-a · .*model-one-2/);
     expect(text).toMatch(/run-b · .*alpha-9 high/);
+  });
+
+  it("a hop cut off by the hop cap still labels the destination route, from actualRoute", () => {
+    const long = (name: string) => `${name}/${"m".repeat(60)}`;
+    const hop = `${long("provider-a")}->${long("provider-b")}`;
+    const task = { id: "h", label: "hopped", state: "running", startedAt: now, routeFallbacks: [hop.slice(0, 96)], actualRoute: long("provider-b") };
+    const text = renderSubagentLive([{ ...runA, tasks: [task] }], undefined).render(200).map(strip).join("\n");
+    expect(text).toContain("m".repeat(22));
+    expect(text).toContain("…");
+  });
+
+  it("a later hop wins over an earlier review fallback", () => {
+    const task = { id: "r", label: "later", state: "running", startedAt: now, reviewFallback: { from: "x/y", to: "z/model-three-4", reason: "quota" },
+      routeFallbacks: ["x/y->z/model-three-4", "z/model-three-4->w/model-five-6"], actualRoute: "w/model-five-6" };
+    expect(renderSubagentLive([{ ...runA, tasks: [task] }], undefined).render(100).map(strip).join("\n")).toMatch(/later {2}model-five-6/);
+  });
+
+  describe("odd labels never overflow a narrow pane", () => {
+    const wide = "数据处理任务数据处理任务", emoji = "🚀🚀🚀 launch 👨‍👩‍👧‍👦👨‍👩‍👧‍👦", colored = "\x1b[31mred\x1b[0m-task-with-colour";
+    const tasks = [wide, emoji, colored, "plain"].map((label, index) => ({ id: `w${index}`, label, state: "running", startedAt: now }))
+      .concat([{ id: "nm", label: "no-model", state: "running", startedAt: now }]);
+    const bare = { id: "run-n", state: "running", tasks: [tasks[4]] };
+    const runWide = { ...runA, tasks: tasks.slice(0, 4).map((task) => ({ ...task, route: "harness-a/数据-model-🚀" })) };
+    it.each([6, 10, 24, 60])("at %i columns every line fits and has no raw escape", (columns) => {
+      for (const run of [runWide, { ...runA, tasks: tasks.slice(0, 4) }, bare]) {
+        for (const render of [renderSubagentLive([run], undefined), renderSubagentResult({ details: { run: { ...run, runId: "r", state: "done" } } })]) {
+          const raw = render.render(columns);
+          expect(raw.length).toBeGreaterThan(0);
+          for (const line of raw) {
+            expect(visibleWidth(line), JSON.stringify(line)).toBeLessThanOrEqual(columns);
+            expect(strip(line)).not.toMatch(/\x1b/);
+          }
+        }
+      }
+    });
+    it("a task with no model shows the name and status without a model cell", () => {
+      const text = renderSubagentLive([bare], undefined).render(60).map(strip).join("\n");
+      expect(text).toMatch(/no-model +running/);
+    });
+    it("pads a tiny unframed row by visible columns", () => {
+      const run = { ...bare, tasks: [{ id: "c", label: "数据处理任务", state: "running", startedAt: now }] };
+      for (const line of renderSubagentLive([run], undefined).render(6)) expect(visibleWidth(line), line).toBeLessThanOrEqual(6);
+    });
   });
 });

@@ -427,6 +427,17 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
     } finally { await h.handlers.get("session_shutdown")!({}, h.ctx); }
   });
 
+  it("carries the last hop's destination route whole when the capped hop strings cut it off", () => {
+    const run = normalizeDispatch({ goal: "hop", tasks: [{ label: "leaf", task: "work" }] }, process.cwd(), "provider-a/model", "medium", 1_000, () => "hop-view");
+    const destination = `provider-b/${"m".repeat(120)}`;
+    run.tasks[0].routeFallbacks = [`provider-a/${"n".repeat(120)}->${destination} (content-filter refusal)`];
+    expect(toRunView(run).tasks[0].actualRoute).toBe(destination);
+    expect(usapTelemetrySnapshot(run).tasks[0].actualRoute).toBe(destination.slice(0, 160));
+    expect(toRunView(run).tasks[0].routeFallbacks![0].length).toBeLessThanOrEqual(160);
+    run.tasks[0].routeFallbacks = undefined;
+    expect(toRunView(run).tasks[0]).not.toHaveProperty("actualRoute");
+  });
+
   it("exposes independent current and last launch queue snapshots in run/status views", () => {
     const run = normalizeDispatch({ goal: "queue metadata", tasks: [{ label: "review", task: "bounded review", role: "reviewer" }] }, process.cwd(), "claude-code/claude-opus-5-5", "xhigh", 1_000, () => "queue-view");
     expect(toRunView(run).tasks[0]).not.toHaveProperty("launchQueue");

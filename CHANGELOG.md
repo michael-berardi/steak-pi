@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.31.1 (2026-11-14)
+
+Model labels in subagent rows are provider-neutral, and a tiny pane no longer overflows.
+
+- **The model label trims no named vendor.** A row shows the last route segment without its eight-digit date; a leading `<provider>-` is removed only when the route's own provider segment names it (`provider-a/provider-a-model-1` reads `model-1`). A route with no provider segment keeps its whole name. A test now fails on any literal vendor-prefix strip in `src`.
+- **A long fallback hop names the right model.** Hub views carry the newest hop's destination whole as `actualRoute`, so the 96- and 160-character caps on the hop strings can no longer cut the label to a partial route. The newest hop also wins over an earlier review fallback on the same task.
+- **A row on a very narrow pane is padded by visible columns.** Below the width where the name and status both fit, the row shows the glyph and the cut name only (the status and time are dropped there, after the model), padded by display width, so wide (CJK, emoji) labels no longer push the line past the pane.
+
 ## 0.31.0 (2026-11-13)
 
 The subagent panel names each task's model, and Steak Pi looks like Steak DSH out of the box.

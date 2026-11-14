@@ -105,6 +105,10 @@ const ENSURE_LITERAL = /\bensure\s*:\s*\{\s*command\s*:/;
 // "team-2" / "Claude (Team)" wherever an example registry account is needed.
 const OPERATOR_ACCOUNT = /claude-kl|"kl"|Claude \(KL\)/i;
 
+// A regex literal anchored to a literal word and hyphen (`/^name-/`) strips one named vendor's prefix and no other:
+// derive such a prefix from the route's own provider segment instead.
+const LITERAL_PREFIX_STRIP = /\.replace\(\/\^[a-z][a-z0-9]*-/i;
+
 type Hit = { path: string; line: number; text: string };
 const hits = (paths: readonly string[], pattern: RegExp): Hit[] => paths.flatMap((path) =>
   readFileSync(path, "utf8").split("\n").flatMap((text, index) =>
@@ -157,6 +161,15 @@ describe("shipped files are provider-neutral", () => {
       .filter((hit) => !isAdapter(join(root, hit.path)) && !allowedTechnicalLine(hit.path, hit.text))
       .map(describeHit);
     expect(model).toEqual([]);
+  });
+
+  it("strip no literal vendor prefix from a model route", () => {
+    expect(LITERAL_PREFIX_STRIP.test('last.replace(/^claude-/i, "")')).toBe(true);
+    expect(LITERAL_PREFIX_STRIP.test('text.replace(/^\\s+/, "")')).toBe(false);
+    // Adapter catalogs name their own provider's models by design.
+    const src = shipped.filter((path) => relative(root, path).startsWith("src/") && path.endsWith(".ts") && !isAdapter(path));
+    expect(src.length).toBeGreaterThan(20);
+    expect(hits(src, LITERAL_PREFIX_STRIP).map(describeHit)).toEqual([]);
   });
 
   it("name no person, client or project", () => {

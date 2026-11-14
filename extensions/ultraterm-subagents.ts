@@ -214,6 +214,8 @@ export interface SettledTaskView {
   error?: string;
   currentTool?: string;
   routeFallbacks?: string[];
+  /** The route the last fallback hop moved to, kept whole: the capped hop strings can cut it off. */
+  actualRoute?: string;
   reviewFallback?: TaskRecord["reviewFallback"];
   turns: number;
   toolErrors: number;
@@ -999,6 +1001,12 @@ function observedCompletionIds(ctx?: ExtensionContext): Set<string> | undefined 
   return ids;
 }
 
+/** The destination of the newest fallback hop, whole (capped to a route's length): the capped hop strings can cut it off. */
+function actualRouteField(hops: readonly string[]): { actualRoute?: string } {
+  const hop = hops.filter((candidate) => candidate.includes("->")).at(-1);
+  const route = hop === undefined ? "" : hop.slice(hop.lastIndexOf("->") + 2).replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s*\(.*\)\s*$/, "").trim().slice(0, 160);
+  return route ? { actualRoute: route } : {};
+}
 function taskDetail(task: TaskRecord): string | undefined {
   if (/Host interrupted|Coordinator shut down/i.test(task.error ?? "")) return task.sessionFile ? "Interrupted — inspect the checkpoint" : "Interrupted — inspect diagnostics";
   if (TURN_BUDGET_ERROR.test(task.error ?? "")) return "Turn budget reached — partial work retained";
@@ -1047,7 +1055,7 @@ export function usapTelemetrySnapshot(run: RunRecord, links: RunLinks = {}) {
       ...(task.reviewFallback ? { reviewFallback: { ...task.reviewFallback } } : {}),
       // Real per-request provenance: each pre-output hop names both routes.
       ...(task.routeFallbacks?.length
-        ? { routeFallbacks: task.routeFallbacks.slice(-8).map((hop) => hop.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 96)) }
+        ? { routeFallbacks: task.routeFallbacks.slice(-8).map((hop) => hop.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 96)), ...actualRouteField(task.routeFallbacks) }
         : {}),
       toolErrors: task.toolErrors ?? 0,
       toolSuccesses: task.toolSuccesses ?? 0,
@@ -1090,7 +1098,7 @@ function taskView(task: TaskRecord): SettledTaskView {
     ...(task.error === undefined ? {} : { error: task.error }),
     ...(task.currentTool ? { currentTool: task.currentTool.slice(0, 80) } : {}),
     // The route this leaf actually ran on after a fallback hop, so a mixed-route wave shows each row's own model.
-    ...(task.routeFallbacks?.length ? { routeFallbacks: task.routeFallbacks.slice(-8).map((hop) => hop.slice(0, 160)) } : {}),
+    ...(task.routeFallbacks?.length ? { routeFallbacks: task.routeFallbacks.slice(-8).map((hop) => hop.slice(0, 160)), ...actualRouteField(task.routeFallbacks) } : {}),
     ...(task.reviewFallback ? { reviewFallback: { ...task.reviewFallback } } : {}),
     turns: task.turns,
     startedAt: task.startedAt,
