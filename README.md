@@ -86,6 +86,9 @@ steak-pi update       # install the latest release (--check only reports)
 steak-pi update --models  # refresh Pi's cached model catalogs, extension providers included
 ```
 
+Use `steak-pi <subcommand> --help` (or `-h`) for launcher usage, including nested verbs such as
+`steak-pi routing check --help`. `steak-pi run --help` passes through to Pi instead.
+
 `steak-pi update --models` runs the installed Pi with your packages loaded and forces a catalog refresh for every
 provider, then prints one line per provider (`refreshed with N models`, or `FAILED:` with the provider's error) and
 exits non-zero if any failed. Use it when `/model` shows an old list: `pi update --models` refreshes only Pi's built-in

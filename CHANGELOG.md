@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.31.3 (2026-11-14)
+
+- **`--help` on a subcommand prints its usage and does nothing else.** `steak-pi update --help` used to run the update, and `steak-pi routing check --help` treated `--help` as a file to check. Every launcher subcommand and nested verb (`routing check`, `local add`, `routes rank`, `usap-api dispatch` and the rest) now answers `--help` or `-h` with one usage line and exits 0, before any setup, download or write. `steak-pi run --help` still goes to the agent itself.
+
 ## 0.31.2 (2026-11-14)
 
 Delegated workers finish what their task asks, and the README states the default access plainly.

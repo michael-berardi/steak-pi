@@ -20,6 +20,43 @@
 # Git and npm installs derive everything from this script's location.
 set -u
 
+# Help must be handled before the hook, runtime setup, or any subcommand work.
+is_help() { [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; }
+if is_help "${2:-}"; then
+  case "${1:-}" in
+    install) echo 'usage: steak-pi install';;
+    update) echo 'usage: steak-pi update [--check | --models]';;
+    status) echo 'usage: steak-pi status';;
+    version) echo 'usage: steak-pi version';;
+    remove|uninstall) echo "usage: steak-pi $1";;
+    usap-api) echo 'usage: steak-pi usap-api <admit|dispatch|resume> [options]';;
+    local) echo 'usage: steak-pi local <add|start|stop|status|ensure|check|release> [arguments]';;
+    routing) echo 'usage: steak-pi routing check [routing.json]';;
+    routes) echo 'usage: steak-pi routes <rank|record|verdict|report> [options]';;
+    env|lean-args|finish-guard-hook|help) echo "usage: steak-pi $1";;
+    *) :;;
+  esac
+  case "${1:-}" in install|update|status|version|remove|uninstall|usap-api|local|routing|routes|env|lean-args|finish-guard-hook|help) exit 0;; esac
+fi
+if is_help "${3:-}"; then
+  usage=''
+  case "${1:-} ${2:-}" in
+    'routing check') usage='routing check [routing.json]';;
+    'usap-api admit') usage='usap-api admit [--tasks N] [--route R] [--role scout|worker|reviewer]';;
+    'usap-api dispatch') usage='usap-api dispatch <wave.json> [--checkpoint-root DIR] [--out FILE]';;
+    'usap-api resume') usage='usap-api resume <run-id> [--checkpoint-root DIR] [--out FILE]';;
+    'local add') usage='local add <gguf path | owner/repo[:quant]> [--name id] [--ctx N] [--port N] [-- extra llama-server args]';;
+    'local start'|'local status') usage="local $2 [id]";;
+    'local stop') usage='local stop';;
+    'local ensure'|'local check'|'local release'|'local _supervise') usage="local $2 <id>";;
+    'routes rank') usage='routes rank --class C [--candidate ENTRY[=HARNESS] ...] [--no-probe-marker] [--json]';;
+    'routes record') usage='routes record --class C --run ID --task ID --route ENTRY --outcome pass|fail|unknown [options]';;
+    'routes verdict') usage='routes verdict --run ID [--task ID] --outcome pass|fail --source verification|test-gate|operator [--note TEXT]';;
+    'routes report') usage='routes report [--class C] [--json]';;
+  esac
+  if [ -n "$usage" ]; then echo "usage: steak-pi $usage"; exit 0; fi
+fi
+
 # Claude Code Stop hook (Hook JSON on stdin; a block verdict on stdout, nothing otherwise). Handled before
 # any other setup so every stop stays fast, and it always exits 0: a missing node or a failing hook must
 # never trap a session.
@@ -382,7 +419,7 @@ case "${1:-help}" in
   env) run_env; say "NODE_COMPILE_CACHE=$NODE_COMPILE_CACHE"; say "MALLOC_ARENA_MAX=$MALLOC_ARENA_MAX"; say "NODE_OPTIONS=$NODE_OPTIONS";;
   lean-args) say "--exclude-tools $LEAN_TOOLS";;
   help|--help|-h|*)
-    say "usage: steak-pi <install|update|status|version|remove|run|usap-api|local|routing|routes|finish-guard-hook|env>"
+    say "usage: steak-pi <install|update|status|version|remove|run|usap-api|local|routing|routes|finish-guard-hook|env|lean-args>"
     say "  install   add Steak Pi to the pi coding agent (or re-point at this copy)"
     say "  update    install the latest release (--check only reports whether one is available; --models refreshes Pi's model catalogs, extension providers included)"
     say "  status    show installed versions and management mode"
@@ -395,6 +432,6 @@ case "${1:-help}" in
     say "  routes    rank | record | verdict | report: the task-class ranking and its evidence store, for a job queue outside Pi"
     say "  finish-guard-hook  Claude Code Stop hook: block a stop while requested work is open (reads hook JSON on stdin)"
     say "  env       print the runtime defaults 'run' would apply"
-    [ -n "${1:-}" ] && [ "$1" != "help" ] && die "unknown command '$1'"
+    case "${1:-help}" in help|--help|-h) :;; *) die "unknown command '$1'";; esac
     ;;
 esac
