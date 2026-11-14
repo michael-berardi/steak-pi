@@ -86,6 +86,7 @@ interface RelayRun {
   pending: Map<string, RelayEnvelope[]>;
   deliveries: Map<string, DeliveryRegistration>;
   requests: Map<string, { from: string; to: string }>;
+  observers: Map<string, Set<(envelope: RelayEnvelope) => void>>;
   nextSeq: number;
   accepted: number;
 }
@@ -153,6 +154,7 @@ export class RelayBroker {
       pending: new Map(peers.map((peerId) => [peerId, []])),
       deliveries: new Map(),
       requests: new Map(),
+      observers: new Map(),
       nextSeq: 1,
       accepted: 0,
     });
@@ -196,6 +198,16 @@ export class RelayBroker {
     return this.bind(runId, senderId, onDelivery);
   }
 
+  /** Observe new mailbox arrivals without consuming them. */
+  observe(runId: string, peerId: string, callback: (envelope: RelayEnvelope) => void): () => void {
+    const run = this.runs.get(runId);
+    if (!run || !run.peerSet.has(peerId)) throw new Error("unknown relay run or peer");
+    const listeners = run.observers.get(peerId) ?? new Set();
+    run.observers.set(peerId, listeners);
+    listeners.add(callback);
+    return () => { listeners.delete(callback); if (!listeners.size) run.observers.delete(peerId); };
+  }
+
   listPeers(runId: string): string[] {
     return [...(this.runs.get(runId)?.peers ?? [])];
   }
@@ -204,6 +216,7 @@ export class RelayBroker {
     const run = this.runs.get(runId);
     if (!run) return false;
     run.deliveries.clear();
+    run.observers.clear();
     run.requests.clear();
     run.pending.clear();
     run.mailboxes.clear();
@@ -329,6 +342,7 @@ export class RelayBroker {
       } else {
         run.mailboxes.get(recipient)!.push(envelope);
         queued += 1;
+        for (const listener of run.observers.get(recipient) ?? []) listener(envelope);
       }
     }
 

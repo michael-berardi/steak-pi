@@ -88,7 +88,8 @@ Before dispatch, inspect only shared interfaces or ambiguity actually needed
 to decompose safely; do not duplicate child discovery. Foreground is the
 efficient default. Choose a background run explicitly only while the parent can
 inspect shared contracts, prepare integration, or set up verification. Then
-call `ultraterm_hub` with one bounded `wait`; do not poll repeatedly, duplicate
+call `ultraterm_hub` with one `wait` using a timeout near the expected run time
+(up to 10 minutes); do not loop on short waits or status, duplicate
 a live task, or start background work merely to wait immediately. Cancellation
 is best effort and does not roll back side effects. A background dispatch holds up
 to about 25 seconds for each launched worker to produce its first model output:
@@ -412,4 +413,4 @@ harness claude-code (or an exact claude-code/<model> route, the Haiku, Sonnet, O
 
 Background runs:
 
-Background only when the parent can integrate while children run, then one bounded ultraterm_hub wait. Never start a background run merely to wait immediately. A background dispatch holds up to ~25 s for each launched worker to produce its first model output: `Started` means no launched worker has died yet, and a worker that fails before it (router refusal, auth, route, spawn, a first request that errors) makes the call throw with that cause and cancels its siblings (a provider quota or usage-limit refusal on an implicit wave instead re-runs the same tasks on the next tier before `Started`).
+Background only when the parent can integrate while children run, then one ultraterm_hub wait with a timeout near the expected run time (up to 10 minutes); do not loop on short waits or status. Never start a background run merely to wait immediately. A background dispatch holds up to ~25 s for each launched worker to produce its first model output: `Started` means no launched worker has died yet, and a worker that fails before it (router refusal, auth, route, spawn, a first request that errors) makes the call throw with that cause and cancels its siblings (a provider quota or usage-limit refusal on an implicit wave instead re-runs the same tasks on the next tier before `Started`).

@@ -685,7 +685,9 @@ in the report). A task that reached the budget without a complete report stays
 - **`status`** — return a nonblocking snapshot of run and task states,
   progress, bounded usage, and available partial evidence;
 - **`wait`** — wait for a state change or terminal run, subject to the caller's
-  wait bound. A hub wait timeout does not extend or replace the run deadline;
+  wait bound (default 30 seconds, maximum 10 minutes). A peer message also wakes
+  the wait and remains available in the inbox. A hub wait timeout does not extend
+  or replace the run deadline;
 - **`cancel`** — prevent queued work from starting and signal active children
   to stop. Cancellation is best effort; already completed filesystem or
   external side effects are not rolled back;
@@ -722,7 +724,8 @@ verifies after. Before dispatch, inspect only shared interfaces or ambiguity
 actually needed for safe decomposition; do not duplicate child discovery.
 Foreground is the efficient default. The parent should choose background mode
 explicitly only when it can inspect shared contracts or prepare integration
-while children run, then issue one bounded `wait`. Starting background work
+while children run, then issue one `wait` with a timeout near the expected run
+time (up to 10 minutes). Do not loop on short waits or status. Starting background work
 merely to wait immediately, or repeatedly polling `status`, wastes turns and is
 not canonical behavior.
 

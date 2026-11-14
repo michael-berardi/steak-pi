@@ -412,6 +412,7 @@ export class SubagentCoordinator {
           () => settle(() => reject(new CoordinatorWaitTimeoutError(runId, timeoutMs))),
           timeoutMs,
         );
+        timer.unref?.();
       }
       // Recheck after installing listeners so a synchronous completion cannot
       // be lost between the initial predicate and subscription.

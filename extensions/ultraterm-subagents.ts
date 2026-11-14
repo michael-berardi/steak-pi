@@ -66,7 +66,8 @@ import {
 } from "../src/subagents/types.ts";
 
 export const PARENT_RELAY_ID = "parent" as const;
-export const MAX_HUB_WAIT_MS = 30_000;
+export const MAX_HUB_WAIT_MS = 600_000;
+const DEFAULT_HUB_WAIT_MS = 30_000;
 export const MAX_TOOL_CONTENT = 48_000;
 export const MAX_COMPLETION_MESSAGE = 4_000;
 export const USAP_TELEMETRY_CUSTOM_TYPE = "ultraterm-usap-telemetry";
@@ -1075,7 +1076,7 @@ function requireRunId(params: UltratermHubParams): string {
 }
 
 function boundedHubWait(value: number | undefined): number {
-  const timeoutMs = value ?? MAX_HUB_WAIT_MS;
+  const timeoutMs = value ?? DEFAULT_HUB_WAIT_MS;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > MAX_HUB_WAIT_MS) {
     throw new RangeError(`hub timeoutMs must be an integer from 0 to ${MAX_HUB_WAIT_MS}`);
   }
@@ -2826,14 +2827,14 @@ export function createUltratermSubagentsExtension(
     pi.registerTool({
       name: "ultraterm_hub",
       label: "UltraTerm Hub",
-      description: "Inspect this native session's live and checkpointed USAP runs: list, status, bounded wait, cancel, send, redirect, inbox, diagnose, or explicitly resume unfinished work. `routes` (read-only) prints, per task class, the estimates the router ranks on (pass rate, expected cost and seconds, evidence counts, demoted routes and why); `record-outcome` attaches a verification verdict (runId, outcome, optional taskId and source) to the evidence a classed run left. Redirect appends instructions to a running worker without cancellation or new permissions. Resume never repeats completed tasks; host exit interrupts execution but preserves checkpoints.",
+      description: "Inspect this native session's live and checkpointed USAP runs: list, status, bounded wait, cancel, send, redirect, inbox, diagnose, or explicitly resume unfinished work. After background dispatch make one wait with a timeout near the expected run time (up to 10 minutes); do not loop on short waits or status. `routes` (read-only) prints, per task class, the estimates the router ranks on (pass rate, expected cost and seconds, evidence counts, demoted routes and why); `record-outcome` attaches a verification verdict (runId, outcome, optional taskId and source) to the evidence a classed run left. Redirect appends instructions to a running worker without cancellation or new permissions. Resume never repeats completed tasks; host exit interrupts execution but preserves checkpoints.",
       promptSnippet: "Inspect, wait for, cancel, or message an existing USAP run",
       promptGuidelines: [
         "Runs and relay actions belong only to this native parent session. IDs copied from other sessions are historical, not controllable here.",
         "runId is required for every action except list and routes.",
         "routes prints the per-class route estimates from the evidence store; after you verify a classed run's work (a test gate, a reviewer wave), record-outcome with its runId and outcome pass or fail so the router learns from the verdict.",
         "Send needs to and body; replies need kind=reply and the exact replyTo.",
-        "Wait with finite timeouts; avoid polling.",
+        "After background dispatch, make one wait with a timeout near the expected run time (up to 10 minutes); do not loop on short waits or status.",
       ],
       parameters: ultratermHubSchema as any,
       renderShell: "self",
@@ -3091,10 +3092,28 @@ export function createUltratermSubagentsExtension(
 
         if (params.action === "wait") {
           const timeoutMs = boundedHubWait(params.timeoutMs);
+          const observerAbort = new AbortController();
+          let stopObserving = () => {};
+          const message = new Promise<string>((resolve) => {
+            stopObserving = current.relay.observe(runId, PARENT_RELAY_ID, (envelope) => {
+              resolve(`[${envelope.from} → ${envelope.to}] ${envelope.body}`);
+              observerAbort.abort();
+            });
+          });
           try {
-            const waited = await current.coordinator.wait(runId, params.mode ?? "next", { timeoutMs, signal });
+            const waitSignal = signal ? AbortSignal.any([signal, observerAbort.signal]) : observerAbort.signal;
+            const outcome = await Promise.race([
+              current.coordinator.wait(runId, params.mode ?? "next", { timeoutMs, signal: waitSignal }).then((run) => {
+                assertOwner(current, ctx);
+                if (run.state !== "running") markDeliveredDurably(current, runId);
+                return { run };
+              }),
+              message.then((text) => ({ text })),
+            ]);
             assertOwner(current, ctx);
-            if (waited.state !== "running") markDeliveredDurably(current, runId);
+            if ("text" in outcome) return { content: [{ type: "text" as const, text: `Peer message (also available in inbox): ${outcome.text}` }], details: { action: "wait" as const, run: toRunView(current.coordinator.snapshot(runId)!), timedOut: false } };
+            const waited = outcome.run;
+            assertOwner(current, ctx);
             const result: {
               content: Array<{ type: "text"; text: string }>;
               details: HubDetails;
@@ -3113,9 +3132,12 @@ export function createUltratermSubagentsExtension(
             assertOwner(current, ctx);
             const afterTimeout = current.coordinator.snapshot(runId)!;
             return {
-              content: [{ type: "text" as const, text: `${renderRunProgress(afterTimeout)}\nObservation window ended after ${timeoutMs}ms; workers continue running. This is not a worker failure.` }],
+              content: [{ type: "text" as const, text: `${renderRunProgress(afterTimeout)}\nWait timed out after ${timeoutMs}ms; run elapsed ${Math.max(0, Date.now() - afterTimeout.createdAt)}ms. Workers continue running; this is not a worker failure.\n${afterTimeout.tasks.filter((task) => !["done", "failed", "aborted", "timed_out"].includes(task.state)).map((task) => `[${task.label}] ${task.state} · last step: ${task.lastStep ?? "not started"}`).join("\n")}` }],
               details: { action: "wait" as const, run: toRunView(afterTimeout), timedOut: true },
             };
+          } finally {
+            stopObserving();
+            observerAbort.abort();
           }
         }
 

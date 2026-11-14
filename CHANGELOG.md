@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.31.4 (2026-11-14)
+
+- **One wait covers a whole background run.** `ultraterm_hub` `wait` was capped at 30 seconds, so a parent waiting on workers that take minutes had to ask again and again, and each ask is a full model turn that re-reads the conversation (a review of one week of sessions counted 1,510 waits and 664 status calls, most answering "still running"). A wait can now last up to 10 minutes. It still returns at once when a task settles, when a worker sends the parent a message, or when the call is cancelled, and it never keeps the process alive. The default without a timeout stays 30 seconds.
+- A wait that times out says how long the run has been going and lists each unfinished task with its last step, so no status call is needed after it.
+- The tool description, the skill and the protocol document say to make one wait near the expected run time after a background dispatch.
+
 ## 0.31.3 (2026-11-14)
 
 - **`--help` on a subcommand prints its usage and does nothing else.** `steak-pi update --help` used to run the update, and `steak-pi routing check --help` treated `--help` as a file to check. Every launcher subcommand and nested verb (`routing check`, `local add`, `routes rank`, `usap-api dispatch` and the rest) now answers `--help` or `-h` with one usage line and exits 0, before any setup, download or write. `steak-pi run --help` still goes to the agent itself.

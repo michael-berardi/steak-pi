@@ -3794,3 +3794,67 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
     });
   });
 });
+
+describe("bounded background observation", () => {
+  async function setup() {
+    let finish!: () => void;
+    let relay!: RelayBroker;
+    let peer!: string;
+    const h = harness((broker) => { relay = broker; return async ({ task, signal }) => {
+      peer = task.id;
+      await new Promise<void>((resolve) => { finish = resolve; signal.addEventListener("abort", () => resolve(), { once: true }); });
+      return { state: "done", output: "complete", turns: 1, usage: emptyUsage() };
+    }; });
+    const started = await h.tools.get("ultraterm_subagents").execute("start", { goal: "Observe", background: true, tasks: [{ label: "leaf", task: "work" }] }, undefined, undefined, h.ctx);
+    await flush();
+    const runId = started.details.run.runId;
+    const wait = (timeoutMs: number, signal?: AbortSignal) => h.tools.get("ultraterm_hub").execute("wait", { action: "wait", runId, timeoutMs }, signal, undefined, h.ctx);
+    return { h, relay, peer, runId, wait, finish: () => finish(), close: async () => { finish(); await flush(); await h.handlers.get("session_shutdown")!({}, h.ctx); } };
+  }
+  it("accepts a long schema wait and wakes on completion", async () => {
+    const h = await setup();
+    try {
+      expect(h.h.tools.get("ultraterm_hub").parameters.properties.timeoutMs.maximum).toBe(600_000);
+      const result = h.wait(60_000); h.finish();
+      expect((await result).details.run.state).toBe("done");
+    } finally { await h.close(); }
+  });
+  it("wakes on a parent relay message", async () => {
+    const h = await setup();
+    try {
+      const result = h.wait(60_000);
+      h.relay.bindSender(h.runId, h.peer).send({ to: "parent", body: "ready" });
+      expect((await result).content[0].text).toContain("ready");
+    } finally { await h.close(); }
+  });
+  it("aborts promptly and clears the observation timer", async () => {
+    const h = await setup();
+    try {
+      const clear = vi.spyOn(globalThis, "clearTimeout");
+      const controller = new AbortController();
+      const result = h.wait(60_000, controller.signal); controller.abort();
+      await expect(result).rejects.toMatchObject({ name: "AbortError" });
+      expect(clear).toHaveBeenCalled();
+      clear.mockRestore();
+    } finally { await h.close(); }
+  });
+  it("reports elapsed time and unfinished labels and steps on timeout", async () => {
+    const h = await setup();
+    try {
+      vi.useFakeTimers();
+      const waiting = h.wait(10);
+      await vi.advanceTimersByTimeAsync(10);
+      const result = await waiting;
+      vi.useRealTimers();
+      expect(result.details.timedOut).toBe(true);
+      expect(result.content[0].text).toMatch(/timed out/i);
+      expect(result.content[0].text).toMatch(/elapsed/i);
+      expect(result.content[0].text).toMatch(/leaf.*last step/i);
+    } finally { await h.close(); }
+  });
+  it("rejects values above the ceiling with a named error", async () => {
+    const h = await setup();
+    try { await expect(h.wait(600_001)).rejects.toMatchObject({ name: "RangeError", message: expect.stringContaining("600000") }); }
+    finally { await h.close(); }
+  });
+});
