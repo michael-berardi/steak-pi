@@ -1,3 +1,5 @@
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { applyDefaultTheme } from "../src/default-theme.ts";
 import { companionActivity, createActivitySignal } from "../src/tui/activity-signal.ts";
 import { HoldDeleteEditor } from "../src/tui/hold-delete-editor.ts";
 import {
@@ -125,6 +127,7 @@ export default function companionUiExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (event, ctx) => {
     if (ctx.mode !== "tui") return;
+    applyDefaultTheme(ctx.ui, { agentDir: () => getAgentDir(), cwd: ctx.cwd });
 
     const entries = ctx.sessionManager.getEntries();
     const hasConversation = entries.some((entry) =>

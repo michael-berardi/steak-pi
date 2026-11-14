@@ -213,6 +213,8 @@ export interface SettledTaskView {
   output: string;
   error?: string;
   currentTool?: string;
+  routeFallbacks?: string[];
+  reviewFallback?: TaskRecord["reviewFallback"];
   turns: number;
   toolErrors: number;
   toolSuccesses: number;
@@ -1087,6 +1089,9 @@ function taskView(task: TaskRecord): SettledTaskView {
     output: task.output,
     ...(task.error === undefined ? {} : { error: task.error }),
     ...(task.currentTool ? { currentTool: task.currentTool.slice(0, 80) } : {}),
+    // The route this leaf actually ran on after a fallback hop, so a mixed-route wave shows each row's own model.
+    ...(task.routeFallbacks?.length ? { routeFallbacks: task.routeFallbacks.slice(-8).map((hop) => hop.slice(0, 160)) } : {}),
+    ...(task.reviewFallback ? { reviewFallback: { ...task.reviewFallback } } : {}),
     turns: task.turns,
     startedAt: task.startedAt,
     endedAt: task.endedAt,

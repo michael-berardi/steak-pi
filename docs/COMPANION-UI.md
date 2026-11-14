@@ -108,8 +108,10 @@ The companion UI contains no RGB, hex, 256-color, dark/light, or UltraTerm
 theme mapping. It asks the currently active Pi theme for semantic colors only:
 `accent`, `text`, `muted`, `dim`, `success`, `warning`, and `error`.
 
-The three historical Steak themes remain available as optional choices, but
-the companion UI neither selects nor requires them. Stock `dark`, stock
+The three Steak themes are optional choices; the companion UI neither
+requires nor selects them. Only when the operator has chosen no theme (no
+`theme` setting, `--use-theme`/`--theme`, `STEAK_PI_THEME=off`) the extension
+applies the bundled `steak` theme for the session without saving a setting. Stock `dark`, stock
 `light`, user themes, and future Pi themes all use the same renderer.
 
 ## Deterministic simulator

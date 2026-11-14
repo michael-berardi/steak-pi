@@ -21,7 +21,7 @@ serious sessions need: parallel subagents with hard limits, compaction that
 costs no model calls, checks that run after every edit, and a status line that
 tells you what the agent is doing.
 
-Current release: **0.30.3**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
+Current release: **0.31.0**, for Pi 0.87 or newer (verified on Pi 1.0.4). Steak Pi also ships inside
 [UltraTerm](https://paretocybernetics.com/software/).
 
 ## Install
@@ -58,14 +58,14 @@ Overrides: `STEAK_PI_HOME`, `STEAK_PI_BIN_DIR`, `STEAK_PI_VERSION` (pin a versio
 Or install manually with the Pi CLI:
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.30.3
+pi install git:github.com/michael-berardi/steak-pi@v0.31.0
 ```
 
 Or from the release archive, without Git:
 
 ```sh
-shasum -a 256 -c steak-pi-0.30.3.tgz.sha256
-tar -xzf steak-pi-0.30.3.tgz
+shasum -a 256 -c steak-pi-0.31.0.tgz.sha256
+tar -xzf steak-pi-0.31.0.tgz
 npm install --ignore-scripts --prefix "$PWD/package"
 pi install "$PWD/package"
 ```
@@ -458,7 +458,9 @@ the Claude route, small tasks and one machine. Reproduce it with
 
 Enable **Quiet startup** in `/settings` to keep routine inventories out of the
 workspace. Themes **steak**, **steak-oled** and **steak-light** are included,
-and any Pi theme works. The UI contract is in
+and any Pi theme works. With no theme chosen Steak Pi starts with **steak**
+(the Steak DSH palette); a `theme` setting, `--use-theme` or
+`STEAK_PI_THEME=off` keeps your own. The UI contract is in
 [docs/COMPANION-UI.md](./docs/COMPANION-UI.md).
 
 Anything that widens what the agent can reach stays opt-in:

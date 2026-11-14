@@ -221,8 +221,9 @@ describe("elapsed-time repaint regression", () => {
         { label: "worker", state: "running", startedAt: 0, currentTool: "bash", turns: 1 },
       ] } } };
       const updated = renderSubagentResult(progress, { isPartial: true }).render(80).join("\n");
-      expect(updated).toContain("bash");
+      expect(updated).not.toContain("bash");
       expect(updated).toContain("1m 0s");
+      expect(renderSubagentResult(progress, { expanded: true }).render(80).join("\n")).toContain("tool bash");
       const ended = { details: { run: { ...result.details.run, tasks: [
         { label: "worker", state: "done", startedAt: 0, endedAt: 25_000 },
       ] } } };

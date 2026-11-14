@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.31.0 (2026-11-13)
+
+The subagent panel names each task's model, and Steak Pi looks like Steak DSH out of the box.
+
+- **Task rows read `name  model` on the left and `status · time` on the right.** The live panel, the completion summary, hub status and the Ctrl+O details use one row: the glyph and task name, the model in a quieter tone (harness, vendor and date trimmed to the part that identifies it), and only the state and elapsed time on the right. The current tool is gone from the row and stays in the Ctrl+O details. A thinking level shows only when it is not medium and the width allows. Each row shows the route its leaf actually runs on, so a mixed-route wave names every row's own model, and a fallback hop or review fallback replaces the run's route. Too narrow: the thinking level goes first, then the task name is cut with an ellipsis down to 12 columns, then the model is dropped; a row never wraps.
+- **The default theme is `steak`, ported from Steak DSH.** With no theme chosen, Steak Pi now starts with the bundled `steak` theme (applied for the session, nothing written to settings). Any choice still wins: a `theme` in the global or project settings (including `system` and light/dark pairs), `--use-theme`, `--theme`, or `STEAK_PI_THEME=off`. The theme keeps DSH's palette and roles (brand red accent, green success, amber warning, raised and flat surfaces) and lifts the text tones that were under 4.5:1 on its surfaces: error text, accent text, dim text and borders, with a text, muted, dim hierarchy. A test pins the DSH values and checks every text token at 4.5:1 and borders at 3:1.
+
 ## 0.30.3 (2026-11-13)
 
 A note from another agent reaches a busy pane and is never reported as failed.

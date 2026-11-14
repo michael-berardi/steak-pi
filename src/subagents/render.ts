@@ -9,7 +9,14 @@ export const width = visibleWidth;
 export function truncate(text: string, columns: number): string {
   return columns > 0 ? stripTerminalSequences(truncateToWidth(sanitize(text), Math.floor(columns), "…")) : "";
 }
-type Row = { text: string; right?: string; tone?: "accent" | "muted" | "dim" | "success" | "warning" | "error" };
+type Tone = "accent" | "muted" | "dim" | "success" | "warning" | "error" | "text";
+/** A task row: glyph + name on the left, the model in a quieter tone after it, status and elapsed time on the right. */
+type TaskCells = { icon: string; name: string; meta?: string; metaShort?: string; iconTone?: Tone; nameTone?: Tone };
+type Row = { text: string; right?: string; tone?: Tone; rightTone?: Tone; cells?: TaskCells };
+/** Narrowest task name (columns) that is worth keeping next to the model; below this the model is dropped first. */
+const MIN_NAME = 12;
+/** A model label never takes more than this many columns. */
+const MAX_META = 24;
 type RecordLike = Record<string, unknown>;
 const record = (value: unknown): RecordLike => value && typeof value === "object" && !Array.isArray(value) ? value as RecordLike : {};
 const array = (value: unknown, max = 8): unknown[] => Array.isArray(value) ? value.slice(0, max) : [];
@@ -36,6 +43,52 @@ function stateStyle(state: string): Pick<Row, "tone"> & { icon: string } {
     : state === "queued" ? { icon: "○", tone: "muted" }
     : { icon: "·", tone: "accent" };
 }
+/** Registry route -> the part that identifies the model: harness/provider prefixes, a vendor prefix and a date suffix are trimmed. */
+export function modelLabel(route: unknown): string {
+  const raw = sanitize(route).replace(/\s*\(.*\)\s*$/, "");
+  const last = raw.split("/").filter(Boolean).pop() ?? "";
+  return last.replace(/^claude-/i, "").replace(/-\d{8}$/, "");
+}
+/** The route this task actually runs on: a review fallback or the last fallback hop beats the run's own route. */
+function taskRoute(task: RecordLike, run: RecordLike): string {
+  const review = record(task.reviewFallback).to;
+  if (typeof review === "string" && review) return review;
+  const hops = array(task.routeFallbacks, 8).filter((hop): hop is string => typeof hop === "string" && hop.includes("->"));
+  const hop = hops.at(-1);
+  if (hop) return hop.slice(hop.lastIndexOf("->") + 2);
+  const selected = record(run.selection).modelId;
+  return typeof task.route === "string" && task.route ? task.route : typeof selected === "string" && selected ? selected : sanitize(run.model);
+}
+/** `model` plus, only when it is not the default medium, the thinking level; the short form is the model alone. */
+function modelMeta(task: RecordLike, run: RecordLike): Pick<TaskCells, "meta" | "metaShort"> {
+  const label = modelLabel(taskRoute(task, run));
+  if (!label) return {};
+  const level = sanitize(run.thinkingLevel).toLowerCase();
+  const short = truncate(label, MAX_META);
+  return { metaShort: short, meta: level && level !== "medium" ? truncate(`${label} ${level}`, MAX_META + 8) : short };
+}
+function taskRow(task: RecordLike, run: RecordLike, observedAt: number, fallbackName = "Unnamed task"): Row {
+  const state = sanitize(task.state) || "unknown";
+  const mark = stateStyle(state);
+  const elapsed = duration(task.startedAt, task.endedAt ?? observedAt);
+  return { text: "", tone: mark.tone, rightTone: mark.tone,
+    right: `${stateLabel(state)}${elapsed ? ` · ${elapsed}` : ""}`,
+    cells: { icon: mark.icon, name: sanitize(task.label) || fallbackName, ...modelMeta(task, run), iconTone: mark.tone, nameTone: mark.tone === "error" || mark.tone === "warning" ? mark.tone : "text" } };
+}
+/** Fit icon, name and model into `available` columns without wrapping: thinking level first, then the name's tail, then the model. */
+function fitCells(cells: TaskCells, available: number): { icon: string; name: string; meta: string } {
+  const icon = cells.icon, lead = visibleWidth(icon) + 1;
+  const room = Math.max(0, available - lead);
+  const name = cells.name;
+  const nameWidth = visibleWidth(name);
+  for (const meta of [cells.meta, cells.metaShort]) {
+    if (!meta) continue;
+    const metaWidth = visibleWidth(meta);
+    const nameRoom = room - metaWidth - 2;
+    if (nameRoom >= Math.min(nameWidth, MIN_NAME)) return { icon, name: nameWidth <= nameRoom ? name : truncate(name, nameRoom), meta };
+  }
+  return { icon, name: nameWidth <= room ? name : truncate(name, room), meta: "" };
+}
 function component(build: (columns: number) => Row[], theme?: Theme): Component {
   return { invalidate() {}, render(columns) {
     const size = Number.isFinite(columns) ? Math.max(0, Math.floor(columns)) : 80;
@@ -43,15 +96,25 @@ function component(build: (columns: number) => Row[], theme?: Theme): Component 
     if (!rows.length) return [];
     const framed = size >= 24;
     const inner = Math.max(0, size - (framed ? 4 : 0));
-    const paint = (tone: Row["tone"], text: string) => {
+    const paint = (tone: Tone | undefined, text: string) => {
       if (!theme || !tone) return text;
       const colored = theme.fg(tone, text);
       return (tone === "error" || tone === "warning") && theme.bold ? theme.bold(colored) : colored;
     };
     const border = (text: string) => paint(rows[0].tone === "error" ? "error" : "dim", text);
-    const body = rows.map(({ text, right, tone }) => {
+    const body = rows.map(({ text, right, tone, rightTone, cells }) => {
       const rhs = right ? truncate(right, Math.floor(inner / 2)) : "";
       const available = Math.max(0, inner - (rhs ? visibleWidth(rhs) + 2 : 0));
+      const wrap = (line: string) => framed ? border("│ ") + line + border(" │") : line;
+      if (cells && available < visibleWidth(cells.icon) + 2) return wrap(paint(cells.iconTone ?? tone, truncate(`${cells.icon} ${cells.name}`, inner).padEnd(inner)) );
+      if (cells) {
+        const fit = fitCells(cells, available);
+        const used = visibleWidth(fit.icon) + 1 + visibleWidth(fit.name) + (fit.meta ? 2 + visibleWidth(fit.meta) : 0);
+        const gap = " ".repeat(Math.max(0, inner - used - visibleWidth(rhs)));
+        const styled = paint(cells.iconTone ?? tone, fit.icon) + " " + paint(cells.nameTone ?? tone, fit.name)
+          + (fit.meta ? "  " + paint("muted", fit.meta) : "") + gap + (rhs ? paint(rightTone ?? tone, rhs) : "");
+        return wrap(styled);
+      }
       const indent = Math.min(8, available, text.match(/^ */)?.[0].length ?? 0);
       const left = " ".repeat(indent) + truncate(text, available - indent);
       const line = rhs ? left + " ".repeat(Math.max(1, inner - visibleWidth(left) - visibleWidth(rhs))) + rhs : left;
@@ -76,13 +139,9 @@ function runRows(raw: unknown, expanded: boolean, observedAt: number): Row[] {
     rows.push({ text: `${sanitize(run.runId ?? run.id)} · ${sanitize(run.model)}`, tone: "muted" });
   }
   tasks.forEach((task, index) => {
-    const state = sanitize(task.state) || "unknown";
-    const mark = stateStyle(state);
-    const elapsed = duration(task.startedAt, task.endedAt ?? observedAt);
-    const tool = !terminal.has(state) && task.currentTool ? ` · ${sanitize(task.currentTool)}` : "";
     // Expanded child blocks get a blank separator so consecutive workers do not run together.
     if (expanded && index > 0) rows.push({ text: "" });
-    rows.push({ text: `${mark.icon} ${sanitize(task.label) || "Unnamed task"}${tool}`, right: `${stateLabel(state)}${elapsed ? ` · ${elapsed}` : ""}`, tone: mark.tone });
+    rows.push(taskRow(task, run, observedAt));
     if (task.error) rows.push({ text: `  ${sanitize(task.error)}`, tone: "error" });
     if (!expanded) return;
     const successes = count(task.toolSuccesses), failures = count(task.toolErrors);
@@ -134,18 +193,16 @@ export function renderSubagentLive(runs: unknown[], theme?: Theme, requestRender
     ? setInterval(requestRender, 1000) : undefined;
   timer?.unref?.();
   const live = component((columns) => {
-    const tasks = runs.flatMap((run) => array(record(run).tasks, 64).map(record));
+    // Each row keeps its own run: a mixed-route wave shows every task's own model.
+    const tasks = runs.flatMap((run) => array(record(run).tasks, 64).map((task) => ({ task: record(task), run: record(run) })));
     if (!tasks.length) return [];
-    const active = tasks.filter((task) => !terminal.has(sanitize(task.state)));
+    const active = tasks.filter(({ task }) => !terminal.has(sanitize(task.state)));
     if (!active.length) return [];
     const settled = tasks.length - active.length;
-    const queued = active.filter(task => task.state === "queued").length;
+    const queued = active.filter(({ task }) => task.state === "queued").length;
     const limit = columns < 70 ? 3 : 6;
     const rows: Row[] = [{ text: `Subagents · ${active.length - queued} working${queued ? ` · ${queued} queued` : ""} · ${settled}/${tasks.length} done`, tone: "accent" }];
-    for (const task of active.slice(0, limit)) {
-      const state = sanitize(task.state);
-      rows.push({ text: `${state === "queued" ? "○" : "·"} ${sanitize(task.label)}`, right: [sanitize(task.currentTool) || stateLabel(state), duration(task.startedAt)].filter(Boolean).join(" · "), tone: "muted" });
-    }
+    for (const { task, run } of active.slice(0, limit)) rows.push(taskRow(task, run, Date.now()));
     if (active.length > limit) rows.push({ text: `+${counted(active.length - limit, "assignment")} · hub status for details`, tone: "muted" });
     return rows;
   }, theme);
@@ -189,7 +246,11 @@ export function renderSubagentResult(result: unknown, options?: { expanded?: boo
       rows.push({ text: `Subagents · ${counted(runs.length, "run")}`, tone: "accent" });
       for (const entry of runs.slice(0, options?.expanded ? 50 : 8)) {
         const item = record(entry);
-        rows.push({ text: `${sanitize(item.runId ?? item.id)} · ${summary(array(item.tasks).map(record))}`, tone: stateStyle(sanitize(item.state)).tone });
+        const mark = stateStyle(sanitize(item.state)), label = modelLabel(sanitize(record(item.selection).modelId) || item.model);
+        const level = sanitize(item.thinkingLevel).toLowerCase();
+        rows.push({ text: "", tone: mark.tone, cells: { icon: mark.icon, name: `${sanitize(item.runId ?? item.id)} · ${summary(array(item.tasks).map(record))}`,
+          ...(label ? { metaShort: truncate(label, MAX_META), meta: truncate(level && level !== "medium" ? `${label} ${level}` : label, MAX_META + 8) } : {}),
+          iconTone: mark.tone, nameTone: "text" } });
       }
       if (runs.length > (options?.expanded ? 50 : 8)) rows.push({ text: "… expand for more history", tone: "muted" });
       if (options?.expanded) rows.push({ text: "Ctrl+O · collapse run history", tone: "accent" });
