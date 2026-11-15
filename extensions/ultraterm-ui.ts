@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createHash } from "node:crypto";
 import { openSync, readSync, closeSync, realpathSync, statSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, resolve, relative, join } from "node:path";
@@ -289,7 +290,12 @@ export function installUi(pi: ExtensionAPI, profiles: () => Profile[] = readProf
     configWatch = setInterval(() => { if (watchContext && refresher.changed()) publish(watchContext); }, CONFIG_POLL_MS);
     configWatch.unref?.();
   };
-  pi.on("session_shutdown", () => { stream.reset(); generation++; clearTimeout(publishTimer); stopConfigWatch(); });
+  // Content hash of the last catalog appended to the session file, keyed by that file. The catalog is
+  // UI state (about 64 KB), never model context: an unchanged one is not appended again. Readers take
+  // the last catalog record in the file, so a file always holds a full record from its first
+  // publication and after every change; a new session or a restart always writes one.
+  let written: { key: string; hash: string } | undefined;
+  pi.on("session_shutdown", () => { stream.reset(); generation++; written = undefined; clearTimeout(publishTimer); stopConfigWatch(); });
   const publish = (ctx: ExtensionContext, attempt = 0) => {
     const epoch = generation;
     clearTimeout(publishTimer);
@@ -319,7 +325,12 @@ export function installUi(pi: ExtensionAPI, profiles: () => Profile[] = readProf
         ctx.ui.notify("UI catalog exceeds publication size limit or 512 models; use native /model", "error");
         return;
       }
-      pi.appendEntry("ultraterm.ui.catalog", catalog);
+      const key = JSON.stringify([host.sessionId, host.sessionFile]);
+      const hash = createHash("sha256").update(encoded).digest("hex");
+      if (written?.key !== key || written.hash !== hash) {
+        pi.appendEntry("ultraterm.ui.catalog", catalog);
+        written = { key, hash };
+      }
       if (/^%\d+$/.test(process.env.TMUX_PANE ?? "")) {
         // Use the same pinned executable as primary-host publication. A PATH
         // tmux can target an incompatible server and leave new sessions locked
@@ -334,7 +345,7 @@ export function installUi(pi: ExtensionAPI, profiles: () => Profile[] = readProf
     }, attempt ? 100 : 0);
     publishTimer.unref?.();
   };
-  pi.on("session_start", (_event, ctx) => { stream.reset(); generation++; startConfigWatch(ctx); publish(ctx); });
+  pi.on("session_start", (_event, ctx) => { stream.reset(); generation++; written = undefined; startConfigWatch(ctx); publish(ctx); });
   pi.on("session_tree", (_event, ctx) => { stream.reset(); generation++; startConfigWatch(ctx); publish(ctx); });
   pi.on("model_select", (_event, ctx) => publish(ctx));
   pi.on("thinking_level_select", (_event, ctx) => publish(ctx));

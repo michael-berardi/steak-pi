@@ -9,6 +9,9 @@ Subagent waves are as wide as the work, and the README is a quarter of its lengt
 - If you relied on the old defaults (8 per provider per session, 14 per session, 12 per provider and 24 in total machine-wide), set them in `usap-caps.json`.
 - **README:** 507 lines to 137. It leads with what Steak Pi adds, measured results with links to the result files, and the one-line install. Settings and worker guidance moved to `docs/REFERENCE.md`, installation details to `docs/INSTALL.md`; both ship in the package. The pinned install command named 0.31.0; a test now keeps it on the current version.
 - `scripts/build-release.sh` refuses an output folder that is an ancestor of the checkout before it deletes anything.
+- **Session files stop filling with UI records.** In one week of sessions a fifth of the bytes were UI state no model reads: the full command and model catalog (about 64 KB, written on every turn) and a USAP progress record on every tool call of every worker.
+  - The `ultraterm.ui.catalog` record is written only when its content changes (compared by a content hash). Every session file still gets one full catalog on its first publication, a restart or new session writes one again, and any change (model, thinking level, commands, models) writes a new one, so the last catalog in the file is always the current one. In a scripted 41-turn session with one change: 47 records and 2,470,282 bytes before, 2 records and 105,114 bytes after.
+  - `ultraterm-usap-telemetry` records are written when a run or task changes state, label, outcome or links, and on every settle. A running task's current step and tool counts on their own are written at most once every 5 seconds, carrying the latest values. The last record per run is still the current run state. In a scripted wave of 3 workers making 40 tool calls each: 250 records and 257,074 bytes before, 10 records and 10,293 bytes after.
 
 ## 0.32.0 (2026-11-14)
 

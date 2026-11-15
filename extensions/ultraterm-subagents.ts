@@ -71,6 +71,8 @@ const DEFAULT_HUB_WAIT_MS = 30_000;
 export const MAX_TOOL_CONTENT = 48_000;
 export const MAX_COMPLETION_MESSAGE = 4_000;
 export const USAP_TELEMETRY_CUSTOM_TYPE = "ultraterm-usap-telemetry";
+/** A running task's step and tool counts change on every tool call; they are written at most once per window. */
+export const DEFAULT_TELEMETRY_COALESCE_MS = 5_000;
 export const USAP_TELEMETRY_VERSION = 1; // Additive route metadata preserves existing readers.
 /** Bounded teardown wait. The host UI is released after this deadline, but the
  * checkpoint lease and live state are retained until the real
@@ -342,6 +344,9 @@ export interface UltratermSubagentsDependencies {
   rng?: Rng;
   /** Bounded startup window (default {@link DEFAULT_STARTUP_WINDOW_MS}); 0 disables the wait. */
   startupWindowMs?: number;
+  /** Window in which step/count-only telemetry changes of a running run are coalesced into one record
+   * (default {@link DEFAULT_TELEMETRY_COALESCE_MS}); 0 writes every distinct snapshot. */
+  telemetryCoalesceMs?: number;
   /** Test seam: the environment an unpinned Claude launch inherits (`CLAUDE_CONFIG_DIR` decides which login
    * it runs on). Defaults to `process.env`; production never passes it. */
   env?: NodeJS.ProcessEnv;
@@ -879,7 +884,7 @@ const SHUTDOWN_WARNING_BOX = Symbol.for("ultraterm.usap.shutdown-warning.v1");
 interface HostRedirect {
   flushCompletions(current: SessionRuntime): void;
   retryDelivery(current: SessionRuntime): void;
-  persistTelemetry(current: SessionRuntime, run: RunRecord): void;
+  persistTelemetry(current: SessionRuntime, run: RunRecord, coalesced?: boolean): void;
   setStatus(current: SessionRuntime, ctx?: ExtensionContext): void;
 }
 function shutdownWarningBox(): { current?: { at: number; owner: string; message: string } } {
@@ -913,6 +918,10 @@ interface SessionRuntime {
   bindings: Map<string, RunBinding>;
   workerRuntimes: Map<string, PiWorkerRuntime>;
   telemetrySignatures: Map<string, string>;
+  /** Lifecycle-only signature of the last written record per run (see {@link usapTelemetryLifecycleKey}). */
+  telemetryLifecycle: Map<string, string>;
+  /** One trailing write per run for coalesced step/count changes. */
+  telemetryPending: Map<string, { timer: ReturnType<typeof setTimeout>; run: RunRecord }>;
   telemetryWritable: boolean;
   statusContext?: ExtensionContext;
   closed: boolean;
@@ -1062,6 +1071,13 @@ export function usapTelemetrySnapshot(run: RunRecord, links: RunLinks = {}) {
       toolSuccesses: task.toolSuccesses ?? 0,
     })),
   };
+}
+
+/** The snapshot without the fields that change on every tool call of a running task (current step and
+ * tool counts). A change here (run or task state, label, outcome, links, membership) is written at once. */
+export function usapTelemetryLifecycleKey(snapshot: ReturnType<typeof usapTelemetrySnapshot>): string {
+  return JSON.stringify({ ...snapshot, tasks: snapshot.tasks.map(({ currentTool: _tool, toolErrors: _errors, toolSuccesses: _successes, detail, ...task }) =>
+    ["queued", "starting", "running", "waiting"].includes(task.state) ? task : { ...task, detail }) });
 }
 
 function requireString(value: unknown, field: string): string {
@@ -1456,19 +1472,46 @@ export function createUltratermSubagentsExtension(
       return { resumedAs, ...(replaced ? { supersededBy: resumedAs } : {}) };
     };
 
-    const persistTelemetry = (current: SessionRuntime, run: RunRecord): void => {
+    const telemetryCoalesceMs = dependencies.telemetryCoalesceMs ?? DEFAULT_TELEMETRY_COALESCE_MS;
+    const cancelPendingTelemetry = (current: SessionRuntime, runId?: string): void => {
+      for (const [id, pending] of current.telemetryPending) {
+        if (runId !== undefined && id !== runId) continue;
+        clearTimeout(pending.timer);
+        current.telemetryPending.delete(id);
+      }
+    };
+    /** Session-file telemetry is UI state, not model context. A record is written when the run or a task
+     * changes lifecycle (state, label, outcome, links, membership) and on every settle; a running task's
+     * step and tool counts alone are coalesced into one trailing record per window, so the latest record
+     * per runId is always current within the window and exact once the run settles. */
+    const persistTelemetry = (current: SessionRuntime, run: RunRecord, coalesced = false): void => {
       const host = hostRedirectOf(current);
-      if (host) return host.persistTelemetry(current, run);
+      if (host) return host.persistTelemetry(current, run, coalesced);
       if (runtime !== current || !current.telemetryWritable || !ownsContext(current, current.statusContext)) return;
       const snapshot = usapTelemetrySnapshot(run, linksFor(current, run));
       const signature = JSON.stringify(snapshot);
-      if (current.telemetrySignatures.get(run.id) === signature) return;
+      if (current.telemetrySignatures.get(run.id) === signature) { cancelPendingTelemetry(current, run.id); return; }
+      const lifecycle = usapTelemetryLifecycleKey(snapshot);
+      if (!coalesced && telemetryCoalesceMs > 0 && run.state === "running" && current.telemetryLifecycle.get(run.id) === lifecycle) {
+        const pending = current.telemetryPending.get(run.id);
+        if (pending) { pending.run = run; return; }
+        const timer = setTimeout(() => {
+          const latest = current.telemetryPending.get(run.id);
+          current.telemetryPending.delete(run.id);
+          if (latest && !current.closed) persistTelemetry(current, latest.run, true);
+        }, telemetryCoalesceMs);
+        timer.unref?.();
+        current.telemetryPending.set(run.id, { timer, run });
+        return;
+      }
+      cancelPendingTelemetry(current, run.id);
       try {
         // Pi's public action delegates to SessionManager.appendCustomEntry.
         // The bound host is the instance that owns the runtime now, so a reload
         // handover keeps telemetry on the live host instead of a stale one.
         current.hostPi.appendEntry(USAP_TELEMETRY_CUSTOM_TYPE, snapshot);
         current.telemetrySignatures.set(run.id, signature);
+        current.telemetryLifecycle.set(run.id, lifecycle);
       } catch {
         // Telemetry observation must never affect child execution.
       }
@@ -1483,6 +1526,8 @@ export function createUltratermSubagentsExtension(
         current.workerRuntimes.delete(runId);
         current.workerRuntimes.delete(`${runId}:review-fallback`);
         current.telemetrySignatures.delete(runId);
+        current.telemetryLifecycle.delete(runId);
+        cancelPendingTelemetry(current, runId);
       }
     };
 
@@ -1557,6 +1602,8 @@ export function createUltratermSubagentsExtension(
       }
       current.bindings.clear();
       current.telemetrySignatures.clear();
+      current.telemetryLifecycle.clear();
+      cancelPendingTelemetry(current);
     };
 
     const destroyRuntime = async (ctx?: ExtensionContext, persist = true): Promise<void> => {
@@ -1740,7 +1787,7 @@ export function createUltratermSubagentsExtension(
       parked.redirect = {
         flushCompletions: (c) => flushCompletions(c),
         retryDelivery: (c) => retryDelivery(c),
-        persistTelemetry: (c, run) => persistTelemetry(c, run),
+        persistTelemetry: (c, run, coalesced) => persistTelemetry(c, run, coalesced),
         setStatus: (c, ctx) => setStatus(c, ctx),
       };
       parked.statusContext = ctx;
@@ -1870,6 +1917,8 @@ export function createUltratermSubagentsExtension(
         bindings: new Map(),
         workerRuntimes,
         telemetrySignatures: new Map(),
+        telemetryLifecycle: new Map(),
+        telemetryPending: new Map(),
         telemetryWritable: true,
         hostPi: pi,
         hostToken: instanceToken,

@@ -421,8 +421,8 @@ describe('Pi UI machine control', () => {
       writeFileSync(modelsPath, config); writeFileSync(authPath, auth);
       await refresher.sync(registry);
       h.event('agent_end'); await vi.advanceTimersByTimeAsync(1);
-      expect(h.entries.at(-1).type).toBe('ultraterm.ui.catalog');
-      expect(h.entries.at(-1).data.models).toEqual(good);
+      // The recovered catalog equals the last one written, so the session file's latest catalog record stays current.
+      expect(h.entries.filter((entry: any) => entry.type === 'ultraterm.ui.catalog').at(-1).data.models).toEqual(good);
       // Credential removal is authoritative, not restored from the UI cache.
       rmSync(authPath);
       await refresher.sync(registry);
@@ -505,4 +505,56 @@ it('model-only selection does not create paid authorization or send an inference
   expect(h.entries.at(-1).data.ok).toBe(true);
   expect(h.messages).toEqual([]);
   expect(approval(paid)).toBe(false);
+});
+
+describe('session telemetry volume: UI catalog', () => {
+  /** Mimics the UltraTerm narrator rule: every `ultraterm.ui.catalog` line replaces the declared catalog when
+   * it is version 1 with a session id, generation, pid and command and model arrays; the last one wins. */
+  const replayCatalog = (lines: string[]) => {
+    let declared: any;
+    for (const line of lines) {
+      const entry = JSON.parse(line);
+      if (entry.type !== 'custom' || entry.customType !== 'ultraterm.ui.catalog') continue;
+      const data = entry.data;
+      const valid = data?.version === 1 && typeof data.sessionId === 'string' && typeof data.generation === 'string' && Number(data.pid) > 0 && Array.isArray(data.commands) && Array.isArray(data.models);
+      declared = valid ? data : undefined;
+    }
+    return declared;
+  };
+  const lines = (entries: any[]) => entries.map((entry, index) => JSON.stringify({ type: 'custom', customType: entry.type, data: entry.data, id: `e${index}`, parentId: `e${index - 1}`, timestamp: '2026-11-15T00:00:00.000Z' }));
+  const bytes = (values: string[]) => values.reduce((sum, line) => sum + Buffer.byteLength(line) + 1, 0);
+  const catalogs = (entries: any[]) => entries.filter(entry => entry.type === 'ultraterm.ui.catalog');
+
+  it('writes one full catalog across unchanged turns, writes again on a change, and replays to the same catalog', async () => {
+    vi.useFakeTimers();
+    const commands = Array.from({ length: 200 }, (_, index) => ({ name: `command-${index}`, description: 'x'.repeat(200), source: 'extension' }));
+    const h = harness();
+    h.pi.getCommands = () => commands;
+    // The previous writer appended the catalog on every publication: rebuild that file from each publication.
+    const legacy: any[] = [];
+    const publication = async (name: string) => {
+      const before = h.entries.length;
+      h.event(name); await vi.advanceTimersByTimeAsync(1);
+      legacy.push(...h.entries.slice(before));
+      if (h.entries.length === before) legacy.push({ type: 'ultraterm.ui.catalog', data: catalogs(h.entries).at(-1).data });
+    };
+    try {
+      h.start(); await vi.advanceTimersByTimeAsync(1);
+      legacy.push(...h.entries);
+      for (let turn = 0; turn < 20; turn += 1) { await publication('agent_start'); await publication('agent_end'); }
+      expect(catalogs(h.entries)).toHaveLength(1);
+      h.pi.setThinkingLevel('low'); await publication('thinking_level_select');
+      expect(catalogs(h.entries)).toHaveLength(2);
+      expect(catalogs(h.entries).at(-1).data.currentModel.thinking).toBe('low');
+      for (let turn = 0; turn < 5; turn += 1) await publication('agent_end');
+      expect(catalogs(h.entries)).toHaveLength(2);
+      const old = lines(legacy), fresh = lines(h.entries);
+      console.log(`UI catalog, scripted session (41 turns, 1 change): before ${catalogs(legacy).length} records / ${bytes(old)} bytes; after ${catalogs(h.entries).length} records / ${bytes(fresh)} bytes`);
+      expect(replayCatalog(fresh)).toEqual(replayCatalog(old));
+      expect(replayCatalog(fresh).currentModel.thinking).toBe('low');
+      // A new session file must carry its own full catalog even when the content would be identical.
+      h.shutdown(); h.start(); await vi.advanceTimersByTimeAsync(1);
+      expect(catalogs(h.entries)).toHaveLength(3);
+    } finally { h.shutdown(); vi.useRealTimers(); }
+  });
 });
