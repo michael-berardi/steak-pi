@@ -84,6 +84,7 @@ const DISTRIBUTION_FILES = [
   "src/update-check.ts",
   "extensions/ultracompress/index.ts",
   "test/steak-pi-updater.test.ts",
+  "test/documentation.test.ts",
 ];
 // A line is allowed only when every personal-name hit on it sits inside a distribution URL.
 // The shared regex is non-global so `.test()` is stateless; stripping uses a fresh case-insensitive

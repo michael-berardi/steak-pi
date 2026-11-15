@@ -1,11 +1,22 @@
 # Steak Pi
 
+[![Latest release](https://img.shields.io/github/v/release/michael-berardi/steak-pi?label=release)](https://github.com/michael-berardi/steak-pi/releases/latest) [![MIT License](https://img.shields.io/github/license/michael-berardi/steak-pi)](LICENSE) ![Pi 0.87+](https://img.shields.io/badge/Pi-0.87%2B-8A2BE2) ![Node.js 22.19+](https://img.shields.io/badge/node-22.19%2B-339933)
+
 Subagents, local compaction and edit verification for the [Pi coding agent](https://pi.dev).
 For developers working through multi-file changes and long terminal sessions:
 keep Pi's editor and tools, add bounded workers, a session plan and a status line.
 
 Provider-neutral: no model, provider preference or paid route is selected for you.
 Use your own Pi credentials and model selection; configure worker routes separately.
+
+Steak Pi also ships inside [UltraTerm](https://paretocybernetics.com/software/).
+
+## Measured
+
+Historical same-model benchmark on macOS; small Python tasks, not a claim about every workload:
+- [40/40 correct in both harnesses; cost $0.053 vs Claude Code’s $0.089](benchmarks/ab/results-2026-11-04.jsonl).
+- [Input tokens: 1.96 M vs 3.71 M; wall time: 482 s vs 434 s](benchmarks/ab/results-2026-11-04.jsonl).
+- [Cost ratio 0.59 (95% CI 0.50–0.70): cheaper, not faster; reproduce the summary](benchmarks/ab/summarize.py).
 
 ## Install
 
@@ -109,7 +120,7 @@ their loaded runtime. `STEAK_PI_NO_UPDATE_CHECK=1` disables background update ch
 - Optional [Claude Code adapter](docs/CLAUDE-CODE.md) and [local models](docs/LOCAL-MODELS.md)
 - [Reproducible overhead benchmark](benchmarks/overhead/README.md) and [changelog](CHANGELOG.md)
 
-## Development
+## From source
 
 ```sh
 git clone https://github.com/michael-berardi/steak-pi.git
@@ -122,3 +133,5 @@ npm run verify
 isolated TUI tests (which require tmux and Python 3).
 No runtime npm dependencies beyond Pi peers. See [CONTRIBUTING.md](CONTRIBUTING.md).
 [MIT license](LICENSE).
+
+Part of [Pareto Cybernetics](https://paretocybernetics.com/projects/steak-pi/): free, private, open-source tools for working with AI agents.

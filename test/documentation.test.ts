@@ -9,6 +9,16 @@ const pkg = JSON.parse(read("package.json"));
 const documents = ["README.md", "docs/INSTALL.md", "docs/REFERENCE.md"];
 
 describe("getting-started documentation", () => {
+  it("retains project links, badges and release-first installation", () => {
+    const readme = read("README.md");
+    expect(readme).toContain("https://paretocybernetics.com/software/");
+    expect(readme).toContain("Part of [Pareto Cybernetics](https://paretocybernetics.com/projects/steak-pi/)");
+    expect(readme).toContain("https://img.shields.io/github/v/release/michael-berardi/steak-pi");
+    expect(readme).toContain("https://img.shields.io/github/license/michael-berardi/steak-pi");
+    expect(readme.match(/```sh\n([^\n]+)/)?.[1]).toBe("curl -fsSL https://github.com/michael-berardi/steak-pi/releases/latest/download/install.sh | sh");
+    expect(readme).toContain("## Measured");
+  });
+
   it("pins install examples to the package version", () => {
     const readme = read("README.md");
     expect(readme).toContain(`steak-pi@v${pkg.version}`);

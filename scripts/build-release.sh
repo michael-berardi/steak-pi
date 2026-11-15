@@ -13,7 +13,9 @@ OUT="${1-dist/release}"
 case "$OUT" in ""|.|./|/|..|../) echo "build-release: refusing output folder '$OUT'" >&2; exit 1 ;; esac
 if [ -d "$OUT" ]; then
   out_abs=$(cd "$OUT" && pwd -P); root_abs=$(pwd -P)
-  { [ "$out_abs" != "/" ] && [ "$out_abs" != "$root_abs" ]; } || { echo "build-release: refusing output folder '$OUT' (the repository root or /)" >&2; exit 1; }
+  case "$root_abs/" in
+    "${out_abs%/}/"*) echo "build-release: refusing output folder '$OUT' (the repository root or an ancestor)" >&2; exit 1 ;;
+  esac
 fi
 [ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "build-release: the working tree has changes; build from a clean checkout" >&2; exit 1; }
 VERSION=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' package.json | head -n 1)
