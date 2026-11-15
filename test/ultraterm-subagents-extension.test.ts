@@ -3938,3 +3938,113 @@ describe("explicit routes for routine workers need a routeReason", () => {
     await h.handlers.get("session_shutdown")!({}, h.ctx);
   });
 });
+
+describe("session telemetry volume: USAP records coalesce to state changes", () => {
+  /** Mimics the UltraTerm narrator rule: every valid `ultraterm-usap-telemetry` line (version 1, tasks array,
+   * runState string) replaces the state of its runId; the latest record per runId is the current run state. */
+  const replayRuns = (lines: string[]) => {
+    const runs = new Map<string, { runState: string; tasks: Array<{ taskId: string; state: string; label: string }> }>();
+    for (const line of lines) {
+      const entry = JSON.parse(line);
+      const data = entry.data;
+      if (entry.type !== "custom" || entry.customType !== "ultraterm-usap-telemetry") continue;
+      if (data?.version !== 1 || !Array.isArray(data.tasks) || typeof data.runState !== "string") continue;
+      runs.set(data.runId, { runState: data.runState, tasks: data.tasks.map(({ taskId, state, label }: any) => ({ taskId, state, label })) });
+    }
+    return runs;
+  };
+  const sessionLines = (entries: any[]) => entries
+    .filter((entry) => entry.type === "ultraterm-usap-telemetry")
+    .map((entry, index) => JSON.stringify({ type: "custom", customType: entry.type, data: entry.data, id: `e${index}`, parentId: `e${index - 1}`, timestamp: "2026-11-15T00:00:00.000Z" }));
+  const bytes = (lines: string[]) => lines.reduce((sum, line) => sum + Buffer.byteLength(line) + 1, 0);
+
+  /** Scripted wave: three workers, each making `calls` tool calls (start and end ticks) plus usage-only ticks. */
+  async function scriptedWave(telemetryCoalesceMs: number | undefined, calls = 40) {
+    const runner: WorkerRunner = async ({ onProgress }) => {
+      onProgress({ state: "running", turns: 1 });
+      let successes = 0;
+      for (let call = 0; call < calls; call += 1) {
+        onProgress({ state: "running", currentTool: call % 2 ? "read" : "bash" });
+        successes += 1;
+        onProgress({ state: "running", currentTool: undefined, toolErrors: 0, toolSuccesses: successes });
+        onProgress({ usage: usage(call + 1), turns: call + 1 });
+      }
+      return { state: "done", output: "ok", turns: calls, usage: emptyUsage(), toolErrors: 0, toolSuccesses: successes };
+    };
+    const h = harness(() => runner, undefined, undefined, telemetryCoalesceMs === undefined ? {} : { telemetryCoalesceMs } as any);
+    const result = await h.tools.get("ultraterm_subagents").execute("wave", { goal: "scripted", concurrency: 3, tasks: ["a", "b", "c"].map((label) => ({ label, task: label })) }, undefined, undefined, h.ctx);
+    await flush();
+    const lines = sessionLines(h.entries);
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+    return { runId: result.details.run.runId as string, lines, h };
+  }
+
+  it("writes no per-tick record while only step or counts change, and keeps the final settle record", async () => {
+    // Coalescing disabled reproduces the previous writer: one record per distinct snapshot.
+    const before = await scriptedWave(0);
+    const after = await scriptedWave(60_000);
+    const old = replayRuns(before.lines).get(before.runId)!, fresh = replayRuns(after.lines).get(after.runId)!;
+    console.log(`USAP telemetry, scripted wave (3 tasks x 40 tool calls): before ${before.lines.length} records / ${bytes(before.lines)} bytes; after ${after.lines.length} records / ${bytes(after.lines)} bytes`);
+    // A reader replaying either file reconstructs the same final run state.
+    expect(fresh).toEqual(old);
+    expect(fresh.runState).toBe("done");
+    expect(fresh.tasks.map((task) => task.state)).toEqual(["done", "done", "done"]);
+    // Final record carries the settled counts even though the ticks were coalesced.
+    const last = JSON.parse(after.lines.at(-1)!).data;
+    expect(last.runState).toBe("done");
+    expect(last.tasks.map((task: any) => task.toolSuccesses)).toEqual([40, 40, 40]);
+    // Only lifecycle transitions write: start, per-task running/done and the settle; never one per tool call.
+    expect(after.lines.length).toBeLessThanOrEqual(12);
+    expect(after.lines.length * 10).toBeLessThan(before.lines.length);
+  });
+
+  it("writes nothing between ticks of a running run whose state does not change", async () => {
+    let tick!: (value: any) => void;
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const h = harness(() => async ({ onProgress }) => {
+      tick = onProgress;
+      onProgress({ state: "running", currentTool: "read" });
+      await gate;
+      return { state: "done", output: "ok", turns: 1, usage: emptyUsage() };
+    }, undefined, undefined, { telemetryCoalesceMs: 60_000 } as any);
+    await h.tools.get("ultraterm_subagents").execute("a", { goal: "steady", background: true, tasks: [{ label: "A", task: "A" }] }, undefined, undefined, h.ctx);
+    await vi.waitFor(() => expect(tick).toBeDefined());
+    await flush();
+    const count = () => h.entries.filter((entry) => entry.type === "ultraterm-usap-telemetry").length;
+    const steady = count();
+    for (let index = 0; index < 50; index += 1) tick({ usage: usage(index + 1), turns: index + 1 });
+    for (let index = 0; index < 50; index += 1) { tick({ currentTool: "bash" }); tick({ currentTool: undefined, toolSuccesses: index + 1, toolErrors: 0 }); }
+    expect(count()).toBe(steady);
+    finish();
+    await vi.waitFor(() => expect(h.entries.at(-1)?.data?.runState).toBe("done"));
+    expect(h.entries.at(-1).data.tasks[0].state).toBe("done");
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+
+  it("flushes coalesced step and count changes once per window while a run keeps running", async () => {
+    let tick!: (value: any) => void;
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const h = harness(() => async ({ onProgress }) => {
+      tick = onProgress;
+      onProgress({ state: "running" });
+      await gate;
+      return { state: "done", output: "ok", turns: 1, usage: emptyUsage() };
+    }, undefined, undefined, { telemetryCoalesceMs: 20 } as any);
+    await h.tools.get("ultraterm_subagents").execute("a", { goal: "window", background: true, tasks: [{ label: "A", task: "A" }] }, undefined, undefined, h.ctx);
+    await vi.waitFor(() => expect(tick).toBeDefined());
+    await flush();
+    const telemetry = () => h.entries.filter((entry) => entry.type === "ultraterm-usap-telemetry");
+    const steady = telemetry().length;
+    for (let index = 0; index < 10; index += 1) { tick({ currentTool: "edit" }); tick({ currentTool: undefined, toolSuccesses: index + 1, toolErrors: 0 }); }
+    tick({ currentTool: "edit" });
+    await vi.waitFor(() => expect(telemetry().length).toBe(steady + 1));
+    expect(telemetry().at(-1).data.tasks[0]).toMatchObject({ toolSuccesses: 10, currentTool: "edit" });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(telemetry().length).toBe(steady + 1);
+    finish();
+    await vi.waitFor(() => expect(telemetry().at(-1).data.runState).toBe("done"));
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+});

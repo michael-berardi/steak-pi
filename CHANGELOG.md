@@ -1,9 +1,12 @@
 # Changelog
 
-## 0.34.0 (unreleased)
+## 0.34.0 (2026-11-15)
 
 - **An explicit route for routine workers must say why.** A review of three weeks of sessions found 853 dispatches in seven days that named a route explicitly; explicit routes are never rerouted, so when that route was at its limit the wave failed where an implicit wave would have moved to the next tier. A `ultraterm_subagents` wave that names `model` or `profile` and has any `worker` or `scout` task (a task with no role is a worker) now needs `routeReason`, 16 to 2000 characters on why the configured worker chain is not right for this wave, the way `thinking: high` needs a `thinkingReason`. Without it the dispatch is refused with `RouteReasonRequiredError`, which prints the field to add and says that omitting `model` and `profile` lets the configured chain choose. Reviewer-only waves are exempt. The rule applies to every explicit route (the routing config has no list of expert routes to narrow it). The reason is recorded in the run receipt (`selection.routeReason`) and the dispatch summary.
 - **A wrong model selector names the accepted form.** 75 failed dispatches passed a profile id or a short alias as `model`. The refusal now says `"steak-pi/x" is a profile, not a model; pass profile: "steak-pi/x"` for a profile id (with or without its `steak-pi/` prefix), or `Did you mean model: "<provider/model>"?` with the exact registry route for a short alias or near miss, from the same profiles and registry the validator uses.
+- **Session files stop filling with UI records.** In one week of sessions a fifth of the bytes were UI state no model reads: the full command and model catalog (about 64 KB, written on every turn) and a USAP progress record on every tool call of every worker.
+  - The `ultraterm.ui.catalog` record is written only when its content changes (compared by a content hash). Every session file still gets one full catalog on its first publication, a restart or new session writes one again, and any change (model, thinking level, commands, models) writes a new one, so the last catalog in the file is always the current one. In a scripted 41-turn session with one change: 47 records and 2,470,282 bytes before, 2 records and 105,114 bytes after.
+  - `ultraterm-usap-telemetry` records are written when a run or task changes state, label, outcome or links, and on every settle. A running task's current step and tool counts on their own are written at most once every 5 seconds, carrying the latest values. The last record per run is still the current run state. In a scripted wave of 3 workers making 40 tool calls each: 250 records and 257,074 bytes before, 10 records and 10,293 bytes after.
 
 ## 0.33.0 (2026-11-15)
 
@@ -14,7 +17,6 @@ Subagent waves are as wide as the work, and the README is a quarter of its lengt
 - If you relied on the old defaults (8 per provider per session, 14 per session, 12 per provider and 24 in total machine-wide), set them in `usap-caps.json`.
 - **README:** 507 lines to 137. It leads with what Steak Pi adds, measured results with links to the result files, and the one-line install. Settings and worker guidance moved to `docs/REFERENCE.md`, installation details to `docs/INSTALL.md`; both ship in the package. The pinned install command named 0.31.0; a test now keeps it on the current version.
 - `scripts/build-release.sh` refuses an output folder that is an ancestor of the checkout before it deletes anything.
-
 ## 0.32.0 (2026-11-14)
 
 - **The status line shows when a session's context has grown large.** Above the compaction threshold you configured for the model, or with none configured above 40% of a window of 500,000 tokens or more, the context band adds `ctx` and the current size (for example `ctx 410k`). Long sessions on large-window models re-read their whole history on every turn; this makes that visible. It is a display cue only and changes nothing about when compaction runs.
