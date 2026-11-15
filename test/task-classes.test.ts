@@ -338,7 +338,7 @@ describe("dispatch: task class routing and the ensure hook", () => {
       sessionManager: { getSessionFile: () => options.durable?.parent, getSessionId: () => options.durable?.parent ?? cwd, getEntries: () => [] },
       ui: { setStatus() {} },
     } as any;
-    const dispatch = (params: Record<string, unknown>, signal?: AbortSignal) => tools.get("ultraterm_subagents").execute("t", { goal: "Class routing", ...params }, signal, undefined, ctx);
+    const dispatch = (params: Record<string, unknown>, signal?: AbortSignal) => tools.get("ultraterm_subagents").execute("t", { goal: "Class routing", routeReason: "Explicit route under test: this case exercises the named route itself.", ...params }, signal, undefined, ctx);
     const close = async () => { await handlers.get("session_shutdown")?.({}, ctx); rmSync(cwd, { recursive: true, force: true }); };
     const hub = (params: Record<string, unknown>) => tools.get("ultraterm_hub").execute("hub", params, undefined, undefined, ctx);
     return { dispatch, runner, exec, events, close, hub, start: () => handlers.get("session_start")!({}, ctx) };

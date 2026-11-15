@@ -476,6 +476,21 @@ all-reviewer wave without an explicit route uses the CLI default
 above instead.
 Profiles select route metadata, not a separate CLI or inherited permissions.
 
+An explicit `model` or `profile` on a wave with any `worker` or `scout` task (a task
+with no role is a worker) requires `routeReason`: 16 to 2000 characters saying why
+the configured worker chain is not right for this wave. Routine workers should omit
+`model` and `profile` so the configured chain chooses: an implicit wave spills to the
+next tier when a route is at its limit, and an explicit route is never rerouted. A
+wave without the field is refused with `RouteReasonRequiredError`, which prints the
+field to add, after the route itself is admitted and before any checkpoint or worker
+exists. Reviewer-only waves are exempt. The rule applies to every explicit route:
+the routing config carries no list of expert routes to narrow it. The reason is
+recorded as `selection.routeReason` in the run receipt and as `routeReason` in the
+dispatch summary. A `model` the registry cannot serve is refused with the closest
+accepted form, from the same profiles and registry the validator uses: a profile id
+(`"steak-pi/x" is a profile, not a model; pass profile: "steak-pi/x"`), or the exact
+registry route for a short alias or near miss (`Did you mean model: "<provider/model>"?`).
+
 Only authenticated, available native registry routes may run Pi workers. A model family
 can be pinned to one subscription route with a `subscriptionRouteChecks` `modelPattern`
 entry in the operator's `routing.json`; nothing is pinned by default. An explicit non-GPT choice from a GPT manager is supported.

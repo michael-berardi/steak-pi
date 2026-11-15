@@ -40,12 +40,13 @@ describe("dispatch ergonomics regressions", () => {
 
   it.each([false, true])("reports effective permissions and route (background=%s)", async (background) => {
     const h = harness();
-    const result = await h.execute({ goal: "permissions", model: "openai-codex/gpt-6.1-sol", background, tasks: [
+    const result = await h.execute({ goal: "permissions", model: "openai-codex/gpt-6.1-sol", routeReason: "This wave checks the permission summary on one named route.", background, tasks: [
       { label: "edit", task: "change file", mayEdit: true, ownedPaths: ["one.ts"], allowBash: true },
       { label: "read", task: "mayEdit mentioned only in prose", role: "reviewer" },
     ] });
     expect(result.details.summary).toEqual({
       harness: "pi", model: "openai-codex/gpt-6.1-sol", profile: null, thinking: "medium", background,
+      routeReason: "This wave checks the permission summary on one named route.",
       tasks: [
         { label: "edit", role: "worker", mayEdit: true, allowBash: true, ownedPaths: 1, readPaths: 0, modelRoute: "openai-codex/gpt-6.1-sol", selectionSource: "override" },
         { label: "read", role: "reviewer", mayEdit: false, allowBash: false, ownedPaths: 0, readPaths: 0, modelRoute: "openai-codex/gpt-6.1-sol", selectionSource: "override" },

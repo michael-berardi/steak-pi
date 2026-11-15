@@ -233,6 +233,8 @@ export interface ModelSelection {
   fallbackReason?: string;
   /** Present when a task of the wave declared a task class: how it did or did not steer the route. */
   taskClass?: TaskClassSelection;
+  /** The caller's routeReason for an explicit route on worker or scout tasks, kept for audit. */
+  routeReason?: string;
   /** Foreign runners keep their harness identity instead of a native route. */
   harness?: HarnessId;
   images: boolean;
@@ -259,6 +261,9 @@ export interface DispatchInput {
   background?: boolean;
   thinking?: "medium" | "high" | "xhigh";
   thinkingReason?: string;
+  /** Why an explicit model/profile, not the configured worker chain, runs this wave's worker or scout tasks.
+   * Required then (16 to 2000 characters); reviewer-only and implicit waves need none. */
+  routeReason?: string;
 }
 
 export interface NormalizedTask {

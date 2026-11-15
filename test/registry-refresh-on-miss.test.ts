@@ -33,7 +33,7 @@ function harness(refreshAdds: boolean) {
 describe("USAP registry refresh on a missing model", () => {
   it("reloads models.json once and dispatches the newly added model", async () => {
     const h = harness(true);
-    const result = await h.execute({ goal: "new model", model: "openai-codex/gpt-6.1-sol", thinking: "medium", tasks: [{ label: "a", task: "say ok" }] });
+    const result = await h.execute({ goal: "new model", model: "openai-codex/gpt-6.1-sol", routeReason: "Explicit route under test: this case exercises the named route itself.", thinking: "medium", tasks: [{ label: "a", task: "say ok" }] });
     expect(h.refresh).toHaveBeenCalledTimes(1);
     expect(result.isError).not.toBe(true);
     expect(result.details.summary.model).toBe("openai-codex/gpt-6.1-sol");

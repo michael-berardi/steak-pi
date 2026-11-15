@@ -19,7 +19,7 @@ const registry = {
   getProvider: () => ({ streamSimple() {} }),
 } as unknown as ExtensionContext["modelRegistry"];
 const input: DispatchInput = {
-  goal: "Check explicit route", model: "openai-codex/gpt-6-astra", thinking: "medium", timeoutMs: 1500000,
+  goal: "Check explicit route", model: "openai-codex/gpt-6-astra", routeReason: "Explicit route under test: this case exercises the named route itself.", thinking: "medium", timeoutMs: 1500000,
   tasks: [{ label: "one", task: "Check route", role: "worker" }],
 };
 

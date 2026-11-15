@@ -210,6 +210,17 @@ roles keep explicit shell grants; this is tool denial, not an OS sandbox.
 Use one run-level `model: "provider/model"` **or**
 `profile: "steak-pi/profile-name"`, never both. All tasks share that route.
 Explicit selection overrides role defaults, including reviewers, and stays exact.
+Routine workers use the configured worker chain: omit `model` and `profile` and the
+chain chooses (and moves to the next tier when a route is at its limit; an explicit
+route never does). An explicit route is for hard or review work. A wave that names
+`model` or `profile` and has any `worker` or `scout` task (a task with no role is a
+worker) needs `routeReason`, 16 to 2000 characters on why the configured chain is not
+right for this wave, like `thinking: high` needs a `thinkingReason`; without it the
+dispatch is refused with `RouteReasonRequiredError`, which names the field to add.
+Reviewer-only waves need none. The receipt and dispatch summary record `routeReason`.
+A selector the registry cannot serve is refused with the exact accepted form when one
+is close: a profile id given as `model` (`pass profile: "steak-pi/<id>"`), or a short
+alias or near miss (`Did you mean model: "<provider/model>"?`).
 Prose saying a model name does not select it. Steak Pi ships no model choice:
 the operator's `~/.config/ultraterm/routing.json` supplies role defaults, worker
 profiles, chains, the expert reviewer and retired routes (see

@@ -165,7 +165,7 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
         h.ctx.modelRegistry.find = find;
         try {
           const result = await h.tools.get("ultraterm_subagents").execute("account", {
-            goal: "Synthetic account selection", claudeAccount: account, ...selector,
+            goal: "Synthetic account selection", claudeAccount: account, routeReason: "Explicit route under test: this case exercises the named route itself.", ...selector,
             tasks: [{ label: "Selected leaf", task: "Inspect synthetic evidence", role }],
           }, undefined, undefined, h.ctx);
           expect(result.isError).not.toBe(true);
@@ -613,7 +613,7 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
       .rejects.toThrow(/split routine workers from the review wave/);
     expect(runnerFactory).not.toHaveBeenCalled();
     for (const route of [{ harness: "pi" }, { model: "openai-codex/gpt-6.1-terra" }]) {
-      const result = await h.tools.get("ultraterm_subagents").execute("explicit-mixed", { goal: "Explicit native review", ...route, tasks }, undefined, undefined, h.ctx);
+      const result = await h.tools.get("ultraterm_subagents").execute("explicit-mixed", { goal: "Explicit native review", routeReason: "Explicit route under test: this case exercises the named route itself.", ...route, tasks }, undefined, undefined, h.ctx);
       expect(result.details.run.model).toBe("openai-codex/gpt-6.1-terra");
       expect(result.details.run.harness).not.toBe("claude-code");
       expect(result.details.run.tasks.every((task: any) => task.state === "done")).toBe(true);
@@ -660,7 +660,7 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
       [{ harness: "claude-code", model: "claude-code/claude-sonnet-5-5", tasks: review }, "claude-code/claude-sonnet-5-5"],
     ];
     for (const [route, expected] of cases) {
-      const result = await h.tools.get("ultraterm_subagents").execute("route", { goal: "route", ...route }, undefined, undefined, h.ctx);
+      const result = await h.tools.get("ultraterm_subagents").execute("route", { goal: "route", routeReason: "Explicit route under test: this case exercises the named route itself.", ...route }, undefined, undefined, h.ctx);
       expect(result.details.run.harness).toBe("claude-code");
       expect(result.details.run.model).toBe(expected);
       expect(runner.mock.calls.at(-1)?.[0].run.model).toBe(expected);
@@ -686,7 +686,7 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
       [{ thinking: "medium", tasks: review }, "medium"],
     ];
     for (const [route, expected] of cases) {
-      const result = await h.tools.get("ultraterm_subagents").execute("effort", { goal: "effort", ...route }, undefined, undefined, h.ctx);
+      const result = await h.tools.get("ultraterm_subagents").execute("effort", { goal: "effort", routeReason: "Explicit route under test: this case exercises the named route itself.", ...route }, undefined, undefined, h.ctx);
       expect(result.details.run.harness).toBe("claude-code");
       expect(runner.mock.calls.at(-1)?.[0].run.thinkingLevel).toBe(expected);
       expect(result.details.run.thinkingLevel).toBe(expected);
@@ -979,6 +979,7 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
     const started = await h.tools.get("ultraterm_subagents").execute("call", {
       goal: "relay",
       harness: harnessRoute,
+      routeReason: "Explicit route under test: this case exercises the named route itself.",
       model: harnessRoute === "claude-code" ? "claude-code/claude-sonnet-5-5" : "openai-codex/gpt-6.1-terra",
       background: true,
       tasks: [{ label: "one", task: "one" }],
@@ -2243,7 +2244,8 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
     return { h, accountCommand, selected };
   }
   const dispatch = (h: ReturnType<typeof harness>, params: Record<string, unknown>) =>
-    h.tools.get("ultraterm_subagents").execute("quota", { goal: "Quota routing", ...params }, undefined, undefined, h.ctx);
+    // These cases exercise named routes themselves; the routeReason rule has its own tests (an implicit wave ignores it).
+    h.tools.get("ultraterm_subagents").execute("quota", { goal: "Quota routing", routeReason: "Explicit route under test: this case exercises the named route itself.", ...params }, undefined, undefined, h.ctx);
   const plain = [{ label: "scout", task: "Read the routing module and report", role: "scout" }];
   const shutdown = (h: ReturnType<typeof harness>) => h.handlers.get("session_shutdown")!({}, h.ctx);
 
@@ -3856,5 +3858,83 @@ describe("bounded background observation", () => {
     const h = await setup();
     try { await expect(h.wait(600_001)).rejects.toMatchObject({ name: "RangeError", message: expect.stringContaining("600000") }); }
     finally { await h.close(); }
+  });
+});
+
+describe("explicit routes for routine workers need a routeReason", () => {
+  const TERRA = "openai-codex/gpt-6.1-terra";
+  const REASON = "This leaf needs the long context window the configured chain lacks.";
+  const profiles = [{ id: "steak-pi/gpt-6-1-terra", model: TERRA }] as never;
+  const setup = () => {
+    const runner = vi.fn(async (_context: Parameters<WorkerRunner>[0]) => ({ state: "done" as const, output: "ok", turns: 1, usage: emptyUsage() }));
+    const h = harness(() => runner, undefined, undefined, { profiles });
+    // An exact registry: only the parent's own route resolves, so a profile id or alias given as model is a miss.
+    h.ctx.modelRegistry.find = (provider: string, id: string) => `${provider}/${id}` === TERRA ? h.ctx.model : undefined;
+    const exec = (params: Record<string, unknown>) => h.tools.get("ultraterm_subagents").execute("route", { goal: "route reason", ...params }, undefined, undefined, h.ctx);
+    return { h, runner, exec };
+  };
+
+  it.each([
+    ["a worker wave by model", { model: TERRA }, [{ label: "build", task: "Implement", role: "worker" }]],
+    ["a wave with no role by profile", { profile: "steak-pi/gpt-6-1-terra" }, [{ label: "build", task: "Implement" }]],
+    ["a scout wave by model", { model: TERRA }, [{ label: "look", task: "Read", role: "scout" }]],
+    ["a mixed worker and reviewer wave", { model: TERRA }, [{ label: "build", task: "Implement", role: "worker" }, { label: "check", task: "Review", role: "reviewer" }]],
+  ])("refuses %s without routeReason, naming the field and the implicit alternative", async (_name, selector, tasks) => {
+    const { h, runner, exec } = setup();
+    const error = await exec({ ...selector, tasks }).catch((e: Error) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).name).toBe("RouteReasonRequiredError");
+    expect((error as Error).message).toMatch(/^RouteReasonRequiredError: this wave names explicit (model|profile) "/);
+    expect((error as Error).message).toContain('Add the field routeReason: "<why the configured chain is not right for this wave, 16 to 2000 characters>"');
+    expect((error as Error).message).toContain("omit model and profile so the configured chain chooses");
+    expect(runner).not.toHaveBeenCalled();
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+
+  it("refuses a routeReason that is too short or not a string", async () => {
+    const { h, runner, exec } = setup();
+    await expect(exec({ model: TERRA, routeReason: "cheaper", tasks: [{ label: "build", task: "Implement" }] })).rejects.toThrow(/routeReason is shorter than 16 characters/);
+    await expect(exec({ model: TERRA, routeReason: 42, tasks: [{ label: "build", task: "Implement" }] })).rejects.toThrow(/routeReason must be a string/);
+    expect(runner).not.toHaveBeenCalled();
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+
+  it("launches an explicit worker wave with routeReason and records it in the receipt and dispatch summary", async () => {
+    const { h, runner, exec } = setup();
+    const result = await exec({ model: TERRA, routeReason: REASON, tasks: [{ label: "build", task: "Implement", role: "worker" }] });
+    expect(result.isError).not.toBe(true);
+    expect(runner).toHaveBeenCalledTimes(1);
+    expect(result.details.run.model).toBe(TERRA);
+    expect(result.details.run.selection).toMatchObject({ source: "override", routeReason: REASON });
+    expect(result.details.summary.routeReason).toBe(REASON);
+    expect(result.content[0].text).toContain(`"routeReason":${JSON.stringify(REASON)}`);
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+
+  it("needs no routeReason for a reviewer-only explicit wave, nor for an implicit worker wave", async () => {
+    const { h, runner, exec } = setup();
+    const review = await exec({ model: TERRA, tasks: [{ label: "check", task: "Review", role: "reviewer" }] });
+    expect(review.details.run.model).toBe(TERRA);
+    expect(review.details.run.selection.routeReason).toBeUndefined();
+    expect(review.details.summary).not.toHaveProperty("routeReason");
+    const implicit = await exec({ tasks: [{ label: "build", task: "Implement", role: "worker" }] });
+    expect(implicit.isError).not.toBe(true);
+    expect(implicit.details.summary).not.toHaveProperty("routeReason");
+    expect(runner).toHaveBeenCalledTimes(2);
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
+  });
+
+  it.each([
+    ["a profile id given as model", "steak-pi/gpt-6-1-terra", '"steak-pi/gpt-6-1-terra" is a profile, not a model; pass profile: "steak-pi/gpt-6-1-terra".'],
+    ["a short profile id given as model", "gpt-6-1-terra", '"gpt-6-1-terra" is a profile, not a model; pass profile: "steak-pi/gpt-6-1-terra".'],
+    ["a short model alias", "gpt-6.1-terra", 'Did you mean model: "openai-codex/gpt-6.1-terra"?'],
+    ["a near miss", "openai-codex/gpt-6.1-tera", 'Did you mean model: "openai-codex/gpt-6.1-terra"?'],
+  ])("refuses %s with the exact accepted form, before asking for a routeReason", async (_name, model, suggestion) => {
+    const { h, runner, exec } = setup();
+    const error = await exec({ model, tasks: [{ label: "build", task: "Implement" }] }).catch((e: Error) => e);
+    expect((error as Error).message).toContain(suggestion);
+    expect((error as Error).message).not.toMatch(/RouteReasonRequiredError/);
+    expect(runner).not.toHaveBeenCalled();
+    await h.handlers.get("session_shutdown")!({}, h.ctx);
   });
 });

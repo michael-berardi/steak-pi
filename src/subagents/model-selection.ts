@@ -143,18 +143,19 @@ export function loadWorkerProfiles(directory = join(homedir(), ".config", "ultra
 }
 
 /** The loaded profile ids closest to a missing one, for the not-found message. */
+function editDistance(a: string, b: string): number {
+  let row = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i += 1) {
+    const next = [i];
+    for (let j = 1; j <= b.length; j += 1) next[j] = Math.min(row[j] + 1, next[j - 1] + 1, row[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    row = next;
+  }
+  return row[b.length];
+}
+
 function nearestProfileIds(id: string, ids: readonly string[], limit = 5): string[] {
   const tail = (value: string) => value.slice(value.lastIndexOf("/") + 1).toLowerCase();
-  const distance = (a: string, b: string): number => {
-    let row = Array.from({ length: b.length + 1 }, (_, i) => i);
-    for (let i = 1; i <= a.length; i += 1) {
-      const next = [i];
-      for (let j = 1; j <= b.length; j += 1) next[j] = Math.min(row[j] + 1, next[j - 1] + 1, row[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
-      row = next;
-    }
-    return row[b.length];
-  };
-  return [...new Set(ids)].map((candidate) => ({ candidate, score: distance(tail(id), tail(candidate)) }))
+  return [...new Set(ids)].map((candidate) => ({ candidate, score: editDistance(tail(id), tail(candidate)) }))
     .sort((a, b) => a.score - b.score || a.candidate.localeCompare(b.candidate)).slice(0, limit).map((item) => item.candidate);
 }
 
@@ -184,17 +185,40 @@ function assertNotClaudeSubscriptionRoute(key: string, profiles: readonly Worker
   throw new Error(`USAP model ${key} is the ${name} Claude Code subscription route; name harness claude-code (or omit the harness) so the claude-code adapter serves it. The native Pi registry cannot serve it, so no run was started and no fallback was selected.`);
 }
 
+/**
+ * The exact accepted form for a model selector the registry cannot serve, from the same profiles and registry
+ * the validator uses: a profile id given as `model` is named as a profile, and a short alias or a near miss
+ * names the closest exact registry route. Empty when nothing is close.
+ */
+export function modelSelectorSuggestion(key: string, registry: Registry, profiles: readonly WorkerProfile[] = []): string {
+  const lower = key.toLowerCase();
+  const tailOf = (value: string) => value.slice(value.lastIndexOf("/") + 1).toLowerCase();
+  const profileMatches = profiles.filter((p) => p.id.toLowerCase() === lower || (!key.includes("/") && tailOf(p.id) === lower));
+  if (profileMatches.length === 1) return ` ${JSON.stringify(key)} is a profile, not a model; pass profile: ${JSON.stringify(profileMatches[0].id)}.`;
+  if (profileMatches.length > 1) return ` ${JSON.stringify(key)} names more than one profile; pass profile as one of ${profileMatches.map((p) => JSON.stringify(p.id)).join(", ")}.`;
+  let catalog: readonly Model[] = [];
+  try { catalog = registry.getAll?.() ?? registry.getAvailable(); } catch { return ""; }
+  const routes = [...new Set(catalog.map(route))];
+  const tail = tailOf(key);
+  const exact = routes.filter((candidate) => candidate.toLowerCase() === lower || tailOf(candidate) === tail);
+  if (exact.length === 1) return ` Did you mean model: ${JSON.stringify(exact[0])}?`;
+  if (exact.length > 1) return ` Did you mean one of model: ${exact.slice(0, 5).map((value) => JSON.stringify(value)).join(", ")}?`;
+  const limit = Math.max(2, Math.floor(tail.length / 3));
+  const near = nearestProfileIds(key, routes, 3).filter((candidate) => editDistance(tail, tailOf(candidate)) <= limit);
+  return near.length > 0 ? ` Did you mean model: ${JSON.stringify(near[0])}?` : "";
+}
+
 function findModel(key: string, registry: Registry, profiles: readonly WorkerProfile[] = []): Model {
   assertActiveModelSelector(key);
   const slash = key.indexOf("/");
-  if (slash < 1 || slash === key.length - 1) throw new Error("USAP model must use the exact provider/model form.");
+  if (slash < 1 || slash === key.length - 1) throw new Error(`USAP model must use the exact provider/model form.${modelSelectorSuggestion(key, registry, profiles)}`);
   if (isDshRoute(key)) {
     throw new Error(`USAP model ${key} is a steak-dsh harness route; name harness steak-dsh (or omit the harness) so the steak-dsh adapter serves it. The native Pi registry cannot serve it, so no run was started and no fallback was selected.`);
   }
   assertNotClaudeSubscriptionRoute(key, profiles);
   const model = registry.find(key.slice(0, slash), key.slice(slash + 1));
   if (model) assertActiveModelIdentity(model);
-  if (!model || route(model) !== key) throw new Error(`USAP model ${key} is unavailable. Choose an exact model from the authenticated registry; no fallback was selected.`);
+  if (!model || route(model) !== key) throw new Error(`USAP model ${key} is unavailable. Choose an exact model from the authenticated registry; no fallback was selected.${modelSelectorSuggestion(key, registry, profiles)}`);
   return model;
 }
 

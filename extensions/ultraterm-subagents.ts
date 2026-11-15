@@ -7,6 +7,7 @@ import { isContentFilterRefusal } from "../src/content-filter-refusal.ts";
 import { noClaudeCause, planOnlyCause, resolveProjectPolicy, type ProjectPolicy } from "../src/subagents/project-policy.ts";
 import { AVAILABILITY_TTL_MS, computeAvailability } from "../src/subagents/route-availability.ts";
 import { CLAUDE_REVIEW_SHELL_REFUSED, isClaudeReadOnlyReview } from "../src/subagents/claude-review-permissions.ts";
+import { requireRouteReason, ROUTE_REASON_MAX_LENGTH, ROUTE_REASON_MIN_LENGTH } from "../src/subagents/route-reason.ts";
 import { canFallbackReview, implicitReviewFallbackRoute, implicitReviewRoute, isReadOnlyReviewWave, recordReviewFallback } from "../src/subagents/reviewer-fallback.ts";
 import { parseRoute, routeLabel, routingConfigOrEmpty, DSH_ROUTE_PREFIX, TASK_CLASS_MAX_LENGTH } from "../src/routing-config.ts";
 import { statSync } from "node:fs";
@@ -154,6 +155,7 @@ export const ultratermSubagentsSchema = Type.Object({
   background: Type.Optional(Type.Boolean({ default: false })),
   thinking: Type.Optional(stringEnum(["medium", "high", "xhigh"] as const)),
   thinkingReason: Type.Optional(Type.String({ minLength: 16, maxLength: 2_000, description: "Why high/xhigh reasoning benefits this task. Required with high/xhigh; every run is medium by default." })),
+  routeReason: Type.Optional(Type.String({ minLength: ROUTE_REASON_MIN_LENGTH, maxLength: ROUTE_REASON_MAX_LENGTH, description: "Why the configured worker chain is not right for this wave. Required when model or profile is named and any task is a worker or scout (reviewer-only waves are exempt); recorded in the receipt. Routine workers should omit model and profile so the configured chain chooses and spills to the next tier at a limit; an explicit route is for hard or review work and is never rerouted." })),
 }, { additionalProperties: false });
 
 /** Public provider-compatible hub schema. Sender identity is absent and host-bound. */
@@ -1246,6 +1248,7 @@ function dispatchDetails(run: RunRecord, persistence: Persistence): DispatchDeta
       thinking: run.thinkingLevel,
       background: run.background,
       ...(run.selection?.taskClass ? { taskClass: { ...run.selection.taskClass } } : {}),
+      ...(run.selection?.routeReason ? { routeReason: run.selection.routeReason } : {}),
       tasks: run.tasks.map((task) => ({
         label: task.label,
         ...(task.taskClass ? { taskClass: task.taskClass } : {}),
@@ -2556,6 +2559,10 @@ export function createUltratermSubagentsExtension(
       const harnessNote = harnessWhy + ((dshHarness || classedDsh)
         ? `Harness note: this wave runs on the steak-dsh harness (the DSH headless CLI) on ${model}; relay steering (hub send/redirect) and resume are unsupported on this harness in v1.\n`
         : "");
+      // An explicit route for routine workers must say why the configured chain is not right. Checked after the
+      // route itself is admitted (so a wrong selector gets its own refusal first), and before any checkpoint,
+      // relay peer or worker exists. Judged on the caller's own selectors, never on an automatic route.
+      const routeReason = requireRouteReason(rawParams as UltratermSubagentsParams);
       const input: DispatchInput = {
         ...params,
         ...(classedDsh ? { harness: "steak-dsh" as const } : {}),
@@ -2614,7 +2621,8 @@ export function createUltratermSubagentsExtension(
         // account was eligible is an automatic fallback, never an operator-requested override.
         ...(opusReviewDefault ? { source: reviewFallbackActive ? "automatic-review-fallback" as const : "automatic-review" as const, automaticReview: true, reviewRequiresImages: requested.requireImages === true,
           ...(reviewPick?.account !== undefined ? { accountAutomatic: true as const } : {}) } : {}),
-        ...(taskClassReceipt ? { taskClass: taskClassReceipt } : {}) };
+        ...(taskClassReceipt ? { taskClass: taskClassReceipt } : {}),
+        ...(routeReason !== undefined ? { routeReason } : {}) };
       if (reviewFallbackActive) for (const task of run.tasks) recordReviewFallback(task, forcedReviewFallback
         ? reviewFallThrough!.reviewReason ?? "quota" : claudeUnavailableReason);
       if (reviewFallbackRuntime) current.workerRuntimes.set(`${run.id}:review-fallback`, Object.freeze(reviewFallbackRuntime));
@@ -2796,7 +2804,7 @@ export function createUltratermSubagentsExtension(
         "Parent owns decomposition, integration, verification; workers own leaves end to end. With exact disjoint paths and acceptance contracts in hand, dispatch in the first tool turn without pre-reading child-owned files; do not duplicate child discovery in the parent.",
         "The operator's routing.json decides the default worker chain, the expert reviewer and which routes need a bounded expert verification (verificationGates); a worker on a gated route is told which reviewer route to request through the parent. Read-only and report-only work need no automatic gate.",
         "taskClass (per task) names an operator-configured class from routing.json taskClasses so an implicit text worker wave runs the route the operator measured best for that class; omit it when unsure. Give every task of a wave the same class (or none), dispatch different classes as separate waves, and when the dispatch note says the class requires a test gate, run that gate before accepting the work.",
-        "model or profile picks an explicit authenticated route (mutually exclusive, overrides roles). A model family the operator pinned to one subscription route (subscriptionRouteChecks modelPattern) runs only there. Routine text work stays on the configured automatic chain; do not pick the configured expert reviewer for routine work. requireImages=true for visual critics or render inspection.",
+        "model or profile picks an explicit authenticated route (mutually exclusive, overrides roles). A model family the operator pinned to one subscription route (subscriptionRouteChecks modelPattern) runs only there. Routine text work stays on the configured automatic chain; do not pick the configured expert reviewer for routine work. An explicit model or profile on a wave with any worker or scout task needs routeReason (why the configured chain is not right for this wave) or the dispatch is refused; reviewer-only waves need none. requireImages=true for visual critics or render inspection.",
         "harness claude-code (or an exact claude-code/<model> route) runs the official CLI at medium effort unless thinking asks for high/xhigh with a thinkingReason. When no step of the configured chain can launch, an implicit routine wave runs on the configured claudeFallbackTier with no re-dispatch; verify that work with an expert review. Explicit routes never fall back. Read the Dispatch reference in the ultraterm-subagent-protocol skill before using a claude-code-api route, image review, relay steering or account pinning.",
         "Background only when the parent can integrate while children run, then one bounded ultraterm_hub wait. Never start a background run merely to wait immediately. `Started` means no launched worker died in its first ~25 s; a worker that fails before its first model output makes the call throw with that cause and cancels its siblings.",
         "For read-only tasks omit ownedPaths and state the read scope in task text, or name the exact folders with readPaths when the evidence sits outside the run cwd (private agent homes only, never a project checkout); mayEdit requires ownedPaths and cannot be combined with readPaths. allowBash bypasses ownedPaths — grant only when operator-level shell access is necessary.",

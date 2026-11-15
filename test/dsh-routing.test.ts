@@ -115,7 +115,7 @@ function build(options: { runner?: (context: WorkerRunContext) => Promise<any>; 
     sessionManager: { getSessionFile: () => undefined, getSessionId: () => cwd, getEntries: () => [] },
     ui: { setStatus() {} },
   } as any;
-  const dispatch = (params: Record<string, unknown>) => tools.get("ultraterm_subagents").execute("t", { goal: "DSH routing", ...params }, undefined, undefined, ctx);
+  const dispatch = (params: Record<string, unknown>) => tools.get("ultraterm_subagents").execute("t", { goal: "DSH routing", routeReason: "Explicit route under test: this case exercises the named route itself.", ...params }, undefined, undefined, ctx);
   const hub = (params: Record<string, unknown>) => tools.get("ultraterm_hub").execute("hub", params, undefined, undefined, ctx);
   const close = async () => { await handlers.get("session_shutdown")?.({}, ctx); rmSync(cwd, { recursive: true, force: true }); };
   return { dispatch, hub, calls, close };

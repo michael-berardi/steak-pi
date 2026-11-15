@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.34.0 (unreleased)
+
+- **An explicit route for routine workers must say why.** A review of three weeks of sessions found 853 dispatches in seven days that named a route explicitly; explicit routes are never rerouted, so when that route was at its limit the wave failed where an implicit wave would have moved to the next tier. A `ultraterm_subagents` wave that names `model` or `profile` and has any `worker` or `scout` task (a task with no role is a worker) now needs `routeReason`, 16 to 2000 characters on why the configured worker chain is not right for this wave, the way `thinking: high` needs a `thinkingReason`. Without it the dispatch is refused with `RouteReasonRequiredError`, which prints the field to add and says that omitting `model` and `profile` lets the configured chain choose. Reviewer-only waves are exempt. The rule applies to every explicit route (the routing config has no list of expert routes to narrow it). The reason is recorded in the run receipt (`selection.routeReason`) and the dispatch summary.
+- **A wrong model selector names the accepted form.** 75 failed dispatches passed a profile id or a short alias as `model`. The refusal now says `"steak-pi/x" is a profile, not a model; pass profile: "steak-pi/x"` for a profile id (with or without its `steak-pi/` prefix), or `Did you mean model: "<provider/model>"?` with the exact registry route for a short alias or near miss, from the same profiles and registry the validator uses.
+
 ## 0.33.0 (2026-11-15)
 
 Subagent waves are as wide as the work, and the README is a quarter of its length.

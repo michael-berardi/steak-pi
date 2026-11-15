@@ -46,7 +46,8 @@ function harness(runner: WorkerRunner) {
 }
 
 const done: WorkerRunner = async () => ({ state: "done", output: "ok", turns: 1, usage: emptyUsage() });
-const wave = (extra: Record<string, unknown> = {}) => ({ goal: "api wave", tasks: [{ label: "Read", task: "read the entrypoint", role: "scout" }], ...extra });
+// These waves name the API route itself; the routeReason rule has its own tests.
+const wave = (extra: Record<string, unknown> = {}) => ({ goal: "api wave", routeReason: "Explicit route under test: this case exercises the named route itself.", tasks: [{ label: "Read", task: "read the entrypoint", role: "scout" }], ...extra });
 
 describe("ultraterm_subagents explicit Claude API route", () => {
   it("dispatches an exact API model on the claude-code harness with an override selection and a stamped ceiling", async () => {
