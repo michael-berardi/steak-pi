@@ -26,6 +26,7 @@ describe("companion extension integration", () => {
   it("installs native components and follows Pi lifecycle events", async () => {
     const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
     const pi = {
+      getSettings: () => ({}),
       on(name: string, handler: (event: any, ctx: any) => unknown) {
         const list = handlers.get(name) ?? [];
         list.push(handler);
@@ -52,12 +53,13 @@ describe("companion extension integration", () => {
       bold: (text: string) => text,
       borderColor: (text: string) => text,
     };
+    let contextUsage = { percent: 12.5, contextWindow: 131_072, tokens: 16_384 };
     const ctx = {
       mode: "tui",
       cwd: "/home/demo/project",
       model: { provider: "zai", id: "glm-5.3-flash" },
       thinkingLevel: "high",
-      getContextUsage: () => ({ percent: 12.5, contextWindow: 131_072, tokens: 16_384 }),
+      getContextUsage: () => contextUsage,
       sessionManager: {
         getEntries: () => {
           entryReads += 1;
@@ -105,6 +107,12 @@ describe("companion extension integration", () => {
     expect(stripAnsi(editor.render(80)[0])).toContain("resumed");
     const composer = editor.render(80).map(stripAnsi).find((line: string) => line.startsWith("╰─"));
     expect(composer).toContain("Message");
+    contextUsage = { percent: 40, contextWindow: 1_000_000, tokens: 400_000 };
+    expect(editor.render(120).join(" ")).not.toContain("ctx 400k");
+    contextUsage = { percent: 40.1, contextWindow: 1_000_000, tokens: 401_000 };
+    expect(editor.render(120).join(" ")).toContain("ctx 401k");
+    contextUsage = { percent: 12.5, contextWindow: 131_072, tokens: 16_384 };
+    expect(editor.render(120).join(" ")).not.toContain("ctx 401k");
     const readsAfterFirstRender = entryReads;
     footer.render(80);
     footer.render(120);

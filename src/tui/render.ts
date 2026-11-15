@@ -44,6 +44,8 @@ export interface UsageTotals {
 export interface ContextSnapshot {
   percent: number | null;
   contextWindow: number;
+  tokens?: number | null;
+  pressure?: boolean;
 }
 
 export interface FooterSnapshot {
@@ -282,7 +284,7 @@ function composerMetrics(
   const tight = density === "tight";
   const percent = contextPercent(snapshot);
   const context = snapshot.context
-    ? `${percent === null ? "?" : `${percent.toFixed(0)}%`}/${composerTokens(snapshot.context.contextWindow)}`
+    ? `${percent === null ? "?" : `${percent.toFixed(0)}%`}/${composerTokens(snapshot.context.contextWindow)}${snapshot.context.pressure && snapshot.context.tokens != null ? ` ctx ${composerTokens(snapshot.context.tokens)}` : ""}`
     : "—";
   const metrics: ComposerSegment[] = [
     { text: `◫${compact ? "" : " "}${context}`, paint: contextPainter(snapshot, palette) },

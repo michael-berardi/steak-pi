@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.32.0 (2026-11-14)
+
+- **The status line shows when a session's context has grown large.** Above the compaction threshold you configured for the model, or with none configured above 40% of a window of 500,000 tokens or more, the context band adds `ctx` and the current size (for example `ctx 410k`). Long sessions on large-window models re-read their whole history on every turn; this makes that visible. It is a display cue only and changes nothing about when compaction runs.
+- **`docs/COMPACTION.md`** explains how to set a per-model automatic compaction threshold with the agent's existing `compaction.modelOverrides` setting, when compaction runs (at a turn boundary, never during a tool call), what is kept, the trade-off, and how to measure the effect before and after on the same tasks. Steak Pi sets no threshold of its own.
+
 ## 0.31.4 (2026-11-14)
 
 - **One wait covers a whole background run.** `ultraterm_hub` `wait` was capped at 30 seconds, so a parent waiting on workers that take minutes had to ask again and again, and each ask is a full model turn that re-reads the conversation (a review of one week of sessions counted 1,510 waits and 664 status calls, most answering "still running"). A wait can now last up to 10 minutes. It still returns at once when a task settles, when a worker sends the parent a message, or when the call is cancelled, and it never keeps the process alive. The default without a timeout stays 30 seconds.

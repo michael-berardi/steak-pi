@@ -33,6 +33,7 @@ import {
   type ContextSnapshot,
   type SemanticPalette,
 } from "../src/tui/render.ts";
+import { contextPressure } from "../src/tui/context-pressure.ts";
 import { isFlatPlanRoute } from "../src/subscription-first-routing.ts";
 
 /**
@@ -65,12 +66,14 @@ function sessionHint(reason: string, hasConversation: boolean, sessionFile?: str
   return "";
 }
 
-function contextSnapshot(ctx: ExtensionContext): ContextSnapshot | undefined {
+function contextSnapshot(ctx: ExtensionContext, pi: ExtensionAPI): ContextSnapshot | undefined {
   const usage = ctx.getContextUsage();
   if (!usage) return undefined;
   return {
     percent: usage.percent ?? null,
     contextWindow: usage.contextWindow,
+    tokens: usage.tokens,
+    pressure: contextPressure(usage.tokens, usage.contextWindow, ctx.model, pi.getSettings()),
   };
 }
 
@@ -175,7 +178,7 @@ export default function companionUiExtension(pi: ExtensionAPI): void {
         routed: model?.api === "pi-virtual" ? cachedRouted : undefined,
         thinking: ctx.thinkingLevel,
         usage,
-        context: contextSnapshot(ctx),
+        context: contextSnapshot(ctx, pi),
         planRoute: ctx.model ? isFlatPlanRoute(ctx.model) : false,
       };
     };
