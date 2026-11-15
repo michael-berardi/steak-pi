@@ -28,6 +28,8 @@
     "src",
     "themes",
     "skills",
+    "docs/INSTALL.md",
+    "docs/REFERENCE.md",
     "docs/AGENT-LIFECYCLE.md",
     "docs/CLAUDE-CODE.md",
     "docs/COMPANION-UI.md",
