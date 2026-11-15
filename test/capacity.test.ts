@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { MachineSlots, NoopSlots } from "../src/subagents/machine-slots.ts";
-import { loadCapacityConfig, machineCap, sessionCap } from "../src/subagents/capacity.ts";
-import { SessionScheduler } from "../src/subagents/scheduler.ts";
+import { adaptiveCeiling, loadCapacityConfig, machineCap, sessionCap } from "../src/subagents/capacity.ts";
+import { SessionScheduler, THROTTLE_RESET_MS, THROTTLE_WINDOW_MS } from "../src/subagents/scheduler.ts";
 
 const tempDirs: string[] = [];
 
@@ -20,27 +20,38 @@ afterEach(() => {
 });
 
 describe("capacity config", () => {
-  it("ships no provider-specific ceiling: every provider gets the default session and machine capacity", () => {
+  it("ships no provider-specific ceiling and no fixed width: capacity follows the computer", () => {
     const config = loadCapacityConfig(undefined as unknown as string);
     expect(config.session.providers).toEqual({});
     expect(config.machine.providers).toEqual({});
-    expect(sessionCap(config, "zai")).toBe(sessionCap(config, "unknown"));
-    expect(machineCap(config, "zai")).toBe(machineCap(config, "unknown"));
-    expect(sessionCap(config, "zai")).toBe(8);
-    expect(machineCap(config, "zai")).toBe(12);
-    expect(sessionCap(config, "xiaomi")).toBe(8);
-    expect(sessionCap(config, "openai-codex")).toBe(8);
-    expect(machineCap(config, "xiaomi")).toBe(12);
-    expect(machineCap(config, "openai-codex")).toBe(12);
-    expect(config.machine.global).toBe(24);
+    const ceiling = adaptiveCeiling();
+    expect(config.session.global).toBe(ceiling);
+    expect(config.machine.global).toBe(ceiling);
+    for (const provider of ["provider-a", "provider-b", "unknown"]) {
+      expect(sessionCap(config, provider)).toBe(ceiling);
+      expect(machineCap(config, provider)).toBe(ceiling);
+    }
   });
 
-  it("sizes a default session scheduler from the configured session global (14), not the per-run cap (8)", () => {
+  it("sizes the ceiling from cores and memory, within 4 to 64", () => {
+    const GIB = 1024 ** 3;
+    expect(adaptiveCeiling(8, 64 * GIB)).toBe(16); // two per core
+    expect(adaptiveCeiling(16, 24 * GIB)).toBe(12); // one per 2 GiB
+    expect(adaptiveCeiling(1, 1 * GIB)).toBe(4); // a small machine still runs a wave
+    expect(adaptiveCeiling(128, 512 * GIB)).toBe(64); // hard bound
+    expect(adaptiveCeiling(Number.NaN, Number.NaN)).toBe(4);
+  });
+
+  it("sizes a default session scheduler from the computer, and an operator cap wins", () => {
     process.env.STEAK_PI_USAP_CAPS = "off";
-    const scheduler = new SessionScheduler();
-    expect(scheduler.maxConcurrency).toBe(14);
-    expect(scheduler.capFor("xiaomi")).toBe(8);
-    expect(scheduler.capFor("openai-codex")).toBe(8);
+    expect(new SessionScheduler().maxConcurrency).toBe(adaptiveCeiling());
+    const path = join(slotDir(), "caps.json");
+    writeFileSync(path, JSON.stringify({ session: { global: 40, providers: { "provider-a": 3 } } }));
+    const config = loadCapacityConfig(path);
+    const scheduler = new SessionScheduler(config.session.global, config);
+    expect(scheduler.maxConcurrency).toBe(40);
+    expect(scheduler.capFor("provider-a")).toBe(3);
+    expect(scheduler.capFor("provider-b")).toBe(40);
   });
 
   it("loads overrides and falls back on malformed files", () => {
@@ -83,7 +94,9 @@ describe("SessionScheduler provider buckets", () => {
   });
 
   it("caps a provider bucket and does not head-of-line block other providers", async () => {
-    const scheduler = new SessionScheduler(14);
+    const config = loadCapacityConfig(undefined as unknown as string);
+    config.session.providers = { xiaomi: 8 };
+    const scheduler = new SessionScheduler(14, config);
     const releaseXiaomi: Array<() => void> = [];
     // Fill the xiaomi bucket.
     for (let i = 0; i < 8; i++) {
@@ -101,6 +114,56 @@ describe("SessionScheduler provider buckets", () => {
     await codexRun;
     await queuedXiaomi;
     expect(scheduler.activeCount).toBe(0);
+  });
+});
+
+describe("SessionScheduler adaptive width", () => {
+  const wide = () => {
+    const config = loadCapacityConfig(undefined as unknown as string);
+    config.session.global = 32;
+    return config;
+  };
+
+  it("runs a 24-task wave 24 wide when capacity allows", async () => {
+    const scheduler = new SessionScheduler(32, wide());
+    let active = 0; let peak = 0;
+    await Promise.all(Array.from({ length: 24 }, () => scheduler.run(async () => {
+      active += 1; peak = Math.max(peak, active);
+      await new Promise((r) => setTimeout(r, 20));
+      active -= 1;
+    }, undefined, "provider-a")));
+    expect(peak).toBe(24);
+  });
+
+  it("halves a rate-limited provider once per burst, leaves others alone, and recovers a slot per clean finish", async () => {
+    let now = 1_000;
+    const scheduler = new SessionScheduler(32, wide(), () => now);
+    const held = await Promise.all(Array.from({ length: 16 }, () => scheduler.acquire(undefined, "provider-a")));
+    expect(scheduler.limitFor("provider-a")).toBe(32);
+    scheduler.throttle("provider-a");
+    scheduler.throttle("provider-a"); // same burst: counted once
+    expect(scheduler.limitFor("provider-a")).toBe(8);
+    expect(scheduler.limitFor("provider-b")).toBe(32);
+
+    // Running workers keep running; a new launch waits until the provider is under its reduced width.
+    let started = false;
+    const waiting = scheduler.run(async () => { started = true; }, undefined, "provider-a");
+    await new Promise((r) => setTimeout(r, 10));
+    expect(started).toBe(false);
+    for (const release of held.splice(0, 9)) release();
+    await waiting;
+    expect(started).toBe(true);
+
+    now += THROTTLE_WINDOW_MS + 1;
+    scheduler.throttle("provider-a"); // a later refusal halves again, never below one
+    expect(scheduler.limitFor("provider-a")).toBe(3);
+    for (let i = 0; i < 40; i++) scheduler.recover("provider-a");
+    expect(scheduler.limitFor("provider-a")).toBe(32);
+    for (const release of held) release();
+    for (let i = 0; i < 12; i++) { now += THROTTLE_WINDOW_MS + 1; scheduler.throttle("provider-a"); }
+    expect(scheduler.limitFor("provider-a")).toBe(1);
+    now += THROTTLE_RESET_MS; // quiet for long enough: full width again
+    expect(scheduler.limitFor("provider-a")).toBe(32);
   });
 });
 

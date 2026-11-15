@@ -6,7 +6,7 @@ Canonical contract: [`ULTRATERM-SUBAGENT-PROTOCOL.md`](./ULTRATERM-SUBAGENT-PROT
 The legacy `parallel` subprocess executor has been removed. Steak Pi now exposes
 one session-scoped UltraTerm Sub-Agent Protocol (USAP) coordinator:
 
-- `ultraterm_subagents` validates and dispatches 1–8 bounded leaves;
+- `ultraterm_subagents` validates and dispatches bounded leaves, one per independent part of the work;
 - `ultraterm_hub` lists, inspects, waits for, messages, and cancels runs;
 - `ultraterm_relay` is available only inside children for run-local peer mail.
 
@@ -26,7 +26,7 @@ parent integrates results.
 | Resource | Bound |
 | --- | --- |
 | Tasks per run | 8 |
-| Concurrent children | 8 per run; session/machine ceilings from `usap-caps.json` (see the protocol reference for defaults) |
+| Concurrent children | One per task; capacity (the computer, `usap-caps.json`, provider rate limits) decides how many run at once |
 | Simultaneously active runs | 16 |
 | Run deadline | 10 minutes by default; 1 second–8 hours accepted |
 | Reviewer launch queue | 60 seconds across run/session/machine waits, capped by run deadline |

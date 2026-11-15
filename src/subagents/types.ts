@@ -26,13 +26,14 @@ export type HarnessId = (typeof HARNESS_IDS)[number];
 export function harnessOf(value: HarnessId | undefined): HarnessId {
   return value ?? "pi";
 }
-export const MAX_TASKS = 8;
+/** Safety bound on one dispatch, not a target: a wave is as wide as the work has independent leaves. */
+export const MAX_TASKS = 64;
 export const MAX_ACTIVE_RUNS = 16;
 export const MAX_RETAINED_TERMINAL_RUNS = 50;
 /** Fallback launch width when a dispatch supplies no usable task count. */
 export const DEFAULT_CONCURRENCY = 4;
-/** Session-wide launch ceiling. Automatic chain lanes fill 8-wide waves. */
-export const MAX_CONCURRENCY = 8;
+/** Hard ceiling on any launch width. The width that actually runs is decided by capacity (see capacity.ts). */
+export const MAX_CONCURRENCY = 64;
 export const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 export const MIN_TIMEOUT_MS = 1_000;
 /** Eight hours: one dispatch may hold a long-horizon leaf instead of re-dispatching it. */

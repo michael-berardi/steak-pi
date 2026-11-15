@@ -4,6 +4,10 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertClaudeEscapesProven, assertClaudeRulesProven, proveClaudeEscapes, resolveClaudeExecutable } from "../src/subagents/claude-rule-selftest.ts";
 
+// Long enough for the fake CLI (a Node script) to start and write its run log on a busy machine before the
+// self-test gives up on it; 500 to 700 ms lost that race under load and the run count read 0.
+const FAKE_CLI_TIMEOUT_MS = 4_000;
+
 /** The fake CLI's permission matcher, embedded into the fake CLI's source. `ignore` lists the escaped characters whose
  * backslash is ignored ("all" for every one); an unescaped character then keeps its pattern meaning: `[` opens a class,
  * `*` is a wildcard, `{a,b}` (with a comma) is a brace expansion, `+(a)` is an extglob, `!(a)` is a negation. */
@@ -105,7 +109,7 @@ describe("claude escape self-test", () => {
   it("a timeout is refused, and no child is left running", async () => {
     const { exe, cache } = install("hang");
     const started = Date.now();
-    const error = await assertClaudeEscapesProven(bracket, exe, () => undefined, { workDir: dirname(cache), cachePath: cache, timeoutMs: 700 }).catch((e: Error) => e);
+    const error = await assertClaudeEscapesProven(bracket, exe, () => undefined, { workDir: dirname(cache), cachePath: cache, timeoutMs: FAKE_CLI_TIMEOUT_MS }).catch((e: Error) => e);
     expect((error as Error).message).toMatch(/did not pass the escape self-test: .*timed out/);
     expect(Date.now() - started).toBeLessThan(20_000);
   }, 60_000);
@@ -199,10 +203,10 @@ describe("claude escape self-test", () => {
   it("a grandchild holding stdout open cannot hang the self-test; a later call is not blocked", async () => {
     const { exe, cache } = install("grandchild");
     const started = Date.now();
-    const verdict = await prove(exe, cache, { timeoutMs: 700 });
+    const verdict = await prove(exe, cache, { timeoutMs: FAKE_CLI_TIMEOUT_MS });
     expect(verdict.ok).toBe(false);
     expect(verdict.cause).toMatch(/timed out/);
-    expect(Date.now() - started).toBeLessThan(7_000);
+    expect(Date.now() - started).toBeLessThan(FAKE_CLI_TIMEOUT_MS + 10_000);
     const second = install("honour");
     expect((await prove(second.exe, second.cache)).ok).toBe(true);
   }, 60_000);
@@ -223,7 +227,7 @@ describe("claude escape self-test", () => {
     const pid = Number(readFileSync(`${exe}.pid`, "utf8"));
     expect(() => process.kill(pid, 0)).toThrow();
     // The abort was not cached: the same CLI, not aborted, is still tested (and refused for hanging).
-    expect((await prove(exe, cache, { timeoutMs: 500 })).cause).toMatch(/timed out/);
+    expect((await prove(exe, cache, { timeoutMs: FAKE_CLI_TIMEOUT_MS })).cause).toMatch(/timed out/);
     // An already-aborted signal never starts anything.
     const done = new AbortController(); done.abort();
     expect((await prove(exe, cache, { signal: done.signal })).cause).toMatch(/cancelled/);
@@ -359,7 +363,7 @@ describe("claude escape self-test", () => {
     for (const mode of ["crash", "hang"] as const) {
       const { exe, cache } = install(mode);
       let now = 1_000_000;
-      const run = () => prove(exe, cache, { now: () => now, timeoutMs: 700 });
+      const run = () => prove(exe, cache, { now: () => now, timeoutMs: FAKE_CLI_TIMEOUT_MS });
       expect((await run()).ok, mode).toBe(false);
       expect(runLog(exe), mode).toBe(1);
       now += 9 * 60_000;

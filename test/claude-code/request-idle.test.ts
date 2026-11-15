@@ -6,8 +6,12 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isRetryableAssistantError, type AssistantMessage } from "@earendil-works/pi-ai";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { closeClaudeProcesses, runClaudeRequest } from "../../extensions/claude-code/claude-cli.ts";
+
+// Each case starts a fake CLI and waits out real idle timers (2.3 s and more); the default 5 s test limit is too
+// tight on a busy machine.
+vi.setConfig({ testTimeout: 30_000 });
 
 const FAKE = `#!/usr/bin/env node
 import readline from "node:readline";

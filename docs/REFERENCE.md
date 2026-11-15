@@ -29,10 +29,11 @@ parent
         ↕ run-local relay
 ```
 
-- **Limits:** eight tasks and eight concurrent workers per run. Each session
-  runs at most eight workers per provider (fourteen combined; lower per-provider
-  ceilings come from your `~/.config/steak-pi/usap-caps.json`), within
-  machine-wide caps shared by every session on the computer.
+- **Width:** adaptive. A wave gets one worker per independent task, and
+  capacity decides how many run at once: a ceiling sized to your computer and
+  shared by every session on it, lower limits you set in
+  `~/.config/steak-pi/usap-caps.json`, and an automatic slowdown for a
+  provider that rate-limits.
 - **Ownership:** read-only workers have no edit tools. Writers may only touch
   their own paths, and overlapping ownership is refused before the run starts.
   Claude ownership paths with permission-rule characters such as `[slug]` are

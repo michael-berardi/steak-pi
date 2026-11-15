@@ -41,15 +41,17 @@ Use adaptive concurrency, never padding work:
 - **0:** direct answer, one known edit, or coupled work.
 - **1:** isolation or a specialist pass helps without true parallelism.
 - **2:** two independent leaves.
-- **3–5:** several genuinely independent paths or evidence sources.
-- **6–8:** long multi-aspect work with many disjoint leaves; fill the wave
-  instead of executing serially in the parent.
+- **3 or more:** one worker per genuinely independent path or evidence
+  source, however many there are. Twenty disjoint repositories are twenty
+  leaves in one wave, not three waves of a fixed size.
 
-Launch width defaults to min(8, task count), subject to capacity. Provider
-session and machine ceilings are not built in: set them in
-`~/.config/steak-pi/usap-caps.json`. When absent the defaults are 8 per provider
-per session, 14 per session combined, and 24 machine-wide. Each run still
-accepts at most eight tasks. Stop delegating
+No width is built in. A wave requests one worker per task and capacity decides
+how many run at once; the rest queue and start as slots free. The default
+ceiling is sized to the computer (two workers per core or one per 2 GiB of memory,
+whichever is lower), the operator's `~/.config/steak-pi/usap-caps.json`
+overrides it per provider, per session or machine-wide, and a provider that
+rate-limits is given fewer new launches until its workers finish cleanly again.
+One dispatch accepts up to 64 tasks, a safety bound and never a target. Stop delegating
 when briefing cost exceeds the remaining work, and dispatch more workers only
 when they buy completion speed.
 
@@ -336,8 +338,8 @@ timeout is not a completed or partial review. Once launch capacity is acquired, 
 queue bound is removed; execution retains the original run deadline. Legacy owners
 may be unknown; never remove live or unreadable slots to obtain review capacity.
 
-Canonical ceilings include 8 concurrent children per run, 16 active runs,
-8 tasks per run, 50 retained terminal runs, 20,000 retained output characters per child,
+Canonical ceilings include 64 tasks per run (a safety bound), 16 active runs,
+capacity-sized concurrency, 50 retained terminal runs, 20,000 retained output characters per child,
 4,000 characters per relay body, 100 mailbox messages, and 500 messages per
 run. Treat truncation, timeout, budget exhaustion, failure, and cancellation
 as evidence to inspect—not reasons to silently fan out or retry.
@@ -405,7 +407,7 @@ are here, unchanged.
 
 Routes and fallback:
 
-Dispatch 1-8 bounded tasks through Pi, the official headless Claude Code CLI, or the steak-dsh harness (the DSH headless CLI on an exact steak-dsh/<provider>/<model-id> route). Implicit routine waves run the operator's configured worker chain (textWorkerChain / multimodalWorkerChain in ~/.config/ultraterm/routing.json), then the configured Claude subscription tier (claudeFallbackTier); implicit all-reviewer waves run the configured implicitReview route. With nothing configured an implicit wave fails with the config key to set, while explicit model/profile/harness routes always work. The router's quota is checked first: a configured tier whose every account is cooling down or at 100% is skipped. Explicit routes win and are never rerouted; an explicit route in an exhausted provider is refused with the router's cause. A task may declare a taskClass the operator configured in routing.json: an implicit text worker wave then walks that class's chain first (same launch, quota, paid-route and onlyWhen checks), then the normal route; one run uses one route and a class steers only a wave whose every task carries it (within its slots and scope), an unknown class is ignored with a note, and the receipt names the class and why its route was or was not chosen. A worker that fails before its first model output fails this call itself, background or not, except that an implicit wave refused on a provider quota or usage limit (402 / insufficient credits / no endpoints found, a usage-limit error, a cooling-down router refusal) re-runs the same tasks once on the next configured tier inside this call, before Started. Each turn carries a one-line route availability notice (up, or COOLING until a time, HELD BACK, or NOT ALLOWED by project policy, plus the next usable route): omit model, profile and harness and let the router choose; never pin a COOLING, HELD BACK or NOT ALLOWED route. Foreground default; ownedPaths grants guarded writes on either harness; readPaths grants a read-only artifact root outside the run cwd to a read-only task; allowBash is unsandboxed shell except Claude read-only reviewers get no Bash. Claude image review uses native Read on staged files under cwd or a declared readPaths root.
+Dispatch bounded tasks, one per independent leaf (as many as the work has, up to 64), through Pi, the official headless Claude Code CLI, or the steak-dsh harness (the DSH headless CLI on an exact steak-dsh/<provider>/<model-id> route). Implicit routine waves run the operator's configured worker chain (textWorkerChain / multimodalWorkerChain in ~/.config/ultraterm/routing.json), then the configured Claude subscription tier (claudeFallbackTier); implicit all-reviewer waves run the configured implicitReview route. With nothing configured an implicit wave fails with the config key to set, while explicit model/profile/harness routes always work. The router's quota is checked first: a configured tier whose every account is cooling down or at 100% is skipped. Explicit routes win and are never rerouted; an explicit route in an exhausted provider is refused with the router's cause. A task may declare a taskClass the operator configured in routing.json: an implicit text worker wave then walks that class's chain first (same launch, quota, paid-route and onlyWhen checks), then the normal route; one run uses one route and a class steers only a wave whose every task carries it (within its slots and scope), an unknown class is ignored with a note, and the receipt names the class and why its route was or was not chosen. A worker that fails before its first model output fails this call itself, background or not, except that an implicit wave refused on a provider quota or usage limit (402 / insufficient credits / no endpoints found, a usage-limit error, a cooling-down router refusal) re-runs the same tasks once on the next configured tier inside this call, before Started. Each turn carries a one-line route availability notice (up, or COOLING until a time, HELD BACK, or NOT ALLOWED by project policy, plus the next usable route): omit model, profile and harness and let the router choose; never pin a COOLING, HELD BACK or NOT ALLOWED route. Foreground default; ownedPaths grants guarded writes on either harness; readPaths grants a read-only artifact root outside the run cwd to a read-only task; allowBash is unsandboxed shell except Claude read-only reviewers get no Bash. Claude image review uses native Read on staged files under cwd or a declared readPaths root.
 
 The claude-code harness:
 

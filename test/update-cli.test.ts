@@ -94,7 +94,7 @@ describe("steak-pi update for release-folder installs", () => {
     expect(r.status).not.toBe(0);
     expect(r.stderr).toMatch(/(npm ci failed in .*0\.17\.0\/package|still lacks pi-host-fixture after npm ci); Pi settings were not changed and still load 0\.16\.0/);
     expect(readFileSync(join(f.agent, "settings.json"), "utf8")).toBe(before);
-  });
+  }, 60_000); // runs a real `npm ci`, which takes longer than the default 5 s on a busy machine
 
   it("installs the dependencies of an existing release before re-pointing Pi at it", () => {
     const f = fixture("0.16.0", "0.17.0");
@@ -112,7 +112,7 @@ describe("steak-pi update for release-folder installs", () => {
     expect(r.stdout).toContain("Release 0.17.0 is missing dependencies (pi-host-fixture); installing them...");
     expect(existsSync(join(dest, "node_modules", "pi-host-fixture", "package.json"))).toBe(true);
     expect(JSON.parse(readFileSync(join(f.agent, "settings.json"), "utf8")).packages).toEqual(["../share/steak-pi/releases/0.17.0/package"]);
-  });
+  }, 60_000); // runs a real npm install
 
   it("preserves an incomplete existing destination", () => {
     const f = fixture("0.16.0", "0.17.0");

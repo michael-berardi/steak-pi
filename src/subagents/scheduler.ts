@@ -1,7 +1,11 @@
-import { machineCap, loadCapacityConfig, sessionCap, type CapacityConfig } from "./capacity.ts";
-import { MAX_CONCURRENCY } from "./types.ts";
+import { machineCap, loadCapacityConfig, type CapacityConfig } from "./capacity.ts";
 
 export type SchedulerLease = () => void;
+
+/** Rate-limit refusals closer together than this are one event. */
+export const THROTTLE_WINDOW_MS = 5_000;
+/** A provider with no rate limit for this long gets its full width back. */
+export const THROTTLE_RESET_MS = 10 * 60_000;
 
 interface QueuedAcquire {
   provider: string;
@@ -18,7 +22,8 @@ export function abortError(signal?: AbortSignal, message = "Operation aborted"):
 }
 
 function bucketCap(config: CapacityConfig, provider: string, globalCeiling: number): number {
-  return Math.min(sessionCap(config, provider), globalCeiling);
+  // A provider without its own configured ceiling may use the whole of this scheduler's width.
+  return Math.min(config.session.providers[provider] ?? globalCeiling, globalCeiling);
 }
 
 /**
@@ -34,8 +39,12 @@ export class SessionScheduler {
   private activeLeases = 0;
   private readonly activeByBucket = new Map<string, number>();
   private readonly queue: QueuedAcquire[] = [];
+  /** Providers currently slowed after a rate limit: provider -> launch width allowed now. */
+  private readonly throttled = new Map<string, { limit: number; at: number }>();
+  private readonly now: () => number;
 
-  constructor(maxConcurrency = loadCapacityConfig().session.global, config?: CapacityConfig) {
+  constructor(maxConcurrency = loadCapacityConfig().session.global, config?: CapacityConfig, now: () => number = Date.now) {
+    this.now = now;
     if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1 || maxConcurrency > 64) {
       throw new RangeError("maxConcurrency must be an integer from 1 to 64");
     }
@@ -55,8 +64,40 @@ export class SessionScheduler {
     return this.activeByBucket.get(provider) ?? 0;
   }
 
+  /** Configured ceiling for a provider in this session. */
   capFor(provider: string): number {
     return bucketCap(this.config, provider, this.maxConcurrency);
+  }
+
+  /** Width a provider may run right now: its ceiling, or less while it is being throttled. */
+  limitFor(provider: string): number {
+    const slowed = this.throttled.get(provider);
+    if (slowed && this.now() - slowed.at >= THROTTLE_RESET_MS) this.throttled.delete(provider);
+    return Math.min(this.capFor(provider), this.throttled.get(provider)?.limit ?? Infinity);
+  }
+
+  /**
+   * A provider rate-limited a worker: halve the width this session gives it.
+   * Workers already running are left alone; fewer new ones start. One burst of
+   * refusals counts once (`THROTTLE_WINDOW_MS`), so a wave that is throttled
+   * together does not collapse to a single worker.
+   */
+  throttle(provider: string): void {
+    const now = this.now();
+    const prior = this.throttled.get(provider);
+    if (prior && now - prior.at < THROTTLE_WINDOW_MS) return;
+    const running = Math.max(1, this.activeFor(provider));
+    const limit = Math.max(1, Math.floor(Math.min(this.limitFor(provider), running) / 2));
+    this.throttled.set(provider, { limit, at: now });
+  }
+
+  /** A worker on this provider finished cleanly: give one launch slot back, up to the ceiling. */
+  recover(provider: string): void {
+    const prior = this.throttled.get(provider);
+    if (!prior) return;
+    if (prior.limit + 1 >= this.capFor(provider)) this.throttled.delete(provider);
+    else this.throttled.set(provider, { limit: prior.limit + 1, at: prior.at });
+    this.drain();
   }
 
   /** Acquire one launch slot, optionally scoped to a provider bucket. */
@@ -101,8 +142,7 @@ export class SessionScheduler {
 
   private hasRoom(entry: QueuedAcquire): boolean {
     if (this.activeLeases >= this.maxConcurrency) return false;
-    const cap = bucketCap(this.config, entry.provider, this.maxConcurrency);
-    return (this.activeByBucket.get(entry.provider) ?? 0) < cap;
+    return (this.activeByBucket.get(entry.provider) ?? 0) < this.limitFor(entry.provider);
   }
 
   private drain(): void {
@@ -145,9 +185,6 @@ function defaultSessionScheduler(): SessionScheduler {
 
 /** The process/session-wide worker pool shared by default by every coordinator. */
 export const sessionScheduler = defaultSessionScheduler();
-
-/** Ceiling used by the default bucket for providers without an explicit cap. */
-export const DEFAULT_BUCKET_CEILING = Math.min(MAX_CONCURRENCY, sessionScheduler.maxConcurrency);
 
 // Short aliases keep callers and tests readable without creating another pool.
 export { SessionScheduler as Scheduler };

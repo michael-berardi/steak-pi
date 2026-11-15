@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.33.0 (2026-11-15)
+
+Subagent waves are as wide as the work, and the README is a quarter of its length.
+
+- **No fixed width of 8.** A dispatch takes one task per independent part of the work (up to 64, a safety bound) and asks for one worker per task. How many run at once is decided by capacity: the default session and machine ceilings are sized to the computer (two workers per core or one per 2 GiB of memory, whichever is lower, never under 4), and `~/.config/steak-pi/usap-caps.json` still overrides them per provider, per session or machine-wide. Tasks beyond capacity queue and start as slots free.
+- **A provider that rate-limits is slowed, not hammered.** When a worker fails on a rate limit, the session halves the number of new workers it starts on that provider (running workers are left alone; one burst of refusals counts once). Each worker that then finishes cleanly gives one slot back, and ten quiet minutes restore the full width.
+- If you relied on the old defaults (8 per provider per session, 14 per session, 12 per provider and 24 in total machine-wide), set them in `usap-caps.json`.
+- **README:** 507 lines to 137. It leads with what Steak Pi adds, measured results with links to the result files, and the one-line install. Settings and worker guidance moved to `docs/REFERENCE.md`, installation details to `docs/INSTALL.md`; both ship in the package. The pinned install command named 0.31.0; a test now keeps it on the current version.
+- `scripts/build-release.sh` refuses an output folder that is an ancestor of the checkout before it deletes anything.
+
 ## 0.32.0 (2026-11-14)
 
 - **The status line shows when a session's context has grown large.** Above the compaction threshold you configured for the model, or with none configured above 40% of a window of 500,000 tokens or more, the context band adds `ctx` and the current size (for example `ctx 410k`). Long sessions on large-window models re-read their whole history on every turn; this makes that visible. It is a display cue only and changes nothing about when compaction runs.

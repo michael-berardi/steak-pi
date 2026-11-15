@@ -148,7 +148,7 @@ export const ultratermSubagentsSchema = Type.Object({
   constraints: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4_000 }), { maxItems: 64 })),
   contract: Type.Optional(Type.String({ minLength: 1, maxLength: 8_000 })),
   tasks: Type.Array(TaskSchema, { minItems: 1, maxItems: MAX_TASKS }),
-  concurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_CONCURRENCY, description: "Defaults to min(8, task count)." })),
+  concurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_CONCURRENCY, description: "Optional narrower width. Default: one worker per task, as capacity allows." })),
   timeoutMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: MAX_TIMEOUT_MS, description: "Absolute run budget including queue time; default 10 minutes, maximum 8 hours. Reviewer launch waits are additionally bounded to 60 seconds." })),
   maxTurns: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_WORKER_TURNS, description: "Per-worker request budget; default 64. Increase explicitly for long-horizon work." })),
   background: Type.Optional(Type.Boolean({ default: false })),
@@ -1399,8 +1399,7 @@ export function createUltratermSubagentsExtension(
     };
     let clearedStatusUi: ExtensionContext["ui"] | undefined;
     // Replacements share leases with any late-disposing prior initialization.
-    // Session-wide ceiling comes from usap-caps.json; each run stays capped at
-    // MAX_CONCURRENCY by dispatch validation.
+    // Session-wide ceiling comes from the machine's capacity or usap-caps.json.
     const scheduler = dependencies.createScheduler?.() ?? new SessionScheduler();
     /** Teardowns whose workers had not settled at the bounded deadline. Their
      * checkpoint lease and live state stay retained (never force-released, never
@@ -2789,10 +2788,10 @@ export function createUltratermSubagentsExtension(
     pi.registerTool({
       name: "ultraterm_subagents",
       label: "UltraTerm Subagents",
-      description: "Dispatch 1-8 bounded tasks through Pi, the official headless Claude Code CLI, or the steak-dsh harness (an exact steak-dsh/<provider>/<model-id> route). Omit model, profile and harness and the operator's routing.json picks the route: the configured worker chain, then the configured Claude subscription tier; an all-reviewer wave runs the configured review route. Explicit routes win and are never rerouted. Each turn carries a route availability notice: never pin a COOLING, HELD BACK or NOT ALLOWED route. A worker that fails before its first model output fails this call, except a provider quota or usage-limit refusal on an implicit wave, which re-runs the same tasks once on the next configured tier inside this call. Foreground default; ownedPaths grants guarded writes; readPaths grants a read-only artifact root outside the run cwd to a read-only task; allowBash is unsandboxed shell except Claude read-only reviewers get no Bash. Routing, fallback, task-class and harness details are in the ultraterm-subagent-protocol skill (Dispatch reference).",
+      description: "Dispatch bounded tasks, one per independent leaf (as many as the work has, up to 64), through Pi, the official headless Claude Code CLI, or the steak-dsh harness (an exact steak-dsh/<provider>/<model-id> route). Omit model, profile and harness and the operator's routing.json picks the route: the configured worker chain, then the configured Claude subscription tier; an all-reviewer wave runs the configured review route. Explicit routes win and are never rerouted. Each turn carries a route availability notice: never pin a COOLING, HELD BACK or NOT ALLOWED route. A worker that fails before its first model output fails this call, except a provider quota or usage-limit refusal on an implicit wave, which re-runs the same tasks once on the next configured tier inside this call. Foreground default; ownedPaths grants guarded writes; readPaths grants a read-only artifact root outside the run cwd to a read-only task; allowBash is unsandboxed shell except Claude read-only reviewers get no Bash. Routing, fallback, task-class and harness details are in the ultraterm-subagent-protocol skill (Dispatch reference).",
       promptSnippet: "Dispatch bounded independent child tasks with explicit permissions and path ownership",
       promptGuidelines: [
-        "Fan out by default: independent leaves (disjoint files, modules, screens, angles) dispatch in ONE parallel wave — width defaults to min(8, task count); provider ceilings come from the operator's usap-caps.json.",
+        "Fan out by default: independent leaves (disjoint files, modules, screens, angles) dispatch in ONE parallel wave, one task per leaf however many there are; never trim or pad a wave to a fixed number. Capacity (machine size, the operator's usap-caps.json, a provider that throttles) decides how many run at once and queues the rest.",
         "Delegation must buy completion speed; modest token premiums for real throughput are correct. Trivial or tightly coupled edits and direct answers stay in the parent.",
         "Parent owns decomposition, integration, verification; workers own leaves end to end. With exact disjoint paths and acceptance contracts in hand, dispatch in the first tool turn without pre-reading child-owned files; do not duplicate child discovery in the parent.",
         "The operator's routing.json decides the default worker chain, the expert reviewer and which routes need a bounded expert verification (verificationGates); a worker on a gated route is told which reviewer route to request through the parent. Read-only and report-only work need no automatic gate.",

@@ -96,26 +96,26 @@ dispatch in the first tool turn without pre-reading child-owned files. Batch
 independent inspection using permitted tools; reuse successful identical calls
 unless state changed, then inspect the delta.
 
-### Adaptive concurrency: 0–8
+### Adaptive concurrency
 
 Concurrency is a decision, not a target — but independence defaults to width.
 When several genuinely independent leaves exist, dispatch them together and let
-the wave run wide; the launch width defaults to `min(8, task count)`, so an
-unsized dispatch requests N-wide, subject to provider/session/machine capacity:
+the wave run wide; an unsized dispatch requests one worker per task, and
+provider, session and machine capacity decide how many run at once:
 
 | Concurrent children | Use when |
 | --- | --- |
 | 0 | One known edit, a direct answer, coupled work, or briefing costs more than execution |
 | 1 | Context isolation or a specialist pass helps, but no true parallelism exists |
 | 2 | Two independent implementation, research, or review leaves exist |
-| 3–5 | Several genuinely independent paths, subsystems, audits, or evidence sources exist |
-| 6–8 | Long multi-aspect work with many disjoint leaves; fill the wave instead of executing serially in the parent |
+| 3 or more | One per genuinely independent path, subsystem, audit, or evidence source, however many exist; fill the wave instead of executing serially in the parent |
 
-Eight is the hard per-run concurrency ceiling. Provider session and machine
-concurrency ceilings are not built in: set them in
-`~/.config/steak-pi/usap-caps.json`. When that file is absent the code defaults
-are 8 concurrent children per provider per session, 14 per session combined, and
-24 machine-wide; `README.md` gives the session figures.
+No width is built in. The default session and machine ceilings are sized to the
+computer: two workers per core or one per 2 GiB of memory, whichever is lower
+(never under 4, never over 64). `~/.config/steak-pi/usap-caps.json` overrides
+them per provider, per session or machine-wide. A provider that rate-limits a
+worker has its launch width in that session halved; each worker that then
+finishes cleanly gives one slot back, and ten quiet minutes restore the full width.
 These configurable provider buckets are not model-specific quotas. A run may queue more
 bounded tasks than its width, but only the requested width executes at once.
 Do not invent padding work to fill slots, and do not execute a long list of
@@ -783,11 +783,11 @@ The Steak Pi implementation profile uses these ceilings:
 
 | Resource | Bound |
 | --- | --- |
-| Concurrent children (per run) | 8 hard maximum; requested width defaults to min(8, task count), subject to capacity |
-| Concurrent children (per session) | Configurable in `usap-caps.json`; defaults 8 per provider, 14 combined |
-| Concurrent children (machine-wide) | Configurable in `usap-caps.json`; default 24 |
+| Concurrent children (per run) | One per task by default; capacity decides how many run at once |
+| Concurrent children (per session) | Sized to the computer; configurable in `usap-caps.json`; halved for a provider that rate-limits |
+| Concurrent children (machine-wide) | Sized to the computer; configurable in `usap-caps.json` |
 | Simultaneously active runs | 16; further dispatch is rejected until a run settles |
-| Tasks accepted in one run | 8 hard maximum; excess tasks remain a parent planning problem |
+| Tasks accepted in one run | 64, a safety bound and not a target |
 | Run wall clock | finite; default 10 minutes, accepted range 1 second–8 hours (`timeoutMs`) |
 | Reviewer launch queue | 60 seconds across run, session and machine waits; never beyond the run deadline |
 | Retained terminal runs | 50 per coordinator session; oldest terminal records are evicted while live runs remain |

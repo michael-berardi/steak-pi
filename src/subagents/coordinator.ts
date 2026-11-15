@@ -597,6 +597,10 @@ export class SubagentCoordinator {
                 ...(progress.toolSuccesses !== undefined ? { toolSuccesses: prior.toolSuccesses + progress.toolSuccesses } : {}),
               }),
             });
+            // Adaptive width: a provider that throttles gets fewer new launches in this
+            // session until its workers finish cleanly again.
+            if (result.state === "failed" && classifyFailure(result.error) === "rate-limit") this.scheduler.throttle(provider);
+            else if (result.state === "done") this.scheduler.recover(provider);
             if (attempt > 0) {
               result = { ...result,
                 usage: addUsage(cloneUsage(prior.usage), result.usage),

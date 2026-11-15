@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Coordinator, CoordinatorWaitTimeoutError, workerJournal } from "../src/subagents/coordinator.ts";
 import { Scheduler } from "../src/subagents/scheduler.ts";
 import { workerTurnBudget } from "../src/subagents/pi-worker.ts";
-import type { MachineSlots } from "../src/subagents/machine-slots.ts";
+import { NoopSlots, type MachineSlots } from "../src/subagents/machine-slots.ts";
 import {
   MAX_ACTIVE_RUNS,
   MAX_RETAINED_TERMINAL_RUNS,
@@ -431,10 +431,34 @@ describe("subagent coordinator", () => {
     expect(() => coordinator.start(run("too-late", 1))).toThrow("shut down");
   });
 
+  it("runs a 20-task wave 20 wide, and narrows a provider that rate-limits", async () => {
+    const scheduler = new Scheduler(32);
+    let active = 0; let peak = 0;
+    const wide = new Coordinator(async () => {
+      active += 1; peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      active -= 1;
+      return result();
+    }, { scheduler, machineSlots: new NoopSlots() }); // the machine tier is sized to the computer running the test
+    await wide.wait(wide.start(run("wide", 20, 20)).id, "all", { timeoutMs: 5_000 });
+    expect(peak).toBe(20);
+
+    const limited = new Coordinator(async ({ task: leaf }) => leaf.id.endsWith("-t1")
+      ? { ...result("failed"), error: "429 Too Many Requests" }
+      : result(), { scheduler, machineSlots: new NoopSlots() });
+    await limited.wait(limited.start(run("limited", 1, 1)).id, "all", { timeoutMs: 5_000 });
+    expect(scheduler.limitFor("default")).toBeLessThan(scheduler.capFor("default"));
+    const narrowed = scheduler.limitFor("default");
+    expect(narrowed).toBe(1);
+    // Two clean finishes give two slots back (the repeated refusal is the same burst).
+    await limited.wait(limited.start(run("clean", 3, 3)).id, "all", { timeoutMs: 5_000 });
+    expect(scheduler.limitFor("default")).toBe(narrowed + 2);
+  });
+
   it("defensively validates raw run bounds", () => {
     const coordinator = new Coordinator(async () => result(), { scheduler: new Scheduler(1) });
-    expect(() => coordinator.start(run("empty", 0))).toThrow(/1 to 8/);
-    expect(() => coordinator.start(run("many", 9))).toThrow(/1 to 8/);
+    expect(() => coordinator.start(run("empty", 0))).toThrow(/1 to 64/);
+    expect(() => coordinator.start(run("many", 65))).toThrow(/1 to 64/);
     expect(() => coordinator.start(run("short", 1, 1, 999))).toThrow(/timeoutMs/);
     expect(() => coordinator.start(run("long", 1, 1, 8 * 60 * 60_000 + 1))).toThrow(/timeoutMs/);
   });

@@ -289,9 +289,9 @@ export function normalizeDispatch(
         return input.constraints.map((value, index) => nonemptyString(value, `constraints[${index}]`));
       })();
   const contract = input.contract === undefined ? undefined : nonemptyString(input.contract, "contract");
-  // Adaptive wave sizing: an unsized dispatch launches one wave as wide as its
-  // task count (capped), so N disjoint leaves run N-wide by default instead of
-  // trickling through a fixed quarter-cap. Explicit concurrency still wins.
+  // Adaptive wave sizing: an unsized dispatch asks for one worker per task, so N
+  // disjoint leaves run N-wide. Session and machine capacity decide how many of
+  // them run at once; an explicit concurrency narrows the wave.
   const taskCount = Array.isArray(input.tasks) ? input.tasks.length : 0;
   const concurrencyFallback = Math.min(MAX_CONCURRENCY, Math.max(1, taskCount || DEFAULT_CONCURRENCY));
   const concurrency = integerInRange(

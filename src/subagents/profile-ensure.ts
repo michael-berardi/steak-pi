@@ -91,7 +91,7 @@ export const runEnsureCommand: EnsureExec = (argv, { timeoutMs, signal }) => new
   if (signal?.aborted) onAbort(); else signal?.addEventListener("abort", onAbort, { once: true });
 });
 
-/** One launch or release of a profile at a time in this process: a wave starts up to eight workers at once, and
+/** One launch or release of a profile at a time in this process: a wave starts many workers at once, and
  * a "start the server if it is not running" command must not race itself. Other processes are the command's own
  * business (a lock file); the queue is per profile and a waiter can still be aborted. */
 class Turns {

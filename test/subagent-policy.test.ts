@@ -135,15 +135,15 @@ describe("normalizeDispatch", () => {
     });
   });
 
-  it("requires one to eight tasks with unique nonempty labels", () => {
+  it("requires 1 to 64 tasks with unique nonempty labels", () => {
     const { cwd } = fixture();
-    expect(() => normalizeDispatch(dispatch([]), cwd, "m", "t")).toThrow(/1 to 8/);
+    expect(() => normalizeDispatch(dispatch([]), cwd, "m", "t")).toThrow(/1 to 64/);
     expect(() => normalizeDispatch(
-      dispatch(Array.from({ length: 9 }, (_, index) => ({ label: `t${index}`, task: "x" }))),
+      dispatch(Array.from({ length: 65 }, (_, index) => ({ label: `t${index}`, task: "x" }))),
       cwd,
       "m",
       "t",
-    )).toThrow(/1 to 8/);
+    )).toThrow(/1 to 64/);
     expect(() => normalizeDispatch(dispatch([{ label: " ", task: "x" }]), cwd, "m", "t"))
       .toThrow(/nonempty/);
     expect(() => normalizeDispatch(
@@ -175,8 +175,9 @@ describe("normalizeDispatch", () => {
 
   it("defaults concurrency to a full adaptive wave", () => {
     const { cwd } = fixture();
-    const many = Array.from({ length: MAX_CONCURRENCY }, (_, i) => ({ label: `t${i}`, task: "work" }));
-    expect(normalizeDispatch(dispatch(many), cwd, "m", "t").concurrency).toBe(MAX_CONCURRENCY);
+    // No fixed width: twenty independent leaves ask for twenty workers.
+    const many = Array.from({ length: 20 }, (_, i) => ({ label: `t${i}`, task: "work" }));
+    expect(normalizeDispatch(dispatch(many), cwd, "m", "t").concurrency).toBe(20);
     expect(normalizeDispatch(dispatch(many.slice(0, 3)), cwd, "m", "t").concurrency).toBe(3);
     expect(normalizeDispatch(
       dispatch(many, { concurrency: 2 }),
