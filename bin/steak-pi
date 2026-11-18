@@ -350,7 +350,22 @@ cmd_remove() {
 #   MALLOC_ARENA_MAX=2 fewer glibc arenas across libuv/V8 helper threads
 #   semi-space 2 MB    smaller young generation; idle PSS -12%, 8-worker
 #                      fan-out peak RSS 164 -> 125 MB, no measured slowdown
+# Child processes must not spawn a versioned Homebrew keg path: `brew upgrade` deletes it under a running session
+# (2026-11-18: `spawn .../Cellar/node@22/<old>/bin/node ENOENT`). Export the stable path node was found at, mapping a
+# <prefix>/Cellar/<formula>/<version>/bin/node path to <prefix>/opt/<formula>/bin/node. An explicit STEAK_PI_NODE wins.
+stable_node_env() {
+  [ -n "${STEAK_PI_NODE:-}" ] && return 0
+  found=$(command -v node 2>/dev/null) || return 0
+  case "$found" in
+    */Cellar/*/bin/node)
+      prefix=${found%%/Cellar/*}; rest=${found#*/Cellar/}; formula=${rest%%/*}
+      [ -x "$prefix/opt/$formula/bin/node" ] && found="$prefix/opt/$formula/bin/node";;
+  esac
+  case "$found" in /*) STEAK_PI_NODE="$found"; export STEAK_PI_NODE;; esac
+}
+
 run_env() {
+  stable_node_env
   if [ -z "${NODE_COMPILE_CACHE:-}" ] && [ -z "${NODE_DISABLE_COMPILE_CACHE:-}" ]; then
     NODE_COMPILE_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/steak-pi/node-compile-cache"
     export NODE_COMPILE_CACHE

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.34.2 (2026-11-18)
+
+- **A Homebrew upgrade no longer kills running sessions.** Children were started from `process.execPath`, which is the versioned keg path (`<prefix>/Cellar/<formula>/<version>/bin/node`). `brew upgrade` deletes that directory, so a session that began before the upgrade failed every later spawn with `spawn .../Cellar/node@22/<old>/bin/node ENOENT`, and the unhandled child `error` event ended the session. One helper, `stableNodePath()`, now picks the node for a child at spawn time: an executable `STEAK_PI_NODE` override first, then the stable `<prefix>/opt/<formula>/bin/node` link that Homebrew repoints on upgrade (derived from a Cellar `execPath`, no hard-coded formula or version), then `process.execPath` only if it still exists. If none is left it throws `node runtime moved: <old path>; restart this session`, an ordinary error the caller reports, instead of an uncaught exception. The Claude Code harness's MCP child and the local-model supervisor use it. `steak-pi run` exports `STEAK_PI_NODE` (the stable path node was found at) for every child of the session, including extensions that spawn their own helpers.
+
 ## 0.34.1 (2026-11-18)
 
 - **A free route is no longer blocked by the paid plan's cooldown, and a paid route can never pass as free.** A route counts as free only when all three hold: the operator listed it in the `freeRoutes` list of the routing config, its registry price is explicitly zero, and the operator's own custom-model entry in Pi's `models.json` carries a `cost` row with input, output, cacheRead and cacheWrite all typed `0`. Pi fills an all-zero price for any custom model defined without one, so the composed price alone proves nothing; the raw row does. If `models.json` is unreadable, missing, malformed, partial or lists the model twice, the route is not free (fail closed).

@@ -20,6 +20,7 @@ import { availableMemory, diskUsedPercent, DISK_MAX_PERCENT, gib, startNeedBytes
 import { listProfiles, LocalError, readJson, readProfile, withLock, writeAtomic } from "./store.ts";
 import { resolveServer, serverArgs, type LaunchProfile } from "./profile.ts";
 import { resolveLimits } from "./limits.ts";
+import { stableNodePath } from "../../extensions/claude-code/stable-node-path.ts";
 
 export const DEFAULT_GRACE_MS = 10 * 60_000;
 export const DEFAULT_HEALTH_TIMEOUT_MS = 180_000;
@@ -479,7 +480,9 @@ export function systemDeps(dir: string): Deps {
       // tree) then leaves the server to its idle grace instead of stopping it on the spot (2026-11-02).
       const log = join(dir, "server.log");
       const main = fileURLToPath(new URL("./main.ts", import.meta.url));
-      const out = execFileSync("/bin/sh", ["-c", 'umask 077; "$0" --no-warnings "$1" _supervise "$2" </dev/null >>"$3" 2>&1 & echo $!', process.execPath, main, id, log],
+      let node: string;
+      try { node = stableNodePath(); } catch (error) { throw new LocalError("supervisor-spawn", error instanceof Error ? error.message : String(error)); }
+      const out = execFileSync("/bin/sh", ["-c", 'umask 077; "$0" --no-warnings "$1" _supervise "$2" </dev/null >>"$3" 2>&1 & echo $!', node, main, id, log],
         { encoding: "utf8", env: { ...process.env, ...(adopt ? { STEAK_PI_ADOPT_PID: String(adopt.pid), STEAK_PI_ADOPT_START: adopt.start ?? "" } : {}) }, cwd: dir, timeout: 10_000 });
       const pid = Number(out.trim());
       if (!Number.isInteger(pid) || pid <= 0) throw new LocalError("supervisor-spawn", `could not start the local server supervisor (got ${JSON.stringify(out.trim().slice(0, 40))})`);
