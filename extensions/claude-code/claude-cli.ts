@@ -14,6 +14,7 @@ import { TurnRelay } from "./turn-relay.ts";
 import { usageCreditsAllowed, usageCreditsChargeError, type RateLimitInfo } from "./billing.ts";
 import { assertAccountReserve, forgetSessionAccount, reportRateLimit, resolveRequestAccount } from "./account-reserve.ts";
 import { envFlagEnabled } from "./env.ts";
+import { stableNodePath } from "./stable-node-path.ts";
 import type { DiscoveredClaudeModel } from "./model-catalog.ts";
 import type {
   AnthropicStreamEvent,
@@ -1133,7 +1134,7 @@ class ClaudeProcess {
       const env = { ...plan.env, ANTHROPIC_BASE_URL: await relay.start(input.signal) };
       const mcp = {
         mcpServers: {
-          pi: { command: process.execPath, args: [inertMcpPath, toolsPath] },
+          pi: { command: stableNodePath(), args: [inertMcpPath, toolsPath] },
         },
       };
       const args = [

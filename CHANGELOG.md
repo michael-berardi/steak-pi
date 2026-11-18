@@ -1,12 +1,18 @@
 # Changelog
 
-## 0.35.0 (2026-11-18)
+## 0.35.1 (2026-11-18)
+
+The tag `v0.35.0` was never published as a release: it was cut before 0.34.2 landed and lacks that fix. Use 0.35.1.
 
 - **The local model can be held off automatically.** A local model takes most of the GPU and memory, so it must not run next to other heavy work. Two rules, both set by you and stored in `~/.pi/agent/local/hold.json`:
   - `steak-pi local hold 24h [reason]` switches it off until that time and stops the running server; it comes back by itself (`local hold off` ends it early).
   - `steak-pi local quiet path <repo>` and `quiet process <name>` list work it must not share the machine with. The first sign of that work on a day (the program running, or a commit, checkout, merge or rebase in the repository or a linked worktree) keeps it off for the rest of that local day, also after the program is closed. `quiet today` does the same by hand.
 - While a hold is in force, `start`, `ensure`, `check` and a session on a `local/...` model refuse with `on-hold` or `quiet-day` and the reason, a running server is stopped within 30 seconds even with users attached, and a worker profile whose `ensure` uses the local model is refused before launch so the wave moves to the next step of its chain. A hold file that cannot be read holds the model off (`bad-hold`) and names the fault.
 - `local status` shows the hold in force and the quiet rule.
+
+## 0.34.2 (2026-11-18)
+
+- **A Homebrew upgrade no longer kills running sessions.** Children were started from `process.execPath`, which is the versioned keg path (`<prefix>/Cellar/<formula>/<version>/bin/node`). `brew upgrade` deletes that directory, so a session that began before the upgrade failed every later spawn with `spawn .../Cellar/node@22/<old>/bin/node ENOENT`, and the unhandled child `error` event ended the session. One helper, `stableNodePath()`, now picks the node for a child at spawn time: an executable `STEAK_PI_NODE` override first, then the stable `<prefix>/opt/<formula>/bin/node` link that Homebrew repoints on upgrade (derived from a Cellar `execPath`, no hard-coded formula or version), then `process.execPath` only if it still exists. If none is left it throws `node runtime moved: <old path>; restart this session`, an ordinary error the caller reports, instead of an uncaught exception. The Claude Code harness's MCP child and the local-model supervisor use it. `steak-pi run` exports `STEAK_PI_NODE` (the stable path node was found at) for every child of the session, including extensions that spawn their own helpers.
 
 ## 0.34.1 (2026-11-18)
 
