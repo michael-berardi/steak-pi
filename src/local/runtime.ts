@@ -7,7 +7,7 @@
  * lease has been gone for the grace period it stops the server it started and confirms the port is free.
  * Nothing is installed as a service; everything lives under `~/.pi/agent/local/`.
  *
- * Starts are refused, with a named cause, when llama-server is missing, the model file is gone, the disk is above 90%,
+ * Starts are refused, with a named cause, when a hold is in force (see hold.ts), llama-server is missing, the model file is gone, the disk is above 90%,
  * another model server is running, the port is taken, or free + reclaimable memory cannot hold the model.
  * Everything that touches the machine goes through `Deps`, so the rules are testable with a fake clock and server.
  */
@@ -20,11 +20,14 @@ import { availableMemory, diskUsedPercent, DISK_MAX_PERCENT, gib, startNeedBytes
 import { listProfiles, LocalError, readJson, readProfile, withLock, writeAtomic } from "./store.ts";
 import { resolveServer, serverArgs, type LaunchProfile } from "./profile.ts";
 import { resolveLimits } from "./limits.ts";
+import { activeHold, type HoldProbe } from "./hold.ts";
 
 export const DEFAULT_GRACE_MS = 10 * 60_000;
 export const DEFAULT_HEALTH_TIMEOUT_MS = 180_000;
 export const MANUAL_HOLDER = "manual";
 const POLL_MS = 2000;
+// How often a running server re-reads the hold rules (a process list and a few file times, so not on every poll).
+const HOLD_POLL_MS = 30_000;
 const INSTALL_HINT = "install llama.cpp (macOS: brew install llama.cpp; other systems: https://github.com/ggml-org/llama.cpp/releases) or set STEAK_PI_LLAMA_SERVER to the llama-server path";
 // Local model servers that must not run next to this one (matched on the executable's name only).
 const OTHER_SERVERS = /^(?:llama-server|llama-cli|llama-run|ollama|ollama_llama_server|vllm|sglang|lms)$/;
@@ -56,6 +59,8 @@ export interface Deps {
   spawnServer(binary: string, args: string[], log: string): { pid: number; exited: Promise<number | null> };
   graceMs: number;
   healthTimeoutMs: number;
+  /** What the hold rules look at (running programs, repository file times). Defaults to the real machine. */
+  holdProbe?: HoldProbe;
 }
 
 export class Refused extends LocalError {}
@@ -205,6 +210,9 @@ export type StartPlan =
  * when a start would not be allowed. Because `ensure` acts on this exact answer, `check` can never disagree with it.
  */
 export async function planStart(deps: Deps, profile: LaunchProfile): Promise<StartPlan> {
+  // A hold comes before everything, an attach included: a server still stopping must not be joined while the model is off.
+  const held = activeHold(deps.dir, deps.now(), deps.holdProbe);
+  if (held) refuse(held.code, held.detail);
   const record = readJson<ServerRecord>(serverPath(deps));
   const supervisorUp = !!record && deps.alive(record.supervisorPid, record.supervisorStart);
   const serverUp = !!record && record.serverPid !== undefined && deps.alive(record.serverPid, record.serverStart);
@@ -345,7 +353,7 @@ export async function status(deps: Deps): Promise<Status> {
 
 // ---- the supervisor ---------------------------------------------------------------------------------------------------
 
-export interface SuperviseResult { reason: "idle" | "server-exited" | "signal"; portReleased: boolean }
+export interface SuperviseResult { reason: "idle" | "server-exited" | "signal" | "hold"; portReleased: boolean }
 
 /** An already-running server (recorded PID and start time) as a supervised child: it "exits" when that process is gone. */
 function adoptServer(deps: Deps, adopt: { pid: number; start?: string }): { pid: number; exited: Promise<number | null> } {
@@ -369,9 +377,15 @@ export async function supervise(deps: Deps, id: string, stopRequested: Promise<v
   // The loop only reads the leases (no lock): a stop in progress holds the lock while it waits for this process.
   let idleSince: number | undefined;
   let reason: SuperviseResult["reason"] = "idle";
+  let holdCheckedAt = -Infinity;
   for (;;) {
     if (exited) { reason = "server-exited"; break; }
     if (asked) { reason = "signal"; break; }
+    // A hold that begins while the server runs (a timed hold set, or the quiet rule firing) stops it, leases or not.
+    if (deps.now() - holdCheckedAt >= HOLD_POLL_MS) {
+      holdCheckedAt = deps.now();
+      if (activeHold(deps.dir, deps.now(), deps.holdProbe)) { reason = "hold"; break; }
+    }
     const state = peekLeases(deps);
     idleSince = state.holders > 0 ? undefined : state.idleSince ?? idleSince ?? deps.now();
     if (idleSince !== undefined && deps.now() - idleSince >= deps.graceMs) break;

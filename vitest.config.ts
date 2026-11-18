@@ -27,6 +27,9 @@ export default defineConfig({
       // Keep unit tests hermetic: no cross-process slot files, default caps.
       STEAK_PI_USAP_MACHINE: "off",
       HOME: home,
+      // A run started from an UltraTerm pane inherits the launcher's bundled harness catalog; left set, the operator's
+      // live profiles leak into the suite (2026-11-18: one test failed only inside a pane). Empty means "use the checkout's".
+      ULTRATERM_HARNESS_RESOURCES: "",
       STEAK_PI_ROUTING_CONFIG: join(fixtures, "routing.json"),
       STEAK_PI_PAID_ROUTES: join(fixtures, "paid-routes.json"),
       // The task-class router's evidence store is a state file: tests write theirs under the private HOME.

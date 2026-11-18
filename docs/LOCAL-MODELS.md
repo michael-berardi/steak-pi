@@ -27,6 +27,8 @@ other Pi model: pick it with `--model` or `/model`.
 | `local stop` | Stop the server Steak Pi started (only that one) and confirm the port is released. |
 | `local status [id]` | Server state, number of users, idle time, and the added models. |
 | `local check <id>` | Read-only: runs the disk, memory and model-file checks `ensure` runs, without starting anything or taking a lease. Prints `ok: local/<id> is running` or `ok: local/<id> fits (needs X GiB, Y GiB free)` and exits 0; a start that would be refused prints the `REFUSED` line and exits 3; an unknown id exits 1. Use it before dispatching a worker onto a local model. `ensure` and `check` share one decision function, so they cannot disagree. |
+| `local hold <N>m\|h\|d [reason]` / `local hold off` | Switch the local model off until then (the running server is stopped at once); it comes back by itself. See [Holds](#holds-times-the-local-model-stays-off). |
+| `local quiet` / `quiet path <repo>` / `quiet process <name>` / `quiet remove <x>` / `quiet today [reason]` | The quiet-day rule: work the local model must not share the machine with. |
 | `local ensure <id>` / `local release <id>` | Take / give back one lease. For `routing.json` and hooks (below). |
 
 A Hugging Face spec is read without downloading the model: only the file list and the first few MiB of the chosen
@@ -183,6 +185,9 @@ and nothing is left running or leased:
 
 | Cause | When |
 |---|---|
+| `on-hold` | a timed hold is in force (`local hold`); the message says when it ends |
+| `quiet-day` | the quiet-day rule fired today; the message says what fired it. The local model returns the next day |
+| `bad-hold` | `hold.json` cannot be read; a broken rule file holds the model off instead of switching the rule off |
 | `llama-server-missing` | not on `PATH` (and `STEAK_PI_LLAMA_SERVER` is not set); the message carries the install hint |
 | `model-missing` | the GGUF file is gone |
 | `disk-full` | the disk is above 90% used |
@@ -197,6 +202,40 @@ and nothing is left running or leased:
 
 Memory is checked at `add` against total RAM and again at every start against what is free right now.
 
+## Holds: times the local model stays off
+
+A local model takes most of the GPU and a large share of memory. Two rules keep it away from work that needs the
+machine. Both are yours: Steak Pi ships no program name, repository or schedule.
+
+```sh
+steak-pi local hold 24h rendering this week   # off for 24 hours, then back on by itself
+steak-pi local hold off                       # end a timed hold early
+
+steak-pi local quiet path ~/dev/my-heavy-project   # a repository
+steak-pi local quiet process Blender               # a program, by the name the process list shows
+steak-pi local quiet                               # show the rule and whether it holds right now
+steak-pi local quiet today playtest                # off for the rest of today, by hand
+steak-pi local quiet remove Blender
+```
+
+**A timed hold** refuses every start until it ends and stops a running server when it is set.
+
+**The quiet-day rule** watches for work you listed. The first sign of it on a calendar day switches the local model
+off for the rest of that local day: a listed program running, or a commit, checkout, merge, reset or rebase in a
+listed repository or one of its linked worktrees (read from the modification times of git's own `HEAD`, `ORIG_HEAD`
+and `logs/HEAD`; no file contents are read, and `git status` does not count). The day is remembered, so the model stays off after the
+program is closed, and the next day starts clean. Editing files without committing is not seen; use `quiet today` then.
+
+While a hold is in force:
+
+- `start`, `ensure`, `check` and a session on a `local/...` model refuse with `on-hold` or `quiet-day` and the reason;
+- a server that is already running is stopped within 30 seconds, whoever holds a lease;
+- a USAP worker profile whose `ensure` runs `steak-pi local ensure` is refused before launch, so an implicit wave
+  moves to the next step of its chain. Nothing needs to be taken out of `routing.json`.
+
+The rules live in `~/.pi/agent/local/hold.json`. A file that cannot be read holds the model off (`bad-hold`) and names
+the fault.
+
 ## Lifecycle: leases and idle stop
 
 `ensure` takes one reference for its holder and starts the server if none runs; `release` gives one back. A holder is a
@@ -207,7 +246,7 @@ the last reference is gone a small supervisor process waits the grace period (10
 `local stop` stops it at once, whoever still holds a lease.
 
 State lives in `~/.pi/agent/local/`: `profiles/`, `leases.json`, `server.json` (PIDs, port, start times: only what
-is recorded there is ever stopped), `server.log`. Environment: `STEAK_PI_LOCAL_GRACE_S` (idle grace, default 600),
+is recorded there is ever stopped), `server.log`, `hold.json` (the hold rules above). Environment: `STEAK_PI_LOCAL_GRACE_S` (idle grace, default 600),
 `STEAK_PI_LOCAL_HEALTH_TIMEOUT_S` (default 180), `STEAK_PI_LLAMA_SERVER` (path to the binary).
 
 ## In a Pi session

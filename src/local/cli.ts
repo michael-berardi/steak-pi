@@ -16,6 +16,7 @@ import { HF_SPEC, readHfHeader, resolveHf, type Fetch } from "./hf.ts";
 import { DEFAULT_PORT, idFromSource, planProfile, PlanError, type Source } from "./profile.ts";
 import { check, ensure, manualHolder, pidHolder, release, status, stop, supervise, systemDeps, type Deps } from "./runtime.ts";
 import { promptCapTokens, resolveLimits } from "./limits.ts";
+import { activeHold, addQuiet, clearHold, describeHold, markQuietToday, parseDuration, removeQuiet, setHold } from "./hold.ts";
 import { checkId, listProfiles, localDir, LocalError, modelsJsonPath, readProfile, upsertLocalModel, writeProfile } from "./store.ts";
 
 export interface Io { out(text: string): void; err(text: string): void }
@@ -29,7 +30,12 @@ const USAGE = `usage: steak-pi local <command>
   status [id]     show the server, its users and the added models
   ensure <id>     take a lease and bring the server up (for routing.json ensure.command)
   check <id>      read-only: would 'ensure' start it? ok (exit 0), REFUSED (exit 3), unknown id (exit 1)
-  release <id>    let go of that lease (for ensure.release); the server stops after an idle grace`;
+  release <id>    let go of that lease (for ensure.release); the server stops after an idle grace
+  hold <N>m|h|d [reason]   switch the local model off until then (stops it now); 'hold off' ends it
+  quiet           show the quiet-day rule: work the local model must not share the machine with
+  quiet path <repo dir> | quiet process <name> | quiet remove <dir or name>
+                  the first sign of that work on a day keeps the local model off until the next day
+  quiet today [reason]     switch it off for the rest of today by hand`;
 
 const SHARD_FIRST = /-00001-of-(\d{5})\.gguf$/i;
 
@@ -131,6 +137,7 @@ export async function main(argv: string[], options: CliOptions = {}): Promise<nu
           `users    ${state.holders}${state.holders ? "" : state.running && state.idleMs !== undefined ? `, idle ${minutes(state.idleMs)} (stops after ${minutes(state.graceMs)} idle)` : ""}`,
           ...profiles.map((entry) => `model    local/${entry.id}  ctx ${entry.ctx}, port ${entry.port}, ${entry.source.kind === "file" ? entry.source.path : entry.source.spec}`),
           ...(profiles.length ? [] : ["model    none added yet"]),
+          ...describeHold(deps.dir, deps.now(), deps.holdProbe),
         ].join("\n"));
         return 0;
       }
@@ -160,6 +167,38 @@ export async function main(argv: string[], options: CliOptions = {}): Promise<nu
         const { remaining } = await release(deps, holder());
         io.out(`released local/${rest[0]}; ${remaining} user(s) remain${remaining ? "" : `; the server stops after ${minutes(deps.graceMs)} idle`}`);
         return 0;
+      }
+      case "hold": {
+        if (!rest[0]) { io.err(USAGE); return 1; }
+        if (rest[0] === "off") {
+          await clearHold(deps.dir);
+          const still = activeHold(deps.dir, deps.now(), deps.holdProbe);
+          io.out(still ? `timed hold ended; still off: ${still.detail}` : "timed hold ended; the local model may run");
+          return 0;
+        }
+        const until = deps.now() + parseDuration(rest[0]);
+        await setHold(deps.dir, until, rest.slice(1).join(" ").trim() || undefined);
+        const stopped = await stop(deps);
+        io.out(`${activeHold(deps.dir, deps.now(), deps.holdProbe)?.detail ?? "hold set"}${stopped.stopped ? `; stopped local/${stopped.id}, port ${stopped.port} ${stopped.portReleased ? "released" : "STILL HELD, check the process list"}` : ""}`);
+        return stopped.stopped && !stopped.portReleased ? 2 : 0;
+      }
+      case "quiet": {
+        const [action, ...words] = rest;
+        if (action === "path" || action === "process") {
+          if (!words[0]) { io.err(USAGE); return 1; }
+          await addQuiet(deps.dir, action, words.join(" "));
+        } else if (action === "remove") {
+          if (!words[0]) { io.err(USAGE); return 1; }
+          const { removed } = await removeQuiet(deps.dir, words.join(" "));
+          if (!removed) throw new LocalError("bad-option", `${words.join(" ")} is not in the quiet rule`);
+        } else if (action === "today") {
+          await markQuietToday(deps.dir, deps.now(), words.join(" ").trim() || "switched off by hand");
+        } else if (action !== undefined) { io.err(USAGE); return 1; }
+        // The rule may fire the moment it is written (the program is open, the repository was worked in today): act on it now.
+        const held = activeHold(deps.dir, deps.now(), deps.holdProbe);
+        const stopped = held ? await stop(deps) : undefined;
+        io.out([...describeHold(deps.dir, deps.now(), deps.holdProbe), ...(stopped?.stopped ? [`stopped  local/${stopped.id}, port ${stopped.port} ${stopped.portReleased ? "released" : "STILL HELD, check the process list"}`] : [])].join("\n"));
+        return stopped?.stopped && !stopped.portReleased ? 2 : 0;
       }
       case "_supervise": {
         if (!rest[0] || !readProfile(deps.dir, rest[0])) return 1;

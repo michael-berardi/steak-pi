@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.35.0 (2026-11-18)
+
+- **The local model can be held off automatically.** A local model takes most of the GPU and memory, so it must not run next to other heavy work. Two rules, both set by you and stored in `~/.pi/agent/local/hold.json`:
+  - `steak-pi local hold 24h [reason]` switches it off until that time and stops the running server; it comes back by itself (`local hold off` ends it early).
+  - `steak-pi local quiet path <repo>` and `quiet process <name>` list work it must not share the machine with. The first sign of that work on a day (the program running, or a commit, checkout, merge or rebase in the repository or a linked worktree) keeps it off for the rest of that local day, also after the program is closed. `quiet today` does the same by hand.
+- While a hold is in force, `start`, `ensure`, `check` and a session on a `local/...` model refuse with `on-hold` or `quiet-day` and the reason, a running server is stopped within 30 seconds even with users attached, and a worker profile whose `ensure` uses the local model is refused before launch so the wave moves to the next step of its chain. A hold file that cannot be read holds the model off (`bad-hold`) and names the fault.
+- `local status` shows the hold in force and the quiet rule.
+
 ## 0.34.1 (2026-11-18)
 
 - **A free route is no longer blocked by the paid plan's cooldown, and a paid route can never pass as free.** A route counts as free only when all three hold: the operator listed it in the `freeRoutes` list of the routing config, its registry price is explicitly zero, and the operator's own custom-model entry in Pi's `models.json` carries a `cost` row with input, output, cacheRead and cacheWrite all typed `0`. Pi fills an all-zero price for any custom model defined without one, so the composed price alone proves nothing; the raw row does. If `models.json` is unreadable, missing, malformed, partial or lists the model twice, the route is not free (fail closed).

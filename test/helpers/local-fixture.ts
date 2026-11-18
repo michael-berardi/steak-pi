@@ -100,6 +100,8 @@ export function fakeMachine(dir: string, overrides: Partial<Deps> = {}): Fake {
     spawnServer: () => { throw new Error("not used"); },
     graceMs: 600_000,
     healthTimeoutMs: 30_000,
+    // The hold rules never look at the real machine in a test.
+    holdProbe: { processNames: () => [], mtime: () => undefined, list: () => [] },
     ...overrides,
   };
   return { deps, clock, alive, calls, state, signals };
