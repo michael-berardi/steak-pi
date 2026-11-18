@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { isClaudeAccountId, type ClaudeAccountId } from "./claude-account.ts";
 import { providerAccountCommand, type AccountCommand } from "./provider-accounts.ts";
+import { rawModelHasZeroCostRow } from "../raw-model-cost.ts";
 import { isListedFreeRoute, routingConfigOrEmpty, type QuotaTierConfig } from "../routing-config.ts";
 
 /** Account-router provider keys. The quota tiers a chain walks, and which routes belong to each,
@@ -275,12 +276,14 @@ export function hasExplicitZeroPrice(model: { cost?: unknown } | undefined): boo
   return record(cost) && ["input", "output", "cacheRead", "cacheWrite"].every((key) => Object.hasOwn(cost, key) && cost[key] === 0);
 }
 
-/** A route is free only when the operator listed it in routing.json `freeRoutes` AND its registry price is explicitly
- * zero. The model composer fills an all-zero price for any custom model defined without one, so a zero price alone
- * (a paid account model with no price, operator-typed zeros) proves nothing. Not billing authorization. */
+/** A route is free only when ALL hold: the operator listed it in routing.json `freeRoutes` (that allowlist is the gate),
+ * the registry price is explicitly zero, and the operator's own custom-model entry in Pi's models.json carries a cost
+ * row with every price a literal zero. The model composer fills an all-zero price for a custom model defined without
+ * one, so the composed price alone cannot tell an operator-typed zero from that default; the raw row can. When
+ * models.json cannot be read the route is not free (fail closed). Not billing authorization. */
 export function isProvenFreeModel(model: { provider?: string; id?: string; cost?: unknown } | undefined): boolean {
   return typeof model?.provider === "string" && typeof model.id === "string"
-    && isListedFreeRoute(model.provider, model.id) && hasExplicitZeroPrice(model);
+    && isListedFreeRoute(model.provider, model.id) && hasExplicitZeroPrice(model) && rawModelHasZeroCostRow(model.provider, model.id);
 }
 
 /** Why `step` cannot launch, or undefined (including for unknown, busy and ungated routes).

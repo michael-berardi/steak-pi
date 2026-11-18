@@ -191,7 +191,7 @@ export interface ImplicitReviewConfig { route: string; fallback?: string }
 export interface VerificationGateConfig { match: RegExp; reviewer: string; fallback?: string }
 
 /** The validated operator configuration. Every key is optional; absent means "no choice". */
-/** One operator-proven free route: where the zero price comes from and the evidence for it. */
+/** One operator-declared free route: where the zero price comes from and the evidence for it. */
 export interface FreeRouteConfig { route: string; source: string; evidence: string }
 export const DEFAULT_FREE_ROUTE_COOLDOWN_MINUTES = 10;
 
@@ -226,7 +226,7 @@ export interface RoutingConfig {
   claudeCodeDefaults?: ClaudeCodeDefaultsConfig;
   implicitReview?: ImplicitReviewConfig;
   verificationGates?: readonly VerificationGateConfig[];
-  /** Operator allowlist of routes proven free: a route is free only when listed here AND its registry price is explicitly zero. */
+  /** Operator allowlist of free routes (the gate): a route is free only when listed here AND the raw models.json entry has an all-zero cost row (unreadable: not free). */
   freeRoutes?: readonly FreeRouteConfig[];
   /** Minutes a free route that answered 429/limit before output is held out of selection; absent: DEFAULT_FREE_ROUTE_COOLDOWN_MINUTES. */
   freeRouteCooldownMinutes?: number;

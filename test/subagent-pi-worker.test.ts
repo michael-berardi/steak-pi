@@ -9,6 +9,7 @@ import type {
   CreateAgentSessionOptions,
   ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
+import { clearRawModels, writeRawModels, ZERO_COST } from "./helpers/raw-models.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setRoutingConfigOverride } from "../src/routing-config.ts";
 import { routingFixture } from "./helpers/routing-fixture.ts";
@@ -1389,10 +1390,11 @@ describe("worker plan exhaustion is reported to the account router as usage", ()
     expect(isQuotaLaunchFailure(result.error ?? "")).toBe(false);
   });
 
-  afterEach(() => setRoutingConfigOverride(undefined));
+  afterEach(() => { setRoutingConfigOverride(undefined); clearRawModels(); });
   const FREE_LISTED = { route: "opencode-go/deepseek-v4.1-flash", source: "operator catalog", evidence: "synthetic test" };
-  async function refusedLimitCalls(kind: "go" | "sol", errorMessage: string, free = false, listed = free, baseUrl?: string): Promise<string[][]> {
+  async function refusedLimitCalls(kind: "go" | "sol", errorMessage: string, free = false, listed = free, baseUrl?: string, rawRow = true): Promise<string[][]> {
     setRoutingConfigOverride(listed ? { ...routingFixture(), freeRoutes: [FREE_LISTED] } : undefined);
+    writeRawModels(rawRow ? [{ provider: "opencode-go", id: "deepseek-v4.1-flash", cost: ZERO_COST }] : []);
     const record = task(); const fake = new FakeSession();
     fake.onPrompt = async (session) => {
       const failed = { role: "assistant" as const, content: [], api: "test", provider: "test", model: "test", usage: usage(0), stopReason: "error", errorMessage, timestamp: Date.now() };
@@ -1427,8 +1429,35 @@ describe("worker plan exhaustion is reported to the account router as usage", ()
     expect(limits.length).toBeGreaterThan(0);
   });
 
+  it("treats a listed, registry-zero model with no raw models.json cost row as paid (the composer's default zero)", async () => {
+    const limits = await refusedLimitCalls("go", "429 Too Many Requests", true, false, undefined, false);
+    expect(limits.length).toBeGreaterThan(0);
+    setRoutingConfigOverride({ ...routingFixture(), freeRoutes: [FREE_LISTED] });
+    const record = task(); const command = vi.fn(async (args: string[]) => args[0] !== "select" ? { ok: true } : { ok: true, account: { id: "primary", agentDir: goAgentDir }, lease: "lease-go" });
+    const fake = new FakeSession();
+    const runner = createPiWorkerRunner({ relay: setupBroker(), accountCommand: command,
+      resolveRuntime: () => ({ model: { ...goModel as object, cost: usage(0).cost } as never, thinkingLevel: "off" }),
+      sessionFactory: async () => ({ session: fake }) });
+    await runner({ run: run("/tmp", record), task: record, signal: new AbortController().signal, onProgress: vi.fn() });
+    expect(command.mock.calls.some(([args]) => (args as string[])[0] === "select")).toBe(true);
+  });
+
+  it("keeps the canonical-endpoint check for a listed free model whose tier has no account router", async () => {
+    setRoutingConfigOverride({ ...routingFixture(), freeRoutes: [FREE_LISTED],
+      providerQuotaFallback: [{ quota: "free-tier", provider: "opencode-go", models: ["deepseek-v4.1-flash"], baseUrl: "https://canonical.example/v1" }] });
+    writeRawModels([{ provider: "opencode-go", id: "deepseek-v4.1-flash", cost: ZERO_COST }]);
+    const record = task(); const fake = new FakeSession();
+    const runner = createPiWorkerRunner({ relay: setupBroker(), accountCommand: vi.fn(async () => ({ ok: true })),
+      resolveRuntime: () => ({ model: { ...goModel as object, cost: usage(0).cost, baseUrl: "https://other.example/v1" } as never, thinkingLevel: "off" }),
+      sessionFactory: async () => ({ session: fake }) });
+    const result = await runner({ run: run("/tmp", record), task: record, signal: new AbortController().signal, onProgress: vi.fn() });
+    expect(result.state).toBe("failed");
+    expect(result.error).toContain("requires the canonical endpoint");
+  });
+
   it("keeps the canonical-endpoint check for a listed free model on another baseUrl", async () => {
     setRoutingConfigOverride({ ...routingFixture(), freeRoutes: [FREE_LISTED] });
+    writeRawModels([{ provider: "opencode-go", id: "deepseek-v4.1-flash", cost: ZERO_COST }]);
     const record = task(); const fake = new FakeSession();
     const command = vi.fn(async () => ({ ok: true }));
     const runner = createPiWorkerRunner({ relay: setupBroker(), accountCommand: command,

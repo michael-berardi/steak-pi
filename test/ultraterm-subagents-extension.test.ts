@@ -9,6 +9,7 @@ import { basename, join } from "node:path";
 import { GO_ACCOUNT_ROUTER_TIMEOUT_MS, isolatedCodexAgentDir, isolatedAgentPaths } from "../src/subagents/provider-accounts.ts";
 import { createPiWorkerRunner } from "../src/subagents/pi-worker.ts";
 import type { ExtensionAPI, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { clearRawModels, writeRawModels, writeRawModelsText, ZERO_COST } from "./helpers/raw-models.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_STARTUP_WINDOW_MS,
@@ -129,7 +130,9 @@ function syntheticClaudeReceipt(account: SyntheticClaudeAccount): NonNullable<Ta
   };
 }
 
+let omitRawCostRow = false;
 afterEach(() => {
+  omitRawCostRow = false; clearRawModels();
   vi.useRealTimers();
   vi.unstubAllEnvs();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -2237,6 +2240,8 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
     });
     const h = harness(() => runner, durable, undefined, { accountCommand: accountCommand as never, profiles: BUILTIN_WORKER_PROFILES, ...overrides });
     const models: typeof solModel[] = [solModel, goModel, { ...solModel, id: "gpt-6.1-sol" }, ...(extraModels as typeof solModel[])];
+    // The operator's raw models.json: a typed all-zero cost row for each zero-priced extra model (unless a case withholds it).
+    if (omitRawCostRow) clearRawModels(); else writeRawModels(models.filter((model) => (model as { cost?: unknown }).cost !== undefined && JSON.stringify((model as { cost?: unknown }).cost) === JSON.stringify(ZERO_COST)));
     h.ctx.modelRegistry = {
       find: (provider: string, id: string) => models.find(model => model.provider === provider && model.id === id),
       getAll: () => models, getAvailable: () => models, hasConfiguredAuth: () => true,
@@ -2276,6 +2281,26 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
     it("does not treat an unlisted zero-price model as free (the composer defaults a missing price to zero)", async () => {
       configure([]);
       const { h } = quotaHarness(status({ go: goOut, codex: solUp }), done(), {}, undefined, [first, second]);
+      try {
+        const result = await dispatch(h, { tasks: plain });
+        expect(result.details.run.model).toBe(SOL_ROUTE);
+      } finally { setRoutingConfigOverride(undefined); await shutdown(h); }
+    });
+
+    it("does not treat a listed zero-price route as free when models.json has no cost row for it (the composer's default zero)", async () => {
+      configure();
+      omitRawCostRow = true;
+      const { h } = quotaHarness(status({ go: goOut, codex: solUp }), done(), {}, undefined, [first, second]);
+      try {
+        const result = await dispatch(h, { tasks: plain });
+        expect(result.details.run.model).toBe(SOL_ROUTE);
+      } finally { setRoutingConfigOverride(undefined); await shutdown(h); }
+    });
+
+    it("fails closed when models.json cannot be read", async () => {
+      configure();
+      const { h } = quotaHarness(status({ go: goOut, codex: solUp }), done(), {}, undefined, [first, second]);
+      writeRawModelsText("{ not json");
       try {
         const result = await dispatch(h, { tasks: plain });
         expect(result.details.run.model).toBe(SOL_ROUTE);

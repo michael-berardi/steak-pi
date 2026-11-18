@@ -153,9 +153,14 @@ JavaScript sources, case-insensitive unless noted. Unknown keys are ignored
     { "match": "^provider-a/", "reviewer": "claude-code/<large-model>", "fallback": "provider-x/model-name" }
   ],
 
-  // Routes proven free of plan quota. A route is free only when listed here AND its registry price is explicitly zero
-  // (the model composer defaults a missing price to zero, so a zero price alone proves nothing). Validated by
-  // `steak-pi routing check`. A free route skips plan cooldown and account leasing but keeps the canonical-endpoint check.
+  // Routes the operator declares free of plan quota. This allowlist IS the gate: a route is treated as free only when
+  // it is listed here AND Pi's models.json holds a custom-model entry for exactly that provider/model whose `cost` row
+  // is present with input, output, cacheRead and cacheWrite all typed as 0. Pi's model composer fills an all-zero
+  // price for a custom model defined without one, so the composed registry price cannot tell a typed zero from that
+  // default; the raw row can. If models.json cannot be read (or has no such row) the route is NOT free (fail closed).
+  // Not billing authorization. Each entry needs `route` (provider/model), `source` and `evidence`; validated by
+  // `steak-pi routing check`. A free route skips plan cooldown and account leasing but keeps the canonical-endpoint
+  // check (a tier that pins `baseUrl` for its provider still binds it, with or without an account router).
   "freeRoutes": [
     { "route": "provider-c/model-name", "source": "provider price page", "evidence": "checked 2026-11-01, input/output 0" }
   ],
@@ -191,8 +196,8 @@ What each key replaces, and what happens without it:
 | `claudeCodeDefaults` | `harness: "claude-code"` needs an explicit `model` |
 | `implicitReview` | implicit all-reviewer waves resolve the native reviewer chain |
 | `verificationGates` | no worker is told to request a verification |
-| `freeRoutes` | no route is treated as free; every route is gated by its plan quota as before |
-| `freeRouteCooldownMinutes` | a free route that refused with a rate limit is held out for 10 minutes |
+| `freeRoutes` | no route is treated as free; every route is gated by its plan quota as before (a listed route also needs its all-zero cost row in models.json, else it is gated the same way) |
+| `freeRouteCooldownMinutes` | a free route that refused with a rate limit is held out for 10 minutes (one hold per route, shared by dispatch and the availability line, including `steak-dsh/` routes) |
 | `routeLabels` | notes show `provider/model` |
 
 Provider-specific *adapter* code stays: the Claude Code CLI adapter keeps its

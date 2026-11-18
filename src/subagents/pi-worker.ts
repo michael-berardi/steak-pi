@@ -1155,7 +1155,14 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
           accountProvider = "opencode-go";
           task.providerAccount = { provider: "opencode-go", id: account.id, label: account.label, lease: account.lease };
         }
-      } else if (!free && isQuotaTierRoute(`${runtime.model.provider}/${runtime.model.id}`, CODEX_QUOTA)) {
+      } else if (free) {
+        // No account-router tier, but a tier that lists this provider (and model) may still pin the canonical
+        // endpoint: a listed free route on another baseUrl must not receive the ambient key either.
+        const tier = quotaTiers().find((entry) => entry.provider === runtime.model.provider && (!entry.models || entry.models.includes(runtime.model.id)));
+        if (tier?.baseUrl && runtime.model.baseUrl !== tier.baseUrl) {
+          throw new Error(`${tier.label ?? tier.quota} free route requires the canonical endpoint`);
+        }
+      } else if (isQuotaTierRoute(`${runtime.model.provider}/${runtime.model.id}`, CODEX_QUOTA)) {
         // preferred-free is deliberately NOT included: its virtual call boundary
         // signals return-to-normal instead of borrowing ambient Codex credentials.
         // A normal-profile checkpointed relaunch must enter this reservation path.

@@ -1,3 +1,4 @@
+import { clearRawModels, writeRawModels, ZERO_COST } from "./helpers/raw-models.ts";
 import { describe, expect, it, vi } from "vitest";
 import { sdkPiAiUrl } from "./helpers/pi-sdk-dependencies.ts";
 import { eligibleGoFallback, GO_FALLBACK_MODEL, withOpenCodeGoRouting } from "../src/opencode-go-routing.ts";
@@ -85,6 +86,7 @@ describe("authorized OpenCode Go routing", () => {
   it("never treats permission errors with transient wording as eligible", () => expect(eligibleGoFallback("403 temporarily unavailable region")).toBe(false));
   it("does not grant paid routing when a free model returns even structured plan-exhaustion wording", async () => {
     setRoutingConfigOverride({ freeRoutes: [{ route: "opencode-go/deepseek-v4.1-flash", source: "operator catalog", evidence: "synthetic" }] });
+    writeRawModels([{ provider: "opencode-go", id: "deepseek-v4.1-flash", cost: ZERO_COST }]);
     try {
     const key = "synthetic-go-key";
     const exhaustion = JSON.stringify({ status: 429, code: "subscription_quota_exceeded", scope: "subscription", remaining: 0,
@@ -95,7 +97,7 @@ describe("authorized OpenCode Go routing", () => {
     expect(hasConfirmedGoExhaustion(key)).toBe(true);
     expect((await request({ ...primary, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })).errorMessage).toBe(exhaustion);
     expect(hasConfirmedGoExhaustion(key)).toBe(false);
-    } finally { setRoutingConfigOverride(undefined); }
+    } finally { setRoutingConfigOverride(undefined); clearRawModels(); }
   });
   it("still records exhaustion for a zero-price model the operator did not list as free", async () => {
     const key = "synthetic-go-key-2";

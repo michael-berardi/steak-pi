@@ -658,7 +658,7 @@ async function resolveImplicitWorkerRoute(
   const heldBlock = (step: WorkerRouteStep): string | undefined => {
     const routeName = step.harness === "steak-dsh" ? dshRouteOf(step) : routeOfStep(step);
     // A free route that refused with a rate limit stays out for a short cooldown across dispatches.
-    const cooling = isFree(step) ? freeRouteHeldUntil(routeName, dependencies.now?.() ?? Date.now()) : undefined;
+    const cooling = isFree(step) ? freeRouteHeldUntil(step, dependencies.now?.() ?? Date.now()) : undefined;
     if (cooling !== undefined) return `zero-price route refused a request (rate limit) and is cooling down for ${Math.ceil((cooling - (dependencies.now?.() ?? Date.now())) / 60_000)} more minute(s)`;
     const refused = held.get(routeName);
     return refused?.kind === "free" ? `run ${refused.runId} (zero-price route) refused before any output (${refused.cause})`
