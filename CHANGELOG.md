@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.34.1 (2026-11-18)
+
+- **A free route is no longer blocked by the paid plan's cooldown, and a paid route can never pass as free.** A route counts as free only when all three hold: the operator listed it in the `freeRoutes` list of the routing config, its registry price is explicitly zero, and the operator's own custom-model entry in Pi's `models.json` carries a `cost` row with input, output, cacheRead and cacheWrite all typed `0`. Pi fills an all-zero price for any custom model defined without one, so the composed price alone proves nothing; the raw row does. If `models.json` is unreadable, missing, malformed, partial or lists the model twice, the route is not free (fail closed).
+- A free route that answers a rate limit before any output is held out for `freeRouteCooldownMinutes` (default 10) under its own budget and cooldown, kept apart from the paid plan's. The hold and the availability check share one key, so a harness-qualified route is held and looked up under the same name.
+- A listed free route on a provider whose tier pins a canonical endpoint still refuses to run against any other base URL, so the ambient key is never sent elsewhere.
+
 ## 0.34.0 (2026-11-15)
 
 - **An explicit route for routine workers must say why.** A review of three weeks of sessions found 853 dispatches in seven days that named a route explicitly; explicit routes are never rerouted, so when that route was at its limit the wave failed where an implicit wave would have moved to the next tier. A `ultraterm_subagents` wave that names `model` or `profile` and has any `worker` or `scout` task (a task with no role is a worker) now needs `routeReason`, 16 to 2000 characters on why the configured worker chain is not right for this wave, the way `thinking: high` needs a `thinkingReason`. Without it the dispatch is refused with `RouteReasonRequiredError`, which prints the field to add and says that omitting `model` and `profile` lets the configured chain choose. Reviewer-only waves are exempt. The rule applies to every explicit route (the routing config has no list of expert routes to narrow it). The reason is recorded in the run receipt (`selection.routeReason`) and the dispatch summary.
