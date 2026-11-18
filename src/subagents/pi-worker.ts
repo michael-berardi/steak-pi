@@ -1,7 +1,7 @@
 import { isCatalogExtraRoute, registerCatalogExtras } from "../catalog-extras.ts";
 import { verificationGateFor } from "../routing-config.ts";
 import { resolveProjectPolicy, type ProjectPolicy } from "./project-policy.ts";
-import { CODEX_QUOTA, isClaudeRouteStep, isZeroPriceModel, isQuotaTierRoute, quotaTiers } from "./provider-quota.ts";
+import { CODEX_QUOTA, isClaudeRouteStep, isProvenFreeModel, isQuotaTierRoute, quotaTiers } from "./provider-quota.ts";
 import {
   GO_ACCOUNT_LEASE_RENEW_INTERVAL_MS,
   GO_ACCOUNT_LEASE_TTL_SECONDS,
@@ -1128,13 +1128,17 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       // Account leasing is operator configuration: a providerQuotaFallback tier marked
       // accountRouter leases from the provider account router for its routes. The canonical
       // endpoint, when configured, must match. With no such tier no lease is taken.
-      const free = isZeroPriceModel(runtime.model);
-      const routerTier = free ? undefined : quotaTiers().find((tier) => tier.accountRouter === true && tier.provider === runtime.model.provider);
+      const free = isProvenFreeModel(runtime.model);
+      // A free route skips only the lease and limit reporting; the canonical-endpoint check still binds it, so a
+      // listed route pointed at another baseUrl never receives the ambient account key.
+      const routerTier = quotaTiers().find((tier) => tier.accountRouter === true && tier.provider === runtime.model.provider);
       if (routerTier) {
         if (routerTier.baseUrl && runtime.model.baseUrl !== routerTier.baseUrl) {
           throw new Error(`${routerTier.label ?? routerTier.quota} account routing requires the canonical endpoint`);
         }
-        if (routerTier.quota === "codex") {
+        if (free) {
+          // Proven free on the canonical endpoint: no lease, no plan accounting.
+        } else if (routerTier.quota === "codex") {
           // preferred-free is deliberately NOT included: its virtual call boundary
           // signals return-to-normal instead of borrowing ambient Codex credentials.
           // A normal-profile checkpointed relaunch must enter this reservation path.

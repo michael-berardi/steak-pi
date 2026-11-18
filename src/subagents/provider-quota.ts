@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { isClaudeAccountId, type ClaudeAccountId } from "./claude-account.ts";
 import { providerAccountCommand, type AccountCommand } from "./provider-accounts.ts";
-import { routingConfigOrEmpty, type QuotaTierConfig } from "../routing-config.ts";
+import { isListedFreeRoute, routingConfigOrEmpty, type QuotaTierConfig } from "../routing-config.ts";
 
 /** Account-router provider keys. The quota tiers a chain walks, and which routes belong to each,
  * are operator configuration (`providerQuotaFallback` in routing.json); "claude" is the Claude
@@ -269,17 +269,24 @@ export function quotaProviderOf(step: { provider: string; id: string }): QuotaPr
   return quotaTiers().find((tier) => tier.provider === step.provider && (!tier.models || tier.models.includes(step.id)))?.quota;
 }
 
-/** Only a complete catalog price of exactly zero is independent of plan quota.
- * Missing, partial, or non-numeric prices prove nothing. This is not billing authorization. */
-export function isZeroPriceModel(model: { cost?: unknown } | undefined): boolean {
+/** True only for an explicit, complete zero price. Missing, partial, or non-numeric prices prove nothing. */
+export function hasExplicitZeroPrice(model: { cost?: unknown } | undefined): boolean {
   const cost = model?.cost;
   return record(cost) && ["input", "output", "cacheRead", "cacheWrite"].every((key) => Object.hasOwn(cost, key) && cost[key] === 0);
+}
+
+/** A route is free only when the operator listed it in routing.json `freeRoutes` AND its registry price is explicitly
+ * zero. The model composer fills an all-zero price for any custom model defined without one, so a zero price alone
+ * (a paid account model with no price, operator-typed zeros) proves nothing. Not billing authorization. */
+export function isProvenFreeModel(model: { provider?: string; id?: string; cost?: unknown } | undefined): boolean {
+  return typeof model?.provider === "string" && typeof model.id === "string"
+    && isListedFreeRoute(model.provider, model.id) && hasExplicitZeroPrice(model);
 }
 
 /** Why `step` cannot launch, or undefined (including for unknown, busy and ungated routes).
  * An unconfigured provider is blocked too: no account can ever be reserved on it. */
 export function routeQuotaBlock(snapshot: QuotaSnapshot, step: { provider: string; id: string; cost?: unknown }): string | undefined {
-  if (isZeroPriceModel(step)) return undefined;
+  if (isProvenFreeModel(step)) return undefined;
   const provider = quotaProviderOf(step);
   const quota = provider ? snapshot.providers[provider] : undefined;
   return quota && (quota.exhausted || quota.unconfigured) ? quota.cause : undefined;

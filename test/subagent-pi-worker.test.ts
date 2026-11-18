@@ -9,7 +9,9 @@ import type {
   CreateAgentSessionOptions,
   ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { setRoutingConfigOverride } from "../src/routing-config.ts";
+import { routingFixture } from "./helpers/routing-fixture.ts";
 import {
   MAX_PI_WORKER_TURNS,
   buildPiWorkerContinuationPrompt,
@@ -1387,7 +1389,10 @@ describe("worker plan exhaustion is reported to the account router as usage", ()
     expect(isQuotaLaunchFailure(result.error ?? "")).toBe(false);
   });
 
-  async function refusedLimitCalls(kind: "go" | "sol", errorMessage: string, free = false): Promise<string[][]> {
+  afterEach(() => setRoutingConfigOverride(undefined));
+  const FREE_LISTED = { route: "opencode-go/deepseek-v4.1-flash", source: "operator catalog", evidence: "synthetic test" };
+  async function refusedLimitCalls(kind: "go" | "sol", errorMessage: string, free = false, listed = free, baseUrl?: string): Promise<string[][]> {
+    setRoutingConfigOverride(listed ? { ...routingFixture(), freeRoutes: [FREE_LISTED] } : undefined);
     const record = task(); const fake = new FakeSession();
     fake.onPrompt = async (session) => {
       const failed = { role: "assistant" as const, content: [], api: "test", provider: "test", model: "test", usage: usage(0), stopReason: "error", errorMessage, timestamp: Date.now() };
@@ -1400,12 +1405,12 @@ describe("worker plan exhaustion is reported to the account router as usage", ()
         : { ok: true, account: { id: "primary", agentDir: isolatedCodexAgentDir("primary") }, lease: "lease-sol" });
     const model = kind === "go" ? goModel : solModel;
     const runner = createPiWorkerRunner({ relay: setupBroker(), accountCommand: command,
-      resolveRuntime: () => ({ model: free ? Object.assign({}, model, { cost: usage(0).cost }) : model, thinkingLevel: "off" }),
+      resolveRuntime: () => ({ model: free ? Object.assign({}, model, { cost: usage(0).cost }, baseUrl ? { baseUrl } : {}) : model, thinkingLevel: "off" }),
       ...(kind === "sol" ? { createModelRuntime: async () => solRuntime() } : {}),
       sessionFactory: async () => ({ session: fake }) });
     const result = await runner({ run: run("/tmp", record), task: record, signal: new AbortController().signal, onProgress: vi.fn() });
     expect(result.state).toBe("failed");
-    if (free) {
+    if (listed) {
       expect(command).not.toHaveBeenCalled();
       expect(record.providerAccount).toBeUndefined();
       expect(result.error).toContain(errorMessage);
@@ -1415,6 +1420,23 @@ describe("worker plan exhaustion is reported to the account router as usage", ()
 
   it("does not reserve, cool down, or release an account for a zero-price model's 429", async () => {
     await refusedLimitCalls("go", "429 Too Many Requests", true);
+  });
+
+  it("treats an unlisted zero-price model as paid: it still leases and reports its limit", async () => {
+    const limits = await refusedLimitCalls("go", "429 Too Many Requests", true, false);
+    expect(limits.length).toBeGreaterThan(0);
+  });
+
+  it("keeps the canonical-endpoint check for a listed free model on another baseUrl", async () => {
+    setRoutingConfigOverride({ ...routingFixture(), freeRoutes: [FREE_LISTED] });
+    const record = task(); const fake = new FakeSession();
+    const command = vi.fn(async () => ({ ok: true }));
+    const runner = createPiWorkerRunner({ relay: setupBroker(), accountCommand: command,
+      resolveRuntime: () => ({ model: { ...goModel as object, cost: usage(0).cost, baseUrl: "https://other.example/v1" } as never, thinkingLevel: "off" }),
+      sessionFactory: async () => ({ session: fake }) });
+    const result = await runner({ run: run("/tmp", record), task: record, signal: new AbortController().signal, onProgress: vi.fn() });
+    expect(result.state).toBe("failed");
+    expect(result.error).toContain("requires the canonical endpoint");
   });
 
   it("reports Pi's ChatGPT sentence without a reset time as --kind rate, never as a spent plan", async () => {

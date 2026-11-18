@@ -1,7 +1,29 @@
 import { onlyWhenSkipReason, type WorkerRouteStep } from "../model-route-policy.ts";
-import { routeLabel } from "../routing-config.ts";
+import { DEFAULT_FREE_ROUTE_COOLDOWN_MINUTES, routeKey, routeLabel, routingConfigOrEmpty } from "../routing-config.ts";
 import { noClaudeCause, planOnlyCause, type ProjectPolicy } from "./project-policy.ts";
 import { claudeQuotaBlock, quotaProviderOf, routeQuotaBlock, type QuotaSnapshot } from "./provider-quota.ts";
+
+/** Free routes held out after a pre-output 429/limit refusal: route -> epoch ms the hold ends. Shared by every
+ * dispatch in this process, so the next dispatch does not retry a route that just refused. */
+const freeHolds = new Map<string, number>();
+
+/** Hold a free route out for the configured cooldown (`freeRouteCooldownMinutes`, default 10). Returns the end time. */
+export function holdFreeRoute(route: string, now: number): number {
+  const until = now + (routingConfigOrEmpty().freeRouteCooldownMinutes ?? DEFAULT_FREE_ROUTE_COOLDOWN_MINUTES) * 60_000;
+  freeHolds.set(route, until);
+  return until;
+}
+
+/** The epoch ms a free route's cooldown ends, or undefined when it is not (or no longer) held. */
+export function freeRouteHeldUntil(route: string, now: number): number | undefined {
+  const until = freeHolds.get(route);
+  if (until === undefined) return undefined;
+  if (until <= now) { freeHolds.delete(route); return undefined; }
+  return until;
+}
+
+/** Clear every free-route hold (tests, reload). */
+export function clearFreeRouteHolds(): void { freeHolds.clear(); }
 
 /** How long a rendered availability line may be reused before the router is asked again. */
 export const AVAILABILITY_TTL_MS = 60_000;
@@ -44,8 +66,10 @@ export interface AvailabilityInput {
   policy: ProjectPolicy;
   /** True for a step on a paid metered route (never offered to a planOnly project). */
   isPaid?: (step: WorkerRouteStep) => boolean;
-  /** Recognize a route whose exact catalog model has complete zero prices. */
+  /** Recognize an operator-listed route whose exact catalog model has an explicit zero price. */
   isFree?: (step: WorkerRouteStep) => boolean;
+  /** Epoch ms for free-route cooldown checks; default Date.now(). */
+  now?: number;
   /** Set when the router proves the parent's own Claude login spent: the Claude tier is still up for a
    * launch that pins an eligible account, but an unpinned claude-code route would be refused on it. */
   login?: AvailabilityLogin;
@@ -60,6 +84,8 @@ export function computeAvailability(input: AvailabilityInput): Availability {
     if (policy.planOnly !== undefined && input.isPaid?.(step)) { steps.push({ label, state: "policy", cause: planOnlyCause(policy) }); continue; }
     const onlyWhen = step.onlyWhen ? onlyWhenSkipReason(step.onlyWhen, { quotaSnapshot: snapshot }) : undefined;
     if (onlyWhen !== undefined) { steps.push({ label, state: "held", cause: onlyWhen }); continue; }
+    const heldUntil = input.isFree?.(step) ? freeRouteHeldUntil(routeKey(step), input.now ?? Date.now()) : undefined;
+    if (heldUntil !== undefined) { steps.push({ label, state: "cooling", cause: "free route refused a request (rate limit) and is cooling down", returnsAt: Math.ceil(heldUntil / 1000) }); continue; }
     const block = snapshot.known && !input.isFree?.(step) ? routeQuotaBlock(snapshot, step) : undefined;
     if (block === undefined) { steps.push({ label, state: "up" }); continue; }
     const provider = quotaProviderOf(step);

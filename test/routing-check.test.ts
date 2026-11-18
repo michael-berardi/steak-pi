@@ -25,6 +25,12 @@ describe("steak-pi routing check", () => {
     expect(result.code).toBe(1);
     expect(result.out).toContain("taskClasses.quick-edit.note");
   });
+  it("validates freeRoutes: accepts a listed route and rejects a missing evidence field", () => {
+    expect(run(write("free-ok.json", { freeRoutes: [{ route: "provider-a/model-a", source: "catalog", evidence: "price page" }] })).code).toBe(0);
+    const bad = run(write("free-bad.json", { freeRoutes: [{ route: "provider-a/model-a", source: "catalog" }] }));
+    expect(bad.code).toBe(1);
+    expect(bad.out).toContain("freeRoutes[0].evidence");
+  });
   it("rejects a file that is not JSON", () => {
     const p = join(dir, "broken.json"); writeFileSync(p, "{");
     expect(run(p).code).toBe(1);

@@ -2,10 +2,10 @@ import { setSubagentCountReader, subagentActivityChanged } from "../src/tui/suba
 import { resolveStagedModule } from "../src/subagents/staged-runtime.ts";
 import { registryForSolSelection, type CreateIsolatedModelRuntime } from "../src/subagents/codex-selection.ts";
 import { GO_ACCOUNT_ROUTER_TIMEOUT_MS, type AccountCommand } from "../src/subagents/provider-accounts.ts";
-import { claudeLoginBlock, claudeQuotaBlock, CODEX_QUOTA, isClaudeRouteStep, isMeteredQuota, isQuotaLaunchFailure, isZeroPriceModel, pickClaudeAccount, rankClaudeAccounts, quotaChain, quotaProviderOf, readProviderQuota, routeQuotaBlock, type ClaudeAccountPick, type QuotaProvider, type QuotaSnapshot } from "../src/subagents/provider-quota.ts";
+import { claudeLoginBlock, claudeQuotaBlock, CODEX_QUOTA, isClaudeRouteStep, isMeteredQuota, isQuotaLaunchFailure, isProvenFreeModel, pickClaudeAccount, rankClaudeAccounts, quotaChain, quotaProviderOf, readProviderQuota, routeQuotaBlock, type ClaudeAccountPick, type QuotaProvider, type QuotaSnapshot } from "../src/subagents/provider-quota.ts";
 import { isContentFilterRefusal } from "../src/content-filter-refusal.ts";
 import { noClaudeCause, planOnlyCause, resolveProjectPolicy, type ProjectPolicy } from "../src/subagents/project-policy.ts";
-import { AVAILABILITY_TTL_MS, computeAvailability } from "../src/subagents/route-availability.ts";
+import { AVAILABILITY_TTL_MS, computeAvailability, freeRouteHeldUntil, holdFreeRoute } from "../src/subagents/route-availability.ts";
 import { CLAUDE_REVIEW_SHELL_REFUSED, isClaudeReadOnlyReview } from "../src/subagents/claude-review-permissions.ts";
 import { requireRouteReason, ROUTE_REASON_MAX_LENGTH, ROUTE_REASON_MIN_LENGTH } from "../src/subagents/route-reason.ts";
 import { canFallbackReview, implicitReviewFallbackRoute, implicitReviewRoute, isReadOnlyReviewWave, recordReviewFallback } from "../src/subagents/reviewer-fallback.ts";
@@ -494,11 +494,17 @@ function reachedProviders(run: RunRecord): QuotaProvider[] {
 /** The text a worker's launch failure is classified on. */
 const launchFailureText = (task: TaskRecord): string => task.error ?? "";
 
-/** A free route's own pre-output limit or input refusal, not a provider-plan veto. */
-function isFreeRouteRefusal(text: string): boolean {
+/** A free route's own pre-output limit or input refusal, not a provider-plan veto. A bare "429" in the text is not
+ * proof (ids, counts, ports): it takes a structured status or a provider limit phrase. */
+export function isFreeRouteRefusal(text: string): boolean {
   return !/lease release failed/i.test(text) && (isQuotaLaunchFailure(text) || isContentFilterRefusal(text)
-    || /\b429\b|too many requests|rate[_ -]?limit/i.test(text));
+    || /\b(?:status|http|code)(?:\s*code)?["']?\s*[:=]?\s*429\b|\b429\s+(?:too many|rate|error|status)|too many requests|rate[_ -]?limit/i.test(text));
 }
+
+/** Free hold-outs have their own budget, so a free 429 never reduces the paid fall-throughs. */
+export const MAX_FREE_HOLDOUTS = 3;
+const paidFallThroughs = (items: readonly QuotaFallThrough[]): number => items.filter((item) => item.kind !== "free").length;
+const freeFallThroughs = (items: readonly QuotaFallThrough[]): number => items.filter((item) => item.kind === "free").length;
 
 /**
  * The tiers a run reached, when its pre-output failure may fall through to the next tier: every worker
@@ -650,7 +656,11 @@ async function resolveImplicitWorkerRoute(
   const held = heldRoutes(fallThroughs);
   const isFree = freeStepPredicate(ctx);
   const heldBlock = (step: WorkerRouteStep): string | undefined => {
-    const refused = held.get(step.harness === "steak-dsh" ? dshRouteOf(step) : routeOfStep(step));
+    const routeName = step.harness === "steak-dsh" ? dshRouteOf(step) : routeOfStep(step);
+    // A free route that refused with a rate limit stays out for a short cooldown across dispatches.
+    const cooling = isFree(step) ? freeRouteHeldUntil(routeName, dependencies.now?.() ?? Date.now()) : undefined;
+    if (cooling !== undefined) return `zero-price route refused a request (rate limit) and is cooling down for ${Math.ceil((cooling - (dependencies.now?.() ?? Date.now())) / 60_000)} more minute(s)`;
+    const refused = held.get(routeName);
     return refused?.kind === "free" ? `run ${refused.runId} (zero-price route) refused before any output (${refused.cause})`
       : refused ? `run ${refused.runId} was refused by its profile ensure hook before any worker started (${refused.cause})` : undefined;
   };
@@ -719,7 +729,7 @@ async function resolveImplicitWorkerRoute(
   if (!first && !isDefaultChainExhausted(failure)) throw failure;
   if (first) {
     const step: WorkerRouteStep = { ...stepOfSelection(first.selection), ...(first.selection.harness === "steak-dsh" ? { harness: "steak-dsh" as const } : {}) };
-    const free = isZeroPriceModel(first.model);
+    const free = isProvenFreeModel(first.model);
     const gated = free ? undefined : quotaProviderOf(step);
     // A route a profile `ensure` refusal already held out is left even when it is not router-gated (a profile
     // default can land on it again), by the same forced re-resolution an exhausted route gets.
@@ -796,7 +806,7 @@ function freeStepPredicate(ctx: ExtensionContext): (step: WorkerRouteStep) => bo
     try {
       const registry = ctx.modelRegistry;
       const model = registry.find(step.provider, step.id);
-      return model?.provider === step.provider && model.id === step.id && isZeroPriceModel(model)
+      return model?.provider === step.provider && model.id === step.id && isProvenFreeModel(model)
         && (registry.getAll?.() ?? registry.getAvailable()).some((entry) => entry.provider === step.provider && entry.id === step.id);
     } catch { return false; }
   };
@@ -2532,7 +2542,7 @@ export function createUltratermSubagentsExtension(
           throw new Error(`USAP explicit route ${params.model} cannot launch: ${noClaudeCause(dshPolicy)}. No worker was started and no fallback was selected.`);
         }
         const innerStep = dshModel;
-        const cause = isZeroPriceModel(innerStep) || quotaProviderOf(innerStep) === undefined ? undefined : routeQuotaBlock(await readQuota(), innerStep);
+        const cause = isProvenFreeModel(innerStep) || quotaProviderOf(innerStep) === undefined ? undefined : routeQuotaBlock(await readQuota(), innerStep);
         if (cause !== undefined) {
           throw new Error(`USAP explicit route ${params.model} cannot launch: ${cause}. Explicit routes are never rerouted, so no worker was started and no fallback was selected; wait for the window to return or choose another route yourself.`);
         }
@@ -2579,7 +2589,7 @@ export function createUltratermSubagentsExtension(
         // An explicit route stays exact: never rerouted, but never launched into a provider the
         // router has proven exhausted either. The refusal names the router's own cause.
         const step = piResolved.model;
-        const cause = isZeroPriceModel(step) || quotaProviderOf(step) === undefined ? undefined : routeQuotaBlock(await readQuota(), step);
+        const cause = isProvenFreeModel(step) || quotaProviderOf(step) === undefined ? undefined : routeQuotaBlock(await readQuota(), step);
         if (cause !== undefined) {
           throw new Error(`USAP explicit route ${routeOfStep(step)} cannot launch: ${cause}. Explicit routes are never rerouted, so no worker was started and no fallback was selected; wait for the window to return or choose another route yourself.`);
         }
@@ -2620,9 +2630,9 @@ export function createUltratermSubagentsExtension(
         : foreignHarness ? claudeRoute!
         : classedDsh ? dshRouteOf({ provider: piResolved!.model.provider, id: piResolved!.model.id })
         : `${piResolved!.model.provider}/${piResolved!.model.id}`;
-      const freeWorkerRoute = isZeroPriceModel(piResolved?.model ?? dshModel);
+      const freeWorkerRoute = isProvenFreeModel(piResolved?.model ?? dshModel);
       const gate = freeWorkerRoute && params.tasks.some((task) => task.mayEdit === true)
-        ? verificationGateFor(model) : undefined;
+        ? verificationGateFor(`${(piResolved?.model ?? dshModel)!.provider}/${(piResolved?.model ?? dshModel)!.id}`) : undefined;
       const verificationNote = gate
         ? `Verification required: have ${gate.reviewer} review implementation on ${model} before shipping${gate.fallback ? ` (configured fallback if unavailable: ${gate.fallback})` : ""}.\n`
         : "";
@@ -2791,16 +2801,17 @@ export function createUltratermSubagentsExtension(
         // Fall through only on an implicit, settled pre-output refusal, never after an abort.
         // A free route holds out only itself; a plan limit still holds out the configured tier.
         const refusedFree = freeWorkerRoute && quotaRouted && stillRunning.length === 0 && !signal?.aborted
-          && fallThroughs.length < MAX_QUOTA_FALL_THROUGHS && causes.length > 0
+          && freeFallThroughs(fallThroughs) < MAX_FREE_HOLDOUTS && causes.length > 0
           && !final?.tasks.some((task) => task.outputStarted === true || task.state === "done" || (task.state === "failed" && !causes.includes(task)))
           && causes.every((task) => isFreeRouteRefusal(launchFailureText(task)));
+        if (refusedFree) holdFreeRoute(model, dependencies.now?.() ?? Date.now());
         if (refusedFree) return { fallThrough: { runId: run.id, route: model, providers: [], cause: boundedReason(failureText, 240), kind: "free" } satisfies QuotaFallThrough };
-        const reached = !freeWorkerRoute && quotaRouted && !claudeWorkerTier && stillRunning.length === 0 && !signal?.aborted && fallThroughs.length < MAX_QUOTA_FALL_THROUGHS
+        const reached = !freeWorkerRoute && quotaRouted && !claudeWorkerTier && stillRunning.length === 0 && !signal?.aborted && paidFallThroughs(fallThroughs) < MAX_QUOTA_FALL_THROUGHS
           ? quotaFallThroughProviders(final ?? startedRun, startupFailures) : undefined;
         if (reached) return { fallThrough: { runId: run.id, route: model, providers: reached, cause: boundedReason(failureText, 240) } satisfies QuotaFallThrough };
         // A profile `ensure` hook that refused every launch of an implicit wave holds that route out and moves the
         // wave to the next step, under the same rules: nothing produced output, the run settled, no abort.
-        const refusedByEnsure = quotaRouted && !claudeWorkerTier && stillRunning.length === 0 && !signal?.aborted && fallThroughs.length < MAX_QUOTA_FALL_THROUGHS
+        const refusedByEnsure = quotaRouted && !claudeWorkerTier && stillRunning.length === 0 && !signal?.aborted && paidFallThroughs(fallThroughs) < MAX_QUOTA_FALL_THROUGHS
           && !(final ?? startedRun)?.tasks.some((task) => task.outputStarted === true || task.state === "done")
           && startupFailures.every((task) => isEnsureRefusal(task.error));
         if (refusedByEnsure) return { fallThrough: { runId: run.id, route: model, providers: [], cause: boundedReason(failureText, 240), kind: "ensure" as const } satisfies QuotaFallThrough };
@@ -2809,7 +2820,7 @@ export function createUltratermSubagentsExtension(
         // output, whether the dispatch-time snapshot foresaw it or not (J-3759: the snapshot said the tier was up,
         // the CLI refused, and the review simply failed with one cause).
         const reviewRefusal = !reviewFallbackActive && readOnlyReviewFallback && !claudeUnavailable && requested.requireImages !== true
-          && stillRunning.length === 0 && !signal?.aborted && fallThroughs.length < MAX_QUOTA_FALL_THROUGHS
+          && stillRunning.length === 0 && !signal?.aborted && paidFallThroughs(fallThroughs) < MAX_QUOTA_FALL_THROUGHS
           ? reviewFallThroughReason(final ?? startedRun, startupFailures) : undefined;
         if (reviewRefusal !== undefined) {
           // Ask the router NOW, not at dispatch time: a CLI can refuse a plan the snapshot still showed as launchable.

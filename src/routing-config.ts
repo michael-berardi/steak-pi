@@ -191,6 +191,10 @@ export interface ImplicitReviewConfig { route: string; fallback?: string }
 export interface VerificationGateConfig { match: RegExp; reviewer: string; fallback?: string }
 
 /** The validated operator configuration. Every key is optional; absent means "no choice". */
+/** One operator-proven free route: where the zero price comes from and the evidence for it. */
+export interface FreeRouteConfig { route: string; source: string; evidence: string }
+export const DEFAULT_FREE_ROUTE_COOLDOWN_MINUTES = 10;
+
 export interface RoutingConfig {
   workerDefault?: RouteSelector;
   reviewerDefault?: RouteSelector;
@@ -222,6 +226,10 @@ export interface RoutingConfig {
   claudeCodeDefaults?: ClaudeCodeDefaultsConfig;
   implicitReview?: ImplicitReviewConfig;
   verificationGates?: readonly VerificationGateConfig[];
+  /** Operator allowlist of routes proven free: a route is free only when listed here AND its registry price is explicitly zero. */
+  freeRoutes?: readonly FreeRouteConfig[];
+  /** Minutes a free route that answered 429/limit before output is held out of selection; absent: DEFAULT_FREE_ROUTE_COOLDOWN_MINUTES. */
+  freeRouteCooldownMinutes?: number;
   routeLabels?: Readonly<Record<string, string>>;
 }
 
@@ -648,6 +656,20 @@ export function parseRoutingConfig(raw: unknown): RoutingConfig {
       };
     });
   }
+  if (raw.freeRoutes !== undefined) {
+    const seen = new Set<string>();
+    config.freeRoutes = array(raw.freeRoutes, "freeRoutes").map((entry, index) => {
+      const key = `freeRoutes[${index}]`;
+      if (!object(entry)) return fail(key, "expected { route, source, evidence }");
+      const route = routeKey(parseRoute(entry.route, `${key}.route`));
+      if (seen.has(route)) return fail(`${key}.route`, `${JSON.stringify(route)} appears more than once`);
+      seen.add(route);
+      return { route, source: text(entry.source, `${key}.source`, 200), evidence: text(entry.evidence, `${key}.evidence`, 400) };
+    });
+  }
+  if (raw.freeRouteCooldownMinutes !== undefined) {
+    config.freeRouteCooldownMinutes = boundedNumber(raw.freeRouteCooldownMinutes, "freeRouteCooldownMinutes", 1, 1_440);
+  }
   if (raw.routeLabels !== undefined) {
     if (!object(raw.routeLabels)) return fail("routeLabels", "expected { \"provider/model\": \"label\" }");
     config.routeLabels = Object.fromEntries(Object.entries(raw.routeLabels).map(([route, label]) => [route, text(label, `routeLabels.${route}`)]));
@@ -708,6 +730,11 @@ export function setRoutingConfigOverride(config: Record<string, unknown> | undef
 /** First configured verification gate for the exact dispatched route. */
 export function verificationGateFor(route: string): VerificationGateConfig | undefined {
   return routingConfigOrEmpty().verificationGates?.find((gate) => gate.match.test(route));
+}
+
+/** True when the operator listed this exact route in `freeRoutes`. */
+export function isListedFreeRoute(provider: string, id: string): boolean {
+  return routingConfigOrEmpty().freeRoutes?.some((entry) => entry.route === `${provider}/${id}`) === true;
 }
 
 /** Operator-chosen display label for a route, falling back to the route itself. */

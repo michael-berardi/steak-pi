@@ -153,6 +153,15 @@ JavaScript sources, case-insensitive unless noted. Unknown keys are ignored
     { "match": "^provider-a/", "reviewer": "claude-code/<large-model>", "fallback": "provider-x/model-name" }
   ],
 
+  // Routes proven free of plan quota. A route is free only when listed here AND its registry price is explicitly zero
+  // (the model composer defaults a missing price to zero, so a zero price alone proves nothing). Validated by
+  // `steak-pi routing check`. A free route skips plan cooldown and account leasing but keeps the canonical-endpoint check.
+  "freeRoutes": [
+    { "route": "provider-c/model-name", "source": "provider price page", "evidence": "checked 2026-11-01, input/output 0" }
+  ],
+  // Minutes a free route that answered a rate limit before output is held out (default 10).
+  "freeRouteCooldownMinutes": 10,
+
   // Display names for dispatch notes and receipts.
   "routeLabels": { "provider-a/model-name": "Plan A" }
 }
@@ -182,6 +191,8 @@ What each key replaces, and what happens without it:
 | `claudeCodeDefaults` | `harness: "claude-code"` needs an explicit `model` |
 | `implicitReview` | implicit all-reviewer waves resolve the native reviewer chain |
 | `verificationGates` | no worker is told to request a verification |
+| `freeRoutes` | no route is treated as free; every route is gated by its plan quota as before |
+| `freeRouteCooldownMinutes` | a free route that refused with a rate limit is held out for 10 minutes |
 | `routeLabels` | notes show `provider/model` |
 
 Provider-specific *adapter* code stays: the Claude Code CLI adapter keeps its

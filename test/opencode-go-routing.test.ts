@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { sdkPiAiUrl } from "./helpers/pi-sdk-dependencies.ts";
 import { eligibleGoFallback, GO_FALLBACK_MODEL, withOpenCodeGoRouting } from "../src/opencode-go-routing.ts";
 const { createAssistantMessageEventStream } = await import(/* @vite-ignore */ sdkPiAiUrl);
+import { setRoutingConfigOverride } from "../src/routing-config.ts";
 import { hasConfirmedGoExhaustion } from "../src/subscription-first-routing.ts";
 type Provider = Parameters<typeof withOpenCodeGoRouting>[0];
 // Resolve the SDK's own pi-ai: 0.86 requires normalization before provider dispatch.
@@ -83,6 +84,8 @@ describe("authorized OpenCode Go routing", () => {
   });
   it("never treats permission errors with transient wording as eligible", () => expect(eligibleGoFallback("403 temporarily unavailable region")).toBe(false));
   it("does not grant paid routing when a free model returns even structured plan-exhaustion wording", async () => {
+    setRoutingConfigOverride({ freeRoutes: [{ route: "opencode-go/deepseek-v4.1-flash", source: "operator catalog", evidence: "synthetic" }] });
+    try {
     const key = "synthetic-go-key";
     const exhaustion = JSON.stringify({ status: 429, code: "subscription_quota_exceeded", scope: "subscription", remaining: 0,
       reset_at: new Date(Date.now() + 60_000).toISOString() });
@@ -92,6 +95,15 @@ describe("authorized OpenCode Go routing", () => {
     expect(hasConfirmedGoExhaustion(key)).toBe(true);
     expect((await request({ ...primary, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })).errorMessage).toBe(exhaustion);
     expect(hasConfirmedGoExhaustion(key)).toBe(false);
+    } finally { setRoutingConfigOverride(undefined); }
+  });
+  it("still records exhaustion for a zero-price model the operator did not list as free", async () => {
+    const key = "synthetic-go-key-2";
+    const exhaustion = JSON.stringify({ status: 429, code: "subscription_quota_exceeded", scope: "subscription", remaining: 0,
+      reset_at: new Date(Date.now() + 60_000).toISOString() });
+    const { wrapped } = setup(exhaustion);
+    await wrapped.streamSimple({ ...primary, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }, emptyContext(), { sessionId: "one", apiKey: key }).result();
+    expect(hasConfirmedGoExhaustion(key)).toBe(true);
   });
   it("leaves an exhausted plan to the outer chain instead of retrying the same plan", async () => {
     // Same-plan retry cannot succeed on exhaustion, so it stays ineligible here;

@@ -1,4 +1,4 @@
-import { isZeroPriceModel } from "./subagents/provider-quota.ts";
+import { isProvenFreeModel } from "./subagents/provider-quota.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { authHeadersMatch, beginGoAttempt, observeGoQuota } from "./subscription-first-routing.ts";
 
@@ -31,7 +31,7 @@ export function withOpenCodeGoRouting(provider: Provider): Provider {
     };
     const observe = (target: Model, outcome: "success" | "error", message = "") =>
       observeGoQuota(options.apiKey, outcome,
-        !isZeroPriceModel(target) && authHeadersMatch(options.apiKey, target.headers, options.headers) ? message : "", Date.now(), attempt);
+        !isProvenFreeModel(target) && authHeadersMatch(options.apiKey, target.headers, options.headers) ? message : "", Date.now(), attempt);
     const invoke = (target: Model) => provider[method](target, context, withHeaders);
     // A fresh Go attempt revokes every outstanding exhaustion grant immediately,
     // even when this attempt carries no apiKey or a different one, and returns a

@@ -12,6 +12,7 @@ import type { ExtensionAPI, ModelRuntime } from "@earendil-works/pi-coding-agent
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_STARTUP_WINDOW_MS,
+  isFreeRouteRefusal,
   createUltratermSubagentsExtension,
   renderRunProgress,
   renderRunResult,
@@ -21,6 +22,7 @@ import {
   usapTelemetrySnapshot,
   type UltratermSubagentsDependencies,
 } from "../extensions/ultraterm-subagents.ts";
+import { clearFreeRouteHolds } from "../src/subagents/route-availability.ts";
 import type { RelayBroker } from "../src/subagents/relay.ts";
 import { emptyUsage, type UsageTotals, type WorkerRunner, type TaskRecord } from "../src/subagents/types.ts";
 import { TEAM_REGISTRY, stageClaudeHome } from "./helpers/claude-registry-fixture.ts";
@@ -2256,7 +2258,9 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
     const second = { ...first, id: "catalog-zero-two" };
     const firstRoute = `${first.provider}/${first.id}`;
     const secondRoute = `${second.provider}/${second.id}`;
-    const configure = () => setRoutingConfigOverride({ ...routingFixture(), textWorkerChain: [firstRoute, secondRoute, GO_ROUTE, SOL_ROUTE],
+    const listed = (route: string) => ({ route, source: "operator catalog", evidence: "synthetic" });
+    const configure = (free: string[] = [firstRoute, secondRoute]) => setRoutingConfigOverride({ ...routingFixture(), textWorkerChain: [firstRoute, secondRoute, GO_ROUTE, SOL_ROUTE],
+      freeRoutes: free.map(listed),
       verificationGates: [{ match: "^opencode-go/catalog-zero-", reviewer: OPUS_ROUTE, fallback: SOL_ROUTE }] });
 
     it("selects the first catalog-free route over cooling subscription accounts and names the configured verification gate", async () => {
@@ -2267,6 +2271,72 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
         expect(result.details.run.model).toBe(firstRoute);
         expect(result.content[0].text).toContain(`Verification required: have ${OPUS_ROUTE} review implementation on ${firstRoute} before shipping (configured fallback if unavailable: ${SOL_ROUTE})`);
       } finally { setRoutingConfigOverride(undefined); await shutdown(h); }
+    });
+
+    it("does not treat an unlisted zero-price model as free (the composer defaults a missing price to zero)", async () => {
+      configure([]);
+      const { h } = quotaHarness(status({ go: goOut, codex: solUp }), done(), {}, undefined, [first, second]);
+      try {
+        const result = await dispatch(h, { tasks: plain });
+        expect(result.details.run.model).toBe(SOL_ROUTE);
+      } finally { setRoutingConfigOverride(undefined); await shutdown(h); }
+    });
+
+    it("derives the verification note from the proven-free decision, matching the model route not the dispatch label", async () => {
+      setRoutingConfigOverride({ ...routingFixture(), textWorkerChain: [firstRoute, SOL_ROUTE],
+        freeRoutes: [listed(firstRoute)], verificationGates: [{ match: `^${firstRoute}$`, reviewer: OPUS_ROUTE }] });
+      const { h } = quotaHarness(status({ go: goOut, codex: solUp }), done(), {}, undefined, [first]);
+      try {
+        const result = await dispatch(h, { tasks: [{ label: "edit", task: "Implement", mayEdit: true, ownedPaths: ["src/example.ts"] }] });
+        expect(result.content[0].text).toContain(`Verification required: have ${OPUS_ROUTE} review implementation on ${firstRoute}`);
+      } finally { setRoutingConfigOverride(undefined); await shutdown(h); }
+    });
+
+    it("does not treat a bare 429 inside unrelated text as a free-route refusal", () => {
+      expect(isFreeRouteRefusal("spawn failed: pid 14290 exited; build 429 of 900")).toBe(false);
+      expect(isFreeRouteRefusal("HTTP 429 Too Many Requests")).toBe(true);
+      expect(isFreeRouteRefusal('{"status":429,"error":"x"}')).toBe(true);
+      expect(isFreeRouteRefusal("status: 429")).toBe(true);
+      expect(isFreeRouteRefusal("provider rate limit reached")).toBe(true);
+    });
+
+    it("keeps a 429 route out for a cooldown across dispatches, then retries it", async () => {
+      configure();
+      let clock = 1_000_000;
+      const runner = vi.fn(async ({ run }: Parameters<WorkerRunner>[0]): ReturnType<WorkerRunner> => [firstRoute, secondRoute].includes(run.model)
+        ? { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "429 Too Many Requests" }
+        : { state: "done", output: "ok", turns: 1, usage: emptyUsage() });
+      const { h } = quotaHarness(status({ go: goUp, codex: solUp }), runner, { startupWindowMs: 2_000, now: () => clock }, undefined, [first, second]);
+      try {
+        clearFreeRouteHolds();
+        await dispatch(h, { tasks: plain });
+        const firstWave = runner.mock.calls.length;
+        await dispatch(h, { tasks: plain });
+        expect(runner.mock.calls.slice(firstWave).map(([context]) => context.run.model)).toEqual([GO_ROUTE]);
+        clock += 11 * 60_000;
+        await dispatch(h, { tasks: plain });
+        expect(runner.mock.calls.slice(firstWave + 1).map(([context]) => context.run.model)[0]).toBe(firstRoute);
+      } finally { clearFreeRouteHolds(); setRoutingConfigOverride(undefined); await shutdown(h); }
+    });
+
+    it("does not spend the paid fall-through budget on free hold-outs", async () => {
+      const route = (n: number) => `${first.provider}/catalog-zero-${n}`;
+      const models = [1, 2, 3].map((n) => ({ ...first, id: `catalog-zero-${n}` }));
+      setRoutingConfigOverride({ ...routingFixture(), textWorkerChain: [...models.map((m) => `${m.provider}/${m.id}`), GO_ROUTE, SOL_ROUTE],
+        freeRoutes: models.map((m) => listed(`${m.provider}/${m.id}`)) });
+      const runner = vi.fn(async ({ run }: Parameters<WorkerRunner>[0]): ReturnType<WorkerRunner> => run.model === GO_ROUTE
+        ? { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "usage limit reached" }
+        : run.model.includes("catalog-zero-")
+          ? { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "429 Too Many Requests" }
+          : { state: "done", output: "ok", turns: 1, usage: emptyUsage() });
+      const { h } = quotaHarness(status({ go: goUp, codex: solUp }), runner, { startupWindowMs: 2_000 }, undefined, models);
+      try {
+        clearFreeRouteHolds();
+        const result = await dispatch(h, { tasks: plain });
+        // three free hold-outs, then a paid fall-through still succeeds on the next tier
+        expect(runner.mock.calls.map(([context]) => context.run.model)).toEqual([route(1), route(2), route(3), GO_ROUTE, SOL_ROUTE]);
+        expect(result.details.run.model).toBe(SOL_ROUTE);
+      } finally { clearFreeRouteHolds(); setRoutingConfigOverride(undefined); await shutdown(h); }
     });
 
     it("does not infer free pricing from a partial zero-price row", async () => {
@@ -2280,7 +2350,7 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
     });
 
     it("holds out each 429 route in turn without marking its usable subscription tier spent", async () => {
-      configure();
+      configure(); clearFreeRouteHolds();
       const runner = vi.fn(async ({ run }: Parameters<WorkerRunner>[0]): ReturnType<WorkerRunner> => [firstRoute, secondRoute].includes(run.model)
         ? { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "429 Too Many Requests" }
         : { state: "done", output: "ok", turns: 1, usage: emptyUsage() });
@@ -2292,7 +2362,7 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
         expect(result.content[0].text).toContain(`${firstRoute} (zero-price route) refused`);
         expect(result.content[0].text).toContain(`${secondRoute} (zero-price route) refused`);
         expect(result.content[0].text).not.toContain("Verification required");
-      } finally { setRoutingConfigOverride(undefined); await shutdown(h); }
+      } finally { clearFreeRouteHolds(); setRoutingConfigOverride(undefined); await shutdown(h); }
     });
   });
 
