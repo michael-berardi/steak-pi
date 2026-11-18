@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { sdkPiAiUrl } from "./helpers/pi-sdk-dependencies.ts";
 import { eligibleGoFallback, GO_FALLBACK_MODEL, withOpenCodeGoRouting } from "../src/opencode-go-routing.ts";
 const { createAssistantMessageEventStream } = await import(/* @vite-ignore */ sdkPiAiUrl);
+import { hasConfirmedGoExhaustion } from "../src/subscription-first-routing.ts";
 type Provider = Parameters<typeof withOpenCodeGoRouting>[0];
 // Resolve the SDK's own pi-ai: 0.86 requires normalization before provider dispatch.
 const { normalizeContext } = await import(/* @vite-ignore */ sdkPiAiUrl);
@@ -81,6 +82,17 @@ describe("authorized OpenCode Go routing", () => {
     expect(stream).toHaveBeenCalledTimes(1);
   });
   it("never treats permission errors with transient wording as eligible", () => expect(eligibleGoFallback("403 temporarily unavailable region")).toBe(false));
+  it("does not grant paid routing when a free model returns even structured plan-exhaustion wording", async () => {
+    const key = "synthetic-go-key";
+    const exhaustion = JSON.stringify({ status: 429, code: "subscription_quota_exceeded", scope: "subscription", remaining: 0,
+      reset_at: new Date(Date.now() + 60_000).toISOString() });
+    const { wrapped } = setup(exhaustion);
+    const request = (model: typeof primary) => wrapped.streamSimple(model, emptyContext(), { sessionId: "one", apiKey: key }).result();
+    await request(primary);
+    expect(hasConfirmedGoExhaustion(key)).toBe(true);
+    expect((await request({ ...primary, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })).errorMessage).toBe(exhaustion);
+    expect(hasConfirmedGoExhaustion(key)).toBe(false);
+  });
   it("leaves an exhausted plan to the outer chain instead of retrying the same plan", async () => {
     // Same-plan retry cannot succeed on exhaustion, so it stays ineligible here;
     // the ordered chain may leave the plan for a separately approved route.

@@ -269,9 +269,17 @@ export function quotaProviderOf(step: { provider: string; id: string }): QuotaPr
   return quotaTiers().find((tier) => tier.provider === step.provider && (!tier.models || tier.models.includes(step.id)))?.quota;
 }
 
+/** Only a complete catalog price of exactly zero is independent of plan quota.
+ * Missing, partial, or non-numeric prices prove nothing. This is not billing authorization. */
+export function isZeroPriceModel(model: { cost?: unknown } | undefined): boolean {
+  const cost = model?.cost;
+  return record(cost) && ["input", "output", "cacheRead", "cacheWrite"].every((key) => Object.hasOwn(cost, key) && cost[key] === 0);
+}
+
 /** Why `step` cannot launch, or undefined (including for unknown, busy and ungated routes).
  * An unconfigured provider is blocked too: no account can ever be reserved on it. */
-export function routeQuotaBlock(snapshot: QuotaSnapshot, step: { provider: string; id: string }): string | undefined {
+export function routeQuotaBlock(snapshot: QuotaSnapshot, step: { provider: string; id: string; cost?: unknown }): string | undefined {
+  if (isZeroPriceModel(step)) return undefined;
   const provider = quotaProviderOf(step);
   const quota = provider ? snapshot.providers[provider] : undefined;
   return quota && (quota.exhausted || quota.unconfigured) ? quota.cause : undefined;

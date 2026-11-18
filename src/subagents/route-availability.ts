@@ -44,6 +44,8 @@ export interface AvailabilityInput {
   policy: ProjectPolicy;
   /** True for a step on a paid metered route (never offered to a planOnly project). */
   isPaid?: (step: WorkerRouteStep) => boolean;
+  /** Recognize a route whose exact catalog model has complete zero prices. */
+  isFree?: (step: WorkerRouteStep) => boolean;
   /** Set when the router proves the parent's own Claude login spent: the Claude tier is still up for a
    * launch that pins an eligible account, but an unpinned claude-code route would be refused on it. */
   login?: AvailabilityLogin;
@@ -58,7 +60,7 @@ export function computeAvailability(input: AvailabilityInput): Availability {
     if (policy.planOnly !== undefined && input.isPaid?.(step)) { steps.push({ label, state: "policy", cause: planOnlyCause(policy) }); continue; }
     const onlyWhen = step.onlyWhen ? onlyWhenSkipReason(step.onlyWhen, { quotaSnapshot: snapshot }) : undefined;
     if (onlyWhen !== undefined) { steps.push({ label, state: "held", cause: onlyWhen }); continue; }
-    const block = snapshot.known ? routeQuotaBlock(snapshot, step) : undefined;
+    const block = snapshot.known && !input.isFree?.(step) ? routeQuotaBlock(snapshot, step) : undefined;
     if (block === undefined) { steps.push({ label, state: "up" }); continue; }
     const provider = quotaProviderOf(step);
     const returnsAt = provider ? snapshot.providers[provider]?.earliestReturn : undefined;

@@ -2,14 +2,14 @@ import { setSubagentCountReader, subagentActivityChanged } from "../src/tui/suba
 import { resolveStagedModule } from "../src/subagents/staged-runtime.ts";
 import { registryForSolSelection, type CreateIsolatedModelRuntime } from "../src/subagents/codex-selection.ts";
 import { GO_ACCOUNT_ROUTER_TIMEOUT_MS, type AccountCommand } from "../src/subagents/provider-accounts.ts";
-import { claudeLoginBlock, claudeQuotaBlock, CODEX_QUOTA, isClaudeRouteStep, isMeteredQuota, isQuotaLaunchFailure, pickClaudeAccount, rankClaudeAccounts, quotaChain, quotaProviderOf, readProviderQuota, routeQuotaBlock, type ClaudeAccountPick, type QuotaProvider, type QuotaSnapshot } from "../src/subagents/provider-quota.ts";
+import { claudeLoginBlock, claudeQuotaBlock, CODEX_QUOTA, isClaudeRouteStep, isMeteredQuota, isQuotaLaunchFailure, isZeroPriceModel, pickClaudeAccount, rankClaudeAccounts, quotaChain, quotaProviderOf, readProviderQuota, routeQuotaBlock, type ClaudeAccountPick, type QuotaProvider, type QuotaSnapshot } from "../src/subagents/provider-quota.ts";
 import { isContentFilterRefusal } from "../src/content-filter-refusal.ts";
 import { noClaudeCause, planOnlyCause, resolveProjectPolicy, type ProjectPolicy } from "../src/subagents/project-policy.ts";
 import { AVAILABILITY_TTL_MS, computeAvailability } from "../src/subagents/route-availability.ts";
 import { CLAUDE_REVIEW_SHELL_REFUSED, isClaudeReadOnlyReview } from "../src/subagents/claude-review-permissions.ts";
 import { requireRouteReason, ROUTE_REASON_MAX_LENGTH, ROUTE_REASON_MIN_LENGTH } from "../src/subagents/route-reason.ts";
 import { canFallbackReview, implicitReviewFallbackRoute, implicitReviewRoute, isReadOnlyReviewWave, recordReviewFallback } from "../src/subagents/reviewer-fallback.ts";
-import { parseRoute, routeLabel, routingConfigOrEmpty, DSH_ROUTE_PREFIX, TASK_CLASS_MAX_LENGTH } from "../src/routing-config.ts";
+import { parseRoute, routeLabel, routingConfigOrEmpty, DSH_ROUTE_PREFIX, TASK_CLASS_MAX_LENGTH, verificationGateFor } from "../src/routing-config.ts";
 import { statSync } from "node:fs";
 import { PersistenceHealth } from "../src/subagents/persistence-health.ts";
 import { deferredToolsEnabled, setToolActive } from "../src/deferred-tools.ts";
@@ -464,15 +464,16 @@ interface QuotaFallThrough {
   cause: string;
   /** `ensure`: the route's profile `ensure` hook refused the launch. The route itself, not a quota tier, is held out.
    * `review`: an implicit review wave was refused on the Claude review route before any output; the same review
-   * tasks run once on the configured `implicitReview.fallback` instead. */
-  kind?: "ensure" | "review";
+   * tasks run once on the configured `implicitReview.fallback` instead.
+   * `free`: only the exact zero-price route that refused is held out, not its provider tier. */
+  kind?: "ensure" | "review" | "free";
   /** `review` only: whether the CLI refused on a spent plan or on authentication, so the receipt says which. */
   reviewReason?: "quota" | "auth";
 }
 
-/** Routes whose profile `ensure` hook refused a launch in this walk: never retried, whatever else is true. */
+/** Exact routes refused in this walk: never retried, whatever else is true. */
 const heldRoutes = (fallThroughs: readonly QuotaFallThrough[]): ReadonlyMap<string, QuotaFallThrough> =>
-  new Map(fallThroughs.flatMap((item) => item.kind === "ensure" ? [[item.route, item] as const] : []));
+  new Map(fallThroughs.flatMap((item) => item.kind === "ensure" || item.kind === "free" ? [[item.route, item] as const] : []));
 
 /** Providers a fall-through must not revisit: the furthest tier a failed run reached and everything before it. */
 function spentProviders(fallThroughs: readonly QuotaFallThrough[]): ReadonlySet<QuotaProvider> {
@@ -492,6 +493,12 @@ function reachedProviders(run: RunRecord): QuotaProvider[] {
 
 /** The text a worker's launch failure is classified on. */
 const launchFailureText = (task: TaskRecord): string => task.error ?? "";
+
+/** A free route's own pre-output limit or input refusal, not a provider-plan veto. */
+function isFreeRouteRefusal(text: string): boolean {
+  return !/lease release failed/i.test(text) && (isQuotaLaunchFailure(text) || isContentFilterRefusal(text)
+    || /\b429\b|too many requests|rate[_ -]?limit/i.test(text));
+}
 
 /**
  * The tiers a run reached, when its pre-output failure may fall through to the next tier: every worker
@@ -537,7 +544,9 @@ const fallThroughSummary = (fallThroughs: readonly QuotaFallThrough[]): string =
     ? `run ${item.runId} · ${item.route} was refused by its profile ensure hook before any worker started (${item.cause})`
     : item.kind === "review"
       ? `run ${item.runId} · ${item.route} was refused ${item.reviewReason === "auth" ? "on authentication" : "on the Claude usage limit"} before any worker produced output (${item.cause})`
-      : `run ${item.runId} · ${item.route} was refused on a provider usage limit before any worker produced output (${item.cause})`).join("; ");
+      : item.kind === "free"
+        ? `run ${item.runId} · ${item.route} (zero-price route) refused before any worker produced output (${item.cause})`
+        : `run ${item.runId} · ${item.route} was refused on a provider usage limit before any worker produced output (${item.cause})`).join("; ");
 /** The dispatch-note line for a declared task class (absent when no task declared one). */
 function taskClassNote(receipt: TaskClassSelection | undefined, wave: WaveTaskClass): string {
   if (!receipt) return "";
@@ -565,7 +574,8 @@ function harnessChoiceNote(receipt: TaskClassSelection, harness: HarnessId): str
 }
 /** The words of a receipt for why the wave moved on: a usage limit, an ensure refusal, or both. */
 const fallThroughCause = (fallThroughs: readonly QuotaFallThrough[]): string =>
-  fallThroughs.every((item) => item.kind === "ensure") ? "a profile ensure refusal before any worker started"
+  fallThroughs.some((item) => item.kind === "free") ? "a zero-price route refusal before any output"
+    : fallThroughs.every((item) => item.kind === "ensure") ? "a profile ensure refusal before any worker started"
     : fallThroughs.some((item) => item.kind === "ensure") ? "a usage-limit or ensure refusal before any output"
     : fallThroughs.some((item) => item.kind === "review") ? "a Claude review refusal before any output" : "a usage-limit refusal before any output";
 
@@ -638,51 +648,47 @@ async function resolveImplicitWorkerRoute(
   if (policy.planOnly !== undefined) dependencies = { ...dependencies, approvePaidRoute: () => false };
   const spent = spentProviders(fallThroughs);
   const held = heldRoutes(fallThroughs);
+  const isFree = freeStepPredicate(ctx);
   const heldBlock = (step: WorkerRouteStep): string | undefined => {
-    const refused = held.get(routeOfStep(step));
-    return refused ? `run ${refused.runId} was refused by its profile ensure hook before any worker started (${refused.cause})` : undefined;
+    const refused = held.get(step.harness === "steak-dsh" ? dshRouteOf(step) : routeOfStep(step));
+    return refused?.kind === "free" ? `run ${refused.runId} (zero-price route) refused before any output (${refused.cause})`
+      : refused ? `run ${refused.runId} was refused by its profile ensure hook before any worker started (${refused.cause})` : undefined;
   };
-  const tierBlock = (snapshot: QuotaSnapshot, step: WorkerRouteStep): string | undefined => {
-    // A route whose profile ensure hook refused a launch in this walk is out whatever the router says.
+  const tierBlock = (snapshot: QuotaSnapshot | undefined, step: WorkerRouteStep, free?: boolean): string | undefined => {
+    // A route that already refused a launch in this walk is out whatever the router says.
     const refused = heldBlock(step);
     if (refused !== undefined) return refused;
     // A config-driven onlyWhen condition is checked first: when it is false the step is skipped
     // with its named reason, whatever the quota meter says about the step's own provider.
     const onlyWhen = step.onlyWhen ? onlyWhenSkipReason(step.onlyWhen, { quotaSnapshot: snapshot }) : undefined;
     if (onlyWhen !== undefined) return onlyWhen;
+    if (free ?? isFree(step)) return undefined;
     const provider = quotaProviderOf(step);
-    if (provider === undefined || !spent.has(provider)) return routeQuotaBlock(snapshot, step);
+    const quotaBlock = snapshot && routeQuotaBlock(snapshot, step);
+    if (provider === undefined || !spent.has(provider)) return quotaBlock;
     const failed = fallThroughs.find((item) => item.providers.includes(provider));
     // A tier ahead of the refused one in chain order is out too, whatever the router now says: the walk is
     // strictly downward, so an earlier route is never retried after a later tier was refused.
     return failed ? `run ${failed.runId} was refused on a usage limit before any output (${failed.cause})`
-      : routeQuotaBlock(snapshot, step) ?? "this route was already out when the chain moved on to a later tier that was refused on a usage limit, so it is not retried";
-  };
-  // A tier this walk already refused before output is out whatever the router says, and so is everything ahead
-  // of it in chain order. The veto needs no router meter, so it also holds an unmetered tier that a snapshot
-  // cannot gate: without it the tier would be re-launched and refused again on every attempt.
-  const spentSkip = (step: WorkerRouteStep) => {
-    if (held.has(routeOfStep(step))) return true;
-    const provider = quotaProviderOf(step);
-    return provider !== undefined && spent.has(provider);
+      : quotaBlock ?? "this route was already out when the chain moved on to a later tier that was refused on a usage limit, so it is not retried";
   };
   // Project policy narrows the candidates before anything is ranked: a noClaude project's Claude step (a class
   // candidate, a harness-qualified step's inner route, or a default chain step) is unavailable, not a loss.
   const policyBlock = (step: WorkerRouteStep): string | undefined =>
     policy.noClaude !== undefined && isClaudeRouteStep(step) ? noClaudeCause(policy) : undefined;
   const skipStep = (step: WorkerRouteStep, snapshot: QuotaSnapshot | undefined) =>
-    policyBlock(step) !== undefined || spentSkip(step) || (snapshot !== undefined && tierBlock(snapshot, step) !== undefined);
+    policyBlock(step) !== undefined || tierBlock(snapshot, step) !== undefined;
   let first: NativeSelection | undefined;
   let failure: unknown;
   // A parent on another account-leased tier needs a cross-store Codex-tier lookup. Read quota before
   // opening it, so a proven-exhausted plan is never offered an isolated runtime.
   const parentTier = quotaProviderOf(ctx.model!);
   // A class step that is router-gated or carries an `onlyWhen` is judged on the same snapshot as the default chain.
-  const classNeedsQuota = walk?.steps.some((entry) => entry.step.onlyWhen !== undefined || isMeteredQuota(quotaProviderOf(entry.step) ?? "")) === true;
+  const classNeedsQuota = walk?.steps.some((entry) => entry.step.onlyWhen !== undefined || (!isFree(entry.step) && isMeteredQuota(quotaProviderOf(entry.step) ?? ""))) === true;
   let quota: QuotaSnapshot | undefined = (parentTier !== undefined && parentTier !== CODEX_QUOTA && isMeteredQuota(parentTier)) || classNeedsQuota ? await readQuota() : undefined;
   /** Why a class step did not serve the wave, in the words of a receipt. */
   const classStepCause = (entry: TaskClassStep): string =>
-    entry.blocked ?? policyBlock(entry.step) ?? (quota ? tierBlock(quota, entry.step) : heldBlock(entry.step))
+    entry.blocked ?? policyBlock(entry.step) ?? tierBlock(quota, entry.step)
       ?? dshStepBlockReason(ctx.modelRegistry, entry.step, automaticChainOptions(dependencies))
       ?? "not launchable in this session (not authenticated, not in the dispatch catalog, or a reviewed paid route that is not approved in ~/.pi/agent/paid-routes.json)";
   const classStepName = (entry: TaskClassStep): string => entry.profile ? entry.entry : routeStepLabel(entry.step);
@@ -712,24 +718,26 @@ async function resolveImplicitWorkerRoute(
   try { first = await resolveNativeSelection(ctx, requested, dependencies, { skipRoute: step => skipStep(step, quota), quotaSnapshot: quota, ...(walk ? { taskClass: walk } : {}) }); } catch (error) { failure = error; }
   if (!first && !isDefaultChainExhausted(failure)) throw failure;
   if (first) {
-    const step = stepOfSelection(first.selection);
-    const gated = quotaProviderOf(step);
+    const step: WorkerRouteStep = { ...stepOfSelection(first.selection), ...(first.selection.harness === "steak-dsh" ? { harness: "steak-dsh" as const } : {}) };
+    const free = isZeroPriceModel(first.model);
+    const gated = free ? undefined : quotaProviderOf(step);
     // A route a profile `ensure` refusal already held out is left even when it is not router-gated (a profile
     // default can land on it again), by the same forced re-resolution an exhausted route gets.
     const refused = heldBlock(step);
     // An unmetered tier has no router meter to consult, so its launch is never gated by a router read
     // (its own 402/no-endpoint refusal is the only evidence it spent).
-    if (refused === undefined && (gated === undefined || !isMeteredQuota(gated))) return withClass({ resolved: first, tried: [], causes: [] });
     if (gated !== undefined && isMeteredQuota(gated)) quota ??= await readQuota();
-    const cause = refused ?? tierBlock(quota!, step);
+    const cause = refused ?? tierBlock(quota, step, free);
     if (cause === undefined) {
-      const earlier = first.selection.taskClass?.outcome === "served" ? [] : first.selection.chainRoutes?.slice(0, first.selection.chainRoutes.indexOf(routeOfStep(step))) ?? [];
+      const selectedRoute = step.harness === "steak-dsh" ? dshRouteOf(step) : routeOfStep(step);
+      const earlier = first.selection.taskClass?.outcome === "served" ? [] : first.selection.chainRoutes?.slice(0, first.selection.chainRoutes.indexOf(selectedRoute)) ?? [];
       const causes = earlier.flatMap(route => {
         const slash = route.indexOf("/");
-        const prior = { provider: route.slice(0, slash), id: route.slice(slash + 1) };
+        const inner = dshRouteModel(route);
+        const prior = inner ? { ...inner, harness: "steak-dsh" as const } : { provider: route.slice(0, slash), id: route.slice(slash + 1) };
         // Keep the configured step so a skipped `onlyWhen` step names its condition, not a quota read.
         const configured = defaultWorkerChain(requested.requireImages === true).find((step) => step.provider === prior.provider && step.id === prior.id) ?? prior;
-        const block = tierBlock(quota!, configured);
+        const block = tierBlock(quota, configured);
         return block === undefined ? [] : [`${routeStepLabel(configured)}: ${block}`];
       });
       return withClass({ resolved: first, tried: [], causes });
@@ -781,6 +789,18 @@ async function resolveImplicitWorkerRoute(
 /** The operator policy for the project this dispatch runs in (the parent's cwd, its repository, and the paths tasks own). */
 const projectPolicyOf = (ctx: ExtensionContext, requested: UltratermSubagentsParams, dependencies: UltratermSubagentsDependencies): ProjectPolicy =>
   resolveProjectPolicy(ctx.cwd, requested.tasks.flatMap((task) => task.ownedPaths ?? []), dependencies.projectPolicyPath !== undefined ? { policyPath: dependencies.projectPolicyPath } : {});
+
+/** Read zero prices only from the exact dispatched catalog identity, never from a route name. */
+function freeStepPredicate(ctx: ExtensionContext): (step: WorkerRouteStep) => boolean {
+  return (step) => {
+    try {
+      const registry = ctx.modelRegistry;
+      const model = registry.find(step.provider, step.id);
+      return model?.provider === step.provider && model.id === step.id && isZeroPriceModel(model)
+        && (registry.getAll?.() ?? registry.getAvailable()).some((entry) => entry.provider === step.provider && entry.id === step.id);
+    } catch { return false; }
+  };
+}
 
 /** True for a chain step on a paid metered route (not a subscription or local one): a planOnly project is never given one. */
 function paidStepPredicate(ctx: ExtensionContext): (step: WorkerRouteStep) => boolean {
@@ -2166,7 +2186,7 @@ export function createUltratermSubagentsExtension(
             const loginAccount = claudeLoginBlock(snapshot, dependencies.env ?? process.env);
             const login = loginAccount === undefined ? undefined : { label: loginAccount.account.label, cause: loginAccount.cause,
               ...(loginAccount.account.resetAt !== undefined ? { returnsAt: loginAccount.account.resetAt } : {}) };
-            line = computeAvailability({ snapshot, chain, ...(tier !== undefined ? { claudeTier: tier } : {}), policy, isPaid: paidStepPredicate(ctx), ...(login !== undefined ? { login } : {}) }).line;
+            line = computeAvailability({ snapshot, chain, ...(tier !== undefined ? { claudeTier: tier } : {}), policy, isPaid: paidStepPredicate(ctx), isFree: freeStepPredicate(ctx), ...(login !== undefined ? { login } : {}) }).line;
           }
           availabilityCache = { at: now, key, line };
         }
@@ -2394,7 +2414,7 @@ export function createUltratermSubagentsExtension(
       if (claudeUnavailable) {
         // The review fallback may launch on a reserved router account: refuse now, naming both
         // causes, instead of dying at launch after `Started`.
-        const fallbackBlock = routeQuotaBlock(reviewQuota!, fallbackStep!);
+        const fallbackBlock = freeStepPredicate(ctx)(fallbackStep!) ? undefined : routeQuotaBlock(reviewQuota!, fallbackStep!);
         if (fallbackBlock !== undefined) {
           throw new Error(`USAP implicit review cannot run: Claude subscription tier: ${claudeBlock} | ${routeStepLabel(fallbackStep!)} review fallback: ${fallbackBlock}. No review was started and no fallback was selected; wait for a window to return or name a route explicitly.`);
         }
@@ -2475,7 +2495,7 @@ export function createUltratermSubagentsExtension(
       // The review fallback may launch on a reserved router account too: when the router proves every
       // such account unavailable it is not installed (a Claude quota/auth failure would only trade one
       // refusal for another after `Started`), and the dispatch says so.
-      const reviewFallbackBlock = reviewTextFallback && reviewQuota && !claudeUnavailable ? routeQuotaBlock(reviewQuota, fallbackStep!) : undefined;
+      const reviewFallbackBlock = reviewTextFallback && reviewQuota && !claudeUnavailable && !freeStepPredicate(ctx)(fallbackStep!) ? routeQuotaBlock(reviewQuota, fallbackStep!) : undefined;
       const reviewFallbackSkipNote = reviewFallbackBlock !== undefined
         ? `Review note: the ${routeStepLabel(fallbackStep!)} review fallback is unavailable (${reviewFallbackBlock}); a Claude quota or auth failure ends this review without falling back.\n` : "";
       // The wave this call is retrying says so, and names why the first attempt died: a parent reading only the
@@ -2511,8 +2531,8 @@ export function createUltratermSubagentsExtension(
         if (dshPolicy.noClaude !== undefined && (dshModel.provider === "claude-code" || dshModel.provider === "anthropic" || /^claude[-_]/i.test(dshModel.id) || /(^|\/)claude[-_]/i.test(dshModel.id))) {
           throw new Error(`USAP explicit route ${params.model} cannot launch: ${noClaudeCause(dshPolicy)}. No worker was started and no fallback was selected.`);
         }
-        const innerStep = { provider: dshModel.provider, id: dshModel.id };
-        const cause = quotaProviderOf(innerStep) === undefined ? undefined : routeQuotaBlock(await readQuota(), innerStep);
+        const innerStep = dshModel;
+        const cause = isZeroPriceModel(innerStep) || quotaProviderOf(innerStep) === undefined ? undefined : routeQuotaBlock(await readQuota(), innerStep);
         if (cause !== undefined) {
           throw new Error(`USAP explicit route ${params.model} cannot launch: ${cause}. Explicit routes are never rerouted, so no worker was started and no fallback was selected; wait for the window to return or choose another route yourself.`);
         }
@@ -2558,8 +2578,8 @@ export function createUltratermSubagentsExtension(
       if (piResolved && !implicitRoute) {
         // An explicit route stays exact: never rerouted, but never launched into a provider the
         // router has proven exhausted either. The refusal names the router's own cause.
-        const step = stepOfSelection(piResolved.selection);
-        const cause = quotaProviderOf(step) === undefined ? undefined : routeQuotaBlock(await readQuota(), step);
+        const step = piResolved.model;
+        const cause = isZeroPriceModel(step) || quotaProviderOf(step) === undefined ? undefined : routeQuotaBlock(await readQuota(), step);
         if (cause !== undefined) {
           throw new Error(`USAP explicit route ${routeOfStep(step)} cannot launch: ${cause}. Explicit routes are never rerouted, so no worker was started and no fallback was selected; wait for the window to return or choose another route yourself.`);
         }
@@ -2600,6 +2620,12 @@ export function createUltratermSubagentsExtension(
         : foreignHarness ? claudeRoute!
         : classedDsh ? dshRouteOf({ provider: piResolved!.model.provider, id: piResolved!.model.id })
         : `${piResolved!.model.provider}/${piResolved!.model.id}`;
+      const freeWorkerRoute = isZeroPriceModel(piResolved?.model ?? dshModel);
+      const gate = freeWorkerRoute && params.tasks.some((task) => task.mayEdit === true)
+        ? verificationGateFor(model) : undefined;
+      const verificationNote = gate
+        ? `Verification required: have ${gate.reviewer} review implementation on ${model} before shipping${gate.fallback ? ` (configured fallback if unavailable: ${gate.fallback})` : ""}.\n`
+        : "";
       const thinking = resolvedThinking;
       // The dispatch note names the harness whenever it is not Pi, and whenever a task class chose it: then it also
       // says why, from the same decision the receipt carries (the full estimates follow in the task-class line).
@@ -2762,12 +2788,14 @@ export function createUltratermSubagentsExtension(
           ? `The run record is ${final?.state ?? "failed"} with these causes and no worker is left running.`
           : `Cancellation was requested for the whole run, but ${stillRunning.map((task) => `[${taskLabel(task)}]`).join(", ")} had not stopped within ${STARTUP_CANCEL_SETTLE_MS} ms and may still be shutting down; the run record is still ${final?.state ?? "running"} (inspect it with ultraterm_hub status ${run.id}).`;
         const failureText = (causes.length > 0 ? causes : startupFailures).map(startupCause).join(" | ");
-        // An implicit wave refused on a provider quota or usage limit before any output moves to the next
-        // configured tier instead of failing: only for a router-gated Pi tier, only once per
-        // tier, only when the whole run settled (so nothing can still be running or have written), and
-        // never after the operator aborted. An explicit route, the Claude tier and every non-quota failure
-        // (auth, route, spawn) fall through to the error below.
-        const reached = quotaRouted && !claudeWorkerTier && stillRunning.length === 0 && !signal?.aborted && fallThroughs.length < MAX_QUOTA_FALL_THROUGHS
+        // Fall through only on an implicit, settled pre-output refusal, never after an abort.
+        // A free route holds out only itself; a plan limit still holds out the configured tier.
+        const refusedFree = freeWorkerRoute && quotaRouted && stillRunning.length === 0 && !signal?.aborted
+          && fallThroughs.length < MAX_QUOTA_FALL_THROUGHS && causes.length > 0
+          && !final?.tasks.some((task) => task.outputStarted === true || task.state === "done" || (task.state === "failed" && !causes.includes(task)))
+          && causes.every((task) => isFreeRouteRefusal(launchFailureText(task)));
+        if (refusedFree) return { fallThrough: { runId: run.id, route: model, providers: [], cause: boundedReason(failureText, 240), kind: "free" } satisfies QuotaFallThrough };
+        const reached = !freeWorkerRoute && quotaRouted && !claudeWorkerTier && stillRunning.length === 0 && !signal?.aborted && fallThroughs.length < MAX_QUOTA_FALL_THROUGHS
           ? quotaFallThroughProviders(final ?? startedRun, startupFailures) : undefined;
         if (reached) return { fallThrough: { runId: run.id, route: model, providers: reached, cause: boundedReason(failureText, 240) } satisfies QuotaFallThrough };
         // A profile `ensure` hook that refused every launch of an implicit wave holds that route out and moves the
@@ -2786,7 +2814,7 @@ export function createUltratermSubagentsExtension(
         if (reviewRefusal !== undefined) {
           // Ask the router NOW, not at dispatch time: a CLI can refuse a plan the snapshot still showed as launchable.
           const fresh = await readProviderQuota(dependencies.accountCommand, dependencies.now?.());
-          const fallbackBlockNow = fallbackStep === undefined ? "no implicitReview.fallback is configured" : routeQuotaBlock(fresh, fallbackStep);
+          const fallbackBlockNow = fallbackStep === undefined ? "no implicitReview.fallback is configured" : freeStepPredicate(ctx)(fallbackStep) ? undefined : routeQuotaBlock(fresh, fallbackStep);
           if (fallbackBlockNow === undefined) {
             return { fallThrough: { runId: run.id, route: model, providers: [], cause: boundedReason(failureText, 240), kind: "review" as const, reviewReason: reviewRefusal } satisfies QuotaFallThrough };
           }
@@ -2800,7 +2828,7 @@ export function createUltratermSubagentsExtension(
             : " The configured review fallback serves only read-only text reviews (no write, shell or owned paths), so this privileged review never moves to it."
           : "";
         // A usage limit on a route that has no quota tier cannot fall through: say which config key would let it.
-        const ungated = quotaRouted && !claudeWorkerTier && startupFailures.every((task) => isQuotaLaunchFailure(launchFailureText(task))) && reachedProviders(final ?? startedRun ?? run).length === 0
+        const ungated = !freeWorkerRoute && quotaRouted && !claudeWorkerTier && startupFailures.every((task) => isQuotaLaunchFailure(launchFailureText(task))) && reachedProviders(final ?? startedRun ?? run).length === 0
           ? ` Note: ${model} is in no providerQuotaFallback tier of ~/.config/ultraterm/routing.json, so this usage limit cannot fall through; add its provider there to let an implicit wave move on.` : "";
         // Name the layer that refused: a worker-level chain hop (inside the worker) has already tried the rest of the
         // chain before this dispatch-level error, so the route named here is the one that refused last.
@@ -2818,7 +2846,7 @@ export function createUltratermSubagentsExtension(
         return {
           content: [{
             type: "text" as const,
-            text: `${persistenceNote}${harnessNote}${routeNote}Started USAP run ${run.id} · ${model} · ${resolvedSelection.source}${resolvedSelection.profile ? ` · ${resolvedSelection.profile}` : ""}: ${run.tasks.map((task) => task.id).join(", ")}\nDispatch summary: ${JSON.stringify(dispatchDetails(snapshot, persistence).summary)}`,
+            text: `${persistenceNote}${harnessNote}${routeNote}${verificationNote}Started USAP run ${run.id} · ${model} · ${resolvedSelection.source}${resolvedSelection.profile ? ` · ${resolvedSelection.profile}` : ""}: ${run.tasks.map((task) => task.id).join(", ")}\nDispatch summary: ${JSON.stringify(dispatchDetails(snapshot, persistence).summary)}`,
           }],
           details: dispatchDetails(snapshot, persistence),
         };
@@ -2832,7 +2860,7 @@ export function createUltratermSubagentsExtension(
         assertOwner(current, ctx);
         binding.usageClaimed = true;
         return {
-          content: [{ type: "text" as const, text: `${persistenceNote}${harnessNote}${routeNote}Dispatch summary: ${JSON.stringify(dispatchDetails(settled, persistence).summary)}\n${renderRunResult(settled)}\n${reviewFallbackReceipt(settled, current.store?.directory)}` }],
+          content: [{ type: "text" as const, text: `${persistenceNote}${harnessNote}${routeNote}${verificationNote}Dispatch summary: ${JSON.stringify(dispatchDetails(settled, persistence).summary)}\n${renderRunResult(settled)}\n${reviewFallbackReceipt(settled, current.store?.directory)}` }],
           details: dispatchDetails(settled, persistence),
           // Nested worker usage belongs only here, never under details/results.
           usage: usageCopy(settled.usage),

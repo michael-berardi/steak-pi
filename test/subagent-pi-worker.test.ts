@@ -1387,7 +1387,7 @@ describe("worker plan exhaustion is reported to the account router as usage", ()
     expect(isQuotaLaunchFailure(result.error ?? "")).toBe(false);
   });
 
-  async function refusedLimitCalls(kind: "go" | "sol", errorMessage: string): Promise<string[][]> {
+  async function refusedLimitCalls(kind: "go" | "sol", errorMessage: string, free = false): Promise<string[][]> {
     const record = task(); const fake = new FakeSession();
     fake.onPrompt = async (session) => {
       const failed = { role: "assistant" as const, content: [], api: "test", provider: "test", model: "test", usage: usage(0), stopReason: "error", errorMessage, timestamp: Date.now() };
@@ -1398,14 +1398,24 @@ describe("worker plan exhaustion is reported to the account router as usage", ()
     const command = vi.fn(async (args: string[]) => args[0] !== "select" ? { ok: true }
       : kind === "go" ? { ok: true, account: { id: "primary", agentDir: goAgentDir }, lease: "lease-go" }
         : { ok: true, account: { id: "primary", agentDir: isolatedCodexAgentDir("primary") }, lease: "lease-sol" });
+    const model = kind === "go" ? goModel : solModel;
     const runner = createPiWorkerRunner({ relay: setupBroker(), accountCommand: command,
-      resolveRuntime: () => ({ model: kind === "go" ? goModel : solModel, thinkingLevel: "off" }),
+      resolveRuntime: () => ({ model: free ? Object.assign({}, model, { cost: usage(0).cost }) : model, thinkingLevel: "off" }),
       ...(kind === "sol" ? { createModelRuntime: async () => solRuntime() } : {}),
       sessionFactory: async () => ({ session: fake }) });
     const result = await runner({ run: run("/tmp", record), task: record, signal: new AbortController().signal, onProgress: vi.fn() });
     expect(result.state).toBe("failed");
+    if (free) {
+      expect(command).not.toHaveBeenCalled();
+      expect(record.providerAccount).toBeUndefined();
+      expect(result.error).toContain(errorMessage);
+    }
     return command.mock.calls.map(([args]) => args as string[]).filter((args) => args[0] === "limit");
   }
+
+  it("does not reserve, cool down, or release an account for a zero-price model's 429", async () => {
+    await refusedLimitCalls("go", "429 Too Many Requests", true);
+  });
 
   it("reports Pi's ChatGPT sentence without a reset time as --kind rate, never as a spent plan", async () => {
     const limits = await refusedLimitCalls("sol", "You have hit your ChatGPT usage limit (pro plan).");

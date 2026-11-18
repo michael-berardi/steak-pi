@@ -24,7 +24,7 @@ import {
 import type { RelayBroker } from "../src/subagents/relay.ts";
 import { emptyUsage, type UsageTotals, type WorkerRunner, type TaskRecord } from "../src/subagents/types.ts";
 import { TEAM_REGISTRY, stageClaudeHome } from "./helpers/claude-registry-fixture.ts";
-import { BUILTIN_WORKER_PROFILES } from "./helpers/routing-fixture.ts";
+import { BUILTIN_WORKER_PROFILES, routingFixture } from "./helpers/routing-fixture.ts";
 
 const dirs: string[] = [];
 
@@ -2248,6 +2248,53 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
     h.tools.get("ultraterm_subagents").execute("quota", { goal: "Quota routing", routeReason: "Explicit route under test: this case exercises the named route itself.", ...params }, undefined, undefined, h.ctx);
   const plain = [{ label: "scout", task: "Read the routing module and report", role: "scout" }];
   const shutdown = (h: ReturnType<typeof harness>) => h.handlers.get("session_shutdown")!({}, h.ctx);
+
+  describe("catalog zero-price routes", () => {
+    const zeroCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    // No `-free` suffix, and the subscription route shares their provider.
+    const first = { ...goModel, id: "catalog-zero-one", cost: zeroCost };
+    const second = { ...first, id: "catalog-zero-two" };
+    const firstRoute = `${first.provider}/${first.id}`;
+    const secondRoute = `${second.provider}/${second.id}`;
+    const configure = () => setRoutingConfigOverride({ ...routingFixture(), textWorkerChain: [firstRoute, secondRoute, GO_ROUTE, SOL_ROUTE],
+      verificationGates: [{ match: "^opencode-go/catalog-zero-", reviewer: OPUS_ROUTE, fallback: SOL_ROUTE }] });
+
+    it("selects the first catalog-free route over cooling subscription accounts and names the configured verification gate", async () => {
+      configure();
+      const { h } = quotaHarness(status({ go: goOut, codex: solUp }), done(), {}, undefined, [first, second]);
+      try {
+        const result = await dispatch(h, { tasks: [{ label: "edit", task: "Implement", mayEdit: true, ownedPaths: ["src/example.ts"] }] });
+        expect(result.details.run.model).toBe(firstRoute);
+        expect(result.content[0].text).toContain(`Verification required: have ${OPUS_ROUTE} review implementation on ${firstRoute} before shipping (configured fallback if unavailable: ${SOL_ROUTE})`);
+      } finally { setRoutingConfigOverride(undefined); await shutdown(h); }
+    });
+
+    it("does not infer free pricing from a partial zero-price row", async () => {
+      configure();
+      const { h } = quotaHarness(status({ go: goOut, codex: solUp }), done(), {}, undefined,
+        [{ ...first, cost: { input: 0, output: 0, cacheRead: 0 } }]);
+      try {
+        const result = await dispatch(h, { tasks: plain });
+        expect(result.details.run.model).toBe(SOL_ROUTE);
+      } finally { setRoutingConfigOverride(undefined); await shutdown(h); }
+    });
+
+    it("holds out each 429 route in turn without marking its usable subscription tier spent", async () => {
+      configure();
+      const runner = vi.fn(async ({ run }: Parameters<WorkerRunner>[0]): ReturnType<WorkerRunner> => [firstRoute, secondRoute].includes(run.model)
+        ? { state: "failed", output: "", turns: 0, usage: emptyUsage(), error: "429 Too Many Requests" }
+        : { state: "done", output: "ok", turns: 1, usage: emptyUsage() });
+      const { h } = quotaHarness(status({ go: goUp, codex: solUp }), runner, { startupWindowMs: 2_000 }, undefined, [first, second]);
+      try {
+        const result = await dispatch(h, { tasks: plain });
+        expect(runner.mock.calls.map(([context]) => context.run.model)).toEqual([firstRoute, secondRoute, GO_ROUTE]);
+        expect(result.details.run.model).toBe(GO_ROUTE);
+        expect(result.content[0].text).toContain(`${firstRoute} (zero-price route) refused`);
+        expect(result.content[0].text).toContain(`${secondRoute} (zero-price route) refused`);
+        expect(result.content[0].text).not.toContain("Verification required");
+      } finally { setRoutingConfigOverride(undefined); await shutdown(h); }
+    });
+  });
 
   describe("synthetic: quota preflight for an implicit route", () => {
     it("continues down the default chain past an exhausted Go head to Terra", async () => {

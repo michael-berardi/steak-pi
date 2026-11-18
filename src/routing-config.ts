@@ -705,6 +705,11 @@ export function setRoutingConfigOverride(config: Record<string, unknown> | undef
   cache = undefined;
 }
 
+/** First configured verification gate for the exact dispatched route. */
+export function verificationGateFor(route: string): VerificationGateConfig | undefined {
+  return routingConfigOrEmpty().verificationGates?.find((gate) => gate.match.test(route));
+}
+
 /** Operator-chosen display label for a route, falling back to the route itself. */
 export function routeLabel(step: RouteStep): string {
   return routingConfigOrEmpty().routeLabels?.[routeKey(step)] ?? routeKey(step);

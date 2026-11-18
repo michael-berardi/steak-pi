@@ -1,7 +1,7 @@
 import { isCatalogExtraRoute, registerCatalogExtras } from "../catalog-extras.ts";
-import { routingConfigOrEmpty } from "../routing-config.ts";
+import { verificationGateFor } from "../routing-config.ts";
 import { resolveProjectPolicy, type ProjectPolicy } from "./project-policy.ts";
-import { CODEX_QUOTA, isClaudeRouteStep, isQuotaTierRoute, quotaTiers } from "./provider-quota.ts";
+import { CODEX_QUOTA, isClaudeRouteStep, isZeroPriceModel, isQuotaTierRoute, quotaTiers } from "./provider-quota.ts";
 import {
   GO_ACCOUNT_LEASE_RENEW_INTERVAL_MS,
   GO_ACCOUNT_LEASE_TTL_SECONDS,
@@ -311,7 +311,7 @@ interface AssistantSnapshot {
  * (and an optional named fallback). Nothing is gated by default. */
 export function workerImplementationGate(run: RunRecord, task: TaskRecord): string[] {
   if (!task.mayEdit) return [];
-  const gate = (routingConfigOrEmpty().verificationGates ?? []).find((entry) => entry.match.test(run.model));
+  const gate = verificationGateFor(run.model);
   if (!gate) return [];
   const fallback = gate.fallback
     ? ` If that route is unavailable, say so plainly and request the explicitly named ${gate.fallback} fallback review through the parent.`
@@ -1128,7 +1128,8 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       // Account leasing is operator configuration: a providerQuotaFallback tier marked
       // accountRouter leases from the provider account router for its routes. The canonical
       // endpoint, when configured, must match. With no such tier no lease is taken.
-      const routerTier = quotaTiers().find((tier) => tier.accountRouter === true && tier.provider === runtime.model.provider);
+      const free = isZeroPriceModel(runtime.model);
+      const routerTier = free ? undefined : quotaTiers().find((tier) => tier.accountRouter === true && tier.provider === runtime.model.provider);
       if (routerTier) {
         if (routerTier.baseUrl && runtime.model.baseUrl !== routerTier.baseUrl) {
           throw new Error(`${routerTier.label ?? routerTier.quota} account routing requires the canonical endpoint`);
@@ -1150,7 +1151,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
           accountProvider = "opencode-go";
           task.providerAccount = { provider: "opencode-go", id: account.id, label: account.label, lease: account.lease };
         }
-      } else if (isQuotaTierRoute(`${runtime.model.provider}/${runtime.model.id}`, CODEX_QUOTA)) {
+      } else if (!free && isQuotaTierRoute(`${runtime.model.provider}/${runtime.model.id}`, CODEX_QUOTA)) {
         // preferred-free is deliberately NOT included: its virtual call boundary
         // signals return-to-normal instead of borrowing ambient Codex credentials.
         // A normal-profile checkpointed relaunch must enter this reservation path.
@@ -1174,7 +1175,9 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
         await accountCommand(["bind", "--lease", account.lease, "--session", task.id]);
         signal.throwIfAborted();
       }
-      const chain = account ? undefined : workerChainFallback(run.selection, runtime.model, chainFallback,
+      // A catalog-free refusal belongs to the dispatch walk, not a per-worker
+      // hop that could bypass quota preflight or split a wave across routes.
+      const chain = account || free ? undefined : workerChainFallback(run.selection, runtime.model, chainFallback,
         resolveProjectPolicy(run.cwd, task.ownedPaths ?? []));
       const sdk = options.sessionFactory ? undefined : await initialize(loadPiSdk());
       signal.throwIfAborted();
