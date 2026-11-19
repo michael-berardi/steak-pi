@@ -40,7 +40,7 @@ If the installer prints a PATH instruction, apply it before continuing.
 Already have Pi? Install the current package directly:
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.35.5
+pi install git:github.com/michael-berardi/steak-pi@v0.36.0
 ```
 
 Requires Node.js 22.19+ and Pi 0.87+; development checks use Pi 1.0.4.
@@ -117,7 +117,7 @@ their loaded runtime. `STEAK_PI_NO_UPDATE_CHECK=1` disables background update ch
 - [Installation and launcher](docs/INSTALL.md): paths, environment, updates and uninstall
 - [Companion UI](docs/COMPANION-UI.md) and [themes](docs/THEME-PASS.md)
 - [Worker profiles](docs/PROFILES.md) and [subagent protocol](docs/ULTRATERM-SUBAGENT-PROTOCOL.md)
-- Optional [Claude Code adapter](docs/CLAUDE-CODE.md) and [local models](docs/LOCAL-MODELS.md)
+- Optional [Claude Code adapter](docs/CLAUDE-CODE.md), [Google Antigravity provider](docs/ANTIGRAVITY.md) (off until configured) and [local models](docs/LOCAL-MODELS.md)
 - [Reproducible overhead benchmark](benchmarks/overhead/README.md) and [changelog](CHANGELOG.md)
 
 ## From source

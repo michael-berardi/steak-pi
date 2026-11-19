@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.36.0 (2026-11-19)
+
+Adds an optional Google Antigravity provider, built in and off until you configure it. See `docs/ANTIGRAVITY.md`.
+
+- **New module `extensions/antigravity/`.** It adds a `antigravity` provider with Google sign-in through Pi's own `/login`, the signed-in account's live model list, and streamed text, thinking, tool calls (arguments assembled from pieces), images, usage and stop reasons. It is Steak Pi's own implementation; it depends on no plugin and adds no npm dependency.
+- **Off by default, and free when off.** Nothing loads and nothing registers unless `~/.config/ultraterm/antigravity.json` says `"enabled": true`. With no file the cost is one failed file read (0.1 ms in the factory, about 15 ms more to load the entry than an empty extension in a bare Node process).
+- **It ships no model, OAuth client, account, project or provider preference.** Model ids come from the service; the operator supplies `clientId` and `clientSecret`. A test fails if a model id, an OAuth client or an unexpected host appears in the module's source.
+- **Named failures, no quiet fallbacks:** sign-in without a client, a mismatched callback, a refused refresh, a 401 (one refresh, one resend, then named), a 403, a 429 (waits at most the configured bound, at most the configured number of times, then names when to retry), an image to a text-only model, a silent connection, a stalled upload (not sent again), and a stream cut without a finish reason.
+- Reuses the Claude Code adapter's wait limits (`idle-policy.ts`) for the first-byte and idle limits; the transport is its own because the existing relay is a private method of the Claude relay.
+- 51 new tests against a local fake server; no real Google call is made by the suite.
+
 ## 0.35.5 (2026-11-19)
 
 Fixes the stall that froze two long sessions with many screenshots, and removes a status line nobody asked for.
