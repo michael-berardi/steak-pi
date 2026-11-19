@@ -8,6 +8,9 @@ import { AntigravityError } from "./errors.ts";
 export const ASSUMED_CONTEXT_WINDOW = 128_000;
 export const ASSUMED_MAX_OUTPUT = 8_192;
 
+/** The model list is the one large reply: cap it at 8 MiB. */
+export const MODEL_LIST_MAX_BYTES = 8 * 1024 * 1024;
+
 const SAFE_ID = /^[a-z0-9][a-z0-9_.-]*$/i;
 // Internal placeholders, editor tab/chat models and image generators are not chat models for Pi.
 const NOT_CHAT = /^(?:MODEL_|chat_|tab_)|image/i;
@@ -38,7 +41,7 @@ export function modelFromEntry(config: AntigravityConfig, id: string, entry: unk
 }
 
 export async function listModels(config: AntigravityConfig, session: Session, options: CallOptions = {}): Promise<Model<typeof API_ID>[]> {
-  const data = await callJson(config, session, "/v1internal:fetchAvailableModels", { project: session.projectId }, "model list", options);
+  const data = await callJson(config, session, "/v1internal:fetchAvailableModels", { project: session.projectId }, "model list", { maxBodyBytes: MODEL_LIST_MAX_BYTES, ...options });
   const models = data.models;
   if (!models || typeof models !== "object" || Array.isArray(models)) {
     throw new AntigravityError("protocol", "Antigravity model list: the reply has no `models` object");

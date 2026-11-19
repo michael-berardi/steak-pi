@@ -53,7 +53,7 @@ export function buildContents(model: Model<any>, context: TranscriptContext): Co
 
 export interface BuiltRequest { envelope: Record<string, unknown>; imageCount: number }
 
-export function buildRequest(model: Model<any>, context: TranscriptContext, projectId: string, options: SimpleStreamOptions | undefined): BuiltRequest {
+export function buildRequest(model: Model<any>, context: TranscriptContext, projectId: string, options: SimpleStreamOptions | undefined, identity: { userAgent: string; requestType: string }): BuiltRequest {
   const collapsed = collapseSystemMessages(context);
   const contents = buildContents(model, collapsed);
   if (contents.length === 0) throw new AntigravityError("unsupported", "There is nothing to send: the conversation has no user message");
@@ -73,5 +73,5 @@ export function buildRequest(model: Model<any>, context: TranscriptContext, proj
   if (options?.toolChoice === "none") request.toolConfig = { functionCallingConfig: { mode: "NONE" } };
   if (options?.sessionId) request.sessionId = options.sessionId;
   const imageCount = contents.reduce((n, c) => n + c.parts.filter((p) => "inlineData" in p).length, 0);
-  return { envelope: { project: projectId, model: model.id, request, requestType: "agent", userAgent: "antigravity", requestId: `steak-pi-${randomUUID()}` }, imageCount };
+  return { envelope: { project: projectId, model: model.id, request, requestType: identity.requestType, userAgent: identity.userAgent, requestId: `steak-pi-${randomUUID()}` }, imageCount };
 }

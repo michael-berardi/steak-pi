@@ -174,24 +174,14 @@ describe("antigravity streamed turn", () => {
 });
 
 describe("antigravity failures", () => {
-  it("401: refreshes once, retries with the new token, and succeeds", async () => {
-    fake.on("/token", (req, res) => json(res, 200, { access_token: "tok-new", expires_in: 3600 }));
-    fake.on(STREAM, (req, res, n) => n === 1 ? json(res, 401, { error: { message: "token expired" } }) : sse(res, [chunk([{ text: "ok" }], { finishReason: "STOP" })]));
-    const r = await run(testConfig(fake), model(), ctx([user("hi")]), { apiKey: sessionKey({ refresh: "ref-1" }) });
-    expect(r.message.stopReason).toBe("stop");
-    const streams = fake.seen.filter((s) => s.url.startsWith(STREAM));
-    expect(streams.map((s) => s.headers.authorization)).toEqual(["Bearer tok-live-1", "Bearer tok-new"]);
-    expect(fake.seen.filter((s) => s.url === "/token")).toHaveLength(1);
-  });
-
-  it("401 again after the one refresh is a named expiry (no second refresh)", async () => {
+  it("401 is a named expiry at once: no refresh call, no resend, no token in the message", async () => {
     fake.on("/token", (req, res) => json(res, 200, { access_token: "tok-new", expires_in: 3600 }));
     fake.on(STREAM, (req, res) => json(res, 401, { error: { message: "token expired" } }));
     const r = await run(testConfig(fake), model(), ctx([user("hi")]), { apiKey: sessionKey({ refresh: "ref-1" }) });
-    expect(r.message.errorMessage).toMatch(/rejected the access token \(HTTP 401.*even after one refresh.*\/login antigravity/);
-    expect(fake.seen.filter((s) => s.url === "/token")).toHaveLength(1);
-    expect(fake.seen.filter((s) => s.url.startsWith(STREAM))).toHaveLength(2);
-    expect(r.message.errorMessage).not.toMatch(/tok-/);
+    expect(r.message.errorMessage).toMatch(/rejected the access token \(HTTP 401.*Pi renews.*\/login antigravity/);
+    expect(fake.seen.filter((s) => s.url === "/token")).toHaveLength(0);
+    expect(fake.seen.filter((s) => s.url.startsWith(STREAM))).toHaveLength(1);
+    expect(r.message.errorMessage).not.toMatch(/tok-|ref-1/);
   });
 
   it("401 without a refresh token is a named expiry at once", async () => {
@@ -290,9 +280,83 @@ describe("antigravity failures", () => {
     expect(fake.seen).toHaveLength(1);
   });
 
+  it("does not resend to the next endpoint once the body had finished uploading", async () => {
+    const reset = await startFake();
+    let first = 0;
+    reset.raw("/v1internal", (req) => { first += 1; req.on("end", () => req.socket.destroy()); req.resume(); });
+    fake.on(STREAM, (req, res) => sse(res, [chunk([{ text: "ok" }], { finishReason: "STOP" })]));
+    try {
+      const r = await run(testConfig(fake, { baseUrls: [reset.url, fake.url] }), model(), ctx([user("hi")]));
+      expect(r.message.stopReason).toBe("error");
+      expect(r.message.errorMessage).toMatch(/had been sent, so it was not sent to another endpoint/);
+      expect(first).toBe(1);
+      expect(fake.seen).toHaveLength(0);
+    } finally { await reset.close(); }
+  });
+
+  it("a 5xx from a reachable endpoint is not passed on to the next one", async () => {
+    const down = await startFake();
+    down.on(STREAM, (req, res) => json(res, 503, { error: { message: "busy" } }));
+    fake.on(STREAM, (req, res) => sse(res, [chunk([{ text: "ok" }], { finishReason: "STOP" })]));
+    try {
+      const r = await run(testConfig(fake, { baseUrls: [down.url, fake.url] }), model(), ctx([user("hi")]));
+      expect(r.message.errorMessage).toMatch(/503/);
+      expect(fake.seen).toHaveLength(0);
+    } finally { await down.close(); }
+  });
+
   it("no request goes to any host but the configured ones", async () => {
     fake.on(STREAM, (req, res) => sse(res, [chunk([{ text: "ok" }], { finishReason: "STOP" })]));
     await run(testConfig(fake), model(), ctx([user("hi")]));
     expect(fake.seen.every((s) => s.headers.host === new URL(fake.url).host)).toBe(true);
+  });
+});
+
+describe("antigravity bounds on incoming data", () => {
+  it("one SSE line over the cap is a named protocol error", async () => {
+    const { sseData } = await import("../../extensions/antigravity/stream.ts");
+    async function* chunks() { yield Buffer.from("data: " + "x".repeat(50)); yield Buffer.from("y".repeat(50)); }
+    const error = await (async () => { try { for await (const _ of sseData(chunks(), 64)) { /* drain */ } } catch (e) { return e as Error & { code?: string }; } })();
+    expect(error?.code).toBe("protocol");
+    expect(error?.message).toMatch(/stream line longer than 64/);
+  });
+
+  it("an error body over 1 MiB is a named protocol error, and a big model list passes under its own cap", async () => {
+    fake.on(STREAM, (req, res) => { res.writeHead(500); res.end("z".repeat(1024 * 1024 + 10)); });
+    const r = await run(testConfig(fake), model(), ctx([user("hi")]));
+    expect(r.message.errorMessage).toMatch(/reply body is larger than 1048576 bytes/);
+    const models: Record<string, unknown> = {};
+    for (let i = 0; i < 30000; i++) models[`m-${i}`] = { displayName: "n".repeat(40) };
+    fake.on(LIST, (req, res) => json(res, 200, { models }));
+    const list = await listModels(testConfig(fake), { token: "t", projectId: "p" });
+    expect(list.length).toBe(30000);
+    fake.on(LIST, (req, res) => { res.writeHead(200); res.end("a".repeat(9 * 1024 * 1024)); });
+    await expect(listModels(testConfig(fake), { token: "t", projectId: "p" })).rejects.toThrow(/larger than 8388608 bytes/);
+  });
+
+  it("a token reply over 1 MiB is a named protocol error", async () => {
+    const { refreshTokens } = await import("../../extensions/antigravity/client.ts");
+    fake.on("/token", (req, res) => { res.writeHead(200); res.end("t".repeat(1024 * 1024 + 10)); });
+    await expect(refreshTokens(testConfig(fake), "r")).rejects.toMatchObject({ code: "protocol" });
+  });
+});
+
+describe("antigravity envelope identity", () => {
+  it("userAgent, requestType and ideType follow the config", async () => {
+    fake.on(STREAM, (req, res) => sse(res, [chunk([{ text: "ok" }], { finishReason: "STOP" })]));
+    await run(testConfig(fake, { userAgent: "my-client/1", requestType: "chat" }), model(), ctx([user("hi")]));
+    const body = JSON.parse(fake.seen.find((s) => s.url.startsWith(STREAM))!.body);
+    expect(body).toMatchObject({ userAgent: "my-client/1", requestType: "chat" });
+    fake.on("/v1internal:loadCodeAssist", (req, res) => json(res, 200, { cloudaicompanionProject: "p" }));
+    const { discoverProject } = await import("../../extensions/antigravity/client.ts");
+    await discoverProject(testConfig(fake, { ideType: "OTHER_IDE" }), "t");
+    expect(JSON.parse(fake.seen.find((s) => s.url.startsWith("/v1internal:loadCodeAssist"))!.body)).toEqual({ metadata: { ideType: "OTHER_IDE" } });
+  });
+});
+
+describe("antigravity control characters in shown text", () => {
+  it("providerMessage strips C0, DEL and C1", async () => {
+    const { providerMessage } = await import("../../extensions/antigravity/errors.ts");
+    expect(providerMessage(JSON.stringify({ error: { message: "bad\u001b[31m thing\u009b\u007f!" } }))).toBe("bad[31m thing!");
   });
 });

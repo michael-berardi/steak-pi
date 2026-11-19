@@ -138,7 +138,10 @@ export class Translator {
 }
 
 /** Split an SSE byte stream into JSON data payloads. A line that is not valid JSON is a named error, never skipped. */
-export async function* sseData(chunks: AsyncIterable<Buffer>): AsyncGenerator<Chunk> {
+/** One SSE line longer than this is refused (16 MiB). */
+export const SSE_LINE_MAX = 16 * 1024 * 1024;
+
+export async function* sseData(chunks: AsyncIterable<Buffer>, maxLine = SSE_LINE_MAX): AsyncGenerator<Chunk> {
   let buffer = "";
   const decoder = new TextDecoder();
   const lines = function* (final: boolean) {
@@ -156,6 +159,7 @@ export async function* sseData(chunks: AsyncIterable<Buffer>): AsyncGenerator<Ch
   for await (const chunk of chunks) {
     buffer += decoder.decode(chunk, { stream: true });
     for (const line of lines(false)) { const parsed = parse(line); if (parsed) yield parsed; }
+    if (buffer.length > maxLine) throw new AntigravityError("protocol", `Antigravity sent a stream line longer than ${maxLine} characters; refusing to buffer more`);
   }
   buffer += decoder.decode();
   for (const line of lines(true)) { const parsed = parse(line); if (parsed) yield parsed; }
@@ -168,7 +172,7 @@ export function createStream(config: AntigravityConfig) {
     void (async () => {
       try {
         const session: Session = parseKey(options?.apiKey);
-        const built = buildRequest(model, context, session.projectId, options);
+        const built = buildRequest(model, context, session.projectId, options, config);
         const replaced = await options?.onPayload?.(built.envelope, model);
         const payload = replaced === undefined ? built.envelope : replaced;
         const reply = await call(config, session, "/v1internal:streamGenerateContent?alt=sse", payload, "stream", { signal: options?.signal, timeoutMs: options?.timeoutMs });

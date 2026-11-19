@@ -25,9 +25,16 @@ export interface Reply {
   /** The body, chunk by chunk. Throws an `idle` AntigravityError when it goes quiet for the idle limit. */
   chunks(): AsyncGenerator<Buffer>;
   /** The whole body as text (bounded by the same idle limit). */
-  text(): Promise<string>;
+  text(maxBytes?: number): Promise<string>;
   destroy(): void;
 }
+
+/** Largest body `text()` reads unless the caller names another cap. */
+export const DEFAULT_BODY_MAX = 1024 * 1024;
+
+const uploaded = new WeakSet<object>();
+/** True when the request body was completely sent before this error: the server may have received it, so it must not be sent again elsewhere. */
+export const uploadFinished = (error: unknown): boolean => typeof error === "object" && error !== null && uploaded.has(error);
 
 const megabytes = (n: number) => `${(n / 1_048_576).toFixed(1)} MB`;
 
@@ -50,7 +57,11 @@ export function post(url: string, body: Buffer, options: PostOptions): Promise<R
       signal?.removeEventListener("abort", onAbort);
       fn();
     };
-    const fail = (error: unknown) => done(() => { request.destroy(); reject(error); });
+    const fail = (error: unknown) => done(() => {
+      if (finished && typeof error === "object" && error !== null) uploaded.add(error);
+      request.destroy();
+      reject(error);
+    });
     const onAbort = () => fail(signal?.reason ?? new Error("Antigravity request aborted"));
     const note = () => {
       const now = finished ? total : flushed;
@@ -120,9 +131,14 @@ function wrap(response: http.IncomingMessage, request: http.ClientRequest, limit
     status: response.statusCode ?? 0,
     headers: response.headers,
     chunks,
-    async text() {
+    async text(maxBytes = DEFAULT_BODY_MAX) {
       const parts: Buffer[] = [];
-      for await (const chunk of chunks()) parts.push(chunk);
+      let size = 0;
+      for await (const chunk of chunks()) {
+        size += chunk.length;
+        if (size > maxBytes) throw new AntigravityError("protocol", `Antigravity ${label}: the reply body is larger than ${maxBytes} bytes; refusing to read more`);
+        parts.push(chunk);
+      }
       return Buffer.concat(parts).toString("utf8");
     },
     destroy() { response.destroy(); request.destroy(); },
