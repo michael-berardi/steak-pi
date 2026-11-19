@@ -1,23 +1,24 @@
 import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { clearModelCache, listAgyModels, parseModels } from "../../extensions/agy/models.ts";
 import { agyStatus, createAgyProvider } from "../../extensions/agy/provider.ts";
-import { buildArgs, effortFor, streamAgy } from "../../extensions/agy/stream.ts";
-import { knownConversations } from "../../extensions/agy/prompt.ts";
+import { buildArgs, effortFor, promptInput, streamAgy } from "../../extensions/agy/stream.ts";
+import { buildPrompt, knownConversations, PROMPT_MAX_BYTES, tailBytes } from "../../extensions/agy/prompt.ts";
 import { legacyEnabledConfig, LEGACY_NOTICE } from "../../extensions/agy/legacy.ts";
 import agyExtension from "../../extensions/agy/index.ts";
 
 const FAKE = new URL("./fake-agy.mjs", import.meta.url).pathname;
 const dir = mkdtempSync(join(tmpdir(), "agy-test-"));
-const log = join(dir, "argv.log"), pids = join(dir, "pids.log");
+const log = join(dir, "argv.log"), stdinLog = join(dir, "stdin.log"), pids = join(dir, "pids.log");
 const saved = { ...process.env };
 
 beforeEach(() => {
   clearModelCache(); knownConversations.clear();
-  writeFileSync(log, ""); writeFileSync(pids, "");
-  Object.assign(process.env, { STEAK_PI_AGY_BIN: FAKE, FAKE_AGY_LOG: log, FAKE_AGY_PIDS: pids });
+  writeFileSync(log, ""); writeFileSync(pids, ""); writeFileSync(stdinLog, "");
+  Object.assign(process.env, { STEAK_PI_AGY_BIN: FAKE, FAKE_AGY_LOG: log, FAKE_AGY_STDIN: stdinLog, FAKE_AGY_PIDS: pids });
   delete process.env.FAKE_AGY_SCENARIO; delete process.env.STEAK_PI_AGY_MODE;
 });
 afterEach(() => { for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]; Object.assign(process.env, saved); });
@@ -26,6 +27,9 @@ const user = (text: string) => ({ role: "user", content: text, timestamp: 1 });
 const ctx = (...messages: unknown[]) => ({ messages }) as never;
 const model = { id: "gemini-x-high", api: "agy-stream-json", provider: "agy" } as never;
 const calls = () => readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as string[]);
+const turns = () => calls().filter((c) => c[0] !== "models");
+/** The prompts agy received on stdin, one per turn. */
+const prompts = () => readFileSync(stdinLog, "utf8").split("\n").filter(Boolean).map((l) => { const e = JSON.parse(l); expect(e.event).toBe("user"); return e.message.content as string; });
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
 async function run(scenario: string, messages: unknown[] = [user("hi")], options: Record<string, unknown> = {}) {
@@ -121,41 +125,71 @@ describe("a turn", () => {
 describe("arguments", () => {
   it("runs agy as documented, in the session cwd, with agy's own permissions", async () => {
     await run("success", [user("hi")]);
-    const args = calls().find((c) => c[0] === "-p")!;
-    expect(args).toEqual(["-p", "hi", "--model", "gemini-x-high", "--output-format", "stream-json", "--disable-slash-commands", "--add-dir", process.cwd()]);
+    expect(turns()[0]).toEqual(["--input-format", "stream-json", "--output-format", "stream-json", "--model", "gemini-x-high", "--disable-slash-commands", "--add-dir", process.cwd()]);
+    expect(prompts()).toEqual(["hi"]);
+  });
+  it("sends the prompt on stdin, never in argv, even one that looks like a flag", async () => {
+    const flag = "--dangerously-skip-permissions please";
+    await run("success", [user(flag)]);
+    expect(turns()[0].join(" ")).not.toContain("dangerously");
+    expect(turns()[0]).not.toContain(flag);
+    expect(prompts()).toEqual([flag]);
+    expect(promptInput("a\nb")).toBe('{"event":"user","message":{"content":"a\\nb"}}\n');
+  });
+  it("carries a 300 KB non-ASCII prompt intact", async () => {
+    const big = "héllo 日本語 🚀 ".repeat(15_000);
+    expect(Buffer.byteLength(big)).toBeGreaterThan(300_000);
+    const { message } = await run("success", [user(big)]);
+    expect(message.stopReason).toBe("stop");
+    expect(prompts()).toEqual([big.trim()]);
+    expect(JSON.stringify(turns())).not.toContain("héllo");
   });
   it("maps Pi thinking levels to --effort and never passes --dangerously-skip-permissions", async () => {
     expect(["off", "minimal", "low", "medium", "high", "xhigh", "max", undefined].map(effortFor)).toEqual(["low", "low", "low", "medium", "high", "xhigh", "max", undefined]);
     for (const level of ["off", "minimal", "low", "medium", "high", "xhigh"]) await run("success", [user("hi")], { reasoning: level });
     process.env.STEAK_PI_AGY_MODE = "plan";
     await run("success", [user("hi")], { reasoning: "high" });
-    const all = calls().filter((c) => c[0] === "-p");
+    const all = turns();
     expect(all.map((c) => c[c.indexOf("--effort") + 1])).toEqual(["low", "low", "low", "medium", "high", "xhigh", "high"]);
     expect(all.at(-1)).toContain("--mode");
     expect(all.flat()).not.toContain("--dangerously-skip-permissions");
-    expect(buildArgs({ prompt: "p", model: "m", cwd: "/w" })).not.toContain("--dangerously-skip-permissions");
+    expect(buildArgs({ model: "m", cwd: "/w" })).not.toContain("--dangerously-skip-permissions");
   });
   it("rejects an unknown mode instead of ignoring it", async () => {
     process.env.STEAK_PI_AGY_MODE = "yolo";
     const { message } = await run("success");
     expect(message.errorMessage).toContain("STEAK_PI_AGY_MODE");
-    expect(calls().filter((c) => c[0] === "-p")).toHaveLength(0);
+    expect(turns()).toHaveLength(0);
   });
   it("resumes the conversation when history is linear, and replays a transcript otherwise", async () => {
     const first = await run("success", [user("one")]);
     const a1 = first.message;
     await run("success", [user("one"), a1, user("two")]);
-    const second = calls().filter((c) => c[0] === "-p")[1];
-    expect(second.slice(0, 2)).toEqual(["-p", "two"]);
+    const second = turns()[1];
+    expect(prompts()[1]).toBe("two");
     expect(second[second.indexOf("--conversation") + 1]).toBe("c3b66b04-872b-4fbe-a3a4-058a026ef20a");
     // An edited branch (the assistant message is not the one agy last produced) gets a fresh conversation and a transcript.
     knownConversations.clear();
     await run("success", [user("one"), a1, user("two")]);
-    const third = calls().filter((c) => c[0] === "-p")[2];
+    const third = turns()[2];
     expect(third).not.toContain("--conversation");
-    expect(third[1]).toContain("[user]\none");
-    expect(third[1]).toContain("[assistant]\nGit rebase rewrites history.");
-    expect(third[1]).toContain("Current request:\ntwo");
+    expect(prompts()[2]).toContain("[user]\none");
+    expect(prompts()[2]).toContain("[assistant]\nGit rebase rewrites history.");
+    expect(prompts()[2]).toContain("Current request:\ntwo");
+  });
+  it("resuming sends every user message since agy's last reply", async () => {
+    const a1 = (await run("success", [user("one")])).message;
+    await run("success", [user("one"), a1, user("two"), user("three")]);
+    expect(prompts()[1]).toBe("two\n\nthree");
+    expect(turns()[1]).toContain("--conversation");
+  });
+  it("caps a replayed transcript by bytes, on a character boundary", () => {
+    expect(tailBytes("日本語日本語", 7)).toBe("本語"); // 7 bytes would split a character: the partial one is dropped
+    const msgs = Array.from({ length: 200 }, (_, i) => [user("日本語".repeat(300) + i), { role: "assistant", content: [{ type: "text", text: "ok" }], provider: "other", model: "m", timestamp: 2 }]).flat();
+    const built = buildPrompt([...msgs, user("now")] as never, "m");
+    expect(Buffer.byteLength(built.prompt)).toBeLessThanOrEqual(PROMPT_MAX_BYTES);
+    expect(built.prompt).toContain("Current request:\nnow");
+    expect(built.prompt).not.toContain("\ufffd");
   });
 });
 
@@ -184,6 +218,40 @@ describe("cancellation", () => {
     await waitFor(() => pidList().length >= 2);
     controller.abort();
     for await (const _ of stream) { /* drain */ }
+    await waitFor(() => pidList().every((p) => !alive(p)));
+    expect(pidList().filter(alive)).toEqual([]);
+  }, 20_000);
+
+  it("kills a tool that ignores SIGINT/SIGTERM and holds agy's stdout once agy has exited, and the turn resolves", async () => {
+    const { message } = await run("orphan", [user("go")]);
+    expect(message.stopReason).toBe("stop");
+    expect(pidList()).toHaveLength(2);
+    await waitFor(() => pidList().every((p) => !alive(p)));
+    expect(pidList().filter(alive)).toEqual([]);
+  }, 20_000);
+
+  it("a timeout still fires while a gentler stop is pending", async () => {
+    const controller = new AbortController();
+    process.env.FAKE_AGY_SCENARIO = "stubborn";
+    const started = Date.now();
+    const events: any[] = [];
+    const stream = streamAgy(model, ctx(user("go")), { signal: controller.signal, timeoutMs: 700 } as never);
+    await waitFor(() => pidList().length >= 2);
+    controller.abort(); // stop() is now pending (agy ignores SIGINT/SIGTERM); the timeout must not wait for it
+    for await (const e of stream) events.push(e);
+    expect(Date.now() - started).toBeLessThan(2500);
+    await waitFor(() => pidList().every((p) => !alive(p)));
+    expect(pidList().filter(alive)).toEqual([]);
+  }, 20_000);
+
+  it("a Pi that gets SIGTERM kills agy's group and still exits from the signal", async () => {
+    const script = new URL("./pi-child.mjs", import.meta.url).pathname;
+    const child = spawn(process.execPath, [script], { stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, FAKE_AGY_SCENARIO: "stubborn" } });
+    await waitFor(() => pidList().length >= 2);
+    expect(pidList()).toHaveLength(2);
+    const exited = new Promise<string | null>((resolve) => child.once("exit", (_c, sig) => resolve(sig)));
+    child.kill("SIGTERM");
+    expect(await exited).toBe("SIGTERM");
     await waitFor(() => pidList().every((p) => !alive(p)));
     expect(pidList().filter(alive)).toEqual([]);
   }, 20_000);

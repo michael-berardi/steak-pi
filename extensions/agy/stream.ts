@@ -1,4 +1,4 @@
-// One agy turn: spawn `agy -p ... --output-format stream-json`, translate its events into Pi stream events.
+// One agy turn: spawn `agy --input-format stream-json --output-format stream-json`, send the prompt on stdin,, translate its events into Pi stream events.
 // agy runs its own agent loop and tools, so its tool steps are shown as read-only progress lines, never as Pi tool calls.
 import { createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEventStream, type Model, type SimpleStreamOptions, type TranscriptContext } from "@earendil-works/pi-ai";
 import { AgyError, cleanAgyText, errorFromResult } from "./errors.ts";
@@ -18,9 +18,11 @@ export function effortFor(level: string | undefined): string | undefined {
   }
 }
 
-export function buildArgs(input: { prompt: string; model: string; cwd: string; effort?: string; mode?: string; conversation?: string }): string[] {
+export function buildArgs(input: { model: string; cwd: string; effort?: string; mode?: string; conversation?: string }): string[] {
   // --disable-slash-commands: a prompt that starts with "/" is sent as typed, never run as an agy command.
-  const args = ["-p", input.prompt, "--model", input.model, "--output-format", "stream-json", "--disable-slash-commands"];
+  // The prompt is not an argument: it goes to stdin as one stream-json user event (see promptInput), so it is not in `ps`,
+  // cannot overflow the argument limit and cannot be read as a flag.
+  const args = ["--input-format", "stream-json", "--output-format", "stream-json", "--model", input.model, "--disable-slash-commands"];
   if (input.effort) args.push("--effort", input.effort);
   if (input.mode) args.push("--mode", input.mode);
   if (input.conversation) args.push("--conversation", input.conversation);
@@ -28,6 +30,9 @@ export function buildArgs(input: { prompt: string; model: string; cwd: string; e
   // Never --dangerously-skip-permissions: agy's own permission rules stay in force.
   return args;
 }
+
+/** The one stdin line for a turn; closing stdin afterwards ends agy's session once this turn's result is out. */
+export const promptInput = (prompt: string) => `${JSON.stringify({ event: "user", message: { content: prompt } })}\n`;
 
 function agyMode(env: Record<string, string | undefined>): string | undefined {
   const mode = env.STEAK_PI_AGY_MODE?.trim();
@@ -82,7 +87,7 @@ export function streamAgy(model: Model<any>, context: TranscriptContext, options
       const env = process.env;
       const cwd = process.cwd();
       const built = buildPrompt(context.messages, model.id);
-      const args = buildArgs({ prompt: built.prompt, model: model.id, cwd, effort: effortFor(options?.reasoning), mode: agyMode(env), conversation: built.conversation });
+      const args = buildArgs({ model: model.id, cwd, effort: effortFor(options?.reasoning), mode: agyMode(env), conversation: built.conversation });
       const timeoutMs = options?.timeoutMs && options.timeoutMs > 0 ? options.timeoutMs : Number(env.STEAK_PI_AGY_TIMEOUT_MS) > 0 ? Number(env.STEAK_PI_AGY_TIMEOUT_MS) : DEFAULT_TIMEOUT_MS;
       let result: Record<string, any> | undefined, conversationId: string | undefined, streamed = "", sawStepUsage = false;
       const seenTools = new Set<number>(), usedSteps = new Set<number>();
@@ -104,7 +109,7 @@ export function streamAgy(model: Model<any>, context: TranscriptContext, options
           if (s.state === "DONE" && s.usage && typeof s.step_index === "number" && !usedSteps.has(s.step_index)) { usedSteps.add(s.step_index); addUsage(output.usage, s.usage); sawStepUsage = true; }
         } else if (event.event === "result" && event.result) result = event.result;
       };
-      const run = await runAgy({ args, cwd, env, signal: options?.signal, timeoutMs, onLine });
+      const run = await runAgy({ args, input: promptInput(built.prompt), cwd, env, signal: options?.signal, timeoutMs, onLine });
       if (run.aborted || options?.signal?.aborted) { output.stopReason = "aborted"; output.errorMessage = "agy run cancelled"; stream.push({ type: "error", reason: "aborted", error: output }); stream.end(); return; }
       if (run.signedOut && !result) throw new AgyError("signed-out", "agy is not signed in (agy said: Authentication required); run agy once to sign in.");
       if (run.timedOut) throw new AgyError("timeout", `agy timed out after ${Math.round(timeoutMs / 1000)} s and was stopped (set STEAK_PI_AGY_TIMEOUT_MS to change the limit)`);

@@ -48,7 +48,7 @@ const ROOT_FILES = ["README.md", "CONTRIBUTING.md", "SECURITY.md"];
 const shipped = [...SHIPPED_DIRS.flatMap((dir) => files(join(root, dir))), ...ROOT_FILES.map((name) => join(root, name))].filter(existsSync);
 
 // Concrete model ids and routes only an operator should choose.
-const MODEL_CHOICE = /\b(?:gpt-\d[\w.-]*|deepseek[\w./-]*|opencode-go\/|openrouter\/[\w~]|:exacto\b|mimo[-.]?v?\d|glm[-.]?\d|claude-[a-z]+-\d-\d|(?:GLM|MiMo|Codex|GPT|Opus|Sonnet|Haiku|Claude) [Vv]?[0-9][.0-9]*)/i;
+const MODEL_CHOICE = /\b(?:gpt-\d[\w.-]*|deepseek[\w./-]*|opencode-go\/|openrouter\/[\w~]|:exacto\b|mimo[-.]?v?\d|glm[-.]?\d|claude-[a-z]+-\d-\d|gemini-\d|gemini-[a-z]+-\d|(?:GLM|MiMo|Codex|GPT|Opus|Sonnet|Haiku|Claude) [Vv]?[0-9][.0-9]*)/i;
 // Adapter catalogs: provider adapter code that must name the provider's own models. No default
 // selects any of them; automatic order comes only from routing.json.
 const ADAPTER_CATALOGS = [
@@ -139,7 +139,7 @@ describe("shipped files are provider-neutral", () => {
     }
     // The patterns really match what they guard against, and every allowlisted adapter catalog
     // exists and still needs its exception (a stale entry would silently widen the allowlist).
-    for (const sample of ["openrouter/vendor/model", "opencode-go/x", "a-model:exacto", "gpt-6.1-x", "DeepSeek", "mimo-v2.6", "glm-5.3", "claude-opus-5-5", "Opus 5.5", "Sonnet 5.5", "Claude 1", "GLM 5.3", "MiMo V2.6", "Codex 6", "GPT 1"]) {
+    for (const sample of ["openrouter/vendor/model", "opencode-go/x", "a-model:exacto", "gpt-6.1-x", "DeepSeek", "mimo-v2.6", "glm-5.3", "claude-opus-5-5", "gemini-3-pro", "gemini-pro-3", "Opus 5.5", "Sonnet 5.5", "Claude 1", "GLM 5.3", "MiMo V2.6", "Codex 6", "GPT 1"]) {
       expect(MODEL_CHOICE.test(sample), sample).toBe(true);
     }
     for (const sample of ["Mike", "Liberty Design", "/Users/alex", "berardi"]) expect(PERSONAL.test(sample), sample).toBe(true);

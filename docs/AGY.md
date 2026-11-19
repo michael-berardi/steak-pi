@@ -20,14 +20,20 @@ The model list is exactly what `agy models` prints for your account; your plan d
 ## What a turn does
 
 ```
-agy -p <prompt> --model <id> --output-format stream-json --disable-slash-commands [--effort <level>] [--mode <mode>] [--conversation <id>] --add-dir <cwd>
+agy --input-format stream-json --output-format stream-json --model <id> --disable-slash-commands [--effort <level>] [--mode <mode>] [--conversation <id>] --add-dir <cwd>
 ```
+
+The prompt is not on the command line: Steak Pi writes it to agy's stdin as one `{"event":"user","message":{"content":"..."}}` line and closes stdin ([stream prompts from stdin](https://antigravity.google/docs/cli/headless)), so it does not show in `ps`, cannot exceed the argument-size limit and cannot be read as a flag.
 
 It runs in the session's working directory. Text arrives as it streams. Each tool step agy runs is shown as a read-only progress line in the answer (for example `› agy run_command: npm test`); these are display only, are not Pi tool calls, and are left out when the conversation is replayed.
 
 ### Tool calls run inside agy, not Pi
 
-agy runs its **own** agent loop and tools (shell, file edits, web). They act on your files **outside Pi's approvals**, under **agy's permission rules**. Steak Pi never passes `--dangerously-skip-permissions`, so agy's default preset applies: terminal commands run in agy's sandbox, writes stay in the workspace, and anything that needs approval agy cannot get in headless mode is refused by agy (the run continues). Grant tools ahead of time with `permissions.allow` in `~/.gemini/antigravity-cli/settings.json` ([agy permissions](https://antigravity.google/docs/cli/permissions)). Optional: set `STEAK_PI_AGY_MODE` to `accept-edits`, `auto` or `plan` to pass `--mode`.
+agy runs its own tools under agy's permission rules, outside Pi's approvals. Steak Pi never passes --dangerously-skip-permissions, so agy's default permissions apply: per Google's docs, actions that need approval are not approved in headless mode (the run continues without them); allow tools ahead of time with permissions.allow in ~/.gemini/antigravity-cli/settings.json.
+
+What Google documents ([agy permissions](https://antigravity.google/docs/cli/permissions)): the presets are Request Review, Default (the default), Auto and Turbo. Under Default, terminal commands run in a sandbox limited to the workspace and temp directories with no network, and a command that needs to run outside it asks for approval unless a `command(...)` allow rule covers it; file access outside the workspace and web and MCP actions ask.
+
+This is Google's documented behaviour, not something Steak Pi has verified: it was tested only against a fake agy and a signed-out agy, never a signed-in one. `STEAK_PI_AGY_MODE=auto` passes `--mode auto`, which lets agy approve actions automatically; `accept-edits` and `plan` are the other values.
 
 ### Thinking level
 
@@ -35,14 +41,14 @@ Pi's thinking level maps to `--effort`: off, minimal and low become `low`; mediu
 
 ### Conversation memory
 
-One process per turn (not a warm `--input-format stream-json` process). A turn is a single documented `-p` run, so cancelling is killing one process group, and a branch, an edit or a compaction in Pi can never desynchronise a long-lived child.
+One process per turn: stdin carries a single prompt and is then closed, so agy ends after that turn (Steak Pi does not keep a warm multi-turn session). Cancelling is killing one process group, and a branch, an edit or a compaction in Pi can never desynchronise a long-lived child.
 
-- When Pi's history ends exactly where agy's last conversation ended (same model, same session), the turn sends only your last message with `--conversation <id>`, so agy remembers the files it read and the commands it ran.
-- Otherwise (first turn, a branch or edited history, a Pi restart, a model switch) a **new** agy conversation starts and gets your last message plus a compact text transcript of earlier turns (capped at 100,000 characters, oldest turns dropped first). agy's own tool history from before is not carried over.
+- When Pi's history ends exactly where agy's last conversation ended (same model, same session), the turn sends every message you wrote since agy's last reply with `--conversation <id>`, so agy remembers the files it read and the commands it ran.
+- Otherwise (first turn, a branch or edited history, a Pi restart, a model switch) a **new** agy conversation starts and gets your last message plus a compact text transcript of earlier turns (capped at 100,000 bytes, oldest turns dropped first). agy's own tool history from before is not carried over.
 
 ## Cancel, timeout and errors
 
-Pi's abort sends SIGINT to agy's process group (agy records INTERRUPTED), then SIGTERM after 3 s, then SIGKILL after 2 s more; no child is left running, and a Pi exit kills any that remain. A turn stops after 30 minutes (`STEAK_PI_AGY_TIMEOUT_MS` changes it). Errors name their cause; nothing falls back silently:
+Pi's abort sends SIGINT to agy's process group (agy records INTERRUPTED), then SIGTERM after 3 s, then SIGKILL after 2 s more; agy's whole process group is then killed with SIGKILL whenever agy exits (also after a normal finish), so tools it started cannot outlive it, and a grandchild holding agy's output open cannot hang the turn (the pipes are closed). If Pi gets SIGHUP or SIGTERM, or exits, the live agy groups are killed too; a tool that deliberately starts its own session or process group is outside agy's group and is not reached. A turn stops after 30 minutes (`STEAK_PI_AGY_TIMEOUT_MS` changes it). Errors name their cause; nothing falls back silently:
 
 | Cause | What you see |
 | --- | --- |

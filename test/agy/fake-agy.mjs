@@ -18,6 +18,9 @@ if (args[0] === "models") {
   process.stdout.write("gemini-x-high Gemini X (High)\ngemini-x-low Gemini X (Low)\nother-model Other (Medium)\n");
   process.exit(0);
 }
+// Like agy with --input-format stream-json: the prompt arrives on stdin, one JSON line per turn; stdin closing ends the session.
+const stdinText = await new Promise((resolve) => { let d = ""; process.stdin.setEncoding("utf8").on("data", (c) => (d += c)).on("end", () => resolve(d)).on("error", () => resolve(d)); });
+if (process.env.FAKE_AGY_STDIN) appendFileSync(process.env.FAKE_AGY_STDIN, stdinText.replace(/\n$/, "") + "\n");
 if (process.env.FAKE_AGY_PIDS) appendFileSync(process.env.FAKE_AGY_PIDS, `${process.pid}\n`);
 switch (scenario) {
   case "success":
@@ -48,6 +51,14 @@ switch (scenario) {
   case "model-error":
     out({ event: "result", result: { conversation_id: "", status: "ERROR", response: "", error: `invalid model selection (--model "x" --effort ""): model x is not recognized as a known model or custom model in settings\nAvailable models:\n Gemini X (High)`, duration_seconds: 0, num_turns: 0, usage: {} } });
     process.exit(1);
+  case "orphan": { // a tool that ignores SIGINT/SIGTERM and holds agy's stdout open, outliving agy itself
+    init();
+    const child = spawn(process.execPath, ["-e", "process.on('SIGINT',()=>{});process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"], { stdio: ["ignore", "inherit", "inherit"] });
+    if (process.env.FAKE_AGY_PIDS) appendFileSync(process.env.FAKE_AGY_PIDS, `${child.pid}\n`);
+    step({ step_index: 3, state: "DONE", step_type: "agent_response", text_delta: "done\n" });
+    result("SUCCESS", { response: "done\n" });
+    process.exit(0);
+  }
   case "canceled": init(); result("CANCELED"); break;
   case "interrupted": init(); result("INTERRUPTED"); break;
   case "waiting": init(); result("WAITING"); break;
