@@ -58,11 +58,51 @@ describe("antigravity sign-in", () => {
     expect(lookup.headers["user-agent"]).toMatch(/^steak-pi-antigravity\//);
   });
 
-  it("refuses a callback whose state does not match, naming the cause", async () => {
+  it("a callback with a wrong or missing state, even one carrying error=, is answered 400 and the sign-in keeps waiting", async () => {
     backend();
     const config = testConfig(fake, { redirectPort: await freePort() });
-    await expect(login(config, browser({ state: () => "forged" }))).rejects.toThrow(/state did not match/);
+    const statuses: number[] = [];
+    const bodies: string[] = [];
+    const interaction = browser();
+    const notify = (interaction as { notify: (e: unknown) => void }).notify;
+    (interaction as { notify: (e: unknown) => void }).notify = (event) => {
+      const url = new URL((event as { url: string }).url);
+      const redirect = new URL(url.searchParams.get("redirect_uri")!);
+      const state = url.searchParams.get("state")!;
+      const hit = async (query: string) => { const r = await fetch(`${redirect.origin}${redirect.pathname}?${query}`); statuses.push(r.status); bodies.push(await r.text()); };
+      void (async () => {
+        await new Promise((r) => setTimeout(r, 20));
+        await hit("error=access_denied");
+        await hit("code=evil&state=forged");
+        await hit("code=evil");
+        await hit(`error=${encodeURIComponent("x\u001b[2Jy")}&state=forged`);
+        notify.call(interaction, event);
+      })();
+    };
+    const credential = await login(config, interaction);
+    expect(statuses).toEqual([400, 400, 400, 400]);
+    expect(credential).toMatchObject({ access: "acc-1" });
+    expect(new URLSearchParams(fake.seen.find((s) => s.url === "/token")!.body).get("code")).toBe("code-1");
+  });
+
+  it("a refusal that carries the right state is final, with control characters removed", async () => {
+    backend();
+    const config = testConfig(fake, { redirectPort: await freePort() });
+    const interaction = browser();
+    (interaction as { notify: (e: unknown) => void }).notify = (event) => {
+      const url = new URL((event as { url: string }).url);
+      const redirect = new URL(url.searchParams.get("redirect_uri")!);
+      redirect.searchParams.set("error", "denied\u001b[2J\u009bX");
+      redirect.searchParams.set("state", url.searchParams.get("state")!);
+      setTimeout(() => void fetch(redirect).catch(() => {}), 20);
+    };
+    const error = await login(config, interaction).catch((e) => e);
+    expect(error.message).toBe("Google sign-in was refused: denied[2JX");
     expect(fake.seen.some((s) => s.url === "/token")).toBe(false);
+  });
+
+  it("pasted-text errors carry no control characters", () => {
+    expect(() => parsePasted("?error=a%1b%5b2Jb&state=s", "s")).toThrow("Google sign-in was refused: a[2Jb");
   });
 
   it("names the missing OAuth client instead of using a built-in one", async () => {
@@ -91,6 +131,9 @@ describe("antigravity sign-in", () => {
     expect(new URLSearchParams(fake.seen[0].body).get("refresh_token")).toBe("ref-1");
     const auth = await oauth.toAuth(next);
     expect(parseKey(auth.apiKey)).toMatchObject({ token: "acc-2", projectId: "proj-9" });
+    // The refresh token stays in Pi's store: it is not part of what requests receive.
+    expect(auth.apiKey).not.toMatch(/ref-1|refresh/);
+    expect(Object.keys(JSON.parse(auth.apiKey!)).sort()).toEqual(["projectId", "token"]);
   });
 
   it("a refused refresh token is a named expiry that says to sign in again, and never prints a token", async () => {
@@ -101,6 +144,23 @@ describe("antigravity sign-in", () => {
     expect(error.code).toBe("auth-expired");
     expect(error.message).toMatch(/invalid_grant.*\/login antigravity/);
     expect(error.message).not.toMatch(/1\/\/abc/);
+  });
+
+  it("a network failure during refresh is a transport error, not an expired sign-in", async () => {
+    const oauth = createOAuth(testConfig(fake, { tokenUrl: "http://127.0.0.1:9/token" }));
+    const error = await oauth.refresh({ type: "oauth", access: "a", refresh: "r", expires: 0, projectId: "p" }, new AbortController().signal).catch((e) => e);
+    expect(error).toBeInstanceOf(AntigravityError);
+    expect(error.code).toBe("http");
+    expect(error.message).toMatch(/cannot reach the token endpoint.*try again/);
+    expect(error.message).not.toMatch(/no longer valid|\/login/);
+  });
+
+  it("exactly one token call per Pi refresh, and a 5xx from the endpoint is not an expired sign-in", async () => {
+    fake.on("/token", (req, res) => json(res, 503, { error: "backend_error" }));
+    const oauth = createOAuth(testConfig(fake));
+    const error = await oauth.refresh({ type: "oauth", access: "a", refresh: "r", expires: 0, projectId: "p" }, new AbortController().signal).catch((e) => e);
+    expect(error.code).toBe("http");
+    expect(fake.seen.filter((s) => s.url === "/token")).toHaveLength(1);
   });
 
   it("an unreadable credential is named and never quoted", () => {

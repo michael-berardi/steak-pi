@@ -19,7 +19,7 @@ export function createAntigravityProvider(config: AntigravityConfig) {
       if (!credential || credential.type !== "oauth") return [];
       const projectId = typeof credential.projectId === "string" ? credential.projectId : config.projectId;
       if (!projectId) return [];
-      const session: Session = { token: credential.access, projectId, refresh: credential.refresh };
+      const session: Session = { token: credential.access, projectId };
       return listModels(config, session, { signal });
     },
     api: { stream, streamSimple: stream },

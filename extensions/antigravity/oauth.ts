@@ -1,12 +1,13 @@
 // Sign-in through Pi's own /login flow: OAuth authorization code with PKCE, a loopback callback listener, and a
 // paste-the-URL fallback for a browser on another machine. Pi stores the returned credential (0600 in its auth store);
-// this module keeps no copy of it and opens no browser itself.
+// this module keeps no copy of it and opens no browser itself. The refresh token never leaves Pi's store: the `apiKey`
+// handed to requests carries the access token and project only, and Pi's own `refresh` renews an expiring token.
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { OAuthCredential, OAuthAuth, ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import { discoverProject, exchangeCode, needClient, refreshTokens } from "./client.ts";
 import type { AntigravityConfig } from "./config.ts";
-import { AntigravityError } from "./errors.ts";
+import { AntigravityError, stripControl } from "./errors.ts";
 
 export const CALLBACK_TIMEOUT_MS = 5 * 60 * 1000;
 const CALLBACK_PATH = "/oauth-callback";
@@ -30,9 +31,11 @@ function listen(config: AntigravityConfig, expectedState: string): Promise<{ wai
       const error = url.searchParams.get("error");
       const code = url.searchParams.get("code");
       const state = url.searchParams.get("state");
-      if (error) { page(res, 400, "Sign-in failed. You can close this window."); settle.fail(new AntigravityError("sign-in", `Google sign-in was refused: ${error.slice(0, 100)}`)); return; }
-      if (!code || !state) { page(res, 400, "Sign-in failed: missing code or state."); settle.fail(new AntigravityError("sign-in", "The sign-in callback had no code or state")); return; }
-      if (state !== expectedState) { page(res, 400, "Sign-in failed: state mismatch."); settle.fail(new AntigravityError("sign-in", "The sign-in callback state did not match this sign-in (possible forged callback); start /login antigravity again")); return; }
+      // A request with a missing or wrong state is not part of this sign-in: refuse it and keep waiting, so no web page or
+      // local process can end the sign-in by sending one. Only a callback that carries the right state is final.
+      if (state !== expectedState) return page(res, 400, "Sign-in failed: state missing or not matching this sign-in.");
+      if (error) { page(res, 400, "Sign-in failed. You can close this window."); settle.fail(new AntigravityError("sign-in", `Google sign-in was refused: ${stripControl(error).slice(0, 100)}`)); return; }
+      if (!code) { page(res, 400, "Sign-in failed: missing code."); settle.fail(new AntigravityError("sign-in", "The sign-in callback had no code")); return; }
       page(res, 200, "Antigravity sign-in complete. You can close this window and return to Pi.");
       settle.ok({ code, state });
     });
@@ -61,7 +64,7 @@ export function parsePasted(raw: string, expectedState: string): Callback {
   try { url = new URL(text); }
   catch { url = new URL(`http://localhost${CALLBACK_PATH}?${text.replace(/^\?/, "")}`); }
   const error = url.searchParams.get("error");
-  if (error) throw new AntigravityError("sign-in", `Google sign-in was refused: ${error.slice(0, 100)}`);
+  if (error) throw new AntigravityError("sign-in", `Google sign-in was refused: ${stripControl(error).slice(0, 100)}`);
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
   if (!code || !state) throw new AntigravityError("sign-in", "The pasted text has no code or state; paste the full callback URL");
@@ -92,7 +95,7 @@ export async function login(config: AntigravityConfig, interaction: ProviderAuth
       for (;;) {
         const text = await interaction.prompt({ type: "manual_code", message, signal: settle.signal });
         try { return parsePasted(text, state); }
-        catch (error) { message = `${(error as Error).message}. Paste the full callback URL:`; }
+        catch (error) { message = `${stripControl((error as Error).message)}. Paste the full callback URL:`; }
       }
     })();
     pasted.catch(() => {});
@@ -125,18 +128,18 @@ export function createOAuth(config: AntigravityConfig): OAuthAuth {
     async toAuth(credential) {
       const projectId = typeof credential.projectId === "string" ? credential.projectId : config.projectId;
       if (!projectId) throw new AntigravityError("auth-expired", "The saved Antigravity sign-in has no project; run /login antigravity again");
-      return { apiKey: JSON.stringify({ token: credential.access, projectId, refresh: credential.refresh }) };
+      return { apiKey: JSON.stringify({ token: credential.access, projectId }) };
     },
   };
 }
 
 /** Read what `toAuth` produced. The text may carry a token, so a failure never quotes it. */
-export function parseKey(apiKey: string | undefined): { token: string; projectId: string; refresh?: string } {
+export function parseKey(apiKey: string | undefined): { token: string; projectId: string } {
   if (!apiKey) throw new AntigravityError("auth-expired", "No Antigravity sign-in. Run /login antigravity");
   try {
     const parsed = JSON.parse(apiKey) as Record<string, unknown>;
     if (typeof parsed.token === "string" && parsed.token && typeof parsed.projectId === "string" && parsed.projectId) {
-      return { token: parsed.token, projectId: parsed.projectId, refresh: typeof parsed.refresh === "string" ? parsed.refresh : undefined };
+      return { token: parsed.token, projectId: parsed.projectId };
     }
   } catch { /* named error below, without the text */ }
   throw new AntigravityError("auth-expired", "The Antigravity credential is unreadable. Run /login antigravity");

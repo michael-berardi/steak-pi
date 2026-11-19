@@ -34,6 +34,11 @@ const SECRET_SHAPES: RegExp[] = [
   /("?(?:access_token|refresh_token|client_secret|code|id_token)"?\s*[:=]\s*"?)[^"&\s,}]+/gi,
 ];
 
+/** Drop control characters (C0, DEL, C1) so text from a callback or a provider cannot steer the terminal. */
+export function stripControl(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+}
+
 /** Remove anything shaped like a token from text that is about to be shown. */
 export function redact(text: string): string {
   let out = text;
@@ -50,7 +55,7 @@ export function providerMessage(body: string): string {
     const description = typeof parsed.error_description === "string" ? parsed.error_description : undefined;
     text = [inner, description].filter(Boolean).join(": ") || text;
   } catch { /* not JSON: the raw text is the message */ }
-  return redact(text).replace(/\s+/g, " ").slice(0, 300) || "no message";
+  return stripControl(redact(text).replace(/\s+/g, " ")).slice(0, 300) || "no message";
 }
 
 /** "2 h 3 min", "45 s": a wait a person can read. */
