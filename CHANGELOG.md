@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+Gemini models now run through Google's official Antigravity CLI (`agy`); the direct Antigravity OAuth provider is removed.
+
+- **New `agy` provider (`extensions/agy/`, `docs/AGY.md`).** Runs `agy -p ... --output-format stream-json` in the session directory. Models come from `agy models` at runtime; the provider is hidden while agy is missing or signed out. Text streams as it arrives, agy's tool steps appear as read-only progress lines, usage and stop reasons are mapped, and Pi's thinking level maps to `--effort`. `/agy-status` checks the install and sign-in.
+- **agy's tools run under agy's permission rules, outside Pi's approvals.** `--dangerously-skip-permissions` is never passed.
+- **Cancel kills the whole agy process group** (SIGINT, then SIGTERM, then SIGKILL, bounded); a timeout is named.
+- **Removed `extensions/antigravity/`, its tests and `docs/ANTIGRAVITY.md`.** Google's terms forbid accessing Antigravity through third-party software with its OAuth. A user whose `~/.config/ultraterm/antigravity.json` still enabled it sees one notice at session start.
+
 ## 0.37.0 (2026-11-19)
 
 Adds optional LoRA adapters to local models, and fixes two faults the end-to-end test found.

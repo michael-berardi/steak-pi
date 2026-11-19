@@ -32,7 +32,7 @@
     "docs/REFERENCE.md",
     "docs/AGENT-LIFECYCLE.md",
     "docs/CLAUDE-CODE.md",
-    "docs/ANTIGRAVITY.md",
+    "docs/AGY.md",
     "docs/COMPANION-UI.md",
     "docs/COMPACTION.md",
     "docs/LOCAL-MODELS.md",
@@ -73,7 +73,7 @@
       "./extensions/ultracompress/index.ts",
       "./extensions/skill-catalog-lite/index.ts",
       "./extensions/claude-code/index.ts",
-      "./extensions/antigravity/index.ts",
+      "./extensions/agy/index.ts",
       "./extensions/local/index.ts",
       "./extensions/prompt-budget/index.ts"
     ],
