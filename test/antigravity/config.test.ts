@@ -44,4 +44,34 @@ describe("antigravity config", () => {
     chmodSync(path, 0o600);
     expect(loadConfig({ [CONFIG_ENV]: path })?.clientSecret).toBe("b");
   });
+
+  it.skipIf(process.platform === "win32")("refuses an enabled config that others can write, with or without a secret, naming the chmod", () => {
+    for (const [name, body] of [["w1.json", '{"enabled": true}'], ["w2.json", '{"enabled": true, "clientId": "a", "clientSecret": "b"}']] as const) {
+      const path = write(name, body, 0o666);
+      expect(() => loadConfig({ [CONFIG_ENV]: path }), name).toThrow(/writable by other users.*chmod 600/);
+      chmodSync(path, 0o620);
+      expect(() => loadConfig({ [CONFIG_ENV]: path }), name).toThrow(/writable by other users/);
+      chmodSync(path, 0o600);
+      expect(loadConfig({ [CONFIG_ENV]: path })?.enabled).toBe(true);
+    }
+    // A config that is not enabled is not inspected: the module is off.
+    expect(loadConfig({ [CONFIG_ENV]: write("off3.json", "{}", 0o666) })).toBeUndefined();
+    // Group/other-readable without a secret is fine.
+    expect(loadConfig({ [CONFIG_ENV]: write("r.json", '{"enabled": true}', 0o644) })?.enabled).toBe(true);
+  });
+
+  it.skipIf(process.platform === "win32" || typeof process.getuid !== "function")("refuses a config owned by another user", async () => {
+    const path = write("own.json", '{"enabled": true}');
+    const real = process.getuid!;
+    (process as { getuid: () => number }).getuid = () => real.call(process) + 1;
+    try { expect(() => loadConfig({ [CONFIG_ENV]: path })).toThrow(/not owned by the current user.*chown.*chmod 600/); }
+    finally { (process as { getuid: () => number }).getuid = real; }
+  });
+
+  it("identity keys default to the documented values and can be set", () => {
+    const d = parseConfig({ enabled: true })!;
+    expect([d.requestType, d.ideType]).toEqual(["agent", "ANTIGRAVITY"]);
+    const c = parseConfig({ enabled: true, requestType: "chat", ideType: "X" })!;
+    expect([c.requestType, c.ideType]).toEqual(["chat", "X"]);
+  });
 });

@@ -23,6 +23,10 @@ export interface AntigravityConfig {
   /** Loopback port that the OAuth client has registered as its redirect. */
   redirectPort: number;
   userAgent: string;
+  /** Sent as `requestType` in the request envelope. */
+  requestType: string;
+  /** Sent as `metadata.ideType` in the project lookup. */
+  ideType: string;
   /** Cloud project to bill the quota to. Discovered at sign-in when absent. */
   projectId?: string;
   /** Longest single wait for a rate limit before the request fails with a named error. */
@@ -97,6 +101,8 @@ export function parseConfig(raw: unknown, version: () => string | undefined = ()
     scopes: scopes as string[],
     redirectPort: port,
     userAgent: optionalString("userAgent", o.userAgent) ?? `steak-pi-antigravity/${version() ?? "dev"}`,
+    requestType: optionalString("requestType", o.requestType) ?? "agent",
+    ideType: optionalString("ideType", o.ideType) ?? "ANTIGRAVITY",
     projectId: optionalString("projectId", o.projectId),
     maxRateLimitWaitMs: positiveInt("maxRateLimitWaitMs", o.maxRateLimitWaitMs, 30_000, 300_000),
     maxRateLimitRetries: positiveInt("maxRateLimitRetries", o.maxRateLimitRetries, 2, 3),
@@ -106,7 +112,7 @@ export function parseConfig(raw: unknown, version: () => string | undefined = ()
 /**
  * Read the operator's config. Returns undefined when there is no file or it does not say `"enabled": true`: the module
  * then registers nothing. A file that exists but is unreadable, not JSON, or invalid throws a named error, because a
- * typo must not silently leave the provider off. A file holding a client secret must not be readable by other users.
+ * typo must not silently leave the provider off. A file that other users can write, or that another user owns, is refused; so is one holding a client secret that they can read.
  */
 export function loadConfig(env: Record<string, string | undefined> = process.env, version?: () => string | undefined): AntigravityConfig | undefined {
   const path = configPath(env);
@@ -120,9 +126,15 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   try { raw = JSON.parse(text); }
   catch { throw new AntigravityError("not-configured", `${path} is not valid JSON`); }
   const config = parseConfig(raw, version);
-  if (config?.clientSecret && process.platform !== "win32") {
-    const mode = statSync(path).mode & 0o777;
-    if (mode & 0o077) throw new AntigravityError("not-configured", `${path} holds a client secret but is readable by other users (mode ${mode.toString(8)}); run: chmod 600 ${path}`);
+  if (config && process.platform !== "win32") {
+    // The endpoints in this file decide where the token is sent, so whoever can write it can take the token.
+    const info = statSync(path);
+    const mode = info.mode & 0o777;
+    if (typeof process.getuid === "function" && info.uid !== process.getuid()) {
+      throw new AntigravityError("not-configured", `${path} is not owned by the current user (owner uid ${info.uid}); run: chown "$(id -un)" ${path} && chmod 600 ${path}`);
+    }
+    if (mode & 0o022) throw new AntigravityError("not-configured", `${path} is writable by other users (mode ${mode.toString(8)}), and its endpoints decide where the token is sent; run: chmod 600 ${path}`);
+    if (config.clientSecret && mode & 0o077) throw new AntigravityError("not-configured", `${path} holds a client secret but is readable by other users (mode ${mode.toString(8)}); run: chmod 600 ${path}`);
   }
   return config;
 }
