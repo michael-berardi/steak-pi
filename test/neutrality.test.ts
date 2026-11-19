@@ -271,7 +271,7 @@ describe("shipped files are provider-neutral", () => {
       return rel.startsWith("src/local/") || rel.startsWith("extensions/local/") || rel === "docs/LOCAL-MODELS.md";
     });
     expect(module.map((path) => relative(root, path)).sort()).toEqual([
-      "docs/LOCAL-MODELS.md", "extensions/local/index.ts", "src/local/cli.ts", "src/local/errors.ts", "src/local/gguf.ts",
+      "docs/LOCAL-MODELS.md", "extensions/local/index.ts", "src/local/adapter.ts", "src/local/cli.ts", "src/local/errors.ts", "src/local/gguf.ts",
       "src/local/gpu-probe.ts", "src/local/hardware.ts", "src/local/hf.ts", "src/local/hold.ts", "src/local/limits.ts", "src/local/main.ts",
       "src/local/profile.ts", "src/local/runtime.ts", "src/local/store.ts",
     ]);

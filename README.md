@@ -40,7 +40,7 @@ If the installer prints a PATH instruction, apply it before continuing.
 Already have Pi? Install the current package directly:
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.36.1
+pi install git:github.com/michael-berardi/steak-pi@v0.37.0
 ```
 
 Requires Node.js 22.19+ and Pi 0.87+; development checks use Pi 1.0.4.
@@ -98,7 +98,7 @@ Slot any GGUF into Pi as `local/<id>`: `steak-pi local add <file.gguf | owner/re
 context to this machine (one slot, flash attention, q8_0 KV cache, 6 GiB of RAM kept free) and writes one `local`
 provider to `models.json`. Then `pi --model local/<id>`: `llama-server` starts on demand, is held only while a prompt runs, and stops after 10 minutes with no run.
 It refuses, naming the cause, when memory is short, the disk is above 90% or another model server runs. No model ships
-with Steak Pi; workers use `ensure`/`release`. Details: [docs/LOCAL-MODELS.md](./docs/LOCAL-MODELS.md).
+with Steak Pi; workers use `ensure`/`release`. `--lora <file | owner/repo>` adds an optional LoRA adapter, fetched only then, SHA-256 checked and matched against the model. Details: [docs/LOCAL-MODELS.md](./docs/LOCAL-MODELS.md).
 
 ## Update
 

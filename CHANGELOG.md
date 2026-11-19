@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.37.0 (2026-11-19)
+
+Adds optional LoRA adapters to local models, and fixes two faults the end-to-end test found.
+
+- **`steak-pi local add <model> --lora <file | owner/repo[:file]>`.** An adapter is applied on top of the model (`--lora-scaled`), so a small file trained for an agent harness can change how a local model works without a second copy of the weights. Nothing ships and nothing downloads until you name one.
+- **Checked before use.** The adapter's header and tensor table are matched against the base model: it must be a LoRA for the same architecture, and every adapted tensor must exist in the base with a fitting shape. A mismatch is `REFUSED (bad-adapter)` naming the tensor, and nothing is written.
+- **Verified downloads.** A hub adapter is streamed to `~/.pi/agent/local/adapters/`, checked against the SHA-256 the hub publishes, and discarded on a mismatch (`adapter-checksum`). A file with no published hash or over 4 GiB is refused. A verified copy is reused.
+- **Counted and checked at start.** The adapter's size counts toward the memory a start needs; a missing adapter file is `REFUSED (adapter-missing)`; `status` shows it.
+- **Fix: a lease right after an idle stop no longer fails.** A start that attached to a server already stopping for idle reported `server-exited`. It now waits for that stop and starts a fresh server.
+- **Fix: a refusal is named on Pi 1.x hosts.** When the refusal's abort landed before the request, Pi 1.x reported "This operation was aborted" instead of the refusal; the extension now replaces that message too (never a real error with content).
+- Verified end to end on a small model with a published harness adapter (served on CPU): llama-server's `/lora-adapters` listed the adapter, and Pi, Steak DSH and Carl each completed a tool-calling task on `local/<id>`. With a hold set, Carl named the refusal and, with a fallback configured, answered on the fallback (that run fell through on the connection error to the stopped server). A 27B base and its harness adapter were matched (256 tensors) but not served, because the operator's own local-model hold was in force.
+- 16 new tests.
+
 ## 0.36.1 (2026-11-19)
 
 Hardens the optional Google Antigravity provider after an independent review. Nothing changes while it is off.

@@ -42,16 +42,30 @@ export async function resolveHf(spec: string, fetchImpl: Fetch = fetch as Fetch)
   return { repo, files: files.map((entry) => entry.path), bytes: files.reduce((sum, entry) => sum + (entry.lfs?.size ?? entry.size ?? 0), 0) };
 }
 
-/** Fetch the head of the first shard into a temp file and read its metadata; the temp file is removed. */
-export async function readHfHeader(model: HfModel, fetchImpl: Fetch = fetch as Fetch): Promise<GgufInfo> {
+/**
+ * Fetch the head of the first shard into a temp file and read its metadata; the temp file is removed. With `tensors`, the
+ * tensor tables of every shard are read the same way (heads only) and merged, so a split model is matched whole.
+ */
+export async function readHfHeader(model: HfModel, fetchImpl: Fetch = fetch as Fetch, options: { tensors?: boolean } = {}): Promise<GgufInfo> {
+  const info = await readHfShard(model, 0, fetchImpl, options);
+  if (options.tensors && info.tensors) {
+    for (let index = 1; index < model.files.length; index++) {
+      const shard = await readHfShard(model, index, fetchImpl, { tensors: true, shard: true });
+      for (const [name, dims] of shard.tensors ?? []) info.tensors.set(name, dims);
+    }
+  }
+  return info;
+}
+
+async function readHfShard(model: HfModel, index: number, fetchImpl: Fetch, options: { tensors?: boolean; shard?: boolean }): Promise<GgufInfo> {
   const folder = mkdtempSync(join(tmpdir(), "steak-pi-gguf-"));
   try {
     for (const bytes of HEADER_TRIES) {
-      const response = await fetchImpl(`https://huggingface.co/${model.repo}/resolve/main/${model.files[0]}`, { headers: { ...headers(), Range: `bytes=0-${bytes - 1}` }, signal: AbortSignal.timeout(120_000) });
-      if (!response.ok) throw new LocalError("hf-unreachable", `Hugging Face answered ${response.status} while reading the header of ${model.files[0]}`);
+      const response = await fetchImpl(`https://huggingface.co/${model.repo}/resolve/main/${model.files[index].split("/").map(encodeURIComponent).join("/")}`, { headers: { ...headers(), Range: `bytes=0-${bytes - 1}` }, signal: AbortSignal.timeout(120_000) });
+      if (!response.ok) throw new LocalError("hf-unreachable", `Hugging Face answered ${response.status} while reading the header of ${model.files[index]}`);
       const file = join(folder, "head.gguf");
       writeFileSync(file, Buffer.from(await response.arrayBuffer()), { mode: 0o600 });
-      try { return { ...readGguf(file), fileBytes: model.bytes }; }
+      try { return { ...readGguf(file, options), fileBytes: model.bytes }; }
       catch (error) { if (!(error instanceof GgufError) || !/truncated/.test(error.message) || bytes === HEADER_TRIES.at(-1)) throw error; }
     }
     throw new GgufError("the header is larger than expected");

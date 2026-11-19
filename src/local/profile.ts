@@ -10,6 +10,7 @@ import { basename } from "node:path";
 import type { GgufInfo } from "./gguf.ts";
 import { CACHE_RAM_MIB, gib, HEADROOM_BYTES, kvBytesPerToken, sizeContext, startNeedBytes } from "./hardware.ts";
 import type { LimitsConfig } from "./limits.ts";
+import type { AdapterRef } from "./adapter.ts";
 import { LocalError } from "./errors.ts";
 
 export const PROVIDER = "local";
@@ -32,6 +33,8 @@ export interface LaunchProfile {
   limits?: LimitsConfig;
   /** Server launch settings that change GPU load. Absent: the defaults below. */
   server?: ServerConfig;
+  /** LoRA adapters applied on top of the weights (`--lora-scaled path:scale`). Absent: the plain model. */
+  adapters?: AdapterRef[];
 }
 
 /**
@@ -224,12 +227,17 @@ const hasFlag = (args: readonly string[], flag: string): boolean => args.some((a
  * A flag the profile already passes in its extra arguments is never emitted twice: an explicit choice wins.
  */
 export function serverArgs(profile: LaunchProfile): string[] {
+  for (const adapter of profile.adapters ?? []) {
+    if (adapter.path.includes(",") || adapter.path.includes(":")) throw new LocalError("bad-adapter", `the adapter path ${adapter.path} contains a comma or colon, which llama-server's --lora-scaled cannot carry; move the file`);
+    if (!(Number.isFinite(adapter.scale) && adapter.scale > 0 && adapter.scale <= 4)) throw new LocalError("bad-adapter", `adapter scale ${adapter.scale} must be above 0 and at most 4`);
+  }
   const server = resolveServer(profile);
   const extra = profile.extraArgs;
   const specOn = hasFlag(extra, "--spec-type");
   const specDepthSet = hasFlag(extra, "--spec-draft-n-max");
   return [
     ...(profile.source.kind === "file" ? ["-m", profile.source.path] : ["-hf", profile.source.spec]),
+    ...(profile.adapters ?? []).flatMap((adapter) => ["--lora-scaled", `${adapter.path}:${adapter.scale}`]),
     "--host", "127.0.0.1", "--port", String(profile.port),
     "-c", String(profile.ctx), "-np", String(server.slots), "-ngl", "999", "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0",
     "--jinja",

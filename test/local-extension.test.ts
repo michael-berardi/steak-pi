@@ -118,6 +118,20 @@ describe("local model hook", () => {
     expect(released).toBe(true);
   });
 
+  it("a refusal also replaces the abort error Pi 1.x reports when the abort lands before the request, but never a real error", async () => {
+    const h = harness({ fail: () => "not enough memory" });
+    h.ctx.model = model("local", "model-a");
+    await h.fire("agent_start");
+    const real = { role: "assistant", content: [{ type: "text", text: "partial" }], stopReason: "error", errorMessage: "This operation was aborted" };
+    expect(await h.fire("message_end", { message: real })).toBeUndefined();
+    const other = { role: "assistant", content: [], stopReason: "error", errorMessage: "500 internal error" };
+    const wrapped = { role: "assistant", content: [], stopReason: "error", errorMessage: "upstream said: the operation was aborted by the proxy" };
+    expect(await h.fire("message_end", { message: wrapped })).toBeUndefined();
+    expect(await h.fire("message_end", { message: other })).toBeUndefined();
+    const early = { role: "assistant", content: [], stopReason: "error", errorMessage: "This operation was aborted" };
+    expect((await h.fire("message_end", { message: early }))?.message).toMatchObject({ stopReason: "error", errorMessage: expect.stringMatching(/^steak-pi local: REFUSED \(insufficient-memory\)/) });
+  });
+
   it("a refused start stops the run before any request with the refusal as its error, holds nothing, and tries again on the next prompt", async () => {
     let failing = true;
     const reason = "starting swift-1-5 needs about 16.4 GiB but only 14.2 GiB is free or reclaimable";

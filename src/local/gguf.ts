@@ -1,5 +1,6 @@
 /**
- * A tiny GGUF header reader: only the key/value metadata, never the tensors, and never the whole file.
+ * A tiny GGUF header reader: the key/value metadata and, when asked, the tensor table (names and shapes); never tensor
+ * data, and never the whole file.
  *
  * It answers what a local profile needs to size itself: the architecture, the native context length, the
  * attention shape (for the KV-cache cost per token) and the chat template (for the reasoning controls).
@@ -29,7 +30,20 @@ export interface GgufInfo {
   chatTemplate?: string;
   /** Sampling defaults the file itself carries (`general.sampling.*`), if any. */
   sampling: { temperature?: number; top_p?: number; top_k?: number; min_p?: number };
+  /** `general.type` ("model", "adapter", ...), when the file says. */
+  fileType?: string;
+  /** `adapter.type` ("lora", ...) for an adapter file. */
+  adapterType?: string;
+  /** `adapter.lora.alpha` for a LoRA adapter. */
+  loraAlpha?: number;
+  /** Tensor names and shapes, only when asked for (`readGguf(path, { tensors: true })`). */
+  tensors?: Map<string, number[]>;
 }
+
+/** `tensors`: also read the tensor table. `shard`: a later shard of a split model, which may carry no architecture key. */
+export interface ReadOptions { tensors?: boolean; shard?: boolean }
+const MAX_TENSORS = 1_000_000;
+const MAX_DIMS = 8;
 
 const SCALAR_BYTES = [1, 1, 2, 2, 4, 4, 4, 1, 0, 0, 8, 8, 8];
 const STRING = 8;
@@ -124,7 +138,7 @@ const num = (value: Value | undefined): number | undefined => typeof value === "
 const max = (value: Value | undefined): number | undefined => Array.isArray(value) ? Math.max(...value) : num(value);
 
 /** Read the metadata of a GGUF file (the first shard of a split model is enough). */
-export function readGguf(path: string): GgufInfo {
+export function readGguf(path: string, options: ReadOptions = {}): GgufInfo {
   let fd: number;
   try { fd = openSync(path, "r"); }
   catch (error) { throw new GgufError(`cannot open ${path} (${(error as NodeJS.ErrnoException).code ?? "error"})`); }
@@ -133,7 +147,8 @@ export function readGguf(path: string): GgufInfo {
     if (reader.u32() !== 0x46554747) throw new GgufError("not a GGUF file (bad magic)");
     const version = reader.u32();
     if (version !== 2 && version !== 3) throw new GgufError(`GGUF version ${version} is not supported (2 and 3 are)`);
-    reader.u64(); // tensor count
+    const tensorCount = reader.u64();
+    if (tensorCount > MAX_TENSORS) throw new GgufError("the header claims an implausible number of tensors");
     const keys = reader.u64();
     if (keys > MAX_KEYS) throw new GgufError("the header claims an implausible number of keys");
     const kv = new Map<string, Value>();
@@ -144,8 +159,8 @@ export function readGguf(path: string): GgufInfo {
       if (value !== undefined) kv.set(key, value);
     }
     const architecture = kv.get("general.architecture");
-    if (typeof architecture !== "string") throw new GgufError("the file has no general.architecture");
-    const arch = (suffix: string) => kv.get(`${architecture}.${suffix}`);
+    if (typeof architecture !== "string" && !options.shard) throw new GgufError("the file has no general.architecture");
+    const arch = (suffix: string) => kv.get(`${architecture ?? ""}.${suffix}`);
     const blockCount = num(arch("block_count"));
     const headCount = max(arch("attention.head_count"));
     const kvHeads = arch("attention.head_count_kv");
@@ -166,10 +181,29 @@ export function readGguf(path: string): GgufInfo {
     }
     const template = kv.get("tokenizer.chat_template");
     const name = kv.get("general.name");
+    const fileType = kv.get("general.type");
+    const adapterType = kv.get("adapter.type");
+    const loraAlpha = num(kv.get("adapter.lora.alpha"));
+    let tensors: Map<string, number[]> | undefined;
+    if (options.tensors) {
+      // The tensor table follows the metadata: name, dimension count, dimensions, type, offset. Only names and shapes are kept.
+      tensors = new Map();
+      for (let i = 0; i < tensorCount; i++) {
+        const tensor = reader.string(4096);
+        if (tensor === undefined) throw new GgufError("the header holds an oversized tensor name");
+        const count = reader.u32();
+        if (count > MAX_DIMS) throw new GgufError(`tensor ${tensor} claims ${count} dimensions`);
+        const dims: number[] = [];
+        for (let d = 0; d < count; d++) dims.push(reader.u64());
+        reader.u32(); // type
+        reader.u64(); // offset
+        tensors.set(tensor, dims);
+      }
+    }
     return {
       fileBytes: fstatSync(fd).size,
       version,
-      architecture,
+      architecture: typeof architecture === "string" ? architecture : "",
       ...(typeof name === "string" ? { name } : {}),
       contextLength: num(arch("context_length")),
       blockCount,
@@ -180,6 +214,10 @@ export function readGguf(path: string): GgufInfo {
       valueLength: num(arch("attention.value_length")),
       ...(typeof template === "string" ? { chatTemplate: template } : {}),
       sampling,
+      ...(typeof fileType === "string" ? { fileType } : {}),
+      ...(typeof adapterType === "string" ? { adapterType } : {}),
+      ...(loraAlpha !== undefined ? { loraAlpha } : {}),
+      ...(tensors ? { tensors } : {}),
     };
   } finally {
     closeSync(fd);

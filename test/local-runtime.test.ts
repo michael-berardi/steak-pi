@@ -43,6 +43,45 @@ describe("leases and ensure", () => {
     expect((await release(fake.deps, pidHolder(301))).remaining).toBe(0); // an extra release is harmless
   });
 
+  it("a lease that lands on a server already stopping for idle starts a fresh one instead of failing", async () => {
+    const { dir, fake } = setup();
+    fake.alive.add(301).add(302);
+    fake.state.healthy = true;
+    await ensure(fake.deps, "model-a", pidHolder(301));
+    await release(fake.deps, pidHolder(301));
+    const old = readJson<ServerRecord>(join(dir, "server.json"))!;
+    // The supervisor has decided the idle stop (no lock): the server answers no more and the supervisor exits a moment later.
+    fake.state.healthy = false;
+    let polls = 0;
+    const health = fake.deps.health;
+    fake.deps.health = async (port) => {
+      polls += 1;
+      if (polls === 2) { fake.alive.delete(old.supervisorPid); writeFileSync(join(dir, "server.json"), ""); fake.state.healthy = true; return false; }
+      return health(port);
+    };
+    const result = await ensure(fake.deps, "model-a", pidHolder(302));
+    expect(result.started).toBe(true);
+    expect(fake.calls).toEqual(["supervisor:model-a", "supervisor:model-a"]);
+    expect(holders(dir)["pid:302"]?.count).toBe(1);
+  });
+
+  it("an attach that keeps losing its server gives up with server-exited, holding no lease", async () => {
+    const { dir, fake } = setup();
+    fake.alive.add(301).add(302);
+    fake.state.healthy = true;
+    await ensure(fake.deps, "model-a", pidHolder(301));
+    fake.state.healthy = false;
+    fake.deps.spawnSupervisor = (id) => { fake.calls.push(`supervisor:${id}`); return 7777; }; // a supervisor that dies at once
+    fake.deps.health = async () => {
+      const record = readJson<ServerRecord>(join(dir, "server.json"));
+      if (record) fake.alive.delete(record.supervisorPid);
+      return false;
+    };
+    const error = await refusal(ensure(fake.deps, "model-a", pidHolder(302)));
+    expect(error.code).toBe("server-exited");
+    expect(holders(dir)["pid:302"]).toBeUndefined();
+  });
+
   it("a manual start is a single pinned reference, however many times it runs", async () => {
     const { dir, fake } = setup();
     fake.state.healthy = true;

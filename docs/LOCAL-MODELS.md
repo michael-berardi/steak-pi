@@ -23,6 +23,7 @@ other Pi model: pick it with `--model` or `/model`.
 | Command | What it does |
 |---|---|
 | `local add <gguf path \| owner/repo[:quant]> [--name id] [--ctx N] [--port N] [-- args]` | Read the GGUF header, size the context, write the `local` provider entry and the launch profile. Everything after `--` is appended to the `llama-server` command line. |
+| `local add <model> --lora <file \| owner/repo[:file]> [--lora-scale S]` | The same, with a LoRA adapter applied on top of the model. See [LoRA adapters](#lora-adapters-optional). |
 | `local start [id]` | Start the server and keep it up until `stop` (a pinned lease). `id` is optional when only one model was added. |
 | `local stop` | Stop the server Steak Pi started (only that one) and confirm the port is released. |
 | `local status [id]` | Server state, number of users, idle time, and the added models. |
@@ -35,6 +36,36 @@ A Hugging Face spec is read without downloading the model: only the file list an
 quant (the header) are fetched, with `HF_TOKEN` sent if set. The weights are downloaded by `llama-server` itself the
 first time it starts, so for a big model run that once by hand (or download the file and pass its path) before
 relying on the on-demand start; the health wait is bounded.
+
+## LoRA adapters (optional)
+
+A LoRA adapter is a small file (tens to a few hundred MB) that changes how a base model behaves without replacing it,
+for example an adapter trained to work inside a particular agent harness. Steak Pi ships none and downloads none until
+you name one. Add it next to the model:
+
+```sh
+steak-pi local add ~/models/base.gguf --name my-model --lora ~/models/adapter.gguf        # a file you have
+steak-pi local add ~/models/base.gguf --name my-model --lora owner/adapter-repo[:file]    # fetched from Hugging Face
+```
+
+- **Matched before it is accepted.** The adapter's header and tensor table are read and compared with the base model's:
+  it must be a LoRA adapter (`general.type adapter`, `adapter.type lora`), for the same architecture, and every adapted
+  tensor must exist in the base (all shards of a split model) with a shape the adapter fits. Adapters of 3-D tensors
+  (mixture-of-experts layers) are refused rather than passed unchecked. A mismatch is `REFUSED (bad-adapter)` naming the first
+  tensor or field that does not fit, and nothing is written. Only the headers are read; no weights are loaded.
+- **Fetched only when named, and verified.** An `owner/repo[:file]` adapter is downloaded once into
+  `~/.pi/agent/local/adapters/<owner>--<repo>/`, streamed to a temporary file and checked against the SHA-256 the hub
+  publishes for it; a mismatch is `REFUSED (adapter-checksum)` and the file is discarded. A file with no published hash is
+  refused (`hf-adapter`): download it yourself and pass its path. A verified copy is reused, not downloaded again. A file
+  over 4 GiB is refused (that is a model, not an adapter). `HF_TOKEN` is sent when set, as for models.
+- **Served with the model.** The server gets `--lora-scaled <path>:<scale>` (scale 1 unless `--lora-scale`, at most 4);
+  that single-argument form needs a current `llama-server` (`llama-server --help` lists `--lora-scaled FNAME:SCALE`).
+  The adapter's size counts toward the memory a start needs, and a start whose adapter file is gone is
+  `REFUSED (adapter-missing)`. `status` shows the adapter next to the model.
+- **Same base, same behaviour.** An adapter is trained against one exact base model. Shape checks prove it fits; they
+  cannot prove a fine-tune or merge of the same architecture is the base it was trained on. Use the base its card names,
+  and a quant close to the precision it was trained at (8-bit where the machine allows).
+- **Remove it** by adding the model again without `--lora`; delete the folder under `adapters/` to free the space.
 
 ## How `add` sizes the context
 
@@ -265,7 +296,8 @@ Pi process (a session, or the workers it launches) or the pinned `manual` holder
 refcounted per holder and a holder whose process died is dropped, so a crashed session cannot keep the server up. When
 the last reference is gone a small supervisor process waits the grace period (10 minutes) and then stops the
 `llama-server` it started, confirms the port is released and exits. A new lease inside the grace period cancels the stop.
-`local stop` stops it at once, whoever still holds a lease.
+`local stop` stops it at once, whoever still holds a lease. A lease that lands on a server already stopping for idle
+waits for that stop to finish and starts a fresh server, instead of failing with `server-exited`.
 
 State lives in `~/.pi/agent/local/`: `profiles/`, `leases.json`, `server.json` (PIDs, port, start times: only what
 is recorded there is ever stopped), `server.log`, `hold.json` (the hold rules above). Environment: `STEAK_PI_LOCAL_GRACE_S` (idle grace, default 600),

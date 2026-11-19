@@ -179,12 +179,16 @@ export async function reconcile(deps: Deps): Promise<Orphan | undefined> {
   try { return await withLock(deps.dir, () => reconcileLocked(deps)); } catch { return undefined; }
 }
 
+/** Adapter weights are loaded next to the model's, so they count toward what a start needs. */
+const adapterBytes = (profile: LaunchProfile): number => (profile.adapters ?? []).reduce((sum, adapter) => sum + (adapter.bytes || 0), 0);
+
 async function preflight(deps: Deps, profile: LaunchProfile, running: ServerRecord | undefined): Promise<{ need: number; free: number }> {
   // A profile whose limits or server settings do not validate is refused here, by name, before anything is started.
   resolveLimits(profile);
   resolveServer(profile);
   if (!deps.findServerBinary()) refuse("llama-server-missing", `llama-server was not found on PATH; ${INSTALL_HINT}`);
   if (profile.source.kind === "file" && !existsSync(profile.source.path)) refuse("model-missing", `the model file is gone: ${profile.source.path}`);
+  for (const adapter of profile.adapters ?? []) if (!existsSync(adapter.path)) refuse("adapter-missing", `the adapter file is gone: ${adapter.path}; add it again with: steak-pi local add <model> --lora <adapter>`);
   const used = deps.diskPercent(profile.source.kind === "file" ? profile.source.path : deps.dir);
   if (used > DISK_MAX_PERCENT) refuse("disk-full", `the disk is ${used.toFixed(0)}% used (limit ${DISK_MAX_PERCENT}%); free space before starting a ${gib(profile.modelBytes)} model`);
   const own = [running?.serverPid, running?.supervisorPid].filter((pid): pid is number => pid !== undefined);
@@ -193,9 +197,9 @@ async function preflight(deps: Deps, profile: LaunchProfile, running: ServerReco
   // The server being replaced holds its own port (every profile defaults to the same one): it is stopped before the start,
   // so its port is not a conflict, and its weights and KV cache are memory the start gets back.
   const replacedProfile = running ? readProfile(deps.dir, running.id) : undefined;
-  const replacedBytes = replacedProfile ? startNeedBytes(replacedProfile.modelBytes, replacedProfile.ctx, replacedProfile.kvBytesPerToken) : 0;
+  const replacedBytes = replacedProfile ? startNeedBytes(replacedProfile.modelBytes + adapterBytes(replacedProfile), replacedProfile.ctx, replacedProfile.kvBytesPerToken) : 0;
   if (!(running && running.port === profile.port) && !(await deps.portFree(profile.port))) refuse("port-busy", `127.0.0.1:${profile.port} is held by a process Steak Pi did not start`);
-  const need = startNeedBytes(profile.modelBytes, profile.ctx, profile.kvBytesPerToken);
+  const need = startNeedBytes(profile.modelBytes + adapterBytes(profile), profile.ctx, profile.kvBytesPerToken);
   const free = deps.availableBytes() + replacedBytes;
   if (free < need) refuse("insufficient-memory", `starting ${profile.id} needs about ${gib(need)} (weights + KV cache at ${profile.ctx} tokens + server overhead) but only ${gib(free)} is free or reclaimable; close something heavy or lower the context with: steak-pi local add ... --ctx N`);
   return { need, free };
@@ -253,8 +257,37 @@ const logTail = (path: string): string => {
 
 export interface EnsureResult { started: boolean; baseUrl: string }
 
-/** Take a lease for `id` and make sure its server is up and healthy. Throws `Refused` (or `LocalError`) with a named cause. */
+/**
+ * Take a lease for `id` and make sure its server is up and healthy. Throws `Refused` (or `LocalError`) with a named cause.
+ *
+ * The supervisor decides an idle stop without the lock (a `stop` holds the lock while it waits for the supervisor), so a
+ * lease can land on a server that is already on its way down. A start of our own that dies is a real failure; an attach
+ * whose server goes away is that race, and is tried again from the top, where it starts a fresh server.
+ */
 export async function ensure(deps: Deps, id: string, holder: HolderRef): Promise<EnsureResult> {
+  for (let attempt = 1; ; attempt++) {
+    try { return await ensureOnce(deps, id, holder); }
+    catch (error) {
+      if (!(error instanceof AttachLost) || attempt >= 3) throw error instanceof AttachLost ? error.refused : error;
+      // Wait for the outgoing supervisor to finish (it removes the record once the port is free): its stop takes at most
+      // 15 s (SIGTERM) + 5 s (SIGKILL) + 10 s (port release). An explicit `local stop` racing this attach also ends here,
+      // and the next attempt starts a fresh server for the lease that is still asking for one.
+      for (const deadline = deps.now() + 30_000; deps.now() < deadline;) {
+        const record = readJson<ServerRecord>(serverPath(deps));
+        if (!record || !deps.alive(record.supervisorPid, record.supervisorStart)) break;
+        await deps.sleep(500);
+      }
+    }
+  }
+}
+
+/** An attach whose server stopped while this lease was waiting for it: retried by `ensure`. */
+class AttachLost extends Error {
+  readonly refused: Refused;
+  constructor(refused: Refused) { super(refused.message); this.refused = refused; }
+}
+
+async function ensureOnce(deps: Deps, id: string, holder: HolderRef): Promise<EnsureResult> {
   const profile = requireProfile(deps, id);
   let started = false;
   await withLock(deps.dir, async () => {
@@ -293,6 +326,7 @@ export async function ensure(deps: Deps, id: string, holder: HolderRef): Promise
     const running = runningServer(deps);
     if (started && running && leaseState(deps).holders === 0) await stopRecord(deps, running);
   });
+  if (!started && failure.code === "server-exited") throw new AttachLost(failure);
   throw failure;
 }
 

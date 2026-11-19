@@ -32,6 +32,15 @@ const abortableSleep = (ms: number, signal?: AbortSignal): Promise<void> => new 
   signal?.addEventListener("abort", done, { once: true });
 });
 
+/**
+ * The assistant message a refusal's `ctx.abort()` produced. Pi has finalized it two ways: `stopReason: "aborted"`, and (Pi 1.x,
+ * when the abort lands before the request is sent) `stopReason: "error"` with the abort signal's own text and no content.
+ * Both carry the refusal's cause instead; an error with content or another text is a real failure and is left alone.
+ */
+const abortedByUs = (message: { stopReason?: string; errorMessage?: string; content?: unknown }): boolean =>
+  message.stopReason === "aborted"
+  || (message.stopReason === "error" && !(Array.isArray(message.content) && message.content.length) && /^\s*(?:this )?(?:operation|request) was aborted\.?\s*$/i.test(message.errorMessage ?? ""));
+
 /** The provider the local module writes to `models.json`; a model on it is served by an on-demand llama-server. */
 const LOCAL_PROVIDER = "local";
 
@@ -145,7 +154,7 @@ export function createLocalHook(deps: LocalHookDeps): (pi: ExtensionAPI) => void
         requestStartedAt = undefined;
         governed?.governor.afterRequest(duration);
       }
-      if (refusal === undefined || !refusal.aborted || event.message.role !== "assistant" || event.message.stopReason !== "aborted") return undefined;
+      if (refusal === undefined || !refusal.aborted || event.message.role !== "assistant" || !abortedByUs(event.message)) return undefined;
       const text = refusal.text;
       refusal = undefined;
       return { message: { ...event.message, stopReason: "error", errorMessage: text } };

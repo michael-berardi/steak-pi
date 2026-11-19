@@ -1,7 +1,7 @@
 /**
  * `steak-pi local ...`: slot an OpenAI-compatible local model (a GGUF served by llama-server) into Pi.
  *
- *   add <gguf path | owner/repo[:quant]> [--name id] [--ctx N] [--port N] [-- extra llama-server args]
+ *   add <gguf path | owner/repo[:quant]> [--name id] [--ctx N] [--port N] [--lora <adapter>]... [--lora-scale S] [-- extra llama-server args]
  *   start [id] | stop | status [id]      run and inspect the on-demand server by hand
  *   ensure <id> | release <id>           argv-friendly lease commands for routing.json `workerProfiles[].ensure`
  *
@@ -11,6 +11,7 @@ import { existsSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { readGguf, type GgufInfo } from "./gguf.ts";
+import { adapterFromFile, adapterFromHub, type AdapterRef, type Download } from "./adapter.ts";
 import { gib, totalMemory } from "./hardware.ts";
 import { HF_SPEC, readHfHeader, resolveHf, type Fetch } from "./hf.ts";
 import { DEFAULT_PORT, idFromSource, planProfile, PlanError, type Source } from "./profile.ts";
@@ -20,11 +21,13 @@ import { activeHold, addQuiet, clearHold, describeHold, markQuietToday, parseDur
 import { checkId, listProfiles, localDir, LocalError, modelsJsonPath, readProfile, upsertLocalModel, writeProfile } from "./store.ts";
 
 export interface Io { out(text: string): void; err(text: string): void }
-export interface CliOptions { io?: Io; deps?: Deps; fetch?: Fetch; totalBytes?: number; modelsJson?: string; ppid?: number }
+export interface CliOptions { io?: Io; deps?: Deps; fetch?: Fetch; download?: Download; totalBytes?: number; modelsJson?: string; ppid?: number }
 
 const USAGE = `usage: steak-pi local <command>
-  add <gguf path | owner/repo[:quant]> [--name id] [--ctx N] [--port N] [-- extra llama-server args]
-                  slot a model into Pi as local/<id>, sized for this machine
+  add <gguf path | owner/repo[:quant]> [--name id] [--ctx N] [--port N] [--lora <file | owner/repo[:file]>]...
+      [--lora-scale S] [-- extra llama-server args]
+                  slot a model into Pi as local/<id>, sized for this machine; --lora applies a LoRA adapter (fetched
+                  only then, SHA-256 checked, matched against the model before it is accepted)
   start [id]      start the server and keep it up until 'stop'
   stop            stop the server Steak Pi started
   status [id]     show the server, its users and the added models
@@ -41,21 +44,21 @@ const USAGE = `usage: steak-pi local <command>
 
 const SHARD_FIRST = /-00001-of-(\d{5})\.gguf$/i;
 
-function fileSource(path: string): { source: Source; bytes: number; header: string } {
+function fileSource(path: string): { source: Source; bytes: number; header: string; parts: string[] } {
   const absolute = resolve(path);
   if (!existsSync(absolute) || !statSync(absolute).isFile()) throw new LocalError("model-missing", `${path} is not a file`);
   const split = SHARD_FIRST.exec(absolute);
   const parts = split ? Array.from({ length: Number(split[1]) }, (_, index) => absolute.replace(SHARD_FIRST, `-${String(index + 1).padStart(5, "0")}-of-${split[1]}.gguf`)) : [absolute];
   const missing = parts.find((part) => !existsSync(part));
   if (missing) throw new LocalError("model-missing", `shard ${basename(missing)} is missing next to ${basename(absolute)}`);
-  return { source: { kind: "file", path: absolute }, bytes: parts.reduce((sum, part) => sum + statSync(part).size, 0), header: absolute };
+  return { source: { kind: "file", path: absolute }, bytes: parts.reduce((sum, part) => sum + statSync(part).size, 0), header: absolute, parts };
 }
 
 async function add(argv: string[], options: CliOptions, io: Io): Promise<number> {
   const split = argv.indexOf("--");
   const own = split < 0 ? argv : argv.slice(0, split);
   const extraArgs = split < 0 ? [] : argv.slice(split + 1);
-  const { values, positionals } = parseArgs({ args: own, allowPositionals: true, options: { name: { type: "string" }, ctx: { type: "string" }, port: { type: "string" } } });
+  const { values, positionals } = parseArgs({ args: own, allowPositionals: true, options: { name: { type: "string" }, ctx: { type: "string" }, port: { type: "string" }, lora: { type: "string", multiple: true }, "lora-scale": { type: "string" } } });
   const [target] = positionals;
   if (!target || positionals.length > 1) { io.err(USAGE); return 1; }
   const number = (name: string, text: string | undefined, min: number, max: number): number | undefined => {
@@ -66,36 +69,61 @@ async function add(argv: string[], options: CliOptions, io: Io): Promise<number>
   };
   const requestedCtx = number("ctx", values.ctx, 1024, 4_194_304);
   const port = number("port", values.port, 1024, 65535) ?? DEFAULT_PORT;
+  const loras = values.lora ?? [];
+  if (values["lora-scale"] !== undefined && !loras.length) throw new LocalError("bad-option", "--lora-scale needs --lora");
+  const loraScale = values["lora-scale"] === undefined ? 1 : Number(values["lora-scale"]);
+  if (!(Number.isFinite(loraScale) && loraScale > 0 && loraScale <= 4)) throw new LocalError("bad-option", "--lora-scale must be a number above 0 and at most 4");
+  const tensors = loras.length > 0; // the base's tensor table is read only when an adapter must be matched against it
   let source: Source; let info: GgufInfo;
   if (existsSync(resolve(target))) {
     const file = fileSource(target);
     source = file.source;
-    info = { ...readGgufOrThrow(file.header), fileBytes: file.bytes };
+    info = { ...readGgufOrThrow(file.header, tensors), fileBytes: file.bytes };
+    // A split model keeps tensors in every shard: an adapter is matched against all of them.
+    if (tensors && info.tensors) for (const part of file.parts.slice(1)) {
+      let shard: GgufInfo;
+      try { shard = readGguf(part, { tensors: true, shard: true }); }
+      catch (error) { throw new LocalError("bad-gguf", `${basename(part)}: ${(error as Error).message}`); }
+      for (const [name, dims] of shard.tensors ?? []) info.tensors.set(name, dims);
+    }
   } else if (HF_SPEC.test(target) && !target.startsWith(".") && !target.startsWith("/") && !/\.gguf$/i.test(target)) {
     const model = await resolveHf(target, options.fetch);
     source = { kind: "hf", spec: target };
-    info = await readHfHeader(model, options.fetch);
+    info = await readHfHeader(model, options.fetch, { tensors });
   } else throw new LocalError("model-missing", `${target} is not a file, and not an owner/repo[:quant] Hugging Face spec`);
+  if (info.fileType === "adapter") throw new LocalError("bad-source", `${target} is an adapter, not a model; add the base model and pass the adapter with --lora`);
   const id = checkId(values.name ?? idFromSource(source));
   const dir = options.deps?.dir ?? localDir();
+  const adapters: AdapterRef[] = [];
+  const adapterLines: string[] = [];
+  for (const spec of loras) {
+    // A path that exists is a file; otherwise an owner/repo[:file] spec is fetched; anything else is named as missing.
+    const hub = !existsSync(resolve(spec)) && !spec.startsWith(".") && !spec.startsWith("/") && !spec.startsWith("~") && HF_SPEC.test(spec) && (spec.includes(":") || !/\.gguf$/i.test(spec));
+    const { ref, lines } = !hub
+      ? adapterFromFile(spec, info, loraScale)
+      : await adapterFromHub(spec, dir, info, loraScale, { list: options.fetch, download: options.download, progress: (text) => io.out(text) });
+    adapters.push(ref);
+    adapterLines.push(...lines, `lora      ${ref.origin} at scale ${loraScale}`);
+  }
   let plan;
   try { plan = planProfile({ id, source, info, modelBytes: info.fileBytes, totalBytes: options.totalBytes ?? totalMemory(), port, requestedCtx, extraArgs }); }
   catch (error) { if (error instanceof PlanError) throw new LocalError(error.code, error.message); throw error; }
+  if (adapters.length) plan.profile.adapters = adapters;
   const modelsJson = options.modelsJson ?? modelsJsonPath();
   const { backup } = upsertLocalModel(modelsJson, plan.model as { id: string; baseUrl: string });
   writeProfile(dir, plan.profile);
   const limits = resolveLimits(plan.profile);
   const duty = limits.duty ? `${Math.round(limits.duty.target * 100)}% GPU duty cycle, at most ${Math.round(limits.duty.maxGapMs / 1000)}s of idle between requests` : "no duty-cycle pacing";
   const headroom = limits.headroom ? `a start waits while the GPU is at or above ${limits.headroom.highWater}% (until ${limits.headroom.lowWater}% for ${limits.headroom.confirmSamples} samples, at most ${Math.round(limits.headroom.maxDeferMs / 1000)}s)` : "no GPU headroom check";
-  io.out([`added local/${id}`, ...plan.lines.map((line) => `  ${line}`),
+  io.out([`added local/${id}`, ...plan.lines.map((line) => `  ${line}`), ...adapterLines.map((line) => `  ${line}`),
     `  limits    ${limits.maxOutputTokens} output tokens per request, prompts up to ${promptCapTokens(limits, plan.profile.ctx)} tokens (${Math.round(limits.promptCapRatio * 100)}% of the context) before the local route compacts; ${duty}; ${headroom}. Override any of them under "limits" in the profile file`,
     `  wrote     ${modelsJson}${backup ? ` (backup ${basename(backup)})` : ""} and ${join(dir, "profiles", `${id}.json`)}`,
     `  use       pi --model local/${id}   (the server starts on demand and stops after an idle grace)`].join("\n"));
   return 0;
 }
 
-function readGgufOrThrow(path: string): GgufInfo {
-  try { return readGguf(path); }
+function readGgufOrThrow(path: string, tensors = false): GgufInfo {
+  try { return readGguf(path, { tensors }); }
   catch (error) { throw new LocalError("bad-gguf", `${basename(path)}: ${(error as Error).message}`); }
 }
 
@@ -137,7 +165,7 @@ export async function main(argv: string[], options: CliOptions = {}): Promise<nu
           ...(state.orphan ? [`server   local/${state.orphan.id} on port ${state.orphan.port} (pid ${state.orphan.pid}) was orphaned (supervisor gone): ${state.orphan.action === "stopped" ? `stopped (idle past the grace), port ${state.orphan.portReleased ? "released" : "STILL HELD, check the process list"}` : "adopted by a new supervisor"}`] : []),
           state.running ? `server   local/${state.running.id} on port ${state.running.port} (pid ${state.running.serverPid ?? "starting"}), ${state.supervisorGone ? "orphaned (supervisor gone)" : state.healthy ? "healthy" : "not healthy yet"}` : "server   stopped",
           `users    ${state.holders}${state.holders ? "" : state.running && state.idleMs !== undefined ? `, idle ${minutes(state.idleMs)} (stops after ${minutes(state.graceMs)} idle)` : ""}`,
-          ...profiles.map((entry) => `model    local/${entry.id}  ctx ${entry.ctx}, port ${entry.port}, ${entry.source.kind === "file" ? entry.source.path : entry.source.spec}`),
+          ...profiles.map((entry) => `model    local/${entry.id}  ctx ${entry.ctx}, port ${entry.port}, ${entry.source.kind === "file" ? entry.source.path : entry.source.spec}${(entry.adapters ?? []).map((adapter) => ` + LoRA ${adapter.origin} x${adapter.scale}`).join("")}`),
           ...(profiles.length ? [] : ["model    none added yet"]),
           ...describeHold(deps.dir, deps.now(), deps.holdProbe),
         ].join("\n"));
