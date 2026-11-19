@@ -85,30 +85,43 @@ export function listProfiles(dir: string): LaunchProfile[] {
     .flatMap((name) => { const profile = readJson<LaunchProfile>(join(folder, name)); return profile ? [profile] : []; });
 }
 
+/**
+ * The one rule for a lock folder nobody is using: it is abandoned when it is older than two minutes (whatever its owner file
+ * says), or older than a second and its owner process is gone (a missing, empty or non-numeric owner file counts as gone;
+ * EPERM means the process exists). `withLock` and `tryLockSync` both use it, so they can never disagree about a lock.
+ */
+function lockAbandoned(lock: string): boolean {
+  const age = Date.now() - statSync(lock).mtimeMs;
+  if (age > 120_000) return true;
+  if (age <= 1_000) return false; // a just-created lock may not have its owner file yet
+  try {
+    const pid = Number(readFileSync(join(lock, "owner"), "utf8").trim());
+    if (!Number.isInteger(pid) || pid <= 0) return true;
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "EPERM";
+  }
+}
+
+/** Create the lock folder and write its owner file; when the owner file cannot be written the folder is removed again, so a failure never leaves a lock nobody owns. */
+function acquireLock(lock: string): void {
+  mkdirSync(lock);
+  try { writeFileSync(join(lock, "owner"), `${process.pid}\n`, { mode: 0o600 }); }
+  catch (error) { rmSync(lock, { recursive: true, force: true }); throw error; }
+}
+
 /** Run `fn` holding the directory lock: an atomic mkdir that records its owner (PID). A lock whose owner is gone is taken over at
  * once; one older than two minutes is treated as abandoned, whatever its owner file says. */
 export async function withLock<T>(dir: string, fn: () => T | Promise<T>, sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms))): Promise<T> {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const lock = join(dir, "lock");
-  const owner = join(lock, "owner");
-  const ownerAlive = (): boolean => {
-    try {
-      const pid = Number(readFileSync(owner, "utf8").trim());
-      if (!Number.isInteger(pid) || pid <= 0) return false;
-      process.kill(pid, 0);
-      return true;
-    } catch (error) {
-      return (error as NodeJS.ErrnoException).code === "EPERM";
-    }
-  };
   for (let attempt = 0; ; attempt++) {
-    try { mkdirSync(lock); writeFileSync(owner, `${process.pid}\n`, { mode: 0o600 }); break; }
+    try { acquireLock(lock); break; }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       try {
-        const age = Date.now() - statSync(lock).mtimeMs;
-        // A just-created lock may not have its owner file yet: give it a moment before calling it dead.
-        if (age > 120_000 || (age > 1_000 && !ownerAlive())) { rmSync(lock, { recursive: true, force: true }); continue; }
+        if (lockAbandoned(lock)) { rmSync(lock, { recursive: true, force: true }); continue; }
       } catch { continue; }
       if (attempt > 200) throw new LocalError("lock-busy", `another steak-pi local command holds ${lock}`);
       await sleep(50);
@@ -125,19 +138,14 @@ export async function withLock<T>(dir: string, fn: () => T | Promise<T>, sleep: 
 export function tryLockSync(dir: string): (() => void) | undefined {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const lock = join(dir, "lock");
-  const owner = join(lock, "owner");
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      mkdirSync(lock);
-      writeFileSync(owner, `${process.pid}\n`, { mode: 0o600 });
+      acquireLock(lock);
       return () => rmSync(lock, { recursive: true, force: true });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       try {
-        const age = Date.now() - statSync(lock).mtimeMs;
-        let alive = true;
-        try { process.kill(Number(readFileSync(owner, "utf8").trim()), 0); } catch (kill) { alive = (kill as NodeJS.ErrnoException).code === "EPERM"; }
-        if (age > 120_000 || (age > 1_000 && !alive)) { rmSync(lock, { recursive: true, force: true }); continue; }
+        if (lockAbandoned(lock)) { rmSync(lock, { recursive: true, force: true }); continue; }
       } catch { continue; }
       return undefined;
     }

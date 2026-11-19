@@ -137,11 +137,26 @@ export function gitLayout(repo: string, probe: HoldProbe): { gitdir: string; com
   return { gitdir, common: shared ? resolve(gitdir, shared) : gitdir };
 }
 
-/** Epoch ms of the newest entry in a reflog file (its last line is `old new name <mail> <epoch> <tz>\t message`). */
-function lastReflogAt(path: string, probe: HoldProbe): number | undefined {
-  const lines = probe.readText(path, 4096)?.split("\n").filter(Boolean);
-  const match = lines && /> (\d{9,})(?: [+-]\d{4})?\t/.exec(lines[lines.length - 1]!);
-  return match ? Number(match[1]) * 1000 : undefined;
+/**
+ * Epoch ms of the newest entry in a reflog file. A line is `old new name <mail> <epoch> <tz>` and, when there is a message,
+ * a tab and the message; an entry with no message has no tab. Lines are tried from the newest back, so a half-written last
+ * line does not hide the entry before it. The time comes first on a line, so a long message cut by the read window (the
+ * window starts mid-line) loses nothing that is needed.
+ */
+export function lastReflogAt(path: string, probe: HoldProbe): number | undefined {
+  // Widen the window until a line parses or the whole file was read: a message longer than the window must not hide its own timestamp.
+  for (const window of [4096, 65536, 1 << 20, 16 << 20]) {
+    const text = probe.readText(path, window);
+    if (text === undefined) return undefined;
+    const truncated = Buffer.byteLength(text) >= window; // the file may continue before the window; its first line is then a fragment
+    const lines = text.split("\n");
+    for (let index = lines.length - 1; index >= (truncated ? 1 : 0); index--) {
+      const match = /^[0-9a-f]{40,64} [0-9a-f]{40,64} .*> (\d{9,}) [+-]\d{4}(?:\t|$)/.exec(lines[index]!.replace(/\r$/, ""));
+      if (match) return Number(match[1]) * 1000;
+    }
+    if (!truncated) return undefined;
+  }
+  return undefined;
 }
 
 /**
@@ -153,7 +168,9 @@ function lastReflogAt(path: string, probe: HoldProbe): number | undefined {
 function lastActivity(repo: string, probe: HoldProbe): number | undefined {
   const layout = gitLayout(repo, probe);
   if (!layout) return undefined;
-  const folders = [layout.gitdir, ...probe.list(join(layout.common, "worktrees")).map((name) => join(layout.common, "worktrees", name))];
+  // A linked worktree's own git folder, the shared (main checkout's) git folder, and every linked worktree's folder: work in any of
+  // them is work in this repository, so listing a linked worktree also watches the main checkout.
+  const folders = [...new Set([layout.gitdir, layout.common, ...probe.list(join(layout.common, "worktrees")).map((name) => join(layout.common, "worktrees", name))])];
   const times = folders.flatMap((folder) => [
     probe.mtime(join(folder, "HEAD")),
     probe.mtime(join(folder, "ORIG_HEAD")),
@@ -205,11 +222,22 @@ export function quietProblems(rule: QuietRule, probe: HoldProbe): string[] {
  * the lock the write is skipped: this answer is still a hold, and the next evaluation records it.
  */
 function rememberQuietDay(dir: string, date: string, cause: string, lockHeld: boolean): void {
-  const release = lockHeld ? () => {} : tryLockSync(dir);
-  if (!release) return;
-  try { save(dir, { ...readHold(dir), quietDay: { date, cause } }); }
-  catch { /* still a hold now; the next check tries again */ }
-  finally { release(); }
+  let release: (() => void) | undefined;
+  try {
+    release = lockHeld ? () => {} : tryLockSync(dir);
+    if (!release) return;
+    save(dir, { ...readHold(dir), quietDay: { date, cause } });
+  } catch (error) {
+    // Still a hold now (the caller reports it); only the memory of the day is lost, and the next check tries again.
+    warnOnce(`the quiet day could not be recorded (${error instanceof Error ? error.message.split("\n")[0] : String(error)}); the local model stays off for now and the next check tries again`);
+  } finally { release?.(); }
+}
+
+const warned = new Set<string>();
+function warnOnce(message: string): void {
+  if (warned.has(message)) return;
+  warned.add(message);
+  process.emitWarning(message, "SteakPiLocalHold");
 }
 
 /**

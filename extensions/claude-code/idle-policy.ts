@@ -85,12 +85,23 @@ function envMs(env: Env, name: string): number | undefined {
   return value;
 }
 
+const clampWarned = new Set<string>();
+
+/** A whole number from 0 to MAX_REQUEST_SENDS - 1. A larger whole number is clamped to that maximum with a one-time warning naming the variable; anything else throws naming it. */
 function envCount(env: Env, name: string): number | undefined {
   const raw = env[name];
   if (raw === undefined || raw.trim() === "") return undefined;
   const value = Number(raw);
-  if (!Number.isInteger(value) || value < 0 || value > MAX_REQUEST_SENDS - 1) {
-    throw new Error(`${name} must be a whole number from 0 to ${MAX_REQUEST_SENDS - 1} (a request is sent at most ${MAX_REQUEST_SENDS} times in all)`);
+  const maximum = MAX_REQUEST_SENDS - 1;
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${name} must be a whole number from 0 to ${maximum} (a request is sent at most ${MAX_REQUEST_SENDS} times in all)`);
+  }
+  if (value > maximum) {
+    if (!clampWarned.has(name)) {
+      clampWarned.add(name);
+      process.emitWarning(`${name}=${JSON.stringify(raw)} is above the maximum; using ${maximum} (a request is sent at most ${MAX_REQUEST_SENDS} times in all, so at most ${maximum} recoveries)`, "ClaudeCodeLimit");
+    }
+    return maximum;
   }
   return value;
 }
@@ -105,7 +116,7 @@ function envCount(env: Env, name: string): number | undefined {
  *    short because the API answers a healthy request at once. A resend is not free: it can bill the request again, which is why
  *    every resend, at either layer, comes out of one budget of MAX_REQUEST_SENDS (3) sends.
  * Environment overrides are absolute and are not scaled:
- *  PI_CLAUDE_CODE_IDLE_LIMIT_MS, PI_CLAUDE_CODE_FIRST_BYTE_LIMIT_MS, PI_CLAUDE_CODE_MAX_RECOVERIES (0 to 2; 0 turns recovery off).
+ *  PI_CLAUDE_CODE_IDLE_LIMIT_MS, PI_CLAUDE_CODE_FIRST_BYTE_LIMIT_MS, PI_CLAUDE_CODE_MAX_RECOVERIES (0 to 2; 0 turns recovery off; a larger whole number is clamped to 2 with a one-time warning, anything that is not a whole number throws).
  * A limit is rounded first, then must be at least MIN_LIMIT_MS and at most MAX_TIMER_MS, or the call throws with the name.
  */
 export function idleLimits(timeoutMs: number, shape: RequestShape = {}, env: Env = process.env): IdleLimits {

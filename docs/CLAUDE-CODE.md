@@ -94,9 +94,24 @@ USAP workers on a Claude Code model get the same recovery (they run through
 this provider); a worker that still hits the idle limit is resumed by the
 coordinator's transient-failure rule.
 
+The 3-send bound is per turn, inside the provider. A USAP worker's auto-resume
+is a separate, bounded layer on top of it: after a turn ends with the idle
+error, the coordinator may resume the worker at most 2 times
+(`MAX_AUTO_RESUMES`), after 10 s and then 30 s, and only while the run has at
+least 90 s of budget left. Each resumed turn starts a new 3-send budget, so
+the real worst case for one stalled worker step is 3 x (1 + 2) = 9 sends of
+that request, spread over at least 40 s of waiting plus the silence limits.
+Only the idle errors that say recovery was spent, the reply could not be taken
+back, or the 3 sends were used are resumed; a crash, "recovery is off" and
+"the API had already sent the whole reply" are never resumed. A refused
+`ensure` hook of a local-model profile is never resumed either, whatever words
+its reason contains.
+
 Set these in the environment Pi runs in (absolute values, not scaled):
 `PI_CLAUDE_CODE_IDLE_LIMIT_MS`, `PI_CLAUDE_CODE_FIRST_BYTE_LIMIT_MS`, and
-`PI_CLAUDE_CODE_MAX_RECOVERIES` (0 to 2; 0 turns recovery off). The two limits
+`PI_CLAUDE_CODE_MAX_RECOVERIES` (0 to 2; 0 turns recovery off; a larger whole
+number is set to 2 with a one-time warning naming the variable, and a value
+that is not a whole number fails the turn with its name). The two limits
 are rounded to whole milliseconds, must be from 1000 to 2147483647 (the
 largest timer Node supports), and a bad value fails the turn with its name
 before any process starts.

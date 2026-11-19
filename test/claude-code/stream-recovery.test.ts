@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isRetryableAssistantError, type AssistantMessage, type AssistantMessageEvent, type Context } from "@earendil-works/pi-ai";
 import { afterEach, test, vi } from "vitest";
-import { closeClaudeProcesses, setClaudeCodeDiagnosticReporter, setClaudeCodeStatusReporter } from "../../extensions/claude-code/claude-cli.ts";
+import { closeClaudeProcesses, runClaudeRequest, setClaudeCodeDiagnosticReporter, setClaudeCodeStatusReporter } from "../../extensions/claude-code/claude-cli.ts";
 import { effortRank, formatSilence, idleLimits, MAX_REQUEST_SENDS, requestShape } from "../../extensions/claude-code/idle-policy.ts";
 import { CLAUDE_CODE_MODELS } from "../../extensions/claude-code/model-catalog.ts";
 import { streamClaudeCode } from "../../extensions/claude-code/stream.ts";
@@ -53,6 +53,8 @@ interface Rig {
   /** Every event the Pi stream emitted for the last run, in order (not only the final message). */
   events: AssistantMessageEvent[];
   run: (env?: Record<string, string>, context?: Context, signal?: AbortSignal) => Promise<AssistantMessage>;
+  /** The provider's request loop itself, with the caller's own canRestart / onEvent (what a harness supplies). */
+  direct: (extra: Partial<Parameters<typeof runClaudeRequest>[0]>) => Promise<Awaited<ReturnType<typeof runClaudeRequest>>>;
 }
 
 const timers = new Set<NodeJS.Timeout>();
@@ -107,6 +109,11 @@ async function rig(behaviour: Behaviour, body: (rig: Rig) => Promise<void>): Pro
       executable,
       bodies,
       attempts: () => attempts,
+      direct: (extra) => runClaudeRequest({
+        model: "default", cwd: root, frames: [{ type: "user", message: { role: "user", content: [{ type: "text", text: "hello" }] } }] as never,
+        systemPrompt: "s", manifest: [], extraBody: {}, toolNames: new Map(), timeoutMs: BUDGET, upstreamUrl: `http://127.0.0.1:${port}`,
+        env: { PI_CLAUDE_CODE_COMMAND: executable, SPAWNS: spawnsPath }, ...extra,
+      } as never),
       spawns: async () => (await readFile(spawnsPath, "utf8")).split("\n").filter(Boolean).map(Number),
       run: async (env = {}, context = defaultContext, signal) => {
         events.length = 0;
@@ -263,7 +270,7 @@ test("the idle limit can be set from the environment", () =>
     assert.equal(r.attempts(), 1);
   }));
 
-test("idle limits scale with effort and context, never fall below the budget, and are provider-neutral", () => {
+test("idle limits scale with effort and context, never fall below the budget, and are provider-neutral", async () => {
   const base = idleLimits(300_000, {}, {});
   assert.equal(base.streamIdleMs, 420_000);
   assert.equal(base.firstByteMs, 90_000);
@@ -277,8 +284,21 @@ test("idle limits scale with effort and context, never fall below the budget, an
   assert.equal(idleLimits(300_000, {}, { PI_CLAUDE_CODE_MAX_RECOVERIES: "0" }).maxRecoveries, 0);
   assert.equal(base.maxRecoveries, 2);
   assert.throws(() => idleLimits(300_000, {}, { PI_CLAUDE_CODE_IDLE_LIMIT_MS: "0" }), /PI_CLAUDE_CODE_IDLE_LIMIT_MS must be a number of milliseconds from 1000/);
-  assert.throws(() => idleLimits(300_000, {}, { PI_CLAUDE_CODE_MAX_RECOVERIES: "99" }), /0 to 2/);
-  assert.throws(() => idleLimits(300_000, {}, { PI_CLAUDE_CODE_MAX_RECOVERIES: "3" }), /0 to 2/);
+  // Above the maximum: clamped to it with one warning that names the variable, never a failure on every turn.
+  const warnings: string[] = [];
+  const onWarning = (warning: Error) => { if (warning.name === "ClaudeCodeLimit") warnings.push(warning.message); };
+  process.on("warning", onWarning);
+  assert.equal(idleLimits(300_000, {}, { PI_CLAUDE_CODE_MAX_RECOVERIES: "99" }).maxRecoveries, 2);
+  assert.equal(idleLimits(300_000, {}, { PI_CLAUDE_CODE_MAX_RECOVERIES: "99" }).maxRecoveries, 2);
+  assert.equal(idleLimits(300_000, {}, { PI_CLAUDE_CODE_MAX_RECOVERIES: "3" }).maxRecoveries, 2);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  process.off("warning", onWarning);
+  assert.equal(warnings.length, 1, `one-time: ${JSON.stringify(warnings)}`);
+  assert.match(warnings[0]!, /PI_CLAUDE_CODE_MAX_RECOVERIES="99" is above the maximum; using 2/);
+  // Not a number (or not whole, or negative): still fails, naming the variable.
+  for (const bad of ["abc", "1.5", "-1", "NaN", "Infinity"]) {
+    assert.throws(() => idleLimits(300_000, {}, { PI_CLAUDE_CODE_MAX_RECOVERIES: bad }), /PI_CLAUDE_CODE_MAX_RECOVERIES must be a whole number from 0 to 2/, bad);
+  }
   assert.equal(base.maxSends, MAX_REQUEST_SENDS);
   assert.equal(MAX_REQUEST_SENDS, 3);
   assert.equal(effortRank({ thinkingBudgetTokens: 40_000 }), 4);
@@ -361,6 +381,64 @@ test("message_stop and then Claude Code hangs: the turn finishes from the receiv
     const kinds = r.events.map((event) => event.type);
     assert.equal(kinds.filter((kind) => kind === "text_delta").length, 1);
     assert.equal(kinds.at(-1), "done");
+  }));
+
+test("hangs after message_stop: usage, tool arguments and stop reason come out right from the relay's capture", () =>
+  rig((_attempt, response) => {
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    sse(
+      response,
+      START,
+      textStart, textDelta("let me "), textDelta("look"), { type: "content_block_stop", index: 0 },
+      { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "toolu_1", name: "mcp__pi__lookup", input: {} } },
+      { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "" } },
+      { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "{\"query\":\"ab" } },
+      { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "c\",\"limit\"" } },
+      { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: ":3}" } },
+      { type: "content_block_stop", index: 1 },
+      { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 7 } },
+      { type: "message_stop" },
+    );
+    response.end();
+  }, async (r) => {
+    const tool = { name: "lookup", description: "look something up", parameters: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" } } } };
+    const context = {
+      messages: [
+        { role: "system", content: "", toolsAdded: [tool], timestamp: 0 },
+        { role: "user", content: "hi", timestamp: Date.now() },
+      ],
+    } as unknown as Context;
+    const message = await r.run({ HANG_AFTER_REPLY: "1" }, context);
+    assert.equal(message.stopReason, "toolUse", String(message.errorMessage));
+    assert.equal(message.usage.input, 1);
+    assert.equal(message.usage.output, 7, "message_delta's count replaces message_start's 1");
+    assert.equal(message.usage.totalTokens, 8);
+    assert.equal(textOf(message), "let me look");
+    const calls = message.content.filter((block) => block.type === "toolCall") as Array<{ name: string; arguments: unknown }>;
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]!.name, "lookup");
+    assert.deepEqual(calls[0]!.arguments, { query: "abc", limit: 3 });
+    assert.equal(r.attempts(), 1, "a complete reply is never paid for twice");
+    assert.equal(r.events.at(-1)?.type, "done");
+    const pids = await r.spawns();
+    assert.equal(alive(pids[0]!), false);
+  }));
+
+test("canRestart is asked again right before the restart: output that arrived during the backoff ends the turn, no second send", () =>
+  rig((_attempt, response) => {
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    sse(response, START, { type: "ping" }); // first byte, then silence: a stall with nothing shown yet
+  }, async (r) => {
+    let asked = 0;
+    await assert.rejects(
+      r.direct({ onEvent: () => {}, canRestart: () => (asked += 1) === 1 }), // true at the stall, false once the backoff and the acquisition are over
+      /cannot be taken back/,
+    );
+    assert.equal(asked, 2, "asked at the stall and again right before the restart");
+    assert.equal(r.attempts(), 1, "the request was not sent again");
+    const pids = await r.spawns();
+    // The second process was started and dropped at once: it may be gone before it logs its pid, so only the pids that were logged are checked.
+    for (const pid of pids) assert.equal(alive(pid), false, "no process is left running");
   }));
 
 test("one request is sent at most 3 times across both retry layers: a connection that never answers", () =>

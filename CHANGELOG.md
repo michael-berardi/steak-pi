@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.35.4 (2026-11-19)
+
+Fixes from the final review of 0.35.3.
+
+- **A turn that finishes from the relay's capture after `message_stop` is pinned end to end.** A test where Claude Code hangs after the API's `message_stop` checks the merged usage (output tokens from `message_delta`, not `message_start`), a tool call whose arguments arrive in several `input_json_delta` pieces, and the stop reason Pi sees. The capture was already correct; it is now tested.
+- **The local-hold quiet day can no longer make `check` or the supervisor throw.** The lock is taken inside the `try`; a failure reports the hold as before and logs the named cause once. A lock folder whose owner file cannot be written is removed again. `withLock` and the non-waiting lock now share one stale rule (an empty or unreadable owner file is a dead owner, which the non-waiting lock used to treat as alive).
+- **Reflog reading:** an entry with no message (no tab after the timezone) counts; a half-written last line no longer hides the entry before it; a last line longer than the read window is read from a wider window instead of being cut before its timestamp.
+- **A linked worktree listed as a quiet path also watches the main checkout** (the common git folder), once.
+- **An operator's hold reason can no longer look like a network error to auto-resume.** A refused `ensure` (`USAP profile ensure refused`) is checked before the transient patterns, so a reason such as `connection error` or `503` never causes extra resumes. The test runs the refusal through the real ensure wrapper.
+- `PI_CLAUDE_CODE_MAX_RECOVERIES` above 2 is set to 2 with a one-time warning naming the variable instead of failing every turn; a value that is not a whole number still fails with the variable named.
+- The recovery loop asks `canRestart` again right before the restart, after the backoff and the acquisition: output that reached the stream in the meantime ends the turn with the named error, and no second request is sent.
+- `docs/CLAUDE-CODE.md` states that the 3-send bound is per turn inside the provider, and that a USAP worker's auto-resume is a separate bounded layer, with the worst case (3 x (1 + 2) = 9 sends of one stalled step).
+
 ## 0.35.3 (2026-11-18)
 
 Fixes from the completion review of 0.35.1 and 0.35.2.

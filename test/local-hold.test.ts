@@ -2,12 +2,14 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { main, type Io } from "../src/local/cli.ts";
-import { activeHold, addQuiet, clearHold, describeHold, gitLayout, holdPath, localDay, parseDuration, quietTrigger, readHold, setHold, systemHoldProbe, type HoldProbe } from "../src/local/hold.ts";
+import { activeHold, addQuiet, clearHold, describeHold, gitLayout, holdPath, lastReflogAt, localDay, parseDuration, quietTrigger, readHold, setHold, systemHoldProbe, type HoldProbe } from "../src/local/hold.ts";
 import { check, ensure, pidHolder, Refused, supervise } from "../src/local/runtime.ts";
-import { LocalError, readJson, withLock } from "../src/local/store.ts";
+import { LocalError, readJson, tryLockSync, withLock } from "../src/local/store.ts";
 import { transientFailure } from "../src/subagents/auto-resume.ts";
+import { withProfileEnsure, type EnsureExec } from "../src/subagents/profile-ensure.ts";
+import { emptyUsage, type RunRecord, type TaskRecord, type WorkerRunContext } from "../src/subagents/types.ts";
 import { fakeMachine, seedProfile, tempDir } from "./helpers/local-fixture.ts";
 
 const dirs: Array<{ cleanup(): void }> = [];
@@ -254,6 +256,8 @@ describe("review fixes (0.35.3)", () => {
     expect(layout.gitdir).toBe(join(main, ".git", "worktrees", "linked"));
     expect(layout.common).toBe(join(main, ".git"));
     for (const name of ["HEAD", "ORIG_HEAD"]) { try { age(join(layout.gitdir, name), 3); } catch { /* not every file exists */ } }
+    // the main checkout is watched too (0.35.4), so a fixture that means "no work today" must be old there as well
+    for (const name of ["HEAD", "ORIG_HEAD"]) { try { age(join(main, ".git", name), 3); } catch { /* not every file exists */ } }
     const logs = join(layout.gitdir, "logs", "HEAD");
     if (existsSync(logs)) writeFileSync(logs, reflog(Date.now() - 3 * 86_400_000));
     const { dir } = setup();
@@ -454,5 +458,150 @@ describe("review fixes (0.35.3)", () => {
     // That refusal is a named, final cause: auto-resume does not retry it, and fall-through is only for a launch with no output yet.
     const cause = `USAP profile ensure refused (local): steak-pi local: REFUSED (on-hold): ${refused.message}`;
     expect(transientFailure(cause, 0)).toBeUndefined();
+  });
+
+  it("M4: the refusal reaches auto-resume through the real ensure wrapper, and the operator's reason text cannot make it look transient", async () => {
+    const { dir, fake } = setup();
+    const routing = join(dir, "routing.json");
+    writeFileSync(routing, JSON.stringify({ workerProfiles: [{ id: "hub/local", model: "local-p/small", ensure: { command: ["ensure-local", "model-a"] } }] }));
+    vi.stubEnv("STEAK_PI_ROUTING_CONFIG", routing);
+    try {
+      for (const reason of ["connection error", "fetch failed after a 503 from the proxy", "rate limit, 429, overloaded, socket hang up"]) {
+        await setHold(dir, NOON + HOUR, reason, { replace: true });
+        // The command is the real `ensure`: its refusal is printed exactly as the CLI prints it, and USAP records that text as the cause.
+        const exec: EnsureExec = async () => {
+          const error = await ensure(fake.deps, "model-a", pidHolder(301)).then(() => undefined, (caught: unknown) => caught);
+          expect(error).toBeInstanceOf(LocalError);
+          const stderr = `steak-pi local: REFUSED (${(error as LocalError).code}): ${(error as LocalError).message}\n`;
+          return { ok: false, code: 2, signal: null, timedOut: false, aborted: false, stderr };
+        };
+        const task = { id: "t1", label: "leaf" } as TaskRecord;
+        const run = { id: "run-1", model: "local-p/small", selection: { provider: "local-p", modelId: "small", source: "chain", images: false, tools: true, profile: "hub/local" } } as unknown as RunRecord;
+        const context: WorkerRunContext = { run, task, signal: new AbortController().signal, onProgress: () => {} };
+        const result = await withProfileEnsure(async () => ({ state: "done", output: "", turns: 1, usage: emptyUsage() }), { exec })(context);
+        expect(result.state).toBe("failed");
+        expect(result.error).toContain(reason); // the operator's words are in the cause...
+        expect(transientFailure(result.error, 0)).toBeUndefined(); // ...and are not read as a network or server fault
+        expect(transientFailure(result.error, 1)).toBeUndefined();
+      }
+    } finally { vi.unstubAllEnvs(); }
+    // The same words in a real transport failure are still resumed: only the refusal is exempt.
+    expect(transientFailure("connection error", 0)?.reason).toBe("network drop");
+  });
+});
+
+describe("review fixes (0.35.4)", () => {
+  const stamp = (at: number) => Math.floor(at / 1000);
+  const line = (at: number, message?: string) => `${"0".repeat(40)} ${"1".repeat(40)} Dev <dev@example.invalid> ${stamp(at)} +0000${message === undefined ? "" : `\t${message}`}`;
+  const withText = (text: string | undefined) => ({ ...systemHoldProbe, readText: (_path: string, tail = 4096) => (text === undefined ? undefined : text.length > tail ? text.slice(-tail) : text) });
+  const T = Date.UTC(2031, 4, 10, 9, 0, 0);
+
+  it("reflog: an entry with no message (no tab after the timezone) counts", () => {
+    expect(lastReflogAt("log", withText(`${line(T - 5000, "commit: a")}\n${line(T)}\n`))).toBe(stamp(T) * 1000);
+    expect(lastReflogAt("log", withText(`${line(T)}`))).toBe(stamp(T) * 1000);
+  });
+
+  it("reflog: a half-written last line does not hide the entry before it", () => {
+    const half = `${"0".repeat(40)} ${"1".repeat(40)} Dev <dev@exam`;
+    expect(lastReflogAt("log", withText(`${line(T - 9000, "commit: a")}\n${line(T, "commit: b")}\n${half}`))).toBe(stamp(T) * 1000);
+    // cut inside the timestamp and inside the timezone as well
+    const stampCut = `${"0".repeat(40)} ${"1".repeat(40)} Dev <dev@example.invalid> ${String(stamp(T + 5000)).slice(0, 7)}`;
+    expect(lastReflogAt("log", withText(`${line(T, "commit: b")}\n${stampCut}`))).toBe(stamp(T) * 1000);
+    const zoneCut = `${"0".repeat(40)} ${"1".repeat(40)} Dev <dev@example.invalid> ${stamp(T + 5000)} +00`;
+    expect(lastReflogAt("log", withText(`${line(T, "commit: b")}\n${zoneCut}`))).toBe(stamp(T) * 1000);
+    expect(lastReflogAt("log", withText(""))).toBeUndefined();
+    expect(lastReflogAt("log", withText(undefined))).toBeUndefined();
+  });
+
+  it("reflog: a last line longer than the read window is not cut before its timestamp", () => {
+    const long = "x".repeat(200_000);
+    expect(lastReflogAt("log", withText(`${line(T - 9000, "commit: old")}\n${line(T, long)}\n`))).toBe(stamp(T) * 1000); // not the older entry
+  });
+
+  it("a linked worktree listed as a quiet path also watches the main checkout (the common git dir), once", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "hold-common-")));
+    dirs.push({ cleanup: () => rmSync(root, { recursive: true, force: true }) });
+    const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=Dev", "-c", "user.email=dev@example.invalid", "-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" } });
+    const oldDate = new Date(Date.now() - 3 * 86_400_000).toISOString();
+    const main = join(root, "main");
+    mkdirSync(main);
+    git(main, "init", "-q", "-b", "main");
+    writeFileSync(join(main, "f.txt"), "1\n");
+    git(main, "add", "f.txt");
+    execFileSync("git", ["-c", "user.name=Dev", "-c", "user.email=dev@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "first"], { cwd: main, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_AUTHOR_DATE: oldDate, GIT_COMMITTER_DATE: oldDate } });
+    const linked = join(root, "linked");
+    git(main, "worktree", "add", "-q", linked, "-b", "feature");
+    const past = new Date(Date.now() - 3 * 86_400_000);
+    for (const file of [join(main, ".git", "HEAD"), join(main, ".git", "worktrees", "linked", "HEAD"), join(main, ".git", "worktrees", "linked", "ORIG_HEAD")]) if (existsSync(file)) utimesSync(file, past, past);
+    for (const log of [join(main, ".git", "logs", "HEAD"), join(main, ".git", "worktrees", "linked", "logs", "HEAD")]) if (existsSync(log)) writeFileSync(log, `${line(past.getTime(), "old")}\n`);
+    const rule = { paths: [linked], processes: [] };
+    expect(quietTrigger(rule, Date.now(), systemHoldProbe)).toBeUndefined();
+    // work in the MAIN checkout (not in the listed linked one) is work in this repository
+    writeFileSync(join(main, "f.txt"), "2\n");
+    git(main, "add", "f.txt");
+    git(main, "commit", "-qm", "second");
+    expect(quietTrigger(rule, Date.now(), systemHoldProbe)).toBe(`work in ${linked} today`);
+
+    // and the main git folder is looked at once, not twice (an ordinary clone's own folder is its common folder)
+    const reads: string[] = [];
+    const counting: HoldProbe = { ...systemHoldProbe, mtime: (path) => { reads.push(path); return systemHoldProbe.mtime(path); } };
+    quietTrigger({ paths: [main], processes: [] }, Date.now(), counting);
+    expect(reads.filter((path) => path === join(main, ".git", "HEAD") || path === join(main, ".git", "ORIG_HEAD")).length).toBeLessThanOrEqual(3); // gitLayout's own HEAD check + one look each
+    expect(reads.filter((path) => path === join(main, ".git", "ORIG_HEAD")).length).toBe(1);
+  });
+
+  it("a lock failure never makes the quiet check throw: the hold is reported and the named cause is logged", async () => {
+    if (process.getuid?.() === 0) return; // root ignores permissions
+    const { dir, fake, world, probe } = setup();
+    await addQuiet(dir, "process", "heavy");
+    world.processes = ["heavy"];
+    const warnings: string[] = [];
+    const onWarning = (warning: Error) => { if (warning.name === "SteakPiLocalHold") warnings.push(warning.message); };
+    process.on("warning", onWarning);
+    chmodSync(dir, 0o500); // the lock folder cannot be created
+    try {
+      expect(() => activeHold(dir, fake.clock.t, probe)).not.toThrow();
+      expect(activeHold(dir, fake.clock.t, probe)?.code).toBe("quiet-day");
+      expect((await refusal(check(fake.deps, "model-a"))).code).toBe("quiet-day");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    } finally { chmodSync(dir, 0o700); process.off("warning", onWarning); }
+    expect(warnings.join("\n")).toMatch(/quiet day could not be recorded \(EACCES/);
+    expect(readHold(dir).quietDay).toBeUndefined();
+  });
+
+  it("tryLockSync removes the lock folder when the owner file cannot be written", () => {
+    if (process.getuid?.() === 0) return;
+    const { dir } = setup();
+    let previous: number | undefined;
+    try { previous = process.umask(0o277); } catch { return; } // the folder is then created without write permission
+    try { expect(() => tryLockSync(dir)).toThrow(/EACCES/); }
+    finally { process.umask(previous); }
+    expect(existsSync(join(dir, "lock"))).toBe(false);
+    const release = tryLockSync(dir); // and the next caller is not locked out by a leftover
+    expect(release).toBeTypeOf("function");
+    release?.();
+  });
+
+  it("tryLockSync follows withLock's stale rule: a live owner's lock is kept, a dead or unreadable owner's is taken", () => {
+    const { dir } = setup();
+    const lock = join(dir, "lock");
+    const aged = (seconds: number) => { const at = new Date(Date.now() - seconds * 1000); utimesSync(lock, at, at); };
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner"), `${process.pid}\n`);
+    aged(30);
+    expect(tryLockSync(dir)).toBeUndefined(); // the owner (this process) is alive
+    expect(existsSync(lock)).toBe(true);
+    for (const owner of ["", "not-a-pid\n", "0\n", "-5\n", "2147483646\n"]) {
+      writeFileSync(join(lock, "owner"), owner);
+      aged(30);
+      const release = tryLockSync(dir);
+      expect(release, `owner file ${JSON.stringify(owner)}`).toBeTypeOf("function"); // nobody owns it: taken over
+      release?.();
+      mkdirSync(lock);
+    }
+    rmSync(lock, { recursive: true, force: true });
+    // a lock just created (no owner file yet) is given a moment, as withLock does
+    mkdirSync(lock);
+    expect(tryLockSync(dir)).toBeUndefined();
   });
 });

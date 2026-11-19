@@ -1756,6 +1756,12 @@ export async function runClaudeRequest(request: RunClaudeInput): Promise<RunClau
       } finally {
         clearTimeout(retryTimer);
       }
+      // Asked again right before the restart, after the backoff and the acquisition: output that reached the caller in the
+      // meantime cannot be taken back, so the freshly acquired process is dropped and the turn ends with the named cause.
+      if (input.onEvent && !(input.canRestart?.() ?? false)) {
+        await discardProcess(acquired);
+        throw idleExhausted(error, recoveries, limits, "delivered", sends);
+      }
     }
   }
 }

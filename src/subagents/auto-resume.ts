@@ -8,6 +8,7 @@
  * Never resumed: deadlines, turn limits, content filters, route or policy
  * refusals, cancellations. Those need a decision, not a retry.
  */
+import { isEnsureRefusal } from "./profile-ensure.ts";
 
 export const MAX_AUTO_RESUMES = 2;
 /** A resume is only worth starting with at least this much run budget left. */
@@ -42,6 +43,9 @@ export interface TransientFailure {
 export function transientFailure(error: string | undefined, attempt: number): TransientFailure | undefined {
 	if (!error || attempt >= MAX_AUTO_RESUMES) return undefined;
 	const text = error.trim();
+	// A refused ensure carries the operator's own words (a hold's reason, a command's stderr): never read them as a network or
+	// server error. It is a named, final cause, so the refusal is checked before any pattern below.
+	if (isEnsureRefusal(text)) return undefined;
 	if (NEVER.test(text)) return undefined;
 	for (const rule of TRANSIENT) {
 		if (!rule.pattern.test(text)) continue;
