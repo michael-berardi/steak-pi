@@ -29,6 +29,7 @@ other Pi model: pick it with `--model` or `/model`.
 | `local status [id]` | Server state, number of users, idle time, and the added models. |
 | `local check <id>` | Read-only: runs the disk, memory and model-file checks `ensure` runs, without starting anything or taking a lease. Prints `ok: local/<id> is running` or `ok: local/<id> fits (needs X GiB, Y GiB free)` and exits 0; a start that would be refused prints the `REFUSED` line and exits 3; an unknown id exits 1. Use it before dispatching a worker onto a local model. `ensure` and `check` share one decision function, so they cannot disagree. |
 | `local hold <N>m\|h\|d [reason]` / `local hold off` | Switch the local model off until then (the running server is stopped at once); it comes back by itself. See [Holds](#holds-times-the-local-model-stays-off). |
+| `local bypass <N>m\|h\|d [reason]` / `local bypass off` | Run the local model anyway for that long, although a hold or the quiet-day rule says off; both apply again afterwards. |
 | `local quiet` / `quiet path <repo>` / `quiet process <name>` / `quiet remove <x>` / `quiet today [reason]` | The quiet-day rule: work the local model must not share the machine with. |
 | `local ensure <id>` / `local release <id>` | Take / give back one lease. For `routing.json` and hooks (below). |
 
@@ -85,7 +86,8 @@ adapter: with the hub unreachable the model is added plain, and the output says 
 | `local add ... --lora <file \| owner/repo[:file]> [--lora-scale S]` | Use an adapter you choose instead (same checksum and tensor checks). |
 
 `status` shows the adapter next to the model. A start whose adapter file was deleted is `REFUSED (adapter-missing)`;
-`local adapter <id>` fetches it again. The `--lora-scaled FILE:SCALE` form needs a current `llama-server`.
+`local adapter <id>` fetches it again. The `--lora-scaled FILE:SCALE` form and `--reasoning off` need a current
+`llama-server` (`llama-server --help` lists both).
 
 ## How `add` sizes the context
 
@@ -268,9 +270,17 @@ steak-pi local quiet process HeavyApp               # a program, by the name the
 steak-pi local quiet                               # show the rule and whether it holds right now
 steak-pi local quiet today playtest                # off for the rest of today, by hand
 steak-pi local quiet remove HeavyApp
+
+steak-pi local bypass 2h run the test I asked for    # run anyway for 2 hours, although a hold or a quiet day says off
+steak-pi local bypass off                            # end the bypass early
 ```
 
 **A timed hold** refuses every start until it ends and stops a running server when it is set.
+
+**A bypass** is the operator's explicit "run it anyway" for a set time (at most 7 days): while it lasts, neither the
+timed hold nor the quiet-day rule refuses a start or stops a running server. Both stay recorded and apply again the
+moment it ends (by itself, or with `bypass off`). `status` shows what is bypassed and until when. It is never set by
+anything but the command.
 
 **The quiet-day rule** watches for work you listed. The first sign of it on a calendar day switches the local model
 off for the rest of that local day: a listed program running, or a commit, checkout, merge, reset or rebase in a

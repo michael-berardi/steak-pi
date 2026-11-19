@@ -177,6 +177,33 @@ describe("quiet-day rule", () => {
 });
 
 describe("steak-pi local hold / quiet", () => {
+  it("bypass lets the operator run the local model through a hold and a quiet day, keeps both, and ends by itself", async () => {
+    const { dir, fake, world, out, err, options } = setup();
+    await setHold(dir, NOON + 24 * HOUR, "heavy work");
+    world.processes = ["HeavyApp"];
+    await addQuiet(dir, "process", "HeavyApp", fake.deps.holdProbe);
+    expect(await main(["ensure", "model-a"], options)).toBe(2);
+    expect(await main(["bypass", "2h", "operator", "asked"], options)).toBe(0);
+    expect(out.at(-2) ?? out.at(-1)).toBeDefined();
+    expect(out.at(-1)).toMatch(/hold     bypassed: the timed hold until 2031-05-11 12:00 \(heavy work\)\nbypass   until 2031-05-10 14:00 \(operator asked\)/);
+    expect(await main(["ensure", "model-a"], options)).toBe(0);
+    expect(await main(["check", "model-a"], options)).toBe(0);
+    // The supervisor does not stop the server for the hold while the bypass lasts.
+    expect(activeHold(dir, fake.clock.t, fake.deps.holdProbe)).toBeUndefined();
+    // Both rules are still recorded.
+    expect(readHold(dir)).toMatchObject({ until: NOON + 24 * HOUR, reason: "heavy work", quiet: { processes: ["HeavyApp"] } });
+    // It ends by itself.
+    fake.clock.t = NOON + 2 * HOUR;
+    expect(activeHold(dir, fake.clock.t, fake.deps.holdProbe)?.code).toBe("on-hold");
+    // bypass off ends it early.
+    fake.clock.t = NOON;
+    expect(await main(["bypass", "off"], options)).toBe(0);
+    expect(out.at(-1)).toMatch(/^bypass ended; the local model is off again: the local model is on hold/);
+    expect(await main(["bypass", "8d"], options)).toBe(2);
+    expect(err.at(-1)).toMatch(/REFUSED \(bad-option\): a bypass is at most 7d/);
+    expect(await main(["bypass"], options)).toBe(1);
+  });
+
   it("hold 24h stops the server and refuses starts; hold off ends it; status shows it", async () => {
     const { dir, fake, out, err, options } = setup();
     expect(await main(["ensure", "model-a"], options)).toBe(0);

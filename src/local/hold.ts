@@ -27,6 +27,11 @@ export interface HoldFile {
   quiet?: QuietRule;
   /** The local calendar day (YYYY-MM-DD) the quiet rule fired on, and what fired it. */
   quietDay?: { date: string; cause: string };
+  /**
+   * An operator's explicit override: until this time (epoch ms) neither the timed hold nor the quiet-day rule refuses a
+   * start. The hold and the rule stay recorded and apply again when it ends. Set only by `steak-pi local bypass`.
+   */
+  bypass?: { until: number; reason?: string };
 }
 export interface HoldProbe {
   /** Executable names of the running processes (basenames, never command lines). Throws when the process list cannot be read. */
@@ -89,7 +94,7 @@ export function readHold(dir: string): HoldFile {
   catch (error) { throw new LocalError("bad-hold", `${path} is not valid JSON (${(error as Error).message}); fix it, or keep a copy and start clean with: steak-pi local hold off`); }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new LocalError("bad-hold", `${path} must be a JSON object`);
   const file = raw as Record<string, unknown>;
-  ONLY(file, ["until", "reason", "quiet", "quietDay"], "hold.json");
+  ONLY(file, ["until", "reason", "quiet", "quietDay", "bypass"], "hold.json");
   const out: HoldFile = {};
   if (file.until !== undefined) {
     if (typeof file.until !== "number" || !Number.isFinite(file.until)) throw new LocalError("bad-hold", "hold.json until must be a time in epoch milliseconds");
@@ -110,6 +115,12 @@ export function readHold(dir: string): HoldFile {
     if (!day || typeof day !== "object" || Array.isArray(day) || typeof day.date !== "string" || typeof day.cause !== "string") throw new LocalError("bad-hold", "hold.json quietDay must be { date, cause }");
     ONLY(day, ["date", "cause"], "hold.json quietDay");
     out.quietDay = { date: day.date, cause: day.cause };
+  }
+  if (file.bypass !== undefined) {
+    const bypass = file.bypass as Record<string, unknown> | null;
+    if (!bypass || typeof bypass !== "object" || Array.isArray(bypass) || typeof bypass.until !== "number" || !Number.isFinite(bypass.until) || (bypass.reason !== undefined && typeof bypass.reason !== "string")) throw new LocalError("bad-hold", "hold.json bypass must be { until, reason? }");
+    ONLY(bypass, ["until", "reason"], "hold.json bypass");
+    out.bypass = { until: bypass.until, ...(typeof bypass.reason === "string" ? { reason: bypass.reason } : {}) };
   }
   return out;
 }
@@ -248,6 +259,8 @@ export function activeHold(dir: string, now: number, probe: HoldProbe = systemHo
   let file: HoldFile;
   try { file = readHold(dir); }
   catch (error) { return { code: "bad-hold", detail: error instanceof Error ? error.message : String(error) }; }
+  // The operator's explicit bypass wins over both rules while it lasts; the rules are kept and apply again after it.
+  if (file.bypass && now < file.bypass.until) return undefined;
   if (file.until !== undefined && now < file.until) {
     return { code: "on-hold", detail: `the local model is on hold until ${clock(file.until)}${file.reason ? ` (${file.reason})` : ""}; it comes back by itself, or end the hold with: steak-pi local hold off` };
   }
@@ -305,6 +318,11 @@ export const setHold = (dir: string, until: number, reason?: string, options: { 
 };
 export const clearHold = (dir: string): Promise<Edited> =>
   edit(dir, (file) => { const { until: _until, reason: _reason, ...rest } = file; return rest; });
+/** Let the local model run until `until` whatever the hold and the quiet rule say; they apply again afterwards. */
+export const setBypass = (dir: string, until: number, reason?: string): Promise<Edited> =>
+  edit(dir, (file) => ({ ...file, bypass: { until, ...(reason ? { reason } : {}) } }));
+export const clearBypass = (dir: string): Promise<Edited> =>
+  edit(dir, (file) => { const { bypass: _bypass, ...rest } = file; return rest; });
 export const markQuietToday = (dir: string, now: number, cause: string): Promise<Edited> =>
   edit(dir, (file) => ({ ...file, quietDay: { date: localDay(now), cause } }));
 
@@ -345,7 +363,14 @@ export function describeHold(dir: string, now: number, probe: HoldProbe = system
        "         programs are looked for only when something asks (status, check, ensure, a running server); a program opened and closed in between is not seen",
        ...quietProblems(file.quiet, probe).map((problem) => `quiet    WARNING: ${problem}`)]
     : [];
-  return [`hold     ${active ? `${active.code}: ${active.detail}` : "none"}`, ...rule];
+  const bypassed = file.bypass && now < file.bypass.until
+    ? [`bypass   until ${clock(file.bypass.until)}${file.bypass.reason ? ` (${file.bypass.reason})` : ""}: the hold and the quiet rule do not refuse starts until then; end it early with: steak-pi local bypass off`]
+    : [];
+  // Under a bypass, say what is being bypassed: the timed hold or today's quiet-day record (both stay in the file).
+  const today = localDay(now);
+  const underneath = bypassed.length && file.until !== undefined && now < file.until ? `the timed hold until ${clock(file.until)}${file.reason ? ` (${file.reason})` : ""}`
+    : bypassed.length && file.quietDay?.date === today ? `today's quiet day (${file.quietDay.cause})` : undefined;
+  return [`hold     ${active ? `${active.code}: ${active.detail}` : underneath ? `bypassed: ${underneath}` : "none"}`, ...bypassed, ...rule];
 }
 
 export const systemHoldProbe: HoldProbe = {

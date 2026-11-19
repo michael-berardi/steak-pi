@@ -18,7 +18,7 @@ import { HF_SPEC, readHfHeader, resolveHf, type Fetch } from "./hf.ts";
 import { DEFAULT_PORT, idFromSource, planProfile, PlanError, type Source } from "./profile.ts";
 import { check, ensure, manualHolder, pidHolder, release, status, stop, supervise, systemDeps, type Deps } from "./runtime.ts";
 import { promptCapTokens, resolveLimits } from "./limits.ts";
-import { activeHold, addQuiet, clearHold, describeHold, markQuietToday, parseDuration, removeQuiet, setHold } from "./hold.ts";
+import { activeHold, addQuiet, clearBypass, clearHold, describeHold, markQuietToday, parseDuration, removeQuiet, setBypass, setHold } from "./hold.ts";
 import { checkId, listProfiles, localDir, LocalError, modelsJsonPath, readModelEntry, readProfile, upsertLocalModel, writeProfile } from "./store.ts";
 
 export interface Io { out(text: string): void; err(text: string): void }
@@ -53,6 +53,9 @@ const USAGE = `usage: steak-pi local <command>
   quiet path <repo dir> | quiet process <name> | quiet remove <dir or name>
                   the first sign of that work on a day keeps the local model off until the next day
   quiet today [reason]     switch it off for the rest of today by hand
+  bypass <N>m|h|d [reason] | bypass off
+                  let the local model run for that long although a hold or the quiet rule says off (at most 7d;
+                  the rules stay and apply again afterwards)
   adapter [id] [--trust [publisher]] | adapter off [id]
                   look for this harness's adapter for a model added before (add does it by itself); --trust
                   trusts its publisher without asking (name it to trust only that one). 'off' stops using it`;
@@ -266,6 +269,23 @@ export async function main(argv: string[], options: CliOptions = {}): Promise<nu
         const stopped = await stop(deps);
         io.out(`${activeHold(deps.dir, deps.now(), deps.holdProbe)?.detail ?? "hold set"}${stopped.stopped ? `; stopped local/${stopped.id}, port ${stopped.port} ${stopped.portReleased ? "released" : "STILL HELD, check the process list"}` : ""}`);
         return stopped.stopped && !stopped.portReleased ? 2 : 0;
+      }
+      case "bypass": {
+        // The operator's explicit override of the hold and the quiet-day rule, for a bounded time.
+        if (!rest[0]) { io.err(USAGE); return 1; }
+        if (rest[0] === "off") {
+          await clearBypass(deps.dir);
+          const still = activeHold(deps.dir, deps.now(), deps.holdProbe);
+          io.out(still ? `bypass ended; the local model is off again: ${still.detail}` : "bypass ended; nothing holds the local model off");
+          return 0;
+        }
+        const ms = parseDuration(rest[0]);
+        if (ms > 7 * 86_400_000) throw new LocalError("bad-option", "a bypass is at most 7d; it is meant for a run the operator asked for, not to switch a rule off (remove the rule with: steak-pi local hold off / quiet remove)");
+        const until = deps.now() + ms;
+        const set = await setBypass(deps.dir, until, rest.slice(1).join(" ").trim() || undefined);
+        if (set.quarantined) io.out(`hold.json could not be read; kept it as ${set.quarantined} and started a clean one`);
+        io.out(describeHold(deps.dir, deps.now(), deps.holdProbe).slice(0, 2).join("\n"));
+        return 0;
       }
       case "quiet": {
         const [action, ...words] = rest;

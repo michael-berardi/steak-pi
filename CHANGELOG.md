@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.38.1 (2026-11-19)
+
+A local hold can be bypassed when you ask, and the adapter's thinking setting uses llama-server's current flag.
+
+- **`steak-pi local bypass <N>m|h|d [reason]` / `bypass off`.** Run the local model for a set time (at most 7 days) although a timed hold or the quiet-day rule says off, when you ask for it. Both rules stay recorded and apply again when the bypass ends; `status` shows what is bypassed and until when.
+- Verified live on the 27B base with its harness adapter loaded (`/lora-adapters` listed it), through a bypass of an active hold: Pi fixed a failing test in five turns (read, list, read, edit, run the test) with thinking off, in 55 s, and the test passed.
+- The server of a model whose adapter was trained with thinking off now starts with `--reasoning off` (the replacement for the deprecated `--chat-template-kwargs {"enable_thinking": false}`); a request that asks for thinking still gets it.
+
 ## 0.38.0 (2026-11-19)
 
 Local mode now brings each model's harness adapter by itself, and Gemini models run through Google's official Antigravity CLI (`agy`).

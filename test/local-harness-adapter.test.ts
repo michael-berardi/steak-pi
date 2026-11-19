@@ -143,7 +143,7 @@ describe("local mode applies the harness adapter by itself", () => {
     expect(await main(["add", file, "--name", "m"], { ...options, fetch: h.fetchFake, download: h.download })).toBe(0);
     expect(readProfile(state, "m")!.adapters).toHaveLength(1);
     expect(readProfile(state, "m")!.trainedThinking).toBeUndefined();
-    expect(serverArgs(readProfile(state, "m")!)).not.toContain("--chat-template-kwargs");
+    expect(serverArgs(readProfile(state, "m")!)).not.toContain("--reasoning");
   });
 
   it("a release name part (Instruct) is not a fine-tune; a file with no declared base is not guessed by name search", async () => {
@@ -166,7 +166,7 @@ describe("local mode applies the harness adapter by itself", () => {
     expect(profile.adapters).toEqual([expect.objectContaining({ origin: "lab/Model-7B-pi-GGUF:Model-7B-pi-lora-F16.gguf", sha256: OID, scale: 1 })]);
     expect(profile.trainedThinking).toBe("off");
     const args = serverArgs(profile);
-    expect(args).toEqual(expect.arrayContaining(["--lora-scaled", "--chat-template-kwargs", JSON.stringify({ enable_thinking: false })]));
+    expect(args).toEqual(expect.arrayContaining(["--lora-scaled", "--reasoning", "off"]));
     expect(h.downloads).toEqual([`https://huggingface.co/lab/Model-7B-pi-GGUF/resolve/${REV}/Model-7B-pi-lora-F16.gguf`]);
     expect(profile.adapters![0]).toMatchObject({ publisher: "lab", revision: REV });
     expect(out.join("\n")).toMatch(/adapter {3}lab\/Model-7B-pi-GGUF at commit 0123456789ab \(1234 downloads\), trained for this harness on Org\/Model-7B; publisher "lab" is trusted/);
@@ -227,7 +227,7 @@ describe("local mode applies the harness adapter by itself", () => {
     expect(readProfile(state, "m")!.trainedThinking).toBe("off");
     expect(await main(["adapter", "off", "m"], options)).toBe(0);
     expect(readProfile(state, "m")!.adapters).toEqual([]);
-    expect(serverArgs(readProfile(state, "m")!)).not.toContain("--chat-template-kwargs");
+    expect(serverArgs(readProfile(state, "m")!)).not.toContain("--reasoning");
   });
 
   it("an explicit `local adapter` request for a model with none is a named refusal", async () => {
