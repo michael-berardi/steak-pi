@@ -117,7 +117,7 @@ their loaded runtime. `STEAK_PI_NO_UPDATE_CHECK=1` disables background update ch
 - [Installation and launcher](docs/INSTALL.md): paths, environment, updates and uninstall
 - [Companion UI](docs/COMPANION-UI.md) and [themes](docs/THEME-PASS.md)
 - [Worker profiles](docs/PROFILES.md) and [subagent protocol](docs/ULTRATERM-SUBAGENT-PROTOCOL.md)
-- Optional [Claude Code adapter](docs/CLAUDE-CODE.md), [Google Antigravity provider](docs/ANTIGRAVITY.md) (off until configured) and [local models](docs/LOCAL-MODELS.md)
+- Optional [Claude Code adapter](docs/CLAUDE-CODE.md), [Antigravity CLI (`agy`) route](docs/AGY.md) for Gemini models through Google's official CLI and [local models](docs/LOCAL-MODELS.md)
 - [Reproducible overhead benchmark](benchmarks/overhead/README.md) and [changelog](CHANGELOG.md)
 
 ## From source
