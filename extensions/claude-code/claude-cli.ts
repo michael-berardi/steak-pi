@@ -10,7 +10,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { registerSessionResourceCleanup } from "@earendil-works/pi-ai";
 import { capCacheBreakpoints, MAX_CACHE_BREAKPOINTS } from "./cache-control.ts";
 import { ClaudeWaitLimitError, transportTimeout, waitForOperation } from "./wait.ts";
-import { formatSilence, idleLimits } from "./idle-policy.ts";
+import { formatSilence, idleLimits, type IdleLimits } from "./idle-policy.ts";
 import { TurnRelay } from "./turn-relay.ts";
 import { usageCreditsAllowed, usageCreditsChargeError, type RateLimitInfo } from "./billing.ts";
 import { assertAccountReserve, forgetSessionAccount, reportRateLimit, resolveRequestAccount } from "./account-reserve.ts";
@@ -67,6 +67,12 @@ export interface RunClaudeInput {
   onEvent?: (event: AnthropicStreamEvent) => void;
   /** Called before an automatic recovery asks again, so partial output from the stalled attempt can be dropped. */
   onRestart?: () => void;
+  /**
+   * True while nothing from this turn has reached the caller, so asking again cannot show output twice. Required for a
+   * recovery whenever `onEvent` is set: without it events are assumed delivered and a stalled turn fails with its named
+   * error instead of being asked again.
+   */
+  canRestart?: () => boolean;
   /** Pi session whose linear continuation may reuse a warm Claude process. */
   sessionId?: string;
 }
@@ -75,6 +81,8 @@ export interface RunClaudeOutput {
   message: NativeMessage;
   result: NativeResult;
   usage: NativeUsage;
+  /** Claude Code went silent after the API had sent the whole reply: the reply is complete, the process must not be reused. */
+  hung?: boolean;
   exitCode: number;
   relay: {
     upstreamRequests: number;
@@ -1269,7 +1277,15 @@ class ClaudeProcess {
     return true;
   }
 
-  async run(input: RunClaudeInput, continuation: boolean): Promise<RunClaudeOutput> {
+  /** Sends of the request to the API made by the last turn (the relay's first try and its quiet retries). */
+  sendsLastTurn = 0;
+
+  async run(
+    input: RunClaudeInput,
+    continuation: boolean,
+    turn: { env?: Record<string, string | undefined>; maxSends?: number } = {},
+  ): Promise<RunClaudeOutput> {
+    this.sendsLastTurn = 0;
     if (!this.isAlive()) throw new Error("Claude Code process is no longer available");
     input.signal?.throwIfAborted();
 
@@ -1289,30 +1305,9 @@ class ClaudeProcess {
     this.queue.touch();
     const statusAfterMs = () => this.relay.limits.statusAfterMs;
     let waiting = false;
-    const ticker = setInterval(() => {
-      const silent = Date.now() - Math.max(this.queue.lastTouch, this.relay.lastByteAt);
-      if (silent >= statusAfterMs()) {
-        waiting = true;
-        reportClaudeCodeStatus(`waiting on the model: ${Math.round(silent / 1000)} s since last event`);
-      } else if (waiting) {
-        waiting = false;
-        reportClaudeCodeStatus(undefined);
-      }
-    }, Math.max(10, Math.min(1_000, Math.floor(statusAfterMs() / 3))));
-    ticker.unref?.();
+    let ticker: NodeJS.Timeout | undefined;
+    let begun = false;
     const canonicalInitialUser = input.frames.find((frame) => frame.type === "user")?.message.content ?? [];
-    this.relay.beginTurn(
-      deliver,
-      buildRequestTransform({
-        initialUserPrefix: input.initialUserPrefix,
-        initialSystemMessages: input.initialSystemMessages as NativeRequestMessage[] | undefined,
-        nativeSystemInjections: input.nativeSystemInjections,
-        canonicalInitialUser,
-      }),
-      input.betas,
-      () => this.queue.touch(),
-    );
-
     const abort = () => {
       this.relay.abort();
       this.closeNow();
@@ -1323,8 +1318,34 @@ class ClaudeProcess {
     let nativeError: string | undefined;
     let rateLimit: RateLimitInfo | undefined;
     let rateLimitSession: string | undefined;
+    let hung = false;
 
     try {
+      // The ticker and the turn are armed inside the try, so an exception in either still clears the ticker.
+      ticker = setInterval(() => {
+        const silent = Date.now() - Math.max(this.queue.lastTouch, this.relay.lastByteAt);
+        if (silent >= statusAfterMs()) {
+          waiting = true;
+          reportClaudeCodeStatus(`waiting on the model: ${Math.round(silent / 1000)} s since last event`);
+        } else if (waiting) {
+          waiting = false;
+          reportClaudeCodeStatus(undefined);
+        }
+      }, Math.max(10, Math.min(1_000, Math.floor(statusAfterMs() / 3))));
+      ticker.unref?.();
+      this.relay.beginTurn(
+        deliver,
+        buildRequestTransform({
+          initialUserPrefix: input.initialUserPrefix,
+          initialSystemMessages: input.initialSystemMessages as NativeRequestMessage[] | undefined,
+          nativeSystemInjections: input.nativeSystemInjections,
+          canonicalInitialUser,
+        }),
+        input.betas,
+        () => this.queue.touch(),
+        turn,
+      );
+      begun = true;
       // The replay is bounded per frame, not as a whole: a long conversation on a busy machine
       // needs more than one budget to load, while a frame that is never acknowledged (even under
       // native chatter) still ends the wait. Each acknowledged frame is progress.
@@ -1348,7 +1369,20 @@ class ClaudeProcess {
       }
 
       for (;;) {
-        const event = await this.queue.next(input.signal, () => this.relay.limits.queueIdleMs);
+        let event: NativeOutputEvent | undefined;
+        try {
+          event = await this.queue.next(input.signal, () => this.relay.limits.queueIdleMs);
+        } catch (error) {
+          // The API already sent the whole reply and only Claude Code's final result is missing. Asking again would
+          // bill the same answer twice, so the turn finishes from what the relay captured; the hung process is dropped.
+          if (error instanceof ClaudeWaitLimitError && error.kind === "idle" && !input.signal?.aborted && this.replyCaptured(sawMessageStop)) {
+            hung = true;
+            result = { type: "result", subtype: "success", is_error: false, num_turns: 1, usage: this.relay.capture.message?.usage };
+            reportClaudeCodeDiagnostic("[claude-code] Claude Code went quiet after the API had sent the whole reply; finishing the turn from the received reply instead of asking again.");
+            break;
+          }
+          throw error;
+        }
         if (!event) throw await this.exitError("Claude Code exited before completing its response", input.signal);
         if (event.type === "assistant") {
           const error = nativeErrorText(event);
@@ -1430,6 +1464,7 @@ class ClaudeProcess {
         message,
         result,
         usage,
+        hung: hung || undefined,
         exitCode: this.child.exitCode ?? 0,
         relay: {
           upstreamRequests: Number(this.relay.used),
@@ -1450,14 +1485,22 @@ class ClaudeProcess {
         failure.lastEvent = lastEvent;
         failure.childAlive = this.child.exitCode === null && this.child.signalCode === null;
         failure.bytesReceived = this.relay.bytesReceived;
+        // message_stop was seen: the API finished the reply, so a resend would pay for it twice.
+        if (sawMessageStop) failure.replyComplete = true;
       }
       throw failure;
     } finally {
-      clearInterval(ticker);
+      if (ticker) clearInterval(ticker);
+      if (begun) this.sendsLastTurn = this.relay.attempts;
       if (waiting) reportClaudeCodeStatus(undefined);
       input.signal?.removeEventListener("abort", abort);
       this.relay.finishTurn();
     }
+  }
+
+  /** The relay holds a complete, successful reply (message_stop included). */
+  private replyCaptured(sawMessageStop: boolean): boolean {
+    return sawMessageStop && this.relay.used && this.relay.status === 200 && this.relay.capture.complete && !!this.relay.capture.message;
   }
 
   async close(): Promise<void> {
@@ -1635,6 +1678,8 @@ export async function runClaudeRequest(request: RunClaudeInput): Promise<RunClau
   }
   input.signal?.throwIfAborted();
   const plan = launchPlan(input);
+  // The limits are judged first: a bad PI_CLAUDE_CODE_* value must fail before any process is acquired and left busy.
+  const limits = idleLimits(plan.timeoutMs, {}, plan.env);
   // Acquisition (lock, auth, relay startup) is a non-streaming wait. Its deadline
   // must be disarmed before running the turn: timeoutMs is an HTTP idle budget.
   const deadline = new AbortController();
@@ -1649,12 +1694,13 @@ export async function runClaudeRequest(request: RunClaudeInput): Promise<RunClau
   // A stalled turn is recovered here, not by the operator. The Claude process is only a transport (no tools, one turn,
   // inert MCP), so nothing it did can have run a tool: Pi runs tools itself after the reply is complete, and every tool
   // result already executed is part of the replayed history. Asking again therefore cannot run anything twice.
-  const limits = idleLimits(plan.timeoutMs, {}, plan.env);
   let recoveries = 0;
+  // Sends of this one request to the API, across the relay's quiet retries and every recovery: at most limits.maxSends.
+  let sends = 0;
   for (;;) {
     try {
-      const output = await acquired.worker.run(input, acquired.continuation);
-      const stable = acquired.worker.commit(input, output.message);
+      const output = await acquired.worker.run(input, acquired.continuation, { env: plan.env, maxSends: limits.maxSends - sends });
+      const stable = acquired.worker.commit(input, output.message) && !output.hung;
       if (
         stable &&
         acquired.retained &&
@@ -1682,8 +1728,19 @@ export async function runClaudeRequest(request: RunClaudeInput): Promise<RunClau
       await discardProcess(acquired);
       if (!(error instanceof ClaudeWaitLimitError) || error.kind !== "idle") throw error;
       error.recoveries = recoveries;
-      // A child that already exited is a crash with its own cause, not a quiet model: asking again would hide it.
-      if (error.childAlive === false || recoveries >= limits.maxRecoveries) throw idleExhausted(error, recoveries, limits.maxRecoveries);
+      sends += acquired.worker.sendsLastTurn;
+      // Output already handed to the caller cannot be taken back, and without a canRestart answer it is assumed handed over.
+      const delivered = input.onEvent ? !(input.canRestart?.() ?? false) : false;
+      const refusal: IdleRefusal | undefined =
+        // A child that already exited is a crash with its own cause, not a quiet model: asking again would hide it.
+        error.childAlive === false ? "crash"
+        : limits.maxRecoveries === 0 ? "off"
+        : error.replyComplete ? "complete"
+        : delivered ? "delivered"
+        : recoveries >= limits.maxRecoveries ? "spent"
+        : sends >= limits.maxSends ? "sends"
+        : undefined;
+      if (refusal) throw idleExhausted(error, recoveries, limits, refusal, sends);
       const pause = limits.recoveryBackoffMs[Math.min(recoveries, limits.recoveryBackoffMs.length - 1)];
       recoveries += 1;
       reportClaudeCodeDiagnostic(
@@ -1712,20 +1769,25 @@ function describeStage(stage: string | undefined): string {
   return stage;
 }
 
-/** The error the operator sees once automatic recovery is spent: names the cause and says what to do. */
-function idleExhausted(error: ClaudeWaitLimitError, recoveries: number, max: number): ClaudeWaitLimitError {
-  const tried = max === 0
-    ? "automatic recovery is off (PI_CLAUDE_CODE_MAX_RECOVERIES=0)"
-    : error.childAlive === false
-    ? "no automatic recovery because the process had already exited, which is a crash and not a quiet model"
-    : `${recoveries} automatic ${recoveries === 1 ? "recovery" : "recoveries"} tried and each went quiet again`;
+type IdleRefusal = "crash" | "complete" | "delivered" | "off" | "sends" | "spent";
+
+/** The error the operator sees once automatic recovery is spent or refused: names the cause and says what to do. */
+function idleExhausted(error: ClaudeWaitLimitError, recoveries: number, limits: IdleLimits, refusal: IdleRefusal, sends: number): ClaudeWaitLimitError {
+  const tried = {
+    off: "automatic recovery is off (PI_CLAUDE_CODE_MAX_RECOVERIES=0)",
+    crash: "no automatic recovery because the process had already exited, which is a crash and not a quiet model",
+    complete: "no automatic recovery because the API had already sent the whole reply, and asking again would pay for it twice",
+    delivered: "no automatic recovery because part of the reply had already been shown and cannot be taken back, and asking again would show it twice",
+    sends: `no further recovery because the request was already sent ${sends} times, the most one request is ever sent (${limits.maxSends})`,
+    spent: `${recoveries} automatic ${recoveries === 1 ? "recovery" : "recoveries"} tried and each went quiet again`,
+  }[refusal];
   const message =
     `Claude Code stream idle limit exceeded (no bytes or events): silent for ${formatSilence(error.silentMs ?? 0)} ${describeStage(error.stage)}; ` +
     `last event: ${error.lastEvent ?? "none"}; the Claude Code process was ${error.childAlive === false ? "already gone" : "alive"}` +
     `${error.bytesReceived === undefined ? "" : error.bytesReceived > 0 ? " and the API had sent data this attempt" : " and the API had sent nothing this attempt"}; ` +
     `${tried}. The conversation is intact: send "resume" to try again, or raise PI_CLAUDE_CODE_IDLE_LIMIT_MS / PI_CLAUDE_CODE_FIRST_BYTE_LIMIT_MS if the model is simply slow.`;
   const named = new ClaudeWaitLimitError(message, { kind: "idle", silentMs: error.silentMs, stage: error.stage });
-  Object.assign(named, { lastEvent: error.lastEvent, childAlive: error.childAlive, bytesReceived: error.bytesReceived, recoveries });
+  Object.assign(named, { lastEvent: error.lastEvent, childAlive: error.childAlive, bytesReceived: error.bytesReceived, recoveries, replyComplete: error.replyComplete });
   return named;
 }
 

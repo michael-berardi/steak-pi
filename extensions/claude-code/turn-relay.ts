@@ -178,6 +178,8 @@ export class TurnRelay {
   private transformRequest?: (body: Buffer) => Buffer;
   private requestBetas: string[] = [];
   private onActivity?: () => void;
+  /** Sends this turn may still make (the first included); the request-wide budget is shared with Steak Pi's recoveries. */
+  private attemptCap = Number.POSITIVE_INFINITY;
 
   constructor(
     upstream = "https://api.anthropic.com",
@@ -186,7 +188,7 @@ export class TurnRelay {
     transformRequest?: (body: Buffer) => Buffer,
     requestBetas: string[] = [],
     private readonly retry: RetryPolicy = DEFAULT_RETRY,
-    private readonly env: Record<string, string | undefined> = process.env,
+    private env: Record<string, string | undefined> = process.env,
   ) {
     transportTimeout(timeoutMs);
     this.limits = idleLimits(timeoutMs, {}, env);
@@ -216,6 +218,7 @@ export class TurnRelay {
     transformRequest?: (body: Buffer) => Buffer,
     requestBetas: string[] = [],
     onActivity?: () => void,
+    turn: { env?: Record<string, string | undefined>; maxSends?: number } = {},
   ): void {
     if (this.closed) throw new Error("Claude Code turn relay is closed");
     if (this.active.size > 0) throw new Error("Claude Code turn relay still has an active request");
@@ -229,6 +232,9 @@ export class TurnRelay {
     this.failure = undefined;
     this.failureDetail = undefined;
     this.waitFailure = undefined;
+    // A warm relay keeps the env it was created with; each turn is judged by the env of its own request.
+    if (turn.env) this.env = turn.env;
+    this.attemptCap = turn.maxSends ?? Number.POSITIVE_INFINITY;
     this.limits = idleLimits(this.timeoutMs, {}, this.env);
     this.lastByteAt = Date.now();
     this.bytesReceived = 0;
@@ -370,7 +376,7 @@ export class TurnRelay {
         // A new bounded attempt gets its own idle budget, including after
         // backoff when Claude Code has not emitted any stdout of its own.
         this.onActivity?.();
-        const retryable = attempt < this.retry.attempts && !this.cancelled;
+        const retryable = attempt < Math.min(this.retry.attempts, this.attemptCap) && !this.cancelled;
         this.stage = "upstream-request";
         upstreamRequest = transport.request({
           protocol: this.upstream.protocol,

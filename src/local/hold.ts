@@ -14,10 +14,10 @@
  * A hold file that cannot be read is a hold (`bad-hold`): a typo must never switch the rule off silently.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { closeSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { LocalError } from "./errors.ts";
-import { withLock, writeAtomic } from "./store.ts";
+import { tryLockSync, withLock, writeAtomic } from "./store.ts";
 
 export interface QuietRule { paths: string[]; processes: string[] }
 export interface HoldFile {
@@ -29,11 +29,13 @@ export interface HoldFile {
   quietDay?: { date: string; cause: string };
 }
 export interface HoldProbe {
-  /** Executable names of the running processes (basenames, never command lines). */
+  /** Executable names of the running processes (basenames, never command lines). Throws when the process list cannot be read. */
   processNames(): string[];
   /** Modification time in epoch ms, or undefined when the path does not exist. */
   mtime(path: string): number | undefined;
   list(dir: string): string[];
+  /** The text of a small file (its last `tailBytes` bytes when it is longer), or undefined when it is missing or is a directory. */
+  readText(path: string, tailBytes?: number): string | undefined;
 }
 export interface ActiveHold { code: "on-hold" | "quiet-day" | "bad-hold"; detail: string }
 
@@ -56,15 +58,38 @@ const strings = (value: unknown, key: string): string[] => {
   return value as string[];
 };
 
-/** Read and validate hold.json. A missing file is no hold; anything unreadable throws `bad-hold` naming the fault. */
+const ONLY = (value: Record<string, unknown>, allowed: string[], where: string): void => {
+  const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
+  if (unknown.length) throw new LocalError("bad-hold", `${where} has unknown ${unknown.length === 1 ? "key" : "keys"} ${unknown.map((key) => JSON.stringify(key)).join(", ")} (known: ${allowed.join(", ")}); a typo must not switch the rule off, so fix it or remove it with: steak-pi local hold off`);
+};
+
+/**
+ * Read and validate hold.json. A missing file is no hold; anything else that cannot be read, an unreadable folder
+ * included, an unknown key or a wrong type throws `bad-hold` naming the fault.
+ */
 export function readHold(dir: string): HoldFile {
   const path = holdPath(dir);
-  if (!existsSync(path)) return {};
+  try { statSync(path); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      // Only a folder that exists and lists fine, or one that is simply not there yet, means "no hold".
+      try { statSync(dir); } catch (inner) {
+        if ((inner as NodeJS.ErrnoException).code === "ENOENT") return {};
+        throw new LocalError("bad-hold", `${dir} cannot be read (${(inner as Error).message}), so whether the local model is on hold is unknown`);
+      }
+      return {};
+    }
+    throw new LocalError("bad-hold", `${path} cannot be read (${(error as Error).message}), so whether the local model is on hold is unknown`);
+  }
+  let text: string;
+  try { text = readFileSync(path, "utf8"); }
+  catch (error) { throw new LocalError("bad-hold", `${path} cannot be read (${(error as Error).message}); fix its permissions or move it aside with: steak-pi local hold off`); }
   let raw: unknown;
-  try { raw = JSON.parse(readFileSync(path, "utf8")); }
-  catch (error) { throw new LocalError("bad-hold", `${path} is not valid JSON (${(error as Error).message}); fix it or remove it with: steak-pi local hold off`); }
+  try { raw = JSON.parse(text); }
+  catch (error) { throw new LocalError("bad-hold", `${path} is not valid JSON (${(error as Error).message}); fix it, or keep a copy and start clean with: steak-pi local hold off`); }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new LocalError("bad-hold", `${path} must be a JSON object`);
   const file = raw as Record<string, unknown>;
+  ONLY(file, ["until", "reason", "quiet", "quietDay"], "hold.json");
   const out: HoldFile = {};
   if (file.until !== undefined) {
     if (typeof file.until !== "number" || !Number.isFinite(file.until)) throw new LocalError("bad-hold", "hold.json until must be a time in epoch milliseconds");
@@ -77,11 +102,13 @@ export function readHold(dir: string): HoldFile {
   if (file.quiet !== undefined) {
     if (!file.quiet || typeof file.quiet !== "object" || Array.isArray(file.quiet)) throw new LocalError("bad-hold", "hold.json quiet must be an object with paths and processes");
     const quiet = file.quiet as Record<string, unknown>;
+    ONLY(quiet, ["paths", "processes"], "hold.json quiet");
     out.quiet = { paths: strings(quiet.paths, "quiet.paths"), processes: strings(quiet.processes, "quiet.processes") };
   }
   if (file.quietDay !== undefined) {
     const day = file.quietDay as Record<string, unknown> | null;
-    if (!day || typeof day !== "object" || typeof day.date !== "string" || typeof day.cause !== "string") throw new LocalError("bad-hold", "hold.json quietDay must be { date, cause }");
+    if (!day || typeof day !== "object" || Array.isArray(day) || typeof day.date !== "string" || typeof day.cause !== "string") throw new LocalError("bad-hold", "hold.json quietDay must be { date, cause }");
+    ONLY(day, ["date", "cause"], "hold.json quietDay");
     out.quietDay = { date: day.date, cause: day.cause };
   }
   return out;
@@ -89,35 +116,107 @@ export function readHold(dir: string): HoldFile {
 
 const save = (dir: string, file: HoldFile): void => writeAtomic(holdPath(dir), `${JSON.stringify(file, null, 2)}\n`);
 
-/** The files git rewrites when a repository is worked in: a commit, checkout, merge, reset or rebase, here or in a linked worktree.
- * The index is left out on purpose: `git status` refreshes it, so a tool that only looks at a repository would count as work. */
-function activityFiles(repo: string, probe: HoldProbe): string[] {
-  const git = join(repo, ".git");
-  const own = ["HEAD", "ORIG_HEAD", join("logs", "HEAD")].map((name) => join(git, name));
-  const linked = probe.list(join(git, "worktrees")).flatMap((name) => ["HEAD", "ORIG_HEAD", join("logs", "HEAD")].map((file) => join(git, "worktrees", name, file)));
-  return [...own, ...linked];
+const GIT_FILES = ["HEAD", "ORIG_HEAD", join("logs", "HEAD")];
+
+/**
+ * Where a repository's git data lives. `.git` is a folder in an ordinary clone, but a FILE (`gitdir: <path>`) in a linked
+ * worktree and in a submodule, so the git folder is resolved from that line; a linked worktree names the folder it shares
+ * in `commondir`. Undefined when no HEAD can be found, which means the repository cannot be watched.
+ */
+export function gitLayout(repo: string, probe: HoldProbe): { gitdir: string; common: string } | undefined {
+  const dotGit = join(repo, ".git");
+  let gitdir = dotGit;
+  const pointer = probe.readText(dotGit, 4096);
+  if (pointer !== undefined) {
+    const line = /^gitdir:\s*(.+?)\s*$/m.exec(pointer)?.[1];
+    if (!line) return undefined;
+    gitdir = resolve(repo, line);
+  } else if (probe.mtime(dotGit) === undefined) return undefined;
+  if (probe.mtime(join(gitdir, "HEAD")) === undefined) return undefined;
+  const shared = probe.readText(join(gitdir, "commondir"), 1024)?.trim();
+  return { gitdir, common: shared ? resolve(gitdir, shared) : gitdir };
 }
+
+/** Epoch ms of the newest entry in a reflog file (its last line is `old new name <mail> <epoch> <tz>\t message`). */
+function lastReflogAt(path: string, probe: HoldProbe): number | undefined {
+  const lines = probe.readText(path, 4096)?.split("\n").filter(Boolean);
+  const match = lines && /> (\d{9,})(?: [+-]\d{4})?\t/.exec(lines[lines.length - 1]!);
+  return match ? Number(match[1]) * 1000 : undefined;
+}
+
+/**
+ * The newest sign of work in a repository: git rewrites HEAD, ORIG_HEAD and its reflog when it is worked in (a commit, checkout,
+ * merge, reset or rebase), here or in a linked worktree. The reflog is read for the time of its last entry rather than
+ * the file's modification time: `git gc` and `git reflog expire` rewrite the file (verified on git 2.54) with no work done. The
+ * index is left out on purpose: `git status` refreshes it, so a tool that only looks at a repository would count as work.
+ */
+function lastActivity(repo: string, probe: HoldProbe): number | undefined {
+  const layout = gitLayout(repo, probe);
+  if (!layout) return undefined;
+  const folders = [layout.gitdir, ...probe.list(join(layout.common, "worktrees")).map((name) => join(layout.common, "worktrees", name))];
+  const times = folders.flatMap((folder) => [
+    probe.mtime(join(folder, "HEAD")),
+    probe.mtime(join(folder, "ORIG_HEAD")),
+    lastReflogAt(join(folder, "logs", "HEAD"), probe),
+  ]);
+  return times.reduce<number | undefined>((best, at) => (at !== undefined && (best === undefined || at > best) ? at : best), undefined);
+}
+
+const same = (running: string, wanted: Set<string>): boolean => {
+  const name = running.toLowerCase();
+  if (wanted.has(name)) return true;
+  // Linux cuts a process name to 15 characters, so a longer listed name matches by that prefix.
+  return name.length === 15 && [...wanted].some((entry) => entry.length > 15 && entry.startsWith(name));
+};
 
 /** What fired the quiet rule right now, or undefined. */
 export function quietTrigger(rule: QuietRule, now: number, probe: HoldProbe): string | undefined {
   if (rule.processes.length) {
     const wanted = new Set(rule.processes.map((name) => name.toLowerCase()));
-    const running = probe.processNames().find((name) => wanted.has(name.toLowerCase()));
+    let names: string[] = [];
+    try { names = probe.processNames(); } catch { /* reported by quietProblems: the status line says the program rules cannot fire */ }
+    const running = names.find((name) => same(name, wanted));
     if (running) return `${running} is running`;
   }
   const since = dayStart(now);
   for (const repo of rule.paths) {
-    const touched = activityFiles(repo, probe).some((file) => { const at = probe.mtime(file); return at !== undefined && at >= since; });
-    if (touched) return `work in ${repo} today`;
+    const at = lastActivity(repo, probe);
+    if (at !== undefined && at >= since) return `work in ${repo} today`;
   }
   return undefined;
 }
 
+/** Parts of the quiet rule that cannot fire right now, for `status`: a rule that silently never fires is worse than none. */
+export function quietProblems(rule: QuietRule, probe: HoldProbe): string[] {
+  const problems: string[] = [];
+  if (rule.processes.length) {
+    try { probe.processNames(); }
+    catch (error) { problems.push(`the process list could not be read (${error instanceof Error ? error.message.split("\n")[0] : String(error)}), so the program rules cannot fire`); }
+  }
+  for (const repo of rule.paths) {
+    if (!gitLayout(repo, probe)) problems.push(`${repo} has no readable git HEAD (moved, removed or not a repository), so work there cannot be seen; fix it with: steak-pi local quiet remove ${repo}`);
+  }
+  return problems;
+}
+
+/**
+ * Write the quiet day under the same lock every other edit takes (the caller says when it already holds it), re-reading the
+ * file inside it, so a timed hold or a quiet entry written at the same moment is never overwritten. When someone else holds
+ * the lock the write is skipped: this answer is still a hold, and the next evaluation records it.
+ */
+function rememberQuietDay(dir: string, date: string, cause: string, lockHeld: boolean): void {
+  const release = lockHeld ? () => {} : tryLockSync(dir);
+  if (!release) return;
+  try { save(dir, { ...readHold(dir), quietDay: { date, cause } }); }
+  catch { /* still a hold now; the next check tries again */ }
+  finally { release(); }
+}
+
 /**
  * The hold in force now, or undefined. Evaluating it remembers a quiet day the first time the rule fires (one small atomic
- * write), so the answer stays the same for the rest of that day.
+ * write under the lock, so `check` is not strictly read-only), so the answer stays the same for the rest of that day.
  */
-export function activeHold(dir: string, now: number, probe: HoldProbe = systemHoldProbe): ActiveHold | undefined {
+export function activeHold(dir: string, now: number, probe: HoldProbe = systemHoldProbe, lockHeld = false): ActiveHold | undefined {
   let file: HoldFile;
   try { file = readHold(dir); }
   catch (error) { return { code: "bad-hold", detail: error instanceof Error ? error.message : String(error) }; }
@@ -130,7 +229,7 @@ export function activeHold(dir: string, now: number, probe: HoldProbe = systemHo
   if (!file.quiet) return undefined;
   const cause = quietTrigger(file.quiet, now, probe);
   if (!cause) return undefined;
-  try { save(dir, { ...readHold(dir), quietDay: { date: today, cause } }); } catch { /* still a hold now; the next check tries again */ }
+  rememberQuietDay(dir, today, cause, lockHeld);
   return off(cause);
 }
 
@@ -142,26 +241,52 @@ export function parseDuration(text: string): number {
   return Math.round(ms);
 }
 
-const edit = async (dir: string, change: (file: HoldFile) => HoldFile): Promise<HoldFile> => withLock(dir, async () => {
+/** What an edit returns: the new file, and where the unreadable old one was kept when it had to be replaced. */
+export type Edited = HoldFile & { quarantined?: string };
+
+const edit = async (dir: string, change: (file: HoldFile) => HoldFile): Promise<Edited> => withLock(dir, async () => {
   let current: HoldFile;
-  try { current = readHold(dir); } catch { current = {}; } // an unreadable file is replaced by the command that edits it
+  let quarantined: string | undefined;
+  try { current = readHold(dir); }
+  catch (error) {
+    // An unreadable file is replaced by the command that edits it, but never destroyed: it is renamed aside first, so a typo
+    // does not wipe the rest of the rule, and the caller says where it went.
+    const target = `${holdPath(dir)}.bad-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    try { renameSync(holdPath(dir), target); }
+    catch (renameError) { throw new LocalError("bad-hold", `${(error as Error).message}; it also could not be moved aside (${(renameError as Error).message})`); }
+    quarantined = target;
+    current = {};
+  }
   const next = change(current);
   save(dir, next);
-  return next;
+  return quarantined ? { ...next, quarantined } : next;
 });
 
-export const setHold = (dir: string, until: number, reason?: string): Promise<HoldFile> =>
-  edit(dir, (file) => { const { reason: _old, ...rest } = file; return { ...rest, until, ...(reason ? { reason } : {}) }; });
-export const clearHold = (dir: string): Promise<HoldFile> =>
+/**
+ * Hold the local model off until `until`. A shorter hold never shortens a longer one that is still in force (`hold 1h` after
+ * `hold 24h` keeps the 24 h one) unless `replace` is set; `kept` says it was not changed.
+ */
+export const setHold = (dir: string, until: number, reason?: string, options: { replace?: boolean; now?: number } = {}): Promise<Edited & { kept?: boolean }> => {
+  let kept = false;
+  return edit(dir, (file) => {
+    const now = options.now ?? Date.now();
+    if (!options.replace && file.until !== undefined && file.until > until && file.until > now) { kept = true; return file; }
+    const { reason: _old, ...rest } = file;
+    return { ...rest, until, ...(reason ? { reason } : {}) };
+  }).then((file) => (kept ? { ...file, kept } : file));
+};
+export const clearHold = (dir: string): Promise<Edited> =>
   edit(dir, (file) => { const { until: _until, reason: _reason, ...rest } = file; return rest; });
-export const markQuietToday = (dir: string, now: number, cause: string): Promise<HoldFile> =>
+export const markQuietToday = (dir: string, now: number, cause: string): Promise<Edited> =>
   edit(dir, (file) => ({ ...file, quietDay: { date: localDay(now), cause } }));
 
-export function addQuiet(dir: string, kind: "path" | "process", value: string): Promise<HoldFile> {
+export function addQuiet(dir: string, kind: "path" | "process", value: string, probe: HoldProbe = systemHoldProbe): Promise<Edited> {
   let entry = value;
   if (kind === "path") {
     entry = resolve(value);
-    if (!isAbsolute(entry) || !existsSync(join(entry, ".git"))) throw new LocalError("bad-option", `${value} is not a git repository (no .git there); the quiet rule watches a repository's commits, checkouts and merges`);
+    if (!isAbsolute(entry) || probe.mtime(join(entry, ".git")) === undefined) throw new LocalError("bad-option", `${value} is not a git repository (no .git there); the quiet rule watches a repository's commits, checkouts and merges`);
+    // .git may be a file (a linked worktree or a submodule): its HEAD must be findable, or the rule would never fire.
+    if (!gitLayout(entry, probe)) throw new LocalError("bad-option", `${value} has a .git that points nowhere usable (no HEAD found in the git folder it names); the quiet rule could never see work there`);
   } else if (!PROCESS_NAME.test(value)) throw new LocalError("bad-option", `"${value}" is not a program name; give the executable's name as the process list shows it`);
   return edit(dir, (file) => {
     const quiet = file.quiet ?? { paths: [], processes: [] };
@@ -169,7 +294,7 @@ export function addQuiet(dir: string, kind: "path" | "process", value: string): 
     return { ...file, quiet: { ...quiet, [kind === "path" ? "paths" : "processes"]: list.includes(entry) ? list : [...list, entry] } };
   });
 }
-export async function removeQuiet(dir: string, value: string): Promise<{ file: HoldFile; removed: boolean }> {
+export async function removeQuiet(dir: string, value: string): Promise<{ file: Edited; removed: boolean }> {
   let removed = false;
   const full = resolve(value);
   const file = await edit(dir, (current) => {
@@ -188,17 +313,33 @@ export function describeHold(dir: string, now: number, probe: HoldProbe = system
   let file: HoldFile = {};
   try { file = readHold(dir); } catch { /* reported as the active hold */ }
   const rule = file.quiet && (file.quiet.paths.length || file.quiet.processes.length)
-    ? [`quiet    off for the day when: ${[...file.quiet.paths.map((path) => `work in ${path}`), ...file.quiet.processes.map((name) => `${name} runs`)].join("; ")}`]
+    ? [`quiet    off for the day when: ${[...file.quiet.paths.map((path) => `work in ${path}`), ...file.quiet.processes.map((name) => `${name} runs`)].join("; ")}`,
+       "         programs are looked for only when something asks (status, check, ensure, a running server); a program opened and closed in between is not seen",
+       ...quietProblems(file.quiet, probe).map((problem) => `quiet    WARNING: ${problem}`)]
     : [];
   return [`hold     ${active ? `${active.code}: ${active.detail}` : "none"}`, ...rule];
 }
 
 export const systemHoldProbe: HoldProbe = {
+  // A failed `ps` throws (never an empty list): the caller reports it instead of treating it as "no programs running".
   processNames: () => {
     try {
       return execFileSync("ps", ["-axo", "comm="], { encoding: "utf8", timeout: 5000 }).split("\n").map((line) => line.trim().split("/").pop() ?? "").filter(Boolean);
-    } catch { return []; }
+    } catch (error) { throw new Error(`ps failed: ${(error as Error).message.split("\n")[0]}`); }
   },
   mtime: (path) => { try { return statSync(path).mtimeMs; } catch { return undefined; } },
   list: (dir) => { try { return readdirSync(dir); } catch { return []; } },
+  readText: (path, tailBytes = 4096) => {
+    let fd: number | undefined;
+    try {
+      const size = statSync(path).size;
+      if (!statSync(path).isFile()) return undefined;
+      fd = openSync(path, "r");
+      const length = Math.min(size, tailBytes);
+      const buffer = Buffer.alloc(length);
+      readSync(fd, buffer, 0, length, size - length);
+      return buffer.toString("utf8");
+    } catch { return undefined; }
+    finally { if (fd !== undefined) closeSync(fd); }
+  },
 };

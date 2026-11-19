@@ -52,7 +52,7 @@ Silence is judged per stage, from that budget (300,000 ms in the examples):
 
 | Stage | Limit | When it expires |
 | --- | --- | --- |
-| No answer yet (headers, first byte) | 0.3 x budget, widened by reasoning effort (+15% a step) and request size (up to +50%): 90 s to about 190 s | The relay quietly sends the same request again on a new connection (up to three attempts). Nothing has reached Claude Code, so nothing is repeated. |
+| No answer yet (headers, first byte) | 0.3 x budget, widened by reasoning effort (+15% a step) and request size (up to +50%): 90 s to about 190 s | The relay sends the same request again on a new connection. Nothing has reached Claude Code or you, so no output is repeated, but a resend can be billed again, so it comes out of the request's send budget (below). |
 | Mid-reply silence | 1.4 x budget, +0.1 per effort step, +0.1 for a very large request, at most 1.8 x budget: 420 s to 540 s | Automatic recovery, below. |
 
 Measured 2026-11-18: three turns on a 230k to 450k token context each went
@@ -62,13 +62,27 @@ both too long for a connection that never answers and a dead end for the turn.
 
 **Automatic recovery.** When a reply goes quiet past its limit, Steak Pi stops
 only that Claude Code process (and its relay), starts a fresh one for the same
-Pi session, replays the conversation from Pi's own transcript and asks again.
+Pi session, replays the conversation from Pi's own transcript and asks again,
+but only while nothing of the turn has been shown yet.
 The process is only a transport (no tools, one turn, an inert MCP server): Pi
 runs tools itself after a reply is complete, and every finished tool result is
-part of the replayed history, so a recovery cannot run a tool twice. The text a
-stalled attempt had already streamed is dropped from the partial message. At
-most two recoveries are made, with a short pause between them; a process that
-had already exited is a crash and is reported, not retried. A line in the
+part of the replayed history, so a recovery cannot run a tool twice. Output
+already sent to the Pi stream (text, thinking or a tool call) cannot be taken
+back, so once any has appeared the turn is not asked again: it fails with the
+named error and `resume` continues it. A reply the API already finished
+(`message_stop` received) is never asked for again either: if Claude Code goes
+quiet after that, the turn finishes from the received reply and the hung
+process is dropped. At most two recoveries are made, with a short pause between
+them; a process that had already exited is a crash and is reported, not
+retried.
+
+**Send budget.** One request is sent to the API at most **3 times in all**,
+counting the relay's quiet retries before the first byte, retries after a
+retryable status (500, 502, 503, 504, 529) and every recovery together (it was
+up to 9: 3 relay attempts in each of 3 processes). The budget is fixed; it is
+not an environment setting. A resend can be billed again, so there is no claim
+that a retry is free. When the budget is spent the error says the request was
+already sent 3 times. A line in the
 notifications says what happened, and while a turn is silent the status line
 shows `waiting on the model: N s since last event`.
 
@@ -82,7 +96,10 @@ coordinator's transient-failure rule.
 
 Set these in the environment Pi runs in (absolute values, not scaled):
 `PI_CLAUDE_CODE_IDLE_LIMIT_MS`, `PI_CLAUDE_CODE_FIRST_BYTE_LIMIT_MS`, and
-`PI_CLAUDE_CODE_MAX_RECOVERIES` (0 to 10; 0 turns recovery off).
+`PI_CLAUDE_CODE_MAX_RECOVERIES` (0 to 2; 0 turns recovery off). The two limits
+are rounded to whole milliseconds, must be from 1000 to 2147483647 (the
+largest timer Node supports), and a bad value fails the turn with its name
+before any process starts.
 
 Escape stops a running turn immediately. Cleanup waits at most two seconds
 for inherited output pipes before dropping them, so an MCP process cannot

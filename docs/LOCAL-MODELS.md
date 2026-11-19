@@ -209,22 +209,34 @@ machine. Both are yours: Steak Pi ships no program name, repository or schedule.
 
 ```sh
 steak-pi local hold 24h rendering this week   # off for 24 hours, then back on by itself
+steak-pi local hold 1h --replace short job    # a shorter hold never shortens a longer one in force, unless --replace
 steak-pi local hold off                       # end a timed hold early
 
 steak-pi local quiet path ~/dev/my-heavy-project   # a repository
-steak-pi local quiet process Blender               # a program, by the name the process list shows
+steak-pi local quiet process HeavyApp               # a program, by the name the process list shows
 steak-pi local quiet                               # show the rule and whether it holds right now
 steak-pi local quiet today playtest                # off for the rest of today, by hand
-steak-pi local quiet remove Blender
+steak-pi local quiet remove HeavyApp
 ```
 
 **A timed hold** refuses every start until it ends and stops a running server when it is set.
 
 **The quiet-day rule** watches for work you listed. The first sign of it on a calendar day switches the local model
 off for the rest of that local day: a listed program running, or a commit, checkout, merge, reset or rebase in a
-listed repository or one of its linked worktrees (read from the modification times of git's own `HEAD`, `ORIG_HEAD`
-and `logs/HEAD`; no file contents are read, and `git status` does not count). The day is remembered, so the model stays off after the
-program is closed, and the next day starts clean. Editing files without committing is not seen; use `quiet today` then.
+listed repository or one of its linked worktrees. Work is read from git's own `HEAD` and `ORIG_HEAD` (their
+modification times) and from the time of the last entry in the reflog `logs/HEAD` (not the file's modification time:
+`git gc` and `git reflog expire` rewrite that file with no work done, verified on git 2.54). No other file contents are read,
+and `git status` and `git fetch` do not count. A listed path may be an ordinary clone, a linked worktree or a
+submodule, whose `.git` is a file: the git folder is found from its `gitdir:` line (and `commondir`). `quiet path`
+refuses a repository whose HEAD cannot be found, and `status` warns when a listed one later becomes unreadable. The
+day is remembered, so the model stays off after the program is closed, and the next day starts clean. Editing files
+without committing is not seen; use `quiet today` then. Programs are looked for only when something asks (`status`,
+`check`, `ensure`, or the 30-second look of a running server), so a program opened and closed in between is not seen;
+a process list that cannot be read (`ps` failed) is reported in `status`, not taken as "no programs".
+
+`check` starts nothing and takes no lease, but it is not strictly read-only: the first time the quiet rule fires on a
+day, whichever command sees it first records that day in `hold.json`. The write is made under the same lock as every
+other edit; if another command holds the lock, the next look records it.
 
 While a hold is in force:
 
@@ -233,8 +245,18 @@ While a hold is in force:
 - a USAP worker profile whose `ensure` runs `steak-pi local ensure` is refused before launch, so an implicit wave
   moves to the next step of its chain. Nothing needs to be taken out of `routing.json`.
 
+**Work already running on the local model is not rerouted.** The hold stops the server under it, its request in
+flight ends with a connection error, and the model's partial output is not moved to another route (the fall-through is
+for a launch that produced no output yet, so nothing is repeated). A worker that fails this way is resumed by the
+coordinator as a network drop; the resume runs its `ensure` hook again, which is refused with `on-hold` or
+`quiet-day`, so the worker ends failed with that named cause, and moving the task to another route is then a new
+dispatch. A Pi session on a `local/...` model sees the connection error, and its next prompt is refused with the
+hold's cause.
+
 The rules live in `~/.pi/agent/local/hold.json`. A file that cannot be read holds the model off (`bad-hold`) and names
-the fault.
+the fault: invalid JSON, a wrong type, an unknown key (a typo such as `untill` is not silently ignored) or an
+unreadable file or folder. `hold off` (and any other command that edits the rules) on an unreadable file first renames it
+to `hold.json.bad-<timestamp>`, says so, and starts a clean file, so the rest of the rule can be copied back.
 
 ## Lifecycle: leases and idle stop
 

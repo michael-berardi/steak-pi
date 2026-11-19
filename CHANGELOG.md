@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.35.3 (2026-11-18)
+
+Fixes from the completion review of 0.35.1 and 0.35.2.
+
+- **A recovered Claude Code turn can no longer show output twice.** Recovery asks again only while nothing of the turn has reached the Pi stream (no text, thinking or tool-call event). Once any has, the turn fails with the named idle error ("part of the reply had already been shown and cannot be taken back") and `resume` continues it. Tests record the events the stream emits, not just the final text.
+- **A finished reply is never paid for twice.** If the API already sent `message_stop` and only Claude Code then went quiet, the turn finishes from the reply the relay received and the hung process is dropped; a stall after `message_stop` that cannot finish that way is not recovered.
+- **One request is sent at most 3 times in all, across both retry layers** (it was up to 9: three relay attempts in each of three processes). The relay's quiet retry, its retries after a retryable status and every recovery share one budget; `PI_CLAUDE_CODE_MAX_RECOVERIES` is now 0 to 2. The unproven "a retry costs nothing" claim is removed from the docs, which now state the budget.
+- Limits from the environment are rounded first, then must be 1000 ms to 2147483647 ms, and the native queue limit is capped at the largest Node timer, so a value such as `0.3` or `2147483647` can no longer end a turn at once. A bad value fails the turn by name before any Claude Code process is started, and the limits are worked out before a process is acquired.
+- The coordinator's auto-resume no longer resumes a worker whose error says the process had crashed, recovery was switched off, or the API had already finished the reply. The status ticker is created inside the `try`, so it is always cleared. Stale comments corrected.
+- **Local hold:** a quiet path whose `.git` is a file (a linked worktree or a submodule) now fires: the git folder is found from its `gitdir:` line, and `quiet path` refuses a repository whose HEAD cannot be found. The last reflog entry's time is read instead of the file's modification time, which `git gc` rewrites with no work done. The quiet day is written under the lock. `hold off` (and any edit) on an unreadable `hold.json` first keeps it as `hold.json.bad-<timestamp>` and says so. Unknown keys and an unreadable file or folder are `bad-hold`. A failed `ps` is reported in `status`. A shorter hold never shortens a longer one in force unless `--replace`. Work already running on the local model is not rerouted when a hold stops the server: the docs state that limit and what happens instead, and a test pins it.
+
 ## 0.35.2 (2026-11-18)
 
 - **A quiet or stalled Claude Code turn no longer ends the session turn with `stream idle limit exceeded`.** Three real occurrences on 2026-11-18 (contexts of 230k to 450k tokens) each sat exactly 300 s with no byte from the API, never started a content block, and ended the turn until you typed `resume`. The one 300 s limit was both too long for a connection that never answers and a dead end for the turn. Now:

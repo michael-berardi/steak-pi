@@ -164,8 +164,8 @@ test("empty native error content retains sanitized event.error", () => fixture("
 test("a stalled relay retains a non-retryable cause after transient retries", () => fixture("relay-stuck", async input => {
   await assert.rejects(runClaudeRequest(input), error => {
     assert.ok(error instanceof Error);
-    // Recovery is spent first (two fresh attempts), then the error names the cause and what to do.
-    assert.match(error.message, /stream idle limit exceeded.*partway through the reply.*2 automatic recoveries tried.*resume/s);
+    // Two 503s and the stuck stream already used the 3 sends one request gets across both layers: no recovery on top.
+    assert.match(error.message, /stream idle limit exceeded.*partway through the reply.*already sent 3 times.*resume/s);
     assert.equal(isRetryableAssistantError({ role: "assistant", stopReason: "error", errorMessage: error.message } as AssistantMessage), false);
     assert.doesNotMatch(error.message, /503|timed out|timeout/);
     return true;

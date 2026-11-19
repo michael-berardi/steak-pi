@@ -10,6 +10,17 @@
  * the reasoning effort it asks for. All of them can be set from the environment (see the PI_CLAUDE_CODE_* names).
  */
 
+/** Largest timer Node accepts: a longer delay fires after 1 ms, which would read as an instant stall. */
+export const MAX_TIMER_MS = 2_147_483_647;
+/** Smallest limit the environment may set: anything shorter cuts a healthy turn, and 0 would end it at once. */
+export const MIN_LIMIT_MS = 1_000;
+/**
+ * The most times one request is ever sent to the API, across both retry layers: the relay's quiet retry before the
+ * first byte and Steak Pi's recovery with a fresh process. They draw from this one budget, so the worst case is 3
+ * sends (not 3 relay attempts x 3 processes = 9), and it cannot be raised from the environment.
+ */
+export const MAX_REQUEST_SENDS = 3;
+
 export interface IdleLimits {
   /** Silence before the first byte of the response (a connection that never answers). Retried quietly. */
   firstByteMs: number;
@@ -21,6 +32,8 @@ export interface IdleLimits {
   statusAfterMs: number;
   /** Automatic recoveries (kill only this child, replay, ask again) before the operator sees an error. */
   maxRecoveries: number;
+  /** Total sends of one request to the API across the relay's quiet retries and every recovery. */
+  maxSends: number;
   /** Pause before recovery n (0-based). */
   recoveryBackoffMs: readonly number[];
 }
@@ -65,9 +78,9 @@ export function requestShape(body: Buffer | undefined): RequestShape {
 function envMs(env: Env, name: string): number | undefined {
   const raw = env[name];
   if (raw === undefined || raw.trim() === "") return undefined;
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value <= 0 || value > 2_147_483_647) {
-    throw new Error(`${name} must be a positive number of milliseconds (at most 2147483647)`);
+  const value = Math.round(Number(raw));
+  if (!Number.isFinite(value) || value < MIN_LIMIT_MS || value > MAX_TIMER_MS) {
+    throw new Error(`${name} must be a number of milliseconds from ${MIN_LIMIT_MS} to ${MAX_TIMER_MS} (got ${JSON.stringify(raw)})`);
   }
   return value;
 }
@@ -76,7 +89,9 @@ function envCount(env: Env, name: string): number | undefined {
   const raw = env[name];
   if (raw === undefined || raw.trim() === "") return undefined;
   const value = Number(raw);
-  if (!Number.isInteger(value) || value < 0 || value > 10) throw new Error(`${name} must be a whole number from 0 to 10`);
+  if (!Number.isInteger(value) || value < 0 || value > MAX_REQUEST_SENDS - 1) {
+    throw new Error(`${name} must be a whole number from 0 to ${MAX_REQUEST_SENDS - 1} (a request is sent at most ${MAX_REQUEST_SENDS} times in all)`);
+  }
   return value;
 }
 
@@ -87,9 +102,11 @@ function envCount(env: Env, name: string): number | undefined {
  *  - stream idle = 1.4 x budget, +0.1 per effort step, +0.1 for a very large context, capped at 1.8 x budget
  *    (420 s to 540 s for Pi's default), so a quiet but alive turn is not cut at the old 300 s;
  *  - first byte = 0.3 x budget, widened by effort (+15% a step) and context (up to +50%): 90 s to about 190 s,
- *    short because the API answers a healthy request at once and a retry costs nothing before the first byte.
+ *    short because the API answers a healthy request at once. A resend is not free: it can bill the request again, which is why
+ *    every resend, at either layer, comes out of one budget of MAX_REQUEST_SENDS (3) sends.
  * Environment overrides are absolute and are not scaled:
- *  PI_CLAUDE_CODE_IDLE_LIMIT_MS, PI_CLAUDE_CODE_FIRST_BYTE_LIMIT_MS, PI_CLAUDE_CODE_MAX_RECOVERIES (0 turns recovery off).
+ *  PI_CLAUDE_CODE_IDLE_LIMIT_MS, PI_CLAUDE_CODE_FIRST_BYTE_LIMIT_MS, PI_CLAUDE_CODE_MAX_RECOVERIES (0 to 2; 0 turns recovery off).
+ * A limit is rounded first, then must be at least MIN_LIMIT_MS and at most MAX_TIMER_MS, or the call throws with the name.
  */
 export function idleLimits(timeoutMs: number, shape: RequestShape = {}, env: Env = process.env): IdleLimits {
   const contextTokens = (shape.bodyBytes ?? 0) / 3.5;
@@ -97,16 +114,17 @@ export function idleLimits(timeoutMs: number, shape: RequestShape = {}, env: Env
   const rank = effortRank(shape);
   const scaledIdle = timeoutMs * Math.min(1.8, 1.4 + 0.1 * rank + 0.1 * contextWeight);
   const scaledFirst = timeoutMs * 0.3 * (1 + 0.15 * rank) * (1 + 0.5 * Math.min(1, contextTokens / 500_000));
-  const streamIdleMs = Math.round(envMs(env, "PI_CLAUDE_CODE_IDLE_LIMIT_MS") ?? scaledIdle);
+  const streamIdleMs = Math.min(MAX_TIMER_MS, Math.round(envMs(env, "PI_CLAUDE_CODE_IDLE_LIMIT_MS") ?? scaledIdle));
   // A first byte never gets more patience than the rest of the stream.
   const firstByteMs = Math.round(envMs(env, "PI_CLAUDE_CODE_FIRST_BYTE_LIMIT_MS") ?? Math.min(scaledFirst, streamIdleMs));
   const margin = Math.max(50, Math.min(15_000, Math.round(timeoutMs * 0.05)));
   return {
     firstByteMs,
     streamIdleMs,
-    queueIdleMs: Math.max(firstByteMs, streamIdleMs) + margin,
+    queueIdleMs: Math.min(MAX_TIMER_MS, Math.max(firstByteMs, streamIdleMs) + margin),
     statusAfterMs: Math.max(25, Math.min(30_000, Math.round(Math.min(firstByteMs, streamIdleMs) / 3))),
-    maxRecoveries: envCount(env, "PI_CLAUDE_CODE_MAX_RECOVERIES") ?? 2,
+    maxRecoveries: envCount(env, "PI_CLAUDE_CODE_MAX_RECOVERIES") ?? MAX_REQUEST_SENDS - 1,
+    maxSends: MAX_REQUEST_SENDS,
     recoveryBackoffMs: [Math.min(2_000, Math.round(timeoutMs / 10)), Math.min(8_000, Math.round(timeoutMs / 4))],
   };
 }

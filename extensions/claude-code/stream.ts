@@ -160,7 +160,12 @@ class EventTranslator {
     private readonly toolNames: ClaudeToolNames,
   ) {}
 
-  /** An automatic recovery is asking again: drop what the stalled attempt streamed so the new reply starts clean. */
+  /** Nothing of this turn has reached the Pi stream yet, so asking again cannot show output twice. */
+  get canRestart(): boolean {
+    return !this.sawContentEvent;
+  }
+
+  /** An automatic recovery is asking again, before any content was streamed: forget the stalled attempt's header state. */
   reset(): void {
     this.output.content.length = 0;
     this.nativeToContent.clear();
@@ -396,6 +401,7 @@ export function streamClaudeCode(
         sessionId: options?.cacheRetention === "none" ? undefined : options?.sessionId,
         onEvent: (event) => translator.event(event),
         onRestart: () => translator.reset(),
+        canRestart: () => translator.canRestart,
       });
       translator.finish(
         response.message,

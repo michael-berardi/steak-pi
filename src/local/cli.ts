@@ -29,9 +29,11 @@ const USAGE = `usage: steak-pi local <command>
   stop            stop the server Steak Pi started
   status [id]     show the server, its users and the added models
   ensure <id>     take a lease and bring the server up (for routing.json ensure.command)
-  check <id>      read-only: would 'ensure' start it? ok (exit 0), REFUSED (exit 3), unknown id (exit 1)
+  check <id>      would 'ensure' start it? ok (exit 0), REFUSED (exit 3), unknown id (exit 1); starts nothing, but
+                  may record that the quiet-day rule fired today
   release <id>    let go of that lease (for ensure.release); the server stops after an idle grace
-  hold <N>m|h|d [reason]   switch the local model off until then (stops it now); 'hold off' ends it
+  hold <N>m|h|d [--replace] [reason]   switch the local model off until then (stops it now); a shorter hold never
+                  shortens a longer one still in force unless --replace; 'hold off' ends it
   quiet           show the quiet-day rule: work the local model must not share the machine with
   quiet path <repo dir> | quiet process <name> | quiet remove <dir or name>
                   the first sign of that work on a day keeps the local model off until the next day
@@ -171,13 +173,18 @@ export async function main(argv: string[], options: CliOptions = {}): Promise<nu
       case "hold": {
         if (!rest[0]) { io.err(USAGE); return 1; }
         if (rest[0] === "off") {
-          await clearHold(deps.dir);
+          const cleared = await clearHold(deps.dir);
           const still = activeHold(deps.dir, deps.now(), deps.holdProbe);
+          if (cleared.quarantined) io.out(`hold.json could not be read; kept it as ${cleared.quarantined} and started a clean one (the quiet rule in it is gone: add it back from that copy)`);
           io.out(still ? `timed hold ended; still off: ${still.detail}` : "timed hold ended; the local model may run");
           return 0;
         }
+        const replace = rest.includes("--replace");
+        const words = rest.slice(1).filter((word) => word !== "--replace");
         const until = deps.now() + parseDuration(rest[0]);
-        await setHold(deps.dir, until, rest.slice(1).join(" ").trim() || undefined);
+        const set = await setHold(deps.dir, until, words.join(" ").trim() || undefined, { replace, now: deps.now() });
+        if (set.quarantined) io.out(`hold.json could not be read; kept it as ${set.quarantined} and started a clean one`);
+        if (set.kept) io.out(`kept the longer hold already in force; to shorten it use: steak-pi local hold ${rest[0]} --replace`);
         const stopped = await stop(deps);
         io.out(`${activeHold(deps.dir, deps.now(), deps.holdProbe)?.detail ?? "hold set"}${stopped.stopped ? `; stopped local/${stopped.id}, port ${stopped.port} ${stopped.portReleased ? "released" : "STILL HELD, check the process list"}` : ""}`);
         return stopped.stopped && !stopped.portReleased ? 2 : 0;
@@ -186,13 +193,16 @@ export async function main(argv: string[], options: CliOptions = {}): Promise<nu
         const [action, ...words] = rest;
         if (action === "path" || action === "process") {
           if (!words[0]) { io.err(USAGE); return 1; }
-          await addQuiet(deps.dir, action, words.join(" "));
+          const added = await addQuiet(deps.dir, action, words.join(" "), deps.holdProbe);
+          if (added.quarantined) io.out(`hold.json could not be read; kept it as ${added.quarantined} and started a clean one`);
         } else if (action === "remove") {
           if (!words[0]) { io.err(USAGE); return 1; }
-          const { removed } = await removeQuiet(deps.dir, words.join(" "));
+          const { removed, file: after } = await removeQuiet(deps.dir, words.join(" "));
+          if (after.quarantined) io.out(`hold.json could not be read; kept it as ${after.quarantined} and started a clean one`);
           if (!removed) throw new LocalError("bad-option", `${words.join(" ")} is not in the quiet rule`);
         } else if (action === "today") {
-          await markQuietToday(deps.dir, deps.now(), words.join(" ").trim() || "switched off by hand");
+          const marked = await markQuietToday(deps.dir, deps.now(), words.join(" ").trim() || "switched off by hand");
+          if (marked.quarantined) io.out(`hold.json could not be read; kept it as ${marked.quarantined} and started a clean one`);
         } else if (action !== undefined) { io.err(USAGE); return 1; }
         // The rule may fire the moment it is written (the program is open, the repository was worked in today): act on it now.
         const held = activeHold(deps.dir, deps.now(), deps.holdProbe);

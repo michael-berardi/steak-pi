@@ -1,4 +1,7 @@
-/** A terminal local wait failure, not a suggestion to replay a charged turn. */
+/**
+ * A local wait failure. `kind: "idle"` is a silent model or connection, which Steak Pi may recover by asking again (only
+ * while nothing was shown and the reply was not complete); every other kind is terminal.
+ */
 export class ClaudeWaitLimitError extends Error {
   override name = "ClaudeWaitLimitError";
   /** "idle": the model or connection went silent mid-turn, which a fresh attempt can fix. Anything else is a local wait. */
@@ -10,6 +13,8 @@ export class ClaudeWaitLimitError extends Error {
   childAlive?: boolean;
   bytesReceived?: number;
   recoveries?: number;
+  /** The API had already sent the whole reply (message_stop) when the silence hit: asking again would pay for it twice. */
+  replyComplete?: boolean;
 
   constructor(message: string, details: { kind?: "idle"; silentMs?: number; stage?: string } = {}) {
     super(message);

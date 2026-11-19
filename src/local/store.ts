@@ -117,3 +117,30 @@ export async function withLock<T>(dir: string, fn: () => T | Promise<T>, sleep: 
   try { return await fn(); }
   finally { rmSync(lock, { recursive: true, force: true }); }
 }
+
+/**
+ * Take the directory lock without waiting, for synchronous callers: returns the release function, or undefined when someone
+ * else holds it (a live owner younger than two minutes). The same lock `withLock` uses, so edits never interleave.
+ */
+export function tryLockSync(dir: string): (() => void) | undefined {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const lock = join(dir, "lock");
+  const owner = join(lock, "owner");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      mkdirSync(lock);
+      writeFileSync(owner, `${process.pid}\n`, { mode: 0o600 });
+      return () => rmSync(lock, { recursive: true, force: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      try {
+        const age = Date.now() - statSync(lock).mtimeMs;
+        let alive = true;
+        try { process.kill(Number(readFileSync(owner, "utf8").trim()), 0); } catch (kill) { alive = (kill as NodeJS.ErrnoException).code === "EPERM"; }
+        if (age > 120_000 || (age > 1_000 && !alive)) { rmSync(lock, { recursive: true, force: true }); continue; }
+      } catch { continue; }
+      return undefined;
+    }
+  }
+  return undefined;
+}

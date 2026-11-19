@@ -101,7 +101,7 @@ export function fakeMachine(dir: string, overrides: Partial<Deps> = {}): Fake {
     graceMs: 600_000,
     healthTimeoutMs: 30_000,
     // The hold rules never look at the real machine in a test.
-    holdProbe: { processNames: () => [], mtime: () => undefined, list: () => [] },
+    holdProbe: { processNames: () => [], mtime: () => undefined, list: () => [], readText: () => undefined },
     ...overrides,
   };
   return { deps, clock, alive, calls, state, signals };

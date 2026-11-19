@@ -210,9 +210,9 @@ export type StartPlan =
  * model, or start it (first stopping an orphan or an idle server of another model). Throws `Refused` with the named cause
  * when a start would not be allowed. Because `ensure` acts on this exact answer, `check` can never disagree with it.
  */
-export async function planStart(deps: Deps, profile: LaunchProfile): Promise<StartPlan> {
+export async function planStart(deps: Deps, profile: LaunchProfile, lockHeld = false): Promise<StartPlan> {
   // A hold comes before everything, an attach included: a server still stopping must not be joined while the model is off.
-  const held = activeHold(deps.dir, deps.now(), deps.holdProbe);
+  const held = activeHold(deps.dir, deps.now(), deps.holdProbe, lockHeld);
   if (held) refuse(held.code, held.detail);
   const record = readJson<ServerRecord>(serverPath(deps));
   const supervisorUp = !!record && deps.alive(record.supervisorPid, record.supervisorStart);
@@ -260,7 +260,7 @@ export async function ensure(deps: Deps, id: string, holder: HolderRef): Promise
   await withLock(deps.dir, async () => {
     runningServer(deps); // drop a stale record before deciding
     await reconcileLocked(deps); // an orphan is stopped (idle past the grace) or adopted by a new supervisor
-    const plan = await planStart(deps, profile);
+    const plan = await planStart(deps, profile, true);
     if (plan.kind === "start") {
       if (plan.stop) {
         await stopRecord(deps, plan.stop);

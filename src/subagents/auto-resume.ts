@@ -22,8 +22,9 @@ const TRANSIENT: ReadonlyArray<{ pattern: RegExp; reason: string; delaysMs: read
 	{ pattern: /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EPIPE|socket hang up|network (?:error|connection)|^Connection error\.?$|connection (?:error|reset|closed|lost|refused|timed out)|transport failure; connection or request did not complete/i, reason: "network drop", delaysMs: [10_000, 30_000] },
 	{ pattern: /^terminated$|response headers timed out|Request timed out|stream (?:ended|closed) (?:early|unexpectedly)/i, reason: "provider stream cut", delaysMs: [10_000, 30_000] },
 	{ pattern: /No model or tool activity for \d+ min/, reason: "provider stream stalled", delaysMs: [10_000, 30_000] },
-	// Claude Code's own idle limit, after the provider already recovered in-process the allowed number of times.
-	{ pattern: /Claude Code stream idle limit exceeded/, reason: "provider stream stalled", delaysMs: [10_000, 30_000] },
+	// Claude Code's own idle limit, after the provider already recovered in-process the allowed number of times. Not the
+	// crash message ("already gone"), the "recovery is off" message or the "API had already sent the whole reply" one.
+	{ pattern: /Claude Code stream idle limit exceeded[\s\S]*(?:each went quiet again|cannot be taken back|already sent \d+ times)/, reason: "provider stream stalled", delaysMs: [10_000, 30_000] },
 	{ pattern: /incomplete stream-json frame|claude-code CLI produced no result event/, reason: "Claude Code stream cut", delaysMs: [10_000, 30_000] },
 	{ pattern: /claude-code CLI exited with code \S+ \(signal SIG(?:KILL|TERM|HUP|SEGV|ABRT|BUS)\)/, reason: "Claude Code process died", delaysMs: [10_000, 30_000] },
 	{ pattern: /overloaded|\b50[234]\b|internal server error|server_error|service unavailable/i, reason: "provider overloaded", delaysMs: [30_000, 90_000] },

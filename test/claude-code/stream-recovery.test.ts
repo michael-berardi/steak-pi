@@ -5,10 +5,10 @@ import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isRetryableAssistantError, type AssistantMessage, type Context } from "@earendil-works/pi-ai";
+import { isRetryableAssistantError, type AssistantMessage, type AssistantMessageEvent, type Context } from "@earendil-works/pi-ai";
 import { afterEach, test, vi } from "vitest";
-import { closeClaudeProcesses, setClaudeCodeStatusReporter } from "../../extensions/claude-code/claude-cli.ts";
-import { effortRank, formatSilence, idleLimits, requestShape } from "../../extensions/claude-code/idle-policy.ts";
+import { closeClaudeProcesses, setClaudeCodeDiagnosticReporter, setClaudeCodeStatusReporter } from "../../extensions/claude-code/claude-cli.ts";
+import { effortRank, formatSilence, idleLimits, MAX_REQUEST_SENDS, requestShape } from "../../extensions/claude-code/idle-policy.ts";
 import { CLAUDE_CODE_MODELS } from "../../extensions/claude-code/model-catalog.ts";
 import { streamClaudeCode } from "../../extensions/claude-code/stream.ts";
 
@@ -37,6 +37,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     text = await response.text();
   } catch { /* the relay's own cause is what the operator sees */ }
   const answer = /"text":"(answer[^"]*)"/.exec(text)?.[1] ?? "answer";
+  if (process.env.HANG_AFTER_REPLY) await new Promise(() => setInterval(() => {}, 1000));
   console.log(JSON.stringify({ type: "assistant", message: { id: "m", role: "assistant", content: [{ type: "text", text: answer }], stop_reason: "end_turn", usage } }));
   console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, usage }));
 }
@@ -49,7 +50,9 @@ interface Rig {
   spawns: () => Promise<number[]>;
   bodies: string[];
   attempts: () => number;
-  run: (env?: Record<string, string>, context?: Context) => Promise<AssistantMessage>;
+  /** Every event the Pi stream emitted for the last run, in order (not only the final message). */
+  events: AssistantMessageEvent[];
+  run: (env?: Record<string, string>, context?: Context, signal?: AbortSignal) => Promise<AssistantMessage>;
 }
 
 const timers = new Set<NodeJS.Timeout>();
@@ -57,6 +60,7 @@ afterEach(() => {
   for (const timer of timers) clearTimeout(timer);
   timers.clear();
   setClaudeCodeStatusReporter(undefined);
+  setClaudeCodeDiagnosticReporter(undefined);
 });
 
 function sse(response: http.ServerResponse, ...events: unknown[]): void {
@@ -96,19 +100,26 @@ async function rig(behaviour: Behaviour, body: (rig: Rig) => Promise<void>): Pro
   const port = (upstream.address() as AddressInfo).port;
   const model = CLAUDE_CODE_MODELS[0]!;
   const defaultContext = { messages: [{ role: "user", content: "hi", timestamp: Date.now() }] } as unknown as Context;
+  const events: AssistantMessageEvent[] = [];
   try {
     await body({
+      events,
       executable,
       bodies,
       attempts: () => attempts,
       spawns: async () => (await readFile(spawnsPath, "utf8")).split("\n").filter(Boolean).map(Number),
-      run: (env = {}, context = defaultContext) =>
-        streamClaudeCode(model, context as never, {
+      run: async (env = {}, context = defaultContext, signal) => {
+        events.length = 0;
+        const stream = streamClaudeCode(model, context as never, {
           timeoutMs: BUDGET,
           sessionId: `recovery-${Math.random()}`,
+          signal,
           env: { PI_CLAUDE_CODE_COMMAND: executable, SPAWNS: spawnsPath, ...env },
           upstreamUrl: `http://127.0.0.1:${port}`,
-        } as never).result(),
+        } as never);
+        for await (const event of stream) events.push(event);
+        return stream.result();
+      },
     });
   } finally {
     await closeClaudeProcesses();
@@ -179,10 +190,10 @@ test("a connection that never answers is retried quietly at the relay without re
     assert.ok(Date.now() - started < 2_500, "recovered at the first-byte limit (300 ms), not after the full idle budget");
   }));
 
-test("a stream that dies mid-reply: only that child is stopped, the turn is asked again once, and no tool call repeats", () =>
+test("a stream that dies before any content: only that child is stopped, the turn is asked again once, and no tool call repeats", () =>
   rig((attempt, response) => {
     response.writeHead(200, { "content-type": "text/event-stream" });
-    if (attempt === 1) { sse(response, START, textStart, textDelta("answer")); return; } // then silence forever
+    if (attempt === 1) { sse(response, START, { type: "ping" }); return; } // header bytes, then silence forever
     sse(response, START, textStart, textDelta("answer"), ...FINISH);
     response.end();
   }, async (r) => {
@@ -197,7 +208,10 @@ test("a stream that dies mid-reply: only that child is stopped, the turn is aske
     } as unknown as Context;
     const message = await r.run({}, context);
     assert.equal(message.stopReason, "stop", String(message.errorMessage));
-    assert.equal(textOf(message), "answer", "the stalled attempt's partial text is dropped, not doubled");
+    assert.equal(textOf(message), "answer");
+    const kinds = r.events.map((event) => event.type);
+    assert.equal(kinds.filter((kind) => kind === "text_start").length, 1, `emitted events: ${kinds.join(",")}`);
+    assert.equal(kinds.filter((kind) => kind === "text_delta").length, 1, "the answer is streamed once, not twice");
     assert.equal(r.attempts(), 2, "asked again exactly once");
     const pids = await r.spawns();
     assert.equal(pids.length, 2, "a fresh Claude Code process took over");
@@ -209,7 +223,7 @@ test("a stream that dies mid-reply: only that child is stopped, the turn is aske
 test("a stream that goes quiet on every attempt: bounded recoveries, then an error that names the cause", () =>
   rig((_attempt, response) => {
     response.writeHead(200, { "content-type": "text/event-stream" });
-    sse(response, START, textStart, textDelta("answer"), { type: "ping" });
+    sse(response, START, { type: "ping" });
   }, async (r) => {
     const message = await r.run();
     assert.equal(message.stopReason, "error");
@@ -217,7 +231,7 @@ test("a stream that goes quiet on every attempt: bounded recoveries, then an err
     assert.equal((await r.spawns()).length, 3);
     const error = message.errorMessage ?? "";
     assert.match(error, /^Claude Code stream idle limit exceeded \(no bytes or events\)/);
-    assert.match(error, /silent for 1 s partway through the reply|silent for \d+ s partway through the reply/);
+    assert.match(error, /silent for \d+ s partway through the reply/);
     assert.match(error, /last event: ping/);
     assert.match(error, /process was alive/);
     assert.match(error, /2 automatic recoveries tried/);
@@ -230,7 +244,7 @@ test("a stream that goes quiet on every attempt: bounded recoveries, then an err
 test("recovery can be switched off and the error says so", () =>
   rig((_attempt, response) => {
     response.writeHead(200, { "content-type": "text/event-stream" });
-    sse(response, START, textStart);
+    sse(response, START);
   }, async (r) => {
     const message = await r.run({ PI_CLAUDE_CODE_MAX_RECOVERIES: "0" });
     assert.equal(message.stopReason, "error");
@@ -262,11 +276,155 @@ test("idle limits scale with effort and context, never fall below the budget, an
   assert.equal(idleLimits(300_000, {}, { PI_CLAUDE_CODE_IDLE_LIMIT_MS: "900000" }).streamIdleMs, 900_000);
   assert.equal(idleLimits(300_000, {}, { PI_CLAUDE_CODE_MAX_RECOVERIES: "0" }).maxRecoveries, 0);
   assert.equal(base.maxRecoveries, 2);
-  assert.throws(() => idleLimits(300_000, {}, { PI_CLAUDE_CODE_IDLE_LIMIT_MS: "0" }), /positive number/);
-  assert.throws(() => idleLimits(300_000, {}, { PI_CLAUDE_CODE_MAX_RECOVERIES: "99" }), /0 to 10/);
+  assert.throws(() => idleLimits(300_000, {}, { PI_CLAUDE_CODE_IDLE_LIMIT_MS: "0" }), /PI_CLAUDE_CODE_IDLE_LIMIT_MS must be a number of milliseconds from 1000/);
+  assert.throws(() => idleLimits(300_000, {}, { PI_CLAUDE_CODE_MAX_RECOVERIES: "99" }), /0 to 2/);
+  assert.throws(() => idleLimits(300_000, {}, { PI_CLAUDE_CODE_MAX_RECOVERIES: "3" }), /0 to 2/);
+  assert.equal(base.maxSends, MAX_REQUEST_SENDS);
+  assert.equal(MAX_REQUEST_SENDS, 3);
   assert.equal(effortRank({ thinkingBudgetTokens: 40_000 }), 4);
   assert.deepEqual(requestShape(Buffer.from(JSON.stringify({ output_config: { effort: "high" }, x: 1 }))), { bodyBytes: 41, effort: "high" });
   assert.deepEqual(requestShape(Buffer.from("not json")), { bodyBytes: 8 });
   assert.equal(formatSilence(301_400), "5 min 1 s");
   assert.equal(formatSilence(42_000), "42 s");
 });
+
+test("env limits are checked after rounding, floored at 1000 ms and capped at the largest timer", () => {
+  for (const bad of ["0.3", "0", "-5", "999", "999.4", "abc", "NaN", "Infinity", "2147483648", "1e12"]) {
+    assert.throws(() => idleLimits(300_000, {}, { PI_CLAUDE_CODE_IDLE_LIMIT_MS: bad }), /PI_CLAUDE_CODE_IDLE_LIMIT_MS must be a number of milliseconds/, bad);
+    assert.throws(() => idleLimits(300_000, {}, { PI_CLAUDE_CODE_FIRST_BYTE_LIMIT_MS: bad }), /PI_CLAUDE_CODE_FIRST_BYTE_LIMIT_MS must be/, bad);
+  }
+  assert.equal(idleLimits(300_000, {}, { PI_CLAUDE_CODE_IDLE_LIMIT_MS: "1000.4" }).streamIdleMs, 1_000);
+  assert.equal(idleLimits(300_000, {}, { PI_CLAUDE_CODE_IDLE_LIMIT_MS: "999.6" }).streamIdleMs, 1_000, "rounds to 1000 first, then passes the floor");
+  const huge = idleLimits(300_000, {}, { PI_CLAUDE_CODE_IDLE_LIMIT_MS: "2147483647" });
+  assert.equal(huge.streamIdleMs, 2_147_483_647);
+  assert.equal(huge.queueIdleMs, 2_147_483_647, "the native queue limit never exceeds Node's timer maximum");
+  assert.ok(idleLimits(2_147_483_647, {}, {}).queueIdleMs <= 2_147_483_647);
+  assert.ok(idleLimits(2_147_483_647, {}, {}).streamIdleMs <= 2_147_483_647);
+});
+
+test("a bad limit in the environment fails the turn with its name before any Claude Code process is started", () =>
+  rig(() => { throw new Error("the API must not be called"); }, async (r) => {
+    const message = await r.run({ PI_CLAUDE_CODE_IDLE_LIMIT_MS: "0.3" });
+    assert.equal(message.stopReason, "error");
+    assert.match(message.errorMessage ?? "", /PI_CLAUDE_CODE_IDLE_LIMIT_MS must be a number of milliseconds from 1000/);
+    assert.equal((await r.spawns()).length, 0, "no process was acquired, so none is left busy");
+    assert.equal(r.attempts(), 0);
+  }));
+
+test("text already streamed is never asked for again: the turn fails with the named error and the stream shows it once", () =>
+  rig((_attempt, response) => {
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    sse(response, START, textStart, textDelta("answer"), { type: "ping" }); // then silence forever
+  }, async (r) => {
+    const message = await r.run();
+    assert.equal(message.stopReason, "error");
+    assert.equal(r.attempts(), 1, "no second request: the first already put text on the stream");
+    assert.equal((await r.spawns()).length, 1);
+    assert.match(message.errorMessage ?? "", /^Claude Code stream idle limit exceeded/);
+    assert.match(message.errorMessage ?? "", /already been shown and cannot be taken back/);
+    const kinds = r.events.map((event) => event.type);
+    assert.equal(kinds.filter((kind) => kind === "text_start").length, 1, `emitted events: ${kinds.join(",")}`);
+    assert.equal(kinds.filter((kind) => kind === "text_delta").length, 1);
+    assert.equal(kinds.at(-1), "error");
+    assert.equal(isRetryableAssistantError(message), false);
+    for (const pid of await r.spawns()) assert.equal(alive(pid), false);
+  }));
+
+test("a thinking block already streamed is never asked for again", () =>
+  rig((_attempt, response) => {
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    sse(response, START, { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } }, { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "hmm" } });
+  }, async (r) => {
+    const message = await r.run();
+    assert.equal(message.stopReason, "error");
+    assert.equal(r.attempts(), 1);
+    assert.match(message.errorMessage ?? "", /cannot be taken back/);
+    assert.equal(r.events.filter((event) => event.type === "thinking_start").length, 1);
+  }));
+
+test("message_stop and then Claude Code hangs: the turn finishes from the received reply and the API is asked once", () =>
+  rig((_attempt, response) => {
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    sse(response, START, textStart, textDelta("answer"), ...FINISH);
+    response.end();
+  }, async (r) => {
+    const lines: string[] = [];
+    setClaudeCodeDiagnosticReporter((line) => lines.push(line));
+    const message = await r.run({ HANG_AFTER_REPLY: "1" });
+    assert.equal(message.stopReason, "stop", String(message.errorMessage));
+    assert.equal(textOf(message), "answer");
+    assert.equal(r.attempts(), 1, "a complete reply is never paid for twice");
+    const pids = await r.spawns();
+    assert.equal(pids.length, 1);
+    assert.equal(alive(pids[0]!), false, "the hung process was dropped, not reused");
+    assert.ok(lines.some((line) => /whole reply/.test(line)), JSON.stringify(lines));
+    const kinds = r.events.map((event) => event.type);
+    assert.equal(kinds.filter((kind) => kind === "text_delta").length, 1);
+    assert.equal(kinds.at(-1), "done");
+  }));
+
+test("one request is sent at most 3 times across both retry layers: a connection that never answers", () =>
+  rig(() => { /* never answers, on every send */ }, async (r) => {
+    const message = await r.run();
+    assert.equal(message.stopReason, "error");
+    assert.equal(r.attempts(), MAX_REQUEST_SENDS, "was up to 9 (3 relay attempts x 3 processes)");
+    assert.match(message.errorMessage ?? "", /already sent 3 times, the most one request is ever sent \(3\)/);
+    assert.equal(isRetryableAssistantError(message), false);
+  }));
+
+test("sends are shared: one quiet retry, then one recovery, then no more", () =>
+  rig((attempt, response) => {
+    if (attempt === 1) return; // never answers: the relay's quiet retry sends again (send 2)
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    if (attempt === 2) { sse(response, START, { type: "ping" }); return; } // first byte, then silence: recovery (send 3)
+    sse(response, START, textStart, textDelta("answer"), ...FINISH);
+    response.end();
+  }, async (r) => {
+    const message = await r.run();
+    assert.equal(message.stopReason, "stop", String(message.errorMessage));
+    assert.equal(r.attempts(), 3);
+    assert.equal((await r.spawns()).length, 2);
+  }));
+
+test("sends are shared: with two sends spent, a fresh process gets exactly one more and then the turn fails", () =>
+  rig((attempt, response) => {
+    if (attempt === 1) return;
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    sse(response, START, { type: "ping" }); // silence after the first byte, on every later send
+  }, async (r) => {
+    const message = await r.run();
+    assert.equal(message.stopReason, "error");
+    assert.equal(r.attempts(), 3, "never a fourth send");
+  }));
+
+test("Escape during the backoff between recoveries stops the turn: aborted, no further request, no leftover child", () =>
+  rig((_attempt, response) => {
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    sse(response, START, { type: "ping" });
+  }, async (r) => {
+    const controller = new AbortController();
+    // The recovery line is written right before the backoff starts.
+    setClaudeCodeDiagnosticReporter((line) => { if (/asking again/.test(line)) controller.abort(new Error("operator pressed Escape")); });
+    const message = await r.run({}, undefined, controller.signal);
+    assert.equal(message.stopReason, "aborted");
+    assert.equal(r.attempts(), 1, "no second request after Escape");
+    assert.doesNotMatch(message.errorMessage ?? "", /stream idle limit exceeded/);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal((await r.spawns()).length, 1, "no replacement process was started");
+    for (const pid of await r.spawns()) assert.equal(alive(pid), false);
+  }));
+
+test("Escape during a quiet stretch is an abort, not a stall, and nothing is recovered", () =>
+  rig((_attempt, response) => {
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    sse(response, START, { type: "ping" });
+  }, async (r) => {
+    const controller = new AbortController();
+    later(500, () => controller.abort(new Error("operator pressed Escape")));
+    const started = Date.now();
+    const message = await r.run({}, undefined, controller.signal);
+    assert.equal(message.stopReason, "aborted");
+    assert.ok(Date.now() - started < 1_300, "ended at Escape, before the 1.4 s stall limit");
+    assert.equal(r.attempts(), 1);
+    assert.equal((await r.spawns()).length, 1);
+  }));
