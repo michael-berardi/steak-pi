@@ -99,7 +99,7 @@ describe("generic profile", () => {
   };
 
   it("maps reasoning_effort templates onto the efforts the template names, with ties going up", () => {
-    expect(detectReasoning("{% if reasoning_effort == 'low' %}{% elif reasoning_effort == \"medium\" %}{% elif reasoning_effort == 'xhigh' %}")).toEqual({ kind: "effort", values: ["low", "medium", "xhigh"] });
+    expect(detectReasoning("{% if reasoning_effort == 'low' %}{% elif reasoning_effort == \"medium\" %}{% elif reasoning_effort == 'xhigh' %}")).toEqual({ kind: "effort", values: ["low", "medium", "xhigh"], toggle: false });
     expect(effortMap(["low", "medium", "xhigh"])).toMatchObject({ off: "low", minimal: "low", low: "low", medium: "medium", high: "xhigh", xhigh: "xhigh", max: "xhigh" });
     expect(effortMap(["low", "medium", "high"])).toMatchObject({ high: "high", xhigh: "high", max: "high" });
   });

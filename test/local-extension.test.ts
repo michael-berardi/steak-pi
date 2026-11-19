@@ -6,8 +6,9 @@ type Handler = (event: unknown, ctx: unknown) => unknown;
 const model = (provider: string, id: string) => ({ provider, id });
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-function harness(options: { fail?: () => string | undefined } = {}) {
+function harness(options: { fail?: () => string | undefined; profile?: (id: string) => unknown } = {}) {
   const handlers = new Map<string, Handler>();
+  const thinking = { level: "medium" };
   const log: string[] = [];
   const notes: Array<[string, string]> = [];
   createLocalHook({
@@ -18,14 +19,27 @@ function harness(options: { fail?: () => string | undefined } = {}) {
       return { started: true, baseUrl: "http://127.0.0.1:1/v1" };
     },
     release: async () => { log.push("release"); },
-  })({ on: (name: string, handler: Handler) => { handlers.set(name, handler); } } as never);
+    ...(options.profile ? { profile: options.profile as never } : {}),
+  })({ on: (name: string, handler: Handler) => { handlers.set(name, handler); }, getThinkingLevel: () => thinking.level, setThinkingLevel: (level: string) => { thinking.level = level; log.push(`thinking:${level}`); } } as never);
   const aborts: string[] = [];
   const ctx = { model: undefined as unknown, abort: () => { aborts.push("abort"); }, ui: { notify: (text: string, kind: string) => notes.push([kind, text]) } };
   const fire = async (name: string, event: unknown = {}) => { const result = await handlers.get(name)?.(event, ctx); await tick(); return result as { message?: Record<string, unknown>; cancel?: boolean } | undefined; };
-  return { fire, ctx, log, notes, aborts, cancelled: [] as string[] };
+  return { fire, ctx, log, notes, aborts, thinking, cancelled: [] as string[] };
 }
 
 describe("local model hook", () => {
+  it("a model whose adapter was trained with thinking off starts there once; the operator's later choice stands", async () => {
+    const h = harness({ profile: (id) => (id === "tuned" ? { id, ctx: 32768, trainedThinking: "off" } : { id, ctx: 32768 }) });
+    h.ctx.model = model("local", "tuned");
+    await h.fire("session_start", { reason: "startup" });
+    expect(h.thinking.level).toBe("off");
+    h.thinking.level = "high"; // the operator turns thinking back on
+    await h.fire("model_select", { model: model("local", "tuned") });
+    expect(h.thinking.level).toBe("high");
+    await h.fire("model_select", { model: model("local", "plain") });
+    expect(h.thinking.level).toBe("high");
+  });
+
   it("a session at its prompt holds nothing: a run holds the server from its start until Pi settles", async () => {
     const h = harness();
     h.ctx.model = model("local", "model-a");

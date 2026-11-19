@@ -23,7 +23,7 @@ other Pi model: pick it with `--model` or `/model`.
 | Command | What it does |
 |---|---|
 | `local add <gguf path \| owner/repo[:quant]> [--name id] [--ctx N] [--port N] [-- args]` | Read the GGUF header, size the context, write the `local` provider entry and the launch profile. Everything after `--` is appended to the `llama-server` command line. |
-| `local add <model> --lora <file \| owner/repo[:file]> [--lora-scale S]` | The same, with a LoRA adapter applied on top of the model. See [LoRA adapters](#lora-adapters-optional). |
+| `local adapter [id]` / `local adapter off [id]` | The model's harness adapter: look for it again, or stop using it. See [Harness adapters](#harness-adapters-built-into-local-mode). |
 | `local start [id]` | Start the server and keep it up until `stop` (a pinned lease). `id` is optional when only one model was added. |
 | `local stop` | Stop the server Steak Pi started (only that one) and confirm the port is released. |
 | `local status [id]` | Server state, number of users, idle time, and the added models. |
@@ -37,35 +37,45 @@ quant (the header) are fetched, with `HF_TOKEN` sent if set. The weights are dow
 first time it starts, so for a big model run that once by hand (or download the file and pass its path) before
 relying on the on-demand start; the health wait is bounded.
 
-## LoRA adapters (optional)
+## Harness adapters: built into local mode
 
-A LoRA adapter is a small file (tens to a few hundred MB) that changes how a base model behaves without replacing it,
-for example an adapter trained to work inside a particular agent harness. Steak Pi ships none and downloads none until
-you name one. Add it next to the model:
+Some models have a small add-on (a LoRA adapter, tens to a few hundred MB) trained to work inside this coding agent:
+the same model, taught to use Pi's tools in fewer, better turns. Local mode applies one by itself. There is no flag:
 
 ```sh
-steak-pi local add ~/models/base.gguf --name my-model --lora ~/models/adapter.gguf        # a file you have
-steak-pi local add ~/models/base.gguf --name my-model --lora owner/adapter-repo[:file]    # fetched from Hugging Face
+steak-pi local add ~/models/base.gguf     # finds, checks and applies the harness adapter when one exists
+pi --model local/base
 ```
 
-- **Matched before it is accepted.** The adapter's header and tensor table are read and compared with the base model's:
-  it must be a LoRA adapter (`general.type adapter`, `adapter.type lora`), for the same architecture, and every adapted
-  tensor must exist in the base (all shards of a split model) with a shape the adapter fits. Adapters of 3-D tensors
-  (mixture-of-experts layers) are refused rather than passed unchecked. A mismatch is `REFUSED (bad-adapter)` naming the first
-  tensor or field that does not fit, and nothing is written. Only the headers are read; no weights are loaded.
-- **Fetched only when named, and verified.** An `owner/repo[:file]` adapter is downloaded once into
-  `~/.pi/agent/local/adapters/<owner>--<repo>/`, streamed to a temporary file and checked against the SHA-256 the hub
-  publishes for it; a mismatch is `REFUSED (adapter-checksum)` and the file is discarded. A file with no published hash is
-  refused (`hf-adapter`): download it yourself and pass its path. A verified copy is reused, not downloaded again. A file
-  over 4 GiB is refused (that is a model, not an adapter). `HF_TOKEN` is sent when set, as for models.
-- **Served with the model.** The server gets `--lora-scaled <path>:<scale>` (scale 1 unless `--lora-scale`, at most 4);
-  that single-argument form needs a current `llama-server` (`llama-server --help` lists `--lora-scaled FNAME:SCALE`).
-  The adapter's size counts toward the memory a start needs, and a start whose adapter file is gone is
-  `REFUSED (adapter-missing)`. `status` shows the adapter next to the model.
-- **Same base, same behaviour.** An adapter is trained against one exact base model. Shape checks prove it fits; they
-  cannot prove a fine-tune or merge of the same architecture is the base it was trained on. Use the base its card names,
-  and a quant close to the precision it was trained at (8-bit where the machine allows).
-- **Remove it** by adding the model again without `--lora`; delete the folder under `adapters/` to free the space.
+What `add` does, and prints, step by step:
+
+1. **Works out exactly which model the file is.** From the hub repo you added it from (its "quantization of" tag), or
+   from the file's own name checked against the base it declares. A model that says it is a fine-tune, or that calls
+   itself something other than the base it declares (a fine-tune that kept its parent's label), gets no adapter: an
+   adapter only behaves as trained on the exact model it was trained on, and a fine-tune has the same shapes, so it
+   would load and quietly misbehave.
+2. **Asks the Hugging Face index for an adapter trained for this harness on exactly that model** (the hub's own
+   `base_model:adapter:<model>` link plus the `pi` tag) and takes the most downloaded one, in its llama.cpp (GGUF) form.
+   Steak Pi names no model, adapter or publisher; the hub's links decide.
+3. **Downloads it once**, into `~/.pi/agent/local/adapters/`, verified against the SHA-256 the hub publishes, and
+   **matches it tensor by tensor** against the model (architecture, every adapted tensor and its shape). A file that does
+   not check out is discarded and the model is added without it, with the cause printed.
+4. **Applies it the way it was trained.** The server loads it (`--lora-scaled <file>:1`), its size counts toward the
+   memory a start needs, and the model starts with thinking off, the setting these adapters are trained and measured at
+   (the server default is off, so Steak DSH and Carl get the same; `/thinking` in Pi turns it back on).
+
+Nothing is bundled and nothing downloads for a model that has no adapter. Adding a model never fails because of the
+adapter: with the hub unreachable the model is added plain, and the output says so.
+
+| Command | What it does |
+|---|---|
+| `local adapter [id]` | Look again for a model added before (or after an opt-out); refuses by name when the model has none. |
+| `local adapter off [id]` | Stop using it from the next start. |
+| `local add ... --no-adapter` | Add without looking. |
+| `local add ... --lora <file \| owner/repo[:file]> [--lora-scale S]` | Use an adapter you choose instead (same download, checksum and tensor checks). |
+
+`status` shows the adapter next to the model. A start whose adapter file was deleted is `REFUSED (adapter-missing)`;
+`local adapter <id>` fetches it again. The `--lora-scaled FILE:SCALE` form needs a current `llama-server`.
 
 ## How `add` sizes the context
 

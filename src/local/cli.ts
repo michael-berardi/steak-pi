@@ -1,7 +1,7 @@
 /**
  * `steak-pi local ...`: slot an OpenAI-compatible local model (a GGUF served by llama-server) into Pi.
  *
- *   add <gguf path | owner/repo[:quant]> [--name id] [--ctx N] [--port N] [--lora <adapter>]... [--lora-scale S] [-- extra llama-server args]
+ *   add <gguf path | owner/repo[:quant]> [--name id] [--ctx N] [--port N] [--lora <adapter>]... [--lora-scale S] [--no-adapter] [-- extra llama-server args]
  *   start [id] | stop | status [id]      run and inspect the on-demand server by hand
  *   ensure <id> | release <id>           argv-friendly lease commands for routing.json `workerProfiles[].ensure`
  *
@@ -12,22 +12,24 @@ import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { readGguf, type GgufInfo } from "./gguf.ts";
 import { adapterFromFile, adapterFromHub, type AdapterRef, type Download } from "./adapter.ts";
+import { findHarnessAdapter, type HarnessAdapterResult } from "./harness-adapter.ts";
 import { gib, totalMemory } from "./hardware.ts";
 import { HF_SPEC, readHfHeader, resolveHf, type Fetch } from "./hf.ts";
 import { DEFAULT_PORT, idFromSource, planProfile, PlanError, type Source } from "./profile.ts";
 import { check, ensure, manualHolder, pidHolder, release, status, stop, supervise, systemDeps, type Deps } from "./runtime.ts";
 import { promptCapTokens, resolveLimits } from "./limits.ts";
 import { activeHold, addQuiet, clearHold, describeHold, markQuietToday, parseDuration, removeQuiet, setHold } from "./hold.ts";
-import { checkId, listProfiles, localDir, LocalError, modelsJsonPath, readProfile, upsertLocalModel, writeProfile } from "./store.ts";
+import { checkId, listProfiles, localDir, LocalError, modelsJsonPath, readModelEntry, readProfile, upsertLocalModel, writeProfile } from "./store.ts";
 
 export interface Io { out(text: string): void; err(text: string): void }
 export interface CliOptions { io?: Io; deps?: Deps; fetch?: Fetch; download?: Download; totalBytes?: number; modelsJson?: string; ppid?: number }
 
 const USAGE = `usage: steak-pi local <command>
   add <gguf path | owner/repo[:quant]> [--name id] [--ctx N] [--port N] [--lora <file | owner/repo[:file]>]...
-      [--lora-scale S] [-- extra llama-server args]
-                  slot a model into Pi as local/<id>, sized for this machine; --lora applies a LoRA adapter (fetched
-                  only then, SHA-256 checked, matched against the model before it is accepted)
+      [--lora-scale S] [--no-adapter] [-- extra llama-server args]
+                  slot a model into Pi as local/<id>, sized for this machine. When the hub has an adapter trained for
+                  this harness on exactly this model, it is fetched, SHA-256 checked, matched and applied; --no-adapter
+                  skips that, --lora names an adapter yourself
   start [id]      start the server and keep it up until 'stop'
   stop            stop the server Steak Pi started
   status [id]     show the server, its users and the added models
@@ -40,7 +42,9 @@ const USAGE = `usage: steak-pi local <command>
   quiet           show the quiet-day rule: work the local model must not share the machine with
   quiet path <repo dir> | quiet process <name> | quiet remove <dir or name>
                   the first sign of that work on a day keeps the local model off until the next day
-  quiet today [reason]     switch it off for the rest of today by hand`;
+  quiet today [reason]     switch it off for the rest of today by hand
+  adapter [id] | adapter off [id]
+                  look for this harness's adapter for a model added before (add does it by itself), or stop using it`;
 
 const SHARD_FIRST = /-00001-of-(\d{5})\.gguf$/i;
 
@@ -58,7 +62,7 @@ async function add(argv: string[], options: CliOptions, io: Io): Promise<number>
   const split = argv.indexOf("--");
   const own = split < 0 ? argv : argv.slice(0, split);
   const extraArgs = split < 0 ? [] : argv.slice(split + 1);
-  const { values, positionals } = parseArgs({ args: own, allowPositionals: true, options: { name: { type: "string" }, ctx: { type: "string" }, port: { type: "string" }, lora: { type: "string", multiple: true }, "lora-scale": { type: "string" } } });
+  const { values, positionals } = parseArgs({ args: own, allowPositionals: true, options: { name: { type: "string" }, ctx: { type: "string" }, port: { type: "string" }, lora: { type: "string", multiple: true }, "lora-scale": { type: "string" }, "no-adapter": { type: "boolean" } } });
   const [target] = positionals;
   if (!target || positionals.length > 1) { io.err(USAGE); return 1; }
   const number = (name: string, text: string | undefined, min: number, max: number): number | undefined => {
@@ -73,7 +77,9 @@ async function add(argv: string[], options: CliOptions, io: Io): Promise<number>
   if (values["lora-scale"] !== undefined && !loras.length) throw new LocalError("bad-option", "--lora-scale needs --lora");
   const loraScale = values["lora-scale"] === undefined ? 1 : Number(values["lora-scale"]);
   if (!(Number.isFinite(loraScale) && loraScale > 0 && loraScale <= 4)) throw new LocalError("bad-option", "--lora-scale must be a number above 0 and at most 4");
-  const tensors = loras.length > 0; // the base's tensor table is read only when an adapter must be matched against it
+  if (values["no-adapter"] && loras.length) throw new LocalError("bad-option", "--no-adapter and --lora cannot be used together");
+  // Local mode looks for the harness adapter by default, so the tensor table is read to match one against the model.
+  const tensors = !values["no-adapter"];
   let source: Source; let info: GgufInfo;
   if (existsSync(resolve(target))) {
     const file = fileSource(target);
@@ -105,10 +111,19 @@ async function add(argv: string[], options: CliOptions, io: Io): Promise<number>
     adapters.push(ref);
     adapterLines.push(...lines, `lora      ${ref.origin} at scale ${loraScale}`);
   }
+  let trained: HarnessAdapterResult["trained"];
+  if (!loras.length && !values["no-adapter"]) {
+    const found = await findHarnessAdapter(info, source.kind === "hf" ? source : { kind: "file" }, dir, { list: options.fetch, download: options.download, progress: (text) => io.out(text) });
+    if (found.ref) adapters.push(found.ref);
+    trained = found.trained;
+    adapterLines.push(...found.lines);
+  }
   let plan;
   try { plan = planProfile({ id, source, info, modelBytes: info.fileBytes, totalBytes: options.totalBytes ?? totalMemory(), port, requestedCtx, extraArgs }); }
   catch (error) { if (error instanceof PlanError) throw new LocalError(error.code, error.message); throw error; }
   if (adapters.length) plan.profile.adapters = adapters;
+  if (values["no-adapter"]) plan.profile.harnessAdapter = "off";
+  if (trained?.thinking === "off" && plan.model.reasoning) plan.profile.trainedThinking = "off";
   const modelsJson = options.modelsJson ?? modelsJsonPath();
   const { backup } = upsertLocalModel(modelsJson, plan.model as { id: string; baseUrl: string });
   writeProfile(dir, plan.profile);
@@ -175,6 +190,24 @@ export async function main(argv: string[], options: CliOptions = {}): Promise<nu
         if (!rest[0]) { io.err(USAGE); return 1; }
         const result = await ensure(deps, checkId(rest[0]), holder());
         io.out(`ready: local/${rest[0]} at ${result.baseUrl} (${result.started ? "started" : "already running"})`);
+        return 0;
+      }
+      case "adapter": {
+        // Look again for the harness adapter of a model added before (or after an opt-out); `off` opts out.
+        const id = pickId(deps.dir, rest[0] === "off" ? rest[1] : rest[0]);
+        const profile = readProfile(deps.dir, id);
+        if (!profile) throw new LocalError("unknown-model", `no local model "${id}"`);
+        if (rest[0] === "off") {
+          writeProfile(deps.dir, { ...profile, adapters: [], harnessAdapter: "off", trainedThinking: undefined });
+          io.out(`local/${id} runs without an adapter from its next start (turn it back on with: steak-pi local adapter ${id})`);
+          return 0;
+        }
+        if (profile.source.kind !== "file") throw new LocalError("bad-source", `local/${id} streams its weights from the hub; add it again to look for its adapter`);
+        const info = { ...readGgufOrThrow(profile.source.path, true), fileBytes: profile.modelBytes };
+        const found = await findHarnessAdapter(info, { kind: "file" }, deps.dir, { list: options.fetch, download: options.download, progress: (text) => io.out(text), strict: true });
+        const reasoning = Boolean(readModelEntry(options.modelsJson ?? modelsJsonPath(), id)?.reasoning);
+        writeProfile(deps.dir, { ...profile, adapters: found.ref ? [found.ref] : [], harnessAdapter: undefined, trainedThinking: found.trained?.thinking === "off" && reasoning ? "off" : undefined });
+        io.out([`local/${id}`, ...found.lines.map((line) => `  ${line}`), "  applied   from the next start of the model server"].join("\n"));
         return 0;
       }
       case "check": {

@@ -18,7 +18,7 @@ export const DEFAULT_PORT = 8089;
 export const ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 export type Source = { kind: "file"; path: string } | { kind: "hf"; spec: string };
-export type Reasoning = { kind: "none" } | { kind: "toggle" } | { kind: "effort"; values: string[] };
+export type Reasoning = { kind: "none" } | { kind: "toggle" } | { kind: "effort"; values: string[]; toggle: boolean };
 
 export interface LaunchProfile {
   id: string;
@@ -35,6 +35,10 @@ export interface LaunchProfile {
   server?: ServerConfig;
   /** LoRA adapters applied on top of the weights (`--lora-scaled path:scale`). Absent: the plain model. */
   adapters?: AdapterRef[];
+  /** `"off"`: the operator opted out of the harness adapter (`add --no-adapter`); `local adapter <id>` turns it back on. */
+  harnessAdapter?: "off";
+  /** `"off"`: the applied adapter was trained with thinking off, so a session selecting this model starts there. */
+  trainedThinking?: "off";
 }
 
 /**
@@ -95,7 +99,7 @@ export function detectReasoning(template: string | undefined): Reasoning {
   if (!template) return { kind: "none" };
   if (/reasoning_effort/.test(template)) {
     const seen = RANKED_EFFORTS.filter((value) => new RegExp(`['"]${value}['"]`).test(template));
-    return { kind: "effort", values: seen.length ? seen : ["low", "medium", "high"] };
+    return { kind: "effort", values: seen.length ? seen : ["low", "medium", "high"], toggle: /enable_thinking/.test(template) };
   }
   if (/enable_thinking/.test(template)) return { kind: "toggle" };
   return { kind: "none" };
@@ -163,7 +167,11 @@ export function planProfile(input: PlanInput): Plan {
   };
   if (reasoning.kind === "effort") {
     model.thinkingLevelMap = effortMap(reasoning.values);
-    model.compat = { thinkingFormat: "chat-template", chatTemplateKwargs: { reasoning_effort: { $var: "thinking.effort" } } };
+    // A template with its own on/off switch gets both: "off" really switches thinking off (with effort alone, "off" could
+    // only map to the lowest effort), and every other level sends its effort.
+    model.compat = { thinkingFormat: "chat-template", chatTemplateKwargs: reasoning.toggle
+      ? { enable_thinking: { $var: "thinking.enabled" }, reasoning_effort: { $var: "thinking.effort", omitWhenOff: true } }
+      : { reasoning_effort: { $var: "thinking.effort" } } };
   } else if (reasoning.kind === "toggle") {
     model.compat = { thinkingFormat: "chat-template", chatTemplateKwargs: { enable_thinking: { $var: "thinking.enabled" } } };
   }
@@ -178,7 +186,7 @@ export function planProfile(input: PlanInput): Plan {
       + `the q8_0 KV cache is ${kv.estimated ? `assumed ${perToken} (the file does not describe its attention)` : perToken}, so ${size.fitCtx} would fit; `
       + `capped at ${size.cap} by ${size.capReason}, rounded down to a power of two${size.shrunkFrom ? `; you asked for ${size.shrunkFrom}` : ""}`,
     `server    1 slot, flash attention on, q8_0 KV cache, --jinja, port ${input.port}; starting needs about ${gib(startNeedBytes(input.modelBytes, size.ctx, kv.bytesPerToken))} free`,
-    `thinking  ${reasoning.kind === "effort" ? `reasoning_effort through the chat template (${reasoning.values.join(", ")})`
+    `thinking  ${reasoning.kind === "effort" ? `reasoning_effort through the chat template (${reasoning.values.join(", ")})${reasoning.toggle ? ", and off switches it off" : ""}`
       : reasoning.kind === "toggle" ? "enable_thinking through the chat template (on/off)" : "plain: the chat template has no reasoning controls"}`,
     `sampling  ${Object.keys(info.sampling).length ? `from the file: ${Object.entries(info.sampling).map(([key, value]) => `${key} ${value}`).join(", ")}` : "the server's defaults (the file carries none)"}`,
   ];
@@ -245,6 +253,9 @@ export function serverArgs(profile: LaunchProfile): string[] {
     ...(hasFlag(extra, "-b") || hasFlag(extra, "--batch-size") ? [] : ["--batch-size", String(server.batchSize)]),
     ...(hasFlag(extra, "-ub") || hasFlag(extra, "--ubatch-size") ? [] : ["--ubatch-size", String(server.ubatchSize)]),
     ...(specOn && !specDepthSet ? ["--spec-draft-n-max", String(server.specDraftMax)] : []),
+    // An adapter trained with thinking off: the server's default is off, so a client that sends no thinking switch (Steak
+    // DSH, Carl, a plain request) gets what the adapter was trained for; a request that asks for thinking still gets it.
+    ...(profile.trainedThinking === "off" && !hasFlag(extra, "--chat-template-kwargs") ? ["--chat-template-kwargs", JSON.stringify({ enable_thinking: false })] : []),
     ...extra,
   ];
 }

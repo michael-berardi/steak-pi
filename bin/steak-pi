@@ -45,8 +45,9 @@ if is_help "${3:-}"; then
     'usap-api admit') usage='usap-api admit [--tasks N] [--route R] [--role scout|worker|reviewer]';;
     'usap-api dispatch') usage='usap-api dispatch <wave.json> [--checkpoint-root DIR] [--out FILE]';;
     'usap-api resume') usage='usap-api resume <run-id> [--checkpoint-root DIR] [--out FILE]';;
-    'local add') usage='local add <gguf path | owner/repo[:quant]> [--name id] [--ctx N] [--port N] [--lora <file | owner/repo[:file]>]... [--lora-scale S] [-- extra llama-server args]';;
+    'local add') usage='local add <gguf path | owner/repo[:quant]> [--name id] [--ctx N] [--port N] [--lora <file | owner/repo[:file]>]... [--lora-scale S] [--no-adapter] [-- extra llama-server args]';;
     'local start'|'local status') usage="local $2 [id]";;
+    'local adapter') usage='local adapter [id] | local adapter off [id]';;
     'local stop') usage='local stop';;
     'local ensure'|'local check'|'local release'|'local _supervise') usage="local $2 <id>";;
     'routes rank') usage='routes rank --class C [--candidate ENTRY[=HARNESS] ...] [--no-probe-marker] [--json]';;
@@ -442,7 +443,7 @@ case "${1:-help}" in
     say "  remove    remove the pi-side package"
     say "  run       launch pi with Steak Pi's Node runtime defaults (args pass through; one package, no mode to pick; --lean first is still accepted and keeps the whole run light)"
     say "  usap-api  run explicit Claude API USAP waves: admit | dispatch <wave.json> | resume <run-id>"
-    say "  local     slot in a local GGUF model: add <gguf|owner/repo:quant> [--lora <adapter>] | start | stop | status | ensure <id> | release <id>"
+    say "  local     slot in a local GGUF model (its harness adapter, when one exists, comes with it): add <gguf|owner/repo:quant> | adapter | start | stop | status | ensure <id> | release <id>"
     say "  routing   check [file]: validate routing.json exactly as every Pi turn does (run it before saving an edit)"
     say "  routes    rank | record | verdict | report: the task-class ranking and its evidence store, for a job queue outside Pi"
     say "  finish-guard-hook  Claude Code Stop hook: block a stop while requested work is open (reads hook JSON on stdin)"

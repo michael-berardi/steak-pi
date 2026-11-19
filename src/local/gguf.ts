@@ -30,6 +30,13 @@ export interface GgufInfo {
   chatTemplate?: string;
   /** Sampling defaults the file itself carries (`general.sampling.*`), if any. */
   sampling: { temperature?: number; top_p?: number; top_k?: number; min_p?: number };
+  /** `general.basename`, `general.size_label` and `general.finetune`: what the file says it is. */
+  basename?: string;
+  sizeLabel?: string;
+  finetune?: string;
+  /** `general.base_model.N.repo_url` (Hugging Face repo ids) and `.organization`: what the file says it was derived from. */
+  baseModelRepos?: string[];
+  baseModelOrgs?: string[];
   /** `general.type` ("model", "adapter", ...), when the file says. */
   fileType?: string;
   /** `adapter.type` ("lora", ...) for an adapter file. */
@@ -184,6 +191,15 @@ export function readGguf(path: string, options: ReadOptions = {}): GgufInfo {
     const fileType = kv.get("general.type");
     const adapterType = kv.get("adapter.type");
     const loraAlpha = num(kv.get("adapter.lora.alpha"));
+    const text = (key: string): string | undefined => { const value = kv.get(key); return typeof value === "string" && value.trim() ? value.trim() : undefined; };
+    const baseModelRepos: string[] = [];
+    const baseModelOrgs: string[] = [];
+    for (let i = 0; i < Math.min(num(kv.get("general.base_model.count")) ?? 0, 16); i++) {
+      const match = /^https:\/\/huggingface\.co\/([\w.-]+\/[\w.-]+)\/?$/.exec(text(`general.base_model.${i}.repo_url`) ?? "");
+      if (match) baseModelRepos.push(match[1]);
+      const org = text(`general.base_model.${i}.organization`);
+      if (org) baseModelOrgs.push(org);
+    }
     let tensors: Map<string, number[]> | undefined;
     if (options.tensors) {
       // The tensor table follows the metadata: name, dimension count, dimensions, type, offset. Only names and shapes are kept.
@@ -214,6 +230,11 @@ export function readGguf(path: string, options: ReadOptions = {}): GgufInfo {
       valueLength: num(arch("attention.value_length")),
       ...(typeof template === "string" ? { chatTemplate: template } : {}),
       sampling,
+      ...(text("general.basename") ? { basename: text("general.basename") } : {}),
+      ...(text("general.size_label") ? { sizeLabel: text("general.size_label") } : {}),
+      ...(text("general.finetune") ? { finetune: text("general.finetune") } : {}),
+      ...(baseModelRepos.length ? { baseModelRepos } : {}),
+      ...(baseModelOrgs.length ? { baseModelOrgs } : {}),
       ...(typeof fileType === "string" ? { fileType } : {}),
       ...(typeof adapterType === "string" ? { adapterType } : {}),
       ...(loraAlpha !== undefined ? { loraAlpha } : {}),

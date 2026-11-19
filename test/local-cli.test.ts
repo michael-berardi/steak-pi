@@ -16,7 +16,9 @@ function setup() {
   const io: Io = { out: (text) => out.push(text), err: (text) => err.push(text) };
   const state = join(dir.path, "local");
   const fake = fakeMachine(state);
-  const options = { io, deps: fake.deps, totalBytes: 36 * GIB, modelsJson: join(dir.path, "models.json"), ppid: 100 };
+  // No test reaches the real hub: the harness-adapter lookup sees an offline hub unless a test passes its own fetch.
+  const offline = (async () => { throw new Error("offline in tests"); }) as never;
+  const options = { io, deps: fake.deps, totalBytes: 36 * GIB, modelsJson: join(dir.path, "models.json"), ppid: 100, fetch: offline };
   return { dir: dir.path, out, err, fake, options, state };
 }
 
@@ -87,7 +89,7 @@ describe("steak-pi local add", () => {
       ], arrayBuffer: async () => new ArrayBuffer(0) };
       return { ok: true, status: 206, json: async () => ({}), arrayBuffer: async () => head.buffer.slice(head.byteOffset, head.byteOffset + head.byteLength) as ArrayBuffer };
     };
-    expect(await main(["add", "owner/x-GGUF:Q4_K_M"], { ...options, fetch: fetchFake })).toBe(0);
+    expect(await main(["add", "owner/x-GGUF:Q4_K_M", "--no-adapter"], { ...options, fetch: fetchFake })).toBe(0);
     expect(urls).toEqual(["https://huggingface.co/api/models/owner/x-GGUF/tree/main?recursive=true", "https://huggingface.co/owner/x-GGUF/resolve/main/x-Q4_K_M.gguf bytes=0-16777215"]);
     expect(readProfile(state, "x-gguf-q4_k_m")).toMatchObject({ source: { kind: "hf", spec: "owner/x-GGUF:Q4_K_M" }, modelBytes: 7_000_000_000 });
     expect(out.join("\n")).toMatch(/enable_thinking/);

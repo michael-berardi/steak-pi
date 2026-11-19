@@ -98,7 +98,7 @@ Slot any GGUF into Pi as `local/<id>`: `steak-pi local add <file.gguf | owner/re
 context to this machine (one slot, flash attention, q8_0 KV cache, 6 GiB of RAM kept free) and writes one `local`
 provider to `models.json`. Then `pi --model local/<id>`: `llama-server` starts on demand, is held only while a prompt runs, and stops after 10 minutes with no run.
 It refuses, naming the cause, when memory is short, the disk is above 90% or another model server runs. No model ships
-with Steak Pi; workers use `ensure`/`release`. `--lora <file | owner/repo>` adds an optional LoRA adapter, fetched only then, SHA-256 checked and matched against the model. Details: [docs/LOCAL-MODELS.md](./docs/LOCAL-MODELS.md).
+with Steak Pi; workers use `ensure`/`release`. When a model has an adapter trained for this agent on exactly that model, local mode downloads it the first time, checks it and applies it; nothing is bundled. Details: [docs/LOCAL-MODELS.md](./docs/LOCAL-MODELS.md).
 
 ## Update
 

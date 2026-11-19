@@ -70,6 +70,12 @@ export function upsertLocalModel(file: string, model: { id: string; baseUrl: str
   return { backup };
 }
 
+/** The `local` provider's entry for a model in models.json, when there is one. */
+export function readModelEntry(file: string, id: string): Record<string, unknown> | undefined {
+  const config = readJson<{ providers?: Record<string, { models?: Array<Record<string, unknown>> }> }>(file);
+  return config?.providers?.[PROVIDER]?.models?.find((model) => model.id === id);
+}
+
 export function checkId(id: string): string {
   if (!ID_PATTERN.test(id)) throw new LocalError("bad-id", `model id "${id}" must be lowercase letters, digits, "." "_" "-" (at most 64, starting with a letter or digit)`);
   return id;

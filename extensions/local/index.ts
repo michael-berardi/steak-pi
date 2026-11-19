@@ -122,8 +122,17 @@ export function createLocalHook(deps: LocalHookDeps): (pi: ExtensionAPI) => void
       });
     };
 
-    pi.on("session_start", (_event, ctx) => { select(ctx.model, ctx); });
-    pi.on("model_select", (event, ctx) => { select(event.model, ctx); });
+    // A model whose harness adapter was trained with thinking off starts a session there (the level the adapter was
+    // evaluated at); the operator's /thinking still changes it, and only the first selection of that model sets it.
+    let trainedFor: string | undefined;
+    const trainedThinking = (model: Model) => {
+      const id = localId(model);
+      if (!id || id === trainedFor) return;
+      trainedFor = id;
+      if (profileOf(id)?.trainedThinking === "off" && pi.getThinkingLevel() !== "off") pi.setThinkingLevel("off");
+    };
+    pi.on("session_start", (_event, ctx) => { trainedThinking(ctx.model); select(ctx.model, ctx); });
+    pi.on("model_select", (event, ctx) => { trainedThinking(event.model); select(event.model, ctx); });
     // A run holds the server: the prompt waits for it to be up (the weights reload if it stopped while idle), and a start
     // that failed (memory, a busy port, another server) is tried again on the next prompt instead of until /reload.
     //

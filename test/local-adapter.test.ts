@@ -54,7 +54,9 @@ function setup() {
   const io: Io = { out: (text) => out.push(text), err: (text) => err.push(text) };
   const state = join(dir.path, "local");
   const fake = fakeMachine(state);
-  const options = { io, deps: fake.deps, totalBytes: 36 * GIB, modelsJson: join(dir.path, "models.json"), ppid: 100 };
+  // No test reaches the real hub: the harness-adapter lookup sees an offline hub unless a test passes its own fetch.
+  const offline = (async () => { throw new Error("offline in tests"); }) as never;
+  const options = { io, deps: fake.deps, totalBytes: 36 * GIB, modelsJson: join(dir.path, "models.json"), ppid: 100, fetch: offline };
   const model = join(dir.path, "base.gguf");
   writeFileSync(model, base());
   return { dir: dir.path, out, err, fake, options, state, model };
