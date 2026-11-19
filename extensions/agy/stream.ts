@@ -19,7 +19,8 @@ export function effortFor(level: string | undefined): string | undefined {
 }
 
 export function buildArgs(input: { prompt: string; model: string; cwd: string; effort?: string; mode?: string; conversation?: string }): string[] {
-  const args = ["-p", input.prompt, "--model", input.model, "--output-format", "stream-json"];
+  // --disable-slash-commands: a prompt that starts with "/" is sent as typed, never run as an agy command.
+  const args = ["-p", input.prompt, "--model", input.model, "--output-format", "stream-json", "--disable-slash-commands"];
   if (input.effort) args.push("--effort", input.effort);
   if (input.mode) args.push("--mode", input.mode);
   if (input.conversation) args.push("--conversation", input.conversation);
@@ -105,6 +106,7 @@ export function streamAgy(model: Model<any>, context: TranscriptContext, options
       };
       const run = await runAgy({ args, cwd, env, signal: options?.signal, timeoutMs, onLine });
       if (run.aborted || options?.signal?.aborted) { output.stopReason = "aborted"; output.errorMessage = "agy run cancelled"; stream.push({ type: "error", reason: "aborted", error: output }); stream.end(); return; }
+      if (run.signedOut && !result) throw new AgyError("signed-out", "agy is not signed in (agy said: Authentication required); run agy once to sign in.");
       if (run.timedOut) throw new AgyError("timeout", `agy timed out after ${Math.round(timeoutMs / 1000)} s and was stopped (set STEAK_PI_AGY_TIMEOUT_MS to change the limit)`);
       if (!result) {
         const err = cleanAgyText(run.stderr.split("\n").filter((l) => l.trim()).slice(-2).join(" "), 300);

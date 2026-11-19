@@ -42,7 +42,12 @@ export interface RunOptions {
   onLine?: (line: string) => void;
 }
 
-export interface RunResult { code: number | null; stdout: string; stderr: string; timedOut: boolean; aborted: boolean }
+export interface RunResult { code: number | null; stdout: string; stderr: string; timedOut: boolean; aborted: boolean; signedOut: boolean }
+
+/** Signed out, agy prints this and then waits a minute for a browser sign-in nobody can do from here. */
+const SIGNED_OUT_STDERR = /Authentication required/i;
+/** Time agy gets after that line to write its own result (its own words make the better cause) before it is stopped. */
+export const SIGNED_OUT_GRACE_MS = 1_500;
 
 /** Run agy to completion, delivering stdout line by line. Rejects with a named error only when agy cannot start. */
 export function runAgy(options: RunOptions): Promise<RunResult> {
@@ -51,7 +56,8 @@ export function runAgy(options: RunOptions): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, options.args, { cwd: options.cwd, env: env as NodeJS.ProcessEnv, stdio: ["ignore", "pipe", "pipe"], detached: posix });
     live.add(child);
-    let stdout = "", stderr = "", pending = "", timedOut = false, aborted = false, stopping: Promise<void> | undefined;
+    let stdout = "", stderr = "", pending = "", timedOut = false, aborted = false, signedOut = false, stopping: Promise<void> | undefined;
+    let authTimer: NodeJS.Timeout | undefined;
     const stop = () => { stopping ??= stopChild(child); return stopping; };
     const flush = (final: boolean) => {
       let at: number;
@@ -63,12 +69,15 @@ export function runAgy(options: RunOptions): Promise<RunResult> {
       pending += chunk;
       flush(false);
     });
-    child.stderr!.setEncoding("utf8").on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-8_000); });
+    child.stderr!.setEncoding("utf8").on("data", (chunk: string) => {
+      stderr = (stderr + chunk).slice(-8_000);
+      if (!authTimer && SIGNED_OUT_STDERR.test(stderr)) authTimer = setTimeout(() => { signedOut = true; void stop(); }, SIGNED_OUT_GRACE_MS);
+    });
     const onAbort = () => { aborted = true; void stop(); };
     if (options.signal?.aborted) onAbort(); else options.signal?.addEventListener("abort", onAbort, { once: true });
     const timer = options.timeoutMs ? setTimeout(() => { timedOut = true; void stop(); }, options.timeoutMs) : undefined;
     timer?.unref();
-    const cleanup = () => { clearTimeout(timer); options.signal?.removeEventListener("abort", onAbort); live.delete(child); };
+    const cleanup = () => { clearTimeout(timer); clearTimeout(authTimer); options.signal?.removeEventListener("abort", onAbort); live.delete(child); };
     child.once("error", (error: NodeJS.ErrnoException) => {
       cleanup();
       reject(error.code === "ENOENT" || error.code === "EACCES"
@@ -78,7 +87,7 @@ export function runAgy(options: RunOptions): Promise<RunResult> {
     child.once("close", (code) => {
       flush(true);
       cleanup();
-      resolve({ code, stdout, stderr, timedOut, aborted });
+      resolve({ code, stdout, stderr, timedOut, aborted, signedOut });
     });
   });
 }

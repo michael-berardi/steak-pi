@@ -122,7 +122,7 @@ describe("arguments", () => {
   it("runs agy as documented, in the session cwd, with agy's own permissions", async () => {
     await run("success", [user("hi")]);
     const args = calls().find((c) => c[0] === "-p")!;
-    expect(args).toEqual(["-p", "hi", "--model", "gemini-x-high", "--output-format", "stream-json", "--add-dir", process.cwd()]);
+    expect(args).toEqual(["-p", "hi", "--model", "gemini-x-high", "--output-format", "stream-json", "--disable-slash-commands", "--add-dir", process.cwd()]);
   });
   it("maps Pi thinking levels to --effort and never passes --dangerously-skip-permissions", async () => {
     expect(["off", "minimal", "low", "medium", "high", "xhigh", "max", undefined].map(effortFor)).toEqual(["low", "low", "low", "medium", "high", "xhigh", "max", undefined]);
