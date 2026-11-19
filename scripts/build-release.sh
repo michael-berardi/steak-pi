@@ -41,5 +41,6 @@ if command -v sha256sum >/dev/null 2>&1; then sums() { sha256sum "$@"; }
 else sums() { shasum -a 256 "$@"; }; fi
 ( cd "$OUT" && sums "steak-pi-$VERSION.tgz" > "steak-pi-$VERSION.tgz.sha256" )
 ( cd "$OUT" && sums "steak-pi-$VERSION.tgz" steak-pi.tgz "steak-pi-$VERSION.tgz.sha256" install.sh install.ps1 > SHA256SUMS )
-echo "built $OUT for $commit (version $VERSION)"
+# The absolute folder, so a relative argument (resolved from the checkout, which may itself be reached through a link) cannot be misread.
+echo "built $(cd "$OUT" && pwd -P) for $commit (version $VERSION)"
 ls -l "$OUT"

@@ -38,3 +38,21 @@ it("refuses checkout ancestors, including normalized and symlink paths, before c
   mkdirSync(sibling);
   expect(run(sibling).stderr).not.toContain("refusing output folder");
 });
+
+it("names the absolute folder it wrote to, for a relative output argument", () => {
+  const fixture = mkdtempSync(resolve(".release-relative-"));
+  fixtures.push(fixture);
+  const checkout = join(fixture, "checkout");
+  mkdirSync(join(checkout, "scripts"), { recursive: true });
+  for (const name of ["build-release.sh", "install.sh", "install.ps1"]) copyFileSync(join("scripts", name), join(checkout, "scripts", name));
+  writeFileSync(join(checkout, "package.json"), '{\n  "version": "9.9.9"\n}\n');
+  writeFileSync(join(checkout, "package-lock.json"), "{}\n");
+  execFileSync("git", ["init", "-q", checkout]);
+  const git = (...args: string[]) => execFileSync("git", ["-C", checkout, "-c", "user.name=t", "-c", "user.email=t@example.invalid", ...args]);
+  git("add", "-A"); git("commit", "-q", "-m", "fixture");
+  const result = spawnSync("sh", [join(checkout, "scripts", "build-release.sh"), "../out"], { encoding: "utf8" });
+  expect(result.status, result.stderr).toBe(0);
+  const written = execFileSync("sh", ["-c", 'cd "$1" && pwd -P', "sh", join(fixture, "out")], { encoding: "utf8" }).trim();
+  expect(existsSync(join(written, "steak-pi-9.9.9.tgz"))).toBe(true);
+  expect(result.stdout).toContain(`built ${written} for `);
+});
