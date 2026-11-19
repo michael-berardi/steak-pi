@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.36.1 (2026-11-19)
+
+Hardens the optional Google Antigravity provider after an independent review. Nothing changes while it is off.
+
+- **A stray request cannot cancel a sign-in.** A callback with a missing or wrong `state`, even one carrying `error=`, is answered 400 and the sign-in keeps waiting. Only a callback with the right state ends it.
+- **Control characters are removed** from callback text, pasted-text errors and provider messages before they are shown.
+- **The refresh token is no longer in the `apiKey` handed to requests.** A 401 is a named expiry and the request is not resent; Pi's own refresh renews the token and its store saves it.
+- **A network failure while refreshing says so** (`cannot reach the token endpoint ... try again`) instead of calling the sign-in invalid.
+- **The config file is checked whenever the module is enabled:** one that others can write, or that another user owns, is refused with the command to fix it; a secret that others can read is still refused.
+- **Identity values are configurable and documented:** the envelope `userAgent` follows `userAgent`; `requestType` and `ideType` are new keys with documented defaults. The claim that the module does not identify as another client is removed. The scope list is documented as configurable.
+- **Incoming data is bounded:** a stream line (16 MiB), an error or token reply (1 MiB) and a model list (8 MiB).
+- **No resend after the body was uploaded:** the next endpoint is tried only when the connection failed before the upload finished; a 5xx is no longer passed on.
+- 13 new tests; the test that pinned abort-on-mismatch is replaced.
+
 ## 0.36.0 (2026-11-19)
 
 Adds an optional Google Antigravity provider, built in and off until you configure it. See `docs/ANTIGRAVITY.md`.
