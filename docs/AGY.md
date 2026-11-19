@@ -20,7 +20,7 @@ The model list is exactly what `agy models` prints for your account; your plan d
 ## What a turn does
 
 ```
-agy -p <prompt> --model <id> --output-format stream-json [--effort <level>] [--mode <mode>] [--conversation <id>] --add-dir <cwd>
+agy -p <prompt> --model <id> --output-format stream-json --disable-slash-commands [--effort <level>] [--mode <mode>] [--conversation <id>] --add-dir <cwd>
 ```
 
 It runs in the session's working directory. Text arrives as it streams. Each tool step agy runs is shown as a read-only progress line in the answer (for example `› agy run_command: npm test`); these are display only, are not Pi tool calls, and are left out when the conversation is replayed.
@@ -51,7 +51,7 @@ Pi's abort sends SIGINT to agy's process group (agy records INTERRUPTED), then S
 | plan lacks the model | `agy does not offer the model "<id>" on this account's plan ... Run agy models` |
 | timeout / cancelled / interrupted / waiting | named, with agy's status |
 
-A turn against a signed-out agy can take about 60 s to fail, because agy waits that long for a sign-in; the provider is normally hidden in that state.
+A signed-out agy waits a minute for a browser sign-in; Steak Pi stops it 1.5 s after agy says "Authentication required" and names the cause, so the turn fails in a few seconds. The provider is normally hidden in that state.
 
 ## Settings
 
