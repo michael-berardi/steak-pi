@@ -100,10 +100,17 @@ export async function resolveBase(info: GgufInfo, source: { kind: "file" } | { k
   // fine-tune of it. Any other value is a fine-tune.
   const release = info.finetune && /^(instruct|chat|it|base)$/i.test(info.finetune);
   if (info.finetune && !release) return { why: `the model file says it is a fine-tune (${info.finetune}); a harness adapter is trained on an exact base model` };
-  const names = identityNames(info);
-  if (release && info.basename) {
-    names.add(norm(`${info.basename}-${info.finetune}`));
-    if (info.sizeLabel) names.add(norm(`${info.basename}-${info.sizeLabel}-${info.finetune}`));
+  let names = identityNames(info);
+  if (release) {
+    // An Instruct (or Chat) release is its own model: only names that carry the release word identify it, so the
+    // pretrained base it declares (named without that word) is never taken for it.
+    const word = norm(info.finetune!);
+    const withWord = new Set([...names].filter((name) => name.split("-").includes(word)));
+    if (info.basename) {
+      withWord.add(norm(`${info.basename}-${info.finetune}`));
+      if (info.sizeLabel) withWord.add(norm(`${info.basename}-${info.sizeLabel}-${info.finetune}`));
+    }
+    names = withWord;
   }
   if (source.kind === "hf") {
     const repo = source.spec.split(":")[0];
@@ -134,7 +141,7 @@ export async function resolveBase(info: GgufInfo, source: { kind: "file" } | { k
  * Find, fetch, verify and check the harness adapter for this model. Never throws for a model that simply has none:
  * every outcome is a line; only `strict` (an explicit `local adapter` request) turns a failure into a refusal.
  */
-export async function findHarnessAdapter(info: GgufInfo, source: { kind: "file" } | { kind: "hf"; spec: string }, dir: string, deps: { list?: ListFetch; download?: Download; progress?: (text: string) => void; strict?: boolean; ask?: TrustPrompt; trust?: boolean } = {}): Promise<HarnessAdapterResult> {
+export async function findHarnessAdapter(info: GgufInfo, source: { kind: "file" } | { kind: "hf"; spec: string }, dir: string, deps: { list?: ListFetch; download?: Download; progress?: (text: string) => void; strict?: boolean; ask?: TrustPrompt; trust?: boolean | string; modelId?: string } = {}): Promise<HarnessAdapterResult> {
   const list = deps.list ?? (fetch as unknown as ListFetch);
   const skip = (why: string): HarnessAdapterResult => {
     if (deps.strict) throw new LocalError("no-harness-adapter", why);
@@ -158,9 +165,16 @@ export async function findHarnessAdapter(info: GgufInfo, source: { kind: "file" 
     if (!revision) return skip(`${gguf.id} has no commit id on the hub, so the file cannot be pinned`);
     const card = `${gguf.id} at commit ${revision.slice(0, 12)} (${detail.downloads ?? adapter.downloads ?? 0} downloads), trained for this harness on ${base.repo}`;
     if (!trustedPublishers(dir).has(publisher)) {
+      // `--trust <publisher>` trusts exactly the one named (so a different top candidate found later is never trusted by
+      // accident); a bare `--trust` trusts whoever is the candidate now, which the output names.
+      if (typeof deps.trust === "string" && deps.trust.toLowerCase() !== publisher) {
+        const why = `the harness adapter for ${base.repo} is now ${card}, from "${publisher}", not "${deps.trust}"; nothing was trusted. Check it, then trust it with: --trust ${publisher}`;
+        if (deps.strict) throw new LocalError("untrusted-publisher", why);
+        return { lines: [`adapter   ${why}`] };
+      }
       const asked = deps.trust ? true : deps.ask ? await deps.ask(`Harness adapter for ${base.repo}: ${card}.\nIt changes how the model behaves, and the model's tool calls run with your permissions. Trust adapters from "${publisher}"?`) : undefined;
       if (!asked) {
-        const why = `found ${card}; not applied because "${publisher}" is not a trusted publisher. Trust it and apply it with: steak-pi local adapter <id> --trust`;
+        const why = `found ${card}; not applied because "${publisher}" is not a trusted publisher. Trust it and apply it with: steak-pi local adapter ${deps.modelId ?? "<id>"} --trust ${publisher}`;
         if (deps.strict) throw new LocalError("untrusted-publisher", why);
         return { lines: [`adapter   ${why}`] };
       }
@@ -170,7 +184,8 @@ export async function findHarnessAdapter(info: GgufInfo, source: { kind: "file" 
     let found: Awaited<ReturnType<typeof adapterFromHub>>;
     try { found = await adapterFromHub(gguf.id, dir, info, 1, { list, download: deps.download, progress: deps.progress, revision }); }
     catch (error) { if (!(error instanceof LocalError)) throw error; return skip(`${gguf.id} did not check out (${error.code}: ${error.message})`); }
-    const thinkingOff = await trainedWithoutThinking(list, [adapter.id, gguf.id]);
+    const adapterDetail = adapter.id === gguf.id ? detail : await getJson<HubModel>(list, `https://huggingface.co/api/models/${adapter.id}`).catch(() => undefined);
+    const thinkingOff = await trainedWithoutThinking(list, [[adapter.id, adapterDetail?.sha], [gguf.id, revision]]);
     return {
       ref: found.ref,
       ...(thinkingOff ? { trained: { thinking: "off" as const } } : {}),
@@ -187,12 +202,16 @@ export async function findHarnessAdapter(info: GgufInfo, source: { kind: "file" 
 }
 
 /** True when the adapter's model card says it was trained or evaluated with thinking off. Read, never assumed. */
-async function trainedWithoutThinking(list: ListFetch, repos: string[]): Promise<boolean> {
-  for (const repo of repos) {
-    const response = await list(`https://huggingface.co/${repo}/raw/main/README.md`, { headers: hfHeaders(), signal: AbortSignal.timeout(20_000) }).catch(() => undefined);
+async function trainedWithoutThinking(list: ListFetch, repos: Array<[string, string | undefined]>): Promise<boolean> {
+  for (const [repo, sha] of repos) {
+    const rev = sha && /^[0-9a-f]{40}$/.test(sha) ? sha : "main";
+    const response = await list(`https://huggingface.co/${repo}/raw/${rev}/README.md`, { headers: hfHeaders(), signal: AbortSignal.timeout(20_000) }).catch(() => undefined);
     if (!response?.ok) continue;
     const text = typeof (response as { text?: () => Promise<string> }).text === "function" ? await (response as unknown as { text(): Promise<string> }).text() : String(await response.json().catch(() => ""));
-    if (/thinking off|"enable_thinking":\s*false|without thinking/i.test(text)) return true;
+    // The card's own statement of how it was trained or measured, or the serving flag it documents. A sentence that
+    // weighs both ("with or without thinking") does not count.
+    const says = /(?:^|[^\w])thinking off(?![\w-])|"enable_thinking"\s*:\s*false/i.test(text);
+    if (says && !/with or without thinking|thinking on or off|thinking off or on/i.test(text)) return true;
   }
   return false;
 }

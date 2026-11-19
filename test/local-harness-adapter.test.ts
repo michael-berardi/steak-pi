@@ -48,6 +48,7 @@ function hub(overrides: Record<string, unknown> = {}) {
     [`https://huggingface.co/api/models?filter=${encodeURIComponent("base_model:adapter:lab/Model-7B-pi")}&filter=gguf&sort=downloads&limit=20`]: [{ id: "squatter/Model-7B-pi-GGUF", tags: ["gguf", "lora", "pi"] }, { id: "lab/Model-7B-pi-GGUF", tags: ["gguf", "lora", "pi"] }],
     "https://huggingface.co/api/models/lab/Model-7B-pi-GGUF": { id: "lab/Model-7B-pi-GGUF", sha: REV, downloads: 1234 },
     "https://huggingface.co/lab/Model-7B-pi/raw/main/README.md": "Evaluated under the harness, thinking off unless stated.",
+    [`https://huggingface.co/lab/Model-7B-pi-GGUF/raw/${REV}/README.md`]: "The GGUF form.",
     [`https://huggingface.co/api/models/lab/Model-7B-pi-GGUF/tree/${REV}?recursive=true`]: [{ type: "file", path: "Model-7B-pi-lora-F16.gguf", size: adapterBytes.length, lfs: { size: adapterBytes.length, oid: OID } }],
     ...overrides,
   };
@@ -85,7 +86,7 @@ describe("local mode applies the harness adapter by itself", () => {
     expect(await main(["add", file, "--name", "a"], { ...options, fetch: h.fetchFake, download: h.download, ask: async () => false })).toBe(0);
     expect(readProfile(state, "a")!.adapters ?? []).toEqual([]);
     expect(h.downloads).toEqual([]);
-    expect(out.join("\n")).toMatch(/not applied because "lab" is not a trusted publisher. Trust it and apply it with: steak-pi local adapter <id> --trust/);
+    expect(out.join("\n")).toMatch(/not applied because "lab" is not a trusted publisher. Trust it and apply it with: steak-pi local adapter a --trust lab/);
     // Nobody to ask (no terminal): same, never applied silently.
     expect(await main(["add", file, "--name", "b"], { ...options, fetch: h.fetchFake, download: h.download, ask: undefined as never })).toBe(0);
     expect(readProfile(state, "b")!.adapters ?? []).toEqual([]);
@@ -96,6 +97,36 @@ describe("local mode applies the harness adapter by itself", () => {
     expect(asked[0]).toMatch(/lab\/Model-7B-pi-GGUF at commit 0123456789ab [^]*tool calls run with your permissions. Trust adapters from "lab"\?/);
     expect(h.downloads.every((url) => url.includes("/lab/"))).toBe(true);
     expect(JSON.parse(readFileSync(join(state, "trusted-publishers.json"), "utf8"))).toEqual({ publishers: ["lab"] });
+  });
+
+  it("--trust <publisher> trusts only that publisher; the not-applied message names the model and the publisher", async () => {
+    const { out, err, options, state, file } = setup();
+    const h = hub();
+    const noAsk = { ...options, fetch: h.fetchFake, download: h.download, ask: undefined as never };
+    expect(await main(["add", file, "--name", "m"], noAsk)).toBe(0);
+    expect(out.join("\n")).toMatch(/steak-pi local adapter m --trust lab$/m);
+    expect(await main(["adapter", "m", "--trust", "squatter"], noAsk)).toBe(2);
+    expect(err.at(-1)).toMatch(/REFUSED \(untrusted-publisher\).*from "lab", not "squatter"; nothing was trusted/);
+    expect(readProfile(state, "m")!.adapters ?? []).toEqual([]);
+    expect(await main(["adapter", "m", "--trust", "lab"], noAsk)).toBe(0);
+    expect(readProfile(state, "m")!.adapters).toHaveLength(1);
+    expect(await main(["add", file, "--name", "n", "--trust", "lab"], noAsk)).toBe(0);
+    expect(readProfile(state, "n")!.adapters).toHaveLength(1);
+  });
+
+  it("an Instruct release that declares its pretrained base is not given the base's adapter", async () => {
+    const { resolveBase } = await import("../src/local/harness-adapter.ts");
+    const { readGguf } = await import("../src/local/gguf.ts");
+    const f = setup([["general.name", "str", "Model 7B Instruct"], ["general.basename", "str", "Model"], ["general.size_label", "str", "7B"], ["general.finetune", "str", "Instruct"], ["general.base_model.count", "u32", 1], ["general.base_model.0.organization", "str", "Org"], ["general.base_model.0.repo_url", "str", "https://huggingface.co/Org/Model-7B"]]);
+    const r = await resolveBase(readGguf(f.file), { kind: "file" }, hub().fetchFake as never);
+    expect(r.repo).not.toBe("Org/Model-7B");
+  });
+
+  it("a hint that weighs both settings does not turn thinking off", async () => {
+    const { options, state, file } = setup();
+    const h = hub({ "https://huggingface.co/lab/Model-7B-pi/raw/main/README.md": "Works with or without thinking; thinking off is faster." });
+    expect(await main(["add", file, "--name", "m"], { ...options, fetch: h.fetchFake, download: h.download })).toBe(0);
+    expect(readProfile(state, "m")!.trainedThinking).toBeUndefined();
   });
 
   it("an adapter whose only GGUF form is from another publisher is not used", async () => {
@@ -191,7 +222,7 @@ describe("local mode applies the harness adapter by itself", () => {
     expect(h.asked).toEqual([]);
     expect(readProfile(state, "n")!.harnessAdapter).toBe("off");
     expect(await main(["adapter", "m"], { ...options, fetch: h.fetchFake, download: h.download, ask: undefined as never })).toBe(2); // nobody to ask, publisher not trusted yet
-    expect(await main(["adapter", "m", "--trust"], { ...options, fetch: h.fetchFake, download: h.download, ask: undefined as never })).toBe(0);
+    expect(await main(["adapter", "m", "--trust"], { ...options, fetch: h.fetchFake, download: h.download, ask: undefined as never })).toBe(0); // bare --trust: the candidate the output names
     expect(readProfile(state, "m")!.adapters).toHaveLength(1);
     expect(readProfile(state, "m")!.trainedThinking).toBe("off");
     expect(await main(["adapter", "off", "m"], options)).toBe(0);

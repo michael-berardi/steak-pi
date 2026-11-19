@@ -1,7 +1,7 @@
 /**
  * `steak-pi local ...`: slot an OpenAI-compatible local model (a GGUF served by llama-server) into Pi.
  *
- *   add <gguf path | owner/repo[:quant]> [--name id] [--ctx N] [--port N] [--lora <adapter>]... [--lora-scale S] [--no-adapter] [-- extra llama-server args]
+ *   add <gguf path | owner/repo[:quant]> [--name id] [--ctx N] [--port N] [--lora <adapter>]... [--lora-scale S] [--no-adapter | --trust <publisher>] [-- extra llama-server args]
  *   start [id] | stop | status [id]      run and inspect the on-demand server by hand
  *   ensure <id> | release <id>           argv-friendly lease commands for routing.json `workerProfiles[].ensure`
  *
@@ -36,7 +36,7 @@ function terminalAsk(): TrustPrompt | undefined {
 
 const USAGE = `usage: steak-pi local <command>
   add <gguf path | owner/repo[:quant]> [--name id] [--ctx N] [--port N] [--lora <file | owner/repo[:file]>]...
-      [--lora-scale S] [--no-adapter] [-- extra llama-server args]
+      [--lora-scale S] [--no-adapter | --trust <publisher>] [-- extra llama-server args]
                   slot a model into Pi as local/<id>, sized for this machine. When the hub has an adapter trained for
                   this harness on exactly this model, it is fetched, SHA-256 checked, matched and applied; --no-adapter
                   skips that, --lora names an adapter yourself
@@ -53,9 +53,9 @@ const USAGE = `usage: steak-pi local <command>
   quiet path <repo dir> | quiet process <name> | quiet remove <dir or name>
                   the first sign of that work on a day keeps the local model off until the next day
   quiet today [reason]     switch it off for the rest of today by hand
-  adapter [id] [--trust] | adapter off [id]
+  adapter [id] [--trust [publisher]] | adapter off [id]
                   look for this harness's adapter for a model added before (add does it by itself); --trust
-                  trusts its publisher without asking. 'off' stops using it`;
+                  trusts its publisher without asking (name it to trust only that one). 'off' stops using it`;
 
 const SHARD_FIRST = /-00001-of-(\d{5})\.gguf$/i;
 
@@ -73,7 +73,7 @@ async function add(argv: string[], options: CliOptions, io: Io): Promise<number>
   const split = argv.indexOf("--");
   const own = split < 0 ? argv : argv.slice(0, split);
   const extraArgs = split < 0 ? [] : argv.slice(split + 1);
-  const { values, positionals } = parseArgs({ args: own, allowPositionals: true, options: { name: { type: "string" }, ctx: { type: "string" }, port: { type: "string" }, lora: { type: "string", multiple: true }, "lora-scale": { type: "string" }, "no-adapter": { type: "boolean" } } });
+  const { values, positionals } = parseArgs({ args: own, allowPositionals: true, options: { name: { type: "string" }, ctx: { type: "string" }, port: { type: "string" }, lora: { type: "string", multiple: true }, "lora-scale": { type: "string" }, "no-adapter": { type: "boolean" }, trust: { type: "string" } } });
   const [target] = positionals;
   if (!target || positionals.length > 1) { io.err(USAGE); return 1; }
   const number = (name: string, text: string | undefined, min: number, max: number): number | undefined => {
@@ -124,7 +124,7 @@ async function add(argv: string[], options: CliOptions, io: Io): Promise<number>
   }
   let trained: HarnessAdapterResult["trained"];
   if (!loras.length && !values["no-adapter"]) {
-    const found = await findHarnessAdapter(info, source.kind === "hf" ? source : { kind: "file" }, dir, { list: options.fetch, download: options.download, progress: (text) => io.out(text), ask: options.ask ?? terminalAsk() });
+    const found = await findHarnessAdapter(info, source.kind === "hf" ? source : { kind: "file" }, dir, { list: options.fetch, download: options.download, progress: (text) => io.out(text), modelId: id, trust: values.trust, ask: options.ask ?? terminalAsk() });
     if (found.ref) adapters.push(found.ref);
     trained = found.trained;
     adapterLines.push(...found.lines);
@@ -205,8 +205,11 @@ export async function main(argv: string[], options: CliOptions = {}): Promise<nu
       }
       case "adapter": {
         // Look again for the harness adapter of a model added before (or after an opt-out); `off` opts out.
-        const trust = rest.includes("--trust");
-        const words = rest.filter((word) => word !== "--trust");
+        // `--trust [publisher]`: a publisher name right after it (not an added model id) is the one to trust.
+        const at = rest.indexOf("--trust");
+        const named = at >= 0 && rest[at + 1] && !rest[at + 1].startsWith("-") && !listProfiles(deps.dir).some((entry) => entry.id === rest[at + 1]) ? rest[at + 1] : undefined;
+        const trust: boolean | string = named ?? at >= 0;
+        const words = rest.filter((word, index) => index !== at && !(named && index === at + 1));
         const id = pickId(deps.dir, words[0] === "off" ? words[1] : words[0]);
         const profile = readProfile(deps.dir, id);
         if (!profile) throw new LocalError("unknown-model", `no local model "${id}"`);
@@ -215,9 +218,10 @@ export async function main(argv: string[], options: CliOptions = {}): Promise<nu
           io.out(`local/${id} runs without an adapter from its next start (turn it back on with: steak-pi local adapter ${id})`);
           return 0;
         }
-        if (profile.source.kind !== "file") throw new LocalError("bad-source", `local/${id} streams its weights from the hub; add it again to look for its adapter`);
-        const info = { ...readGgufOrThrow(profile.source.path, true), fileBytes: profile.modelBytes };
-        const found = await findHarnessAdapter(info, { kind: "file" }, deps.dir, { list: options.fetch, download: options.download, progress: (text) => io.out(text), strict: true, trust, ask: options.ask ?? terminalAsk() });
+        const info = profile.source.kind === "file"
+          ? { ...readGgufOrThrow(profile.source.path, true), fileBytes: profile.modelBytes }
+          : { ...(await readHfHeader(await resolveHf(profile.source.spec, options.fetch), options.fetch, { tensors: true })), fileBytes: profile.modelBytes };
+        const found = await findHarnessAdapter(info, profile.source.kind === "hf" ? profile.source : { kind: "file" }, deps.dir, { list: options.fetch, download: options.download, progress: (text) => io.out(text), strict: true, trust, modelId: id, ask: options.ask ?? terminalAsk() });
         const reasoning = Boolean(readModelEntry(options.modelsJson ?? modelsJsonPath(), id)?.reasoning);
         writeProfile(deps.dir, { ...profile, adapters: found.ref ? [found.ref] : [], harnessAdapter: undefined, trainedThinking: found.trained?.thinking === "off" && reasoning ? "off" : undefined });
         io.out([`local/${id}`, ...found.lines.map((line) => `  ${line}`), "  applied   from the next start of the model server"].join("\n"));

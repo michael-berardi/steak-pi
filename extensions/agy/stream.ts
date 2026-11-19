@@ -1,4 +1,4 @@
-// One agy turn: spawn `agy --input-format stream-json --output-format stream-json`, send the prompt on stdin,, translate its events into Pi stream events.
+// One agy turn: spawn `agy --input-format stream-json --output-format stream-json`, send the prompt on stdin, translate its events into Pi stream events.
 // agy runs its own agent loop and tools, so its tool steps are shown as read-only progress lines, never as Pi tool calls.
 import { createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEventStream, type Model, type SimpleStreamOptions, type TranscriptContext } from "@earendil-works/pi-ai";
 import { AgyError, cleanAgyText, errorFromResult } from "./errors.ts";

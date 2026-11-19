@@ -55,7 +55,8 @@ What `add` does, and prints, step by step:
    that says it is a fine-tune, or calls itself something other than the base it declares, gets no adapter: an adapter
    only behaves as trained on the exact model it was trained on, and a fine-tune has the same shapes, so it would load
    and quietly misbehave. A file that declares nothing is not guessed from its name (another account's re-upload could
-   match). A fine-tune that kept its base's exact name cannot be told apart from the base; use `--no-adapter` for one.
+   match). An Instruct or Chat release is identified only by names that carry that word, never as the pretrained base it
+   declares. A fine-tune that kept its base's exact name cannot be told apart from the base; use `--no-adapter` for one.
 2. **Asks the Hugging Face index for an adapter trained for this agent on exactly that model** (the hub's own
    `base_model:adapter:<model>` link plus the `pi` tag). The most downloaded one is the candidate, and its llama.cpp
    (GGUF) file must come from the same publisher. Steak Pi names no model, adapter or publisher.
@@ -63,13 +64,14 @@ What `add` does, and prints, step by step:
    and the model's tool calls run with your permissions. So `add` shows the publisher, repo, commit and download count
    and asks `Trust adapters from "<publisher>"? [y/N]`. A yes is remembered in `~/.pi/agent/local/trusted-publishers.json`
    (empty until you answer). With no terminal to ask (scripts, workers), an untrusted publisher's adapter is named and not
-   applied; `steak-pi local adapter <id> --trust` applies it. Download counts are shown, never used as trust.
+   applied; the output gives the exact command, `steak-pi local adapter <id> --trust <publisher>`, which trusts that
+   publisher only (or pass `--trust <publisher>` to `add`). Download counts are shown, never used as trust.
 4. **Downloads it once, pinned to the commit it was found at**, into `~/.pi/agent/local/adapters/`, checks it against
    the SHA-256 the hub publishes for that commit, and matches it tensor by tensor against the model. The checksum proves
    the file is exactly what that publisher published; it says nothing about who the publisher is (that is step 3). A
    file that does not check out is discarded and the model is added without it, with the cause printed.
 5. **Applies it the way it was trained.** The server loads it (`--lora-scaled <file>:1`) and its size counts toward the
-   memory a start needs. When the adapter's model card says it was trained and measured with thinking off, the model
+   memory a start needs. When the adapter's model card (read at the pinned commit) says it was trained and measured with thinking off, the model
    starts with thinking off (the server default is off too, so every client gets it; `/thinking` in Pi turns it back on).
 
 Nothing is bundled and nothing downloads for a model that has no adapter. Adding a model never fails because of the
@@ -77,7 +79,7 @@ adapter: with the hub unreachable the model is added plain, and the output says 
 
 | Command | What it does |
 |---|---|
-| `local adapter [id] [--trust]` | Look again for a model added before (or after an opt-out); `--trust` trusts the publisher without asking. Refuses by name when there is none. |
+| `local adapter [id] [--trust [publisher]]` | Look again for a model added before (or after an opt-out); `--trust <publisher>` trusts that publisher only, without asking. Refuses by name when there is none, or when the adapter found now comes from a different publisher. |
 | `local adapter off [id]` | Stop using it from the next start. |
 | `local add ... --no-adapter` | Add without looking. |
 | `local add ... --lora <file \| owner/repo[:file]> [--lora-scale S]` | Use an adapter you choose instead (same checksum and tensor checks). |
