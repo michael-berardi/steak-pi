@@ -47,7 +47,7 @@ if is_help "${3:-}"; then
     'usap-api resume') usage='usap-api resume <run-id> [--checkpoint-root DIR] [--out FILE]';;
     'local add') usage='local add <gguf path | owner/repo[:quant]> [--name id] [--ctx N] [--port N] [--lora <file | owner/repo[:file]>]... [--lora-scale S] [--no-adapter] [-- extra llama-server args]';;
     'local start'|'local status') usage="local $2 [id]";;
-    'local adapter') usage='local adapter [id] | local adapter off [id]';;
+    'local adapter') usage='local adapter [id] [--trust] | local adapter off [id]';;
     'local stop') usage='local stop';;
     'local ensure'|'local check'|'local release'|'local _supervise') usage="local $2 <id>";;
     'routes rank') usage='routes rank --class C [--candidate ENTRY[=HARNESS] ...] [--no-probe-marker] [--json]';;

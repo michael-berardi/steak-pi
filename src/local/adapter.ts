@@ -23,6 +23,9 @@ export interface AdapterRef {
   /** Where it came from: a file the operator gave, or `owner/repo:file` on the hub. */
   origin: string;
   sha256?: string;
+  /** For a hub adapter: the publishing account and the exact commit the file came from. */
+  publisher?: string;
+  revision?: string;
 }
 
 /** Largest adapter accepted. A LoRA of any rank used in practice is far below this; a bigger file is a full model. */
@@ -125,12 +128,14 @@ interface TreeEntry { type?: string; path: string; size?: number; lfs?: { size?:
  * Fetch an adapter named `owner/repo[:file or part of its name]` into `<dir>/adapters/`, verify its SHA-256 against the
  * hub's record, then check it against the base. A file already there with the right hash is reused, not downloaded again.
  */
-export async function adapterFromHub(spec: string, dir: string, base: GgufInfo, scale: number, deps: { list?: ListFetch; download?: Download; progress?: (text: string) => void } = {}): Promise<{ ref: AdapterRef; lines: string[] }> {
+export async function adapterFromHub(spec: string, dir: string, base: GgufInfo, scale: number, deps: { list?: ListFetch; download?: Download; progress?: (text: string) => void; revision?: string } = {}): Promise<{ ref: AdapterRef; lines: string[] }> {
   const match = HF_SPEC.exec(spec);
   if (!match) throw new LocalError("bad-adapter", `"${spec}" is neither a file nor an owner/repo[:file] Hugging Face spec`);
   const [, repo, wanted] = match;
   const list = deps.list ?? (fetch as unknown as ListFetch);
-  const response = await list(`https://huggingface.co/api/models/${repo}/tree/main?recursive=true`, { headers: hfHeaders(), signal: AbortSignal.timeout(20_000) }).catch((error: Error) => {
+  // Pinned to one commit: the listing, the hash and the download all come from the same revision.
+  const revision = deps.revision && /^[0-9a-f]{40}$/.test(deps.revision) ? deps.revision : "main";
+  const response = await list(`https://huggingface.co/api/models/${repo}/tree/${revision}?recursive=true`, { headers: hfHeaders(), signal: AbortSignal.timeout(20_000) }).catch((error: Error) => {
     throw new LocalError("hf-unreachable", `cannot reach Hugging Face (${error.message}); download the adapter yourself and pass its path`);
   });
   if (!response.ok) throw new LocalError("hf-unreachable", `Hugging Face answered ${response.status} for ${repo} (a gated repo needs HF_TOKEN)`);
@@ -152,7 +157,7 @@ export async function adapterFromHub(spec: string, dir: string, base: GgufInfo, 
     const partial = `${target}.${process.pid}.part`;
     try {
       deps.progress?.(`downloading ${repo}/${entry.path} (${(bytes / 1024 ** 2).toFixed(0)} MiB)`);
-      await (deps.download ?? httpDownload)(`https://huggingface.co/${repo}/resolve/main/${entry.path.split("/").map(encodeURIComponent).join("/")}`, hfHeaders(), partial);
+      await (deps.download ?? httpDownload)(`https://huggingface.co/${repo}/resolve/${revision}/${entry.path.split("/").map(encodeURIComponent).join("/")}`, hfHeaders(), partial);
       const got = await sha256(partial);
       if (got !== oid) throw new LocalError("adapter-checksum", `${repo}/${entry.path}: SHA-256 ${got} does not match the published ${oid}; the file was discarded`);
       renameSync(partial, target);
@@ -163,5 +168,5 @@ export async function adapterFromHub(spec: string, dir: string, base: GgufInfo, 
   let check: AdapterCheck;
   try { check = checkAdapter(readHeader(target, true), base, `${repo}/${entry.path}`); }
   catch (error) { if (error instanceof LocalError) rmSync(target, { force: true }); throw error; }
-  return { ref: { path: target, scale, bytes: statSync(target).size, origin: `${repo}:${entry.path}`, sha256: oid }, lines: [`fetched   ${repo}/${entry.path}, SHA-256 verified`, ...check.lines] };
+  return { ref: { path: target, scale, bytes: statSync(target).size, origin: `${repo}:${entry.path}`, sha256: oid, publisher: repo.split("/")[0], ...(revision !== "main" ? { revision } : {}) }, lines: [`fetched   ${repo}/${entry.path}, SHA-256 verified`, ...check.lines] };
 }

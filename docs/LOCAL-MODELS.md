@@ -40,39 +40,47 @@ relying on the on-demand start; the health wait is bounded.
 ## Harness adapters: built into local mode
 
 Some models have a small add-on (a LoRA adapter, tens to a few hundred MB) trained to work inside this coding agent:
-the same model, taught to use Pi's tools in fewer, better turns. Local mode applies one by itself. There is no flag:
+the same model, taught to use Pi's tools in fewer, better turns. Local mode finds and applies one by itself. There is
+no flag:
 
 ```sh
-steak-pi local add ~/models/base.gguf     # finds, checks and applies the harness adapter when one exists
+steak-pi local add ~/models/base.gguf     # finds the harness adapter when one exists, asks once to trust its publisher
 pi --model local/base
 ```
 
 What `add` does, and prints, step by step:
 
-1. **Works out exactly which model the file is.** From the hub repo you added it from (its "quantization of" tag), or
-   from the file's own name checked against the base it declares. A model that says it is a fine-tune, or that calls
-   itself something other than the base it declares (a fine-tune that kept its parent's label), gets no adapter: an
-   adapter only behaves as trained on the exact model it was trained on, and a fine-tune has the same shapes, so it
-   would load and quietly misbehave.
-2. **Asks the Hugging Face index for an adapter trained for this harness on exactly that model** (the hub's own
-   `base_model:adapter:<model>` link plus the `pi` tag) and takes the most downloaded one, in its llama.cpp (GGUF) form.
-   Steak Pi names no model, adapter or publisher; the hub's links decide.
-3. **Downloads it once**, into `~/.pi/agent/local/adapters/`, verified against the SHA-256 the hub publishes, and
-   **matches it tensor by tensor** against the model (architecture, every adapted tensor and its shape). A file that does
-   not check out is discarded and the model is added without it, with the cause printed.
-4. **Applies it the way it was trained.** The server loads it (`--lora-scaled <file>:1`), its size counts toward the
-   memory a start needs, and the model starts with thinking off, the setting these adapters are trained and measured at
-   (the server default is off, so Steak DSH and Carl get the same; `/thinking` in Pi turns it back on).
+1. **Works out exactly which model the file is.** From the hub repo you added it from (its "quantization of" tag, which
+   the file's own name must agree with), or from the file's own name checked against the base it declares. A model
+   that says it is a fine-tune, or calls itself something other than the base it declares, gets no adapter: an adapter
+   only behaves as trained on the exact model it was trained on, and a fine-tune has the same shapes, so it would load
+   and quietly misbehave. A file that declares nothing is not guessed from its name (another account's re-upload could
+   match). A fine-tune that kept its base's exact name cannot be told apart from the base; use `--no-adapter` for one.
+2. **Asks the Hugging Face index for an adapter trained for this agent on exactly that model** (the hub's own
+   `base_model:adapter:<model>` link plus the `pi` tag). The most downloaded one is the candidate, and its llama.cpp
+   (GGUF) file must come from the same publisher. Steak Pi names no model, adapter or publisher.
+3. **Asks you once to trust the publisher.** Anyone can publish on the hub, an adapter changes how the model behaves,
+   and the model's tool calls run with your permissions. So `add` shows the publisher, repo, commit and download count
+   and asks `Trust adapters from "<publisher>"? [y/N]`. A yes is remembered in `~/.pi/agent/local/trusted-publishers.json`
+   (empty until you answer). With no terminal to ask (scripts, workers), an untrusted publisher's adapter is named and not
+   applied; `steak-pi local adapter <id> --trust` applies it. Download counts are shown, never used as trust.
+4. **Downloads it once, pinned to the commit it was found at**, into `~/.pi/agent/local/adapters/`, checks it against
+   the SHA-256 the hub publishes for that commit, and matches it tensor by tensor against the model. The checksum proves
+   the file is exactly what that publisher published; it says nothing about who the publisher is (that is step 3). A
+   file that does not check out is discarded and the model is added without it, with the cause printed.
+5. **Applies it the way it was trained.** The server loads it (`--lora-scaled <file>:1`) and its size counts toward the
+   memory a start needs. When the adapter's model card says it was trained and measured with thinking off, the model
+   starts with thinking off (the server default is off too, so every client gets it; `/thinking` in Pi turns it back on).
 
 Nothing is bundled and nothing downloads for a model that has no adapter. Adding a model never fails because of the
 adapter: with the hub unreachable the model is added plain, and the output says so.
 
 | Command | What it does |
 |---|---|
-| `local adapter [id]` | Look again for a model added before (or after an opt-out); refuses by name when the model has none. |
+| `local adapter [id] [--trust]` | Look again for a model added before (or after an opt-out); `--trust` trusts the publisher without asking. Refuses by name when there is none. |
 | `local adapter off [id]` | Stop using it from the next start. |
 | `local add ... --no-adapter` | Add without looking. |
-| `local add ... --lora <file \| owner/repo[:file]> [--lora-scale S]` | Use an adapter you choose instead (same download, checksum and tensor checks). |
+| `local add ... --lora <file \| owner/repo[:file]> [--lora-scale S]` | Use an adapter you choose instead (same checksum and tensor checks). |
 
 `status` shows the adapter next to the model. A start whose adapter file was deleted is `REFUSED (adapter-missing)`;
 `local adapter <id>` fetches it again. The `--lora-scaled FILE:SCALE` form needs a current `llama-server`.

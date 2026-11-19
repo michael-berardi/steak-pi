@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { GgufError, readGguf, type GgufInfo } from "./gguf.ts";
 import { LocalError } from "./store.ts";
 
-export type Fetch = (url: string, init?: { headers?: Record<string, string>; signal?: AbortSignal }) => Promise<{ ok: boolean; status: number; json(): Promise<unknown>; arrayBuffer(): Promise<ArrayBuffer> }>;
+export type Fetch = (url: string, init?: { headers?: Record<string, string>; signal?: AbortSignal }) => Promise<{ ok: boolean; status: number; json(): Promise<unknown>; arrayBuffer(): Promise<ArrayBuffer>; text?(): Promise<string> }>;
 
 export const HF_SPEC = /^([\w.-]+\/[\w.-]+)(?::([\w.-]+))?$/;
 const SHARD = /-(\d{5})-of-(\d{5})\.gguf$/i;

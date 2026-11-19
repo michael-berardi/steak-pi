@@ -12,7 +12,7 @@ import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { readGguf, type GgufInfo } from "./gguf.ts";
 import { adapterFromFile, adapterFromHub, type AdapterRef, type Download } from "./adapter.ts";
-import { findHarnessAdapter, type HarnessAdapterResult } from "./harness-adapter.ts";
+import { findHarnessAdapter, type HarnessAdapterResult, type TrustPrompt } from "./harness-adapter.ts";
 import { gib, totalMemory } from "./hardware.ts";
 import { HF_SPEC, readHfHeader, resolveHf, type Fetch } from "./hf.ts";
 import { DEFAULT_PORT, idFromSource, planProfile, PlanError, type Source } from "./profile.ts";
@@ -22,7 +22,17 @@ import { activeHold, addQuiet, clearHold, describeHold, markQuietToday, parseDur
 import { checkId, listProfiles, localDir, LocalError, modelsJsonPath, readModelEntry, readProfile, upsertLocalModel, writeProfile } from "./store.ts";
 
 export interface Io { out(text: string): void; err(text: string): void }
-export interface CliOptions { io?: Io; deps?: Deps; fetch?: Fetch; download?: Download; totalBytes?: number; modelsJson?: string; ppid?: number }
+export interface CliOptions { io?: Io; deps?: Deps; fetch?: Fetch; download?: Download; totalBytes?: number; modelsJson?: string; ppid?: number; ask?: TrustPrompt }
+
+/** Ask a yes/no question on the terminal; undefined (nobody to ask) when stdin or stdout is not a terminal. */
+function terminalAsk(): TrustPrompt | undefined {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return undefined;
+  return async (question) => {
+    const { createInterface } = await import("node:readline/promises");
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    try { return /^y(es)?$/i.test((await rl.question(`${question} [y/N] `)).trim()); } finally { rl.close(); }
+  };
+}
 
 const USAGE = `usage: steak-pi local <command>
   add <gguf path | owner/repo[:quant]> [--name id] [--ctx N] [--port N] [--lora <file | owner/repo[:file]>]...
@@ -43,8 +53,9 @@ const USAGE = `usage: steak-pi local <command>
   quiet path <repo dir> | quiet process <name> | quiet remove <dir or name>
                   the first sign of that work on a day keeps the local model off until the next day
   quiet today [reason]     switch it off for the rest of today by hand
-  adapter [id] | adapter off [id]
-                  look for this harness's adapter for a model added before (add does it by itself), or stop using it`;
+  adapter [id] [--trust] | adapter off [id]
+                  look for this harness's adapter for a model added before (add does it by itself); --trust
+                  trusts its publisher without asking. 'off' stops using it`;
 
 const SHARD_FIRST = /-00001-of-(\d{5})\.gguf$/i;
 
@@ -113,7 +124,7 @@ async function add(argv: string[], options: CliOptions, io: Io): Promise<number>
   }
   let trained: HarnessAdapterResult["trained"];
   if (!loras.length && !values["no-adapter"]) {
-    const found = await findHarnessAdapter(info, source.kind === "hf" ? source : { kind: "file" }, dir, { list: options.fetch, download: options.download, progress: (text) => io.out(text) });
+    const found = await findHarnessAdapter(info, source.kind === "hf" ? source : { kind: "file" }, dir, { list: options.fetch, download: options.download, progress: (text) => io.out(text), ask: options.ask ?? terminalAsk() });
     if (found.ref) adapters.push(found.ref);
     trained = found.trained;
     adapterLines.push(...found.lines);
@@ -194,17 +205,19 @@ export async function main(argv: string[], options: CliOptions = {}): Promise<nu
       }
       case "adapter": {
         // Look again for the harness adapter of a model added before (or after an opt-out); `off` opts out.
-        const id = pickId(deps.dir, rest[0] === "off" ? rest[1] : rest[0]);
+        const trust = rest.includes("--trust");
+        const words = rest.filter((word) => word !== "--trust");
+        const id = pickId(deps.dir, words[0] === "off" ? words[1] : words[0]);
         const profile = readProfile(deps.dir, id);
         if (!profile) throw new LocalError("unknown-model", `no local model "${id}"`);
-        if (rest[0] === "off") {
+        if (words[0] === "off") {
           writeProfile(deps.dir, { ...profile, adapters: [], harnessAdapter: "off", trainedThinking: undefined });
           io.out(`local/${id} runs without an adapter from its next start (turn it back on with: steak-pi local adapter ${id})`);
           return 0;
         }
         if (profile.source.kind !== "file") throw new LocalError("bad-source", `local/${id} streams its weights from the hub; add it again to look for its adapter`);
         const info = { ...readGgufOrThrow(profile.source.path, true), fileBytes: profile.modelBytes };
-        const found = await findHarnessAdapter(info, { kind: "file" }, deps.dir, { list: options.fetch, download: options.download, progress: (text) => io.out(text), strict: true });
+        const found = await findHarnessAdapter(info, { kind: "file" }, deps.dir, { list: options.fetch, download: options.download, progress: (text) => io.out(text), strict: true, trust, ask: options.ask ?? terminalAsk() });
         const reasoning = Boolean(readModelEntry(options.modelsJson ?? modelsJsonPath(), id)?.reasoning);
         writeProfile(deps.dir, { ...profile, adapters: found.ref ? [found.ref] : [], harnessAdapter: undefined, trainedThinking: found.trained?.thinking === "off" && reasoning ? "off" : undefined });
         io.out([`local/${id}`, ...found.lines.map((line) => `  ${line}`), "  applied   from the next start of the model server"].join("\n"));

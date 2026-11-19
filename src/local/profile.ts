@@ -254,7 +254,7 @@ export function serverArgs(profile: LaunchProfile): string[] {
     ...(hasFlag(extra, "-ub") || hasFlag(extra, "--ubatch-size") ? [] : ["--ubatch-size", String(server.ubatchSize)]),
     ...(specOn && !specDepthSet ? ["--spec-draft-n-max", String(server.specDraftMax)] : []),
     // An adapter trained with thinking off: the server's default is off, so a client that sends no thinking switch (Steak
-    // DSH, Carl, a plain request) gets what the adapter was trained for; a request that asks for thinking still gets it.
+    // DSH, a gateway, a plain request) gets what the adapter was trained for; a request that asks for thinking still gets it.
     ...(profile.trainedThinking === "off" && !hasFlag(extra, "--chat-template-kwargs") ? ["--chat-template-kwargs", JSON.stringify({ enable_thinking: false })] : []),
     ...extra,
   ];
