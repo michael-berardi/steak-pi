@@ -1,6 +1,22 @@
 /** A terminal local wait failure, not a suggestion to replay a charged turn. */
 export class ClaudeWaitLimitError extends Error {
   override name = "ClaudeWaitLimitError";
+  /** "idle": the model or connection went silent mid-turn, which a fresh attempt can fix. Anything else is a local wait. */
+  kind?: "idle";
+  /** What the silence looked like, filled in where it is known. */
+  silentMs?: number;
+  stage?: string;
+  lastEvent?: string;
+  childAlive?: boolean;
+  bytesReceived?: number;
+  recoveries?: number;
+
+  constructor(message: string, details: { kind?: "idle"; silentMs?: number; stage?: string } = {}) {
+    super(message);
+    this.kind = details.kind;
+    this.silentMs = details.silentMs;
+    this.stage = details.stage;
+  }
 }
 
 /** A transport deadline must be finite: zero/Infinity must never disable it. */
@@ -19,6 +35,7 @@ export function waitForOperation<T>(
   label: string,
   signal?: AbortSignal,
   onStop?: () => void,
+  kind?: "idle",
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let settled = false;
@@ -38,7 +55,7 @@ export function waitForOperation<T>(
       else resolve(value as T);
     };
     const abort = () => finish(signal?.reason ?? new Error("Claude Code request aborted"), undefined, true);
-    const timer = setTimeout(() => finish(new ClaudeWaitLimitError(`${label} exceeded its wait limit`), undefined, true), timeoutMs);
+    const timer = setTimeout(() => finish(new ClaudeWaitLimitError(`${label} exceeded its wait limit`, { kind, silentMs: timeoutMs, stage: label }), undefined, true), timeoutMs);
     operation.then((value) => finish(undefined, value), (error) => finish(error));
     signal?.addEventListener("abort", abort, { once: true });
     if (signal?.aborted) abort();

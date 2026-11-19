@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.35.2 (2026-11-18)
+
+- **A quiet or stalled Claude Code turn no longer ends the session turn with `stream idle limit exceeded`.** Three real occurrences on 2026-11-18 (contexts of 230k to 450k tokens) each sat exactly 300 s with no byte from the API, never started a content block, and ended the turn until you typed `resume`. The one 300 s limit was both too long for a connection that never answers and a dead end for the turn. Now:
+  - A request the API never answers (no headers or no first byte) is sent again quietly on a new connection after 90 s to about 190 s (scaled by reasoning effort and request size), before Claude Code sees anything.
+  - Once the reply is streaming, the idle limit is 420 s to 540 s (1.4 to 1.8 times Pi's 300 s budget, more for high effort and large contexts). Every API byte (thinking and tool-input deltas, pings) counts as activity.
+  - A reply that still goes quiet is recovered automatically, at most twice: only that Claude Code process is stopped, a fresh one replays the same Pi conversation and asks again, and the partial text of the stalled attempt is dropped. Claude Code is only a transport (no tools), so no finished tool call is repeated. A process that had already exited is reported as a crash, not retried.
+  - While a turn is silent the status line shows `waiting on the model: N s since last event`, and a notice says when a recovery starts.
+  - When recovery is spent, the error names the silence and stage, the last event, whether the process was alive and how many recoveries were tried, and says to send `resume` or raise a limit.
+  - USAP workers on a Claude Code model get the same recovery, and the coordinator's transient-failure rule now also resumes a worker that ends with this error.
+  - Limits are set in the environment: `PI_CLAUDE_CODE_IDLE_LIMIT_MS`, `PI_CLAUDE_CODE_FIRST_BYTE_LIMIT_MS`, `PI_CLAUDE_CODE_MAX_RECOVERIES` (0 turns recovery off). See `docs/CLAUDE-CODE.md`.
+
 ## 0.35.1 (2026-11-18)
 
 The tag `v0.35.0` was never published as a release: it was cut before 0.34.2 landed and lacks that fix. Use 0.35.1.

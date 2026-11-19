@@ -12,6 +12,7 @@ describe("transient worker failures", () => {
     ["Codex SSE response headers timed out after 300000ms", "provider stream cut"],
     ["Request timed out.", "provider stream cut"],
     ["No model or tool activity for 5 min: the provider stream stopped responding, so the worker was stopped to free its slot.", "provider stream stalled"],
+    ['Claude Code stream idle limit exceeded (no bytes or events): silent for 7 min 0 s partway through the reply; last event: ping; 2 automatic recoveries tried and each went quiet again. The conversation is intact: send "resume" to try again', "provider stream stalled"],
     ["claude-code ended with an incomplete stream-json frame", "Claude Code stream cut"],
     ["Request rate limited", "rate limited"],
     ["Claude CLI synthetic error: rate limit reached; retry with bounded backoff; synthetic frame is not a model response or approval", "rate limited"],

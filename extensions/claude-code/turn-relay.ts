@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import type { AnthropicStreamEvent, NativeContentBlock, NativeMessage } from "./native-types.ts";
 
 import { ClaudeWaitLimitError, transportTimeout, waitForOperation } from "./wait.ts";
+import { formatSilence, idleLimits, requestShape, type IdleLimits } from "./idle-policy.ts";
 
 function copy<T>(value: T): T {
   return structuredClone(value);
@@ -132,6 +133,10 @@ function describeError(error: unknown): string {
   return `${error.name}: ${error.message}${code ? ` [${code}]` : ""}`;
 }
 
+function isIdleWait(error: unknown): boolean {
+  return error instanceof ClaudeWaitLimitError && error.kind === "idle";
+}
+
 /** Socket-level failures only: aborts, bad requests and programming errors are not retried. */
 function isTransientNetworkError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
@@ -148,6 +153,11 @@ export class TurnRelay {
   failure?: string;
   failureDetail?: string;
   waitFailure?: ClaudeWaitLimitError;
+  /** Limits for the request in flight; recomputed once its body (size, effort) is known. */
+  limits: IdleLimits;
+  /** Wall time of the last byte from the API (or of the start of the current attempt). */
+  lastByteAt = Date.now();
+  bytesReceived = 0;
   stage = "start";
   attempts = 0;
   retries = 0;
@@ -176,8 +186,10 @@ export class TurnRelay {
     transformRequest?: (body: Buffer) => Buffer,
     requestBetas: string[] = [],
     private readonly retry: RetryPolicy = DEFAULT_RETRY,
+    private readonly env: Record<string, string | undefined> = process.env,
   ) {
     transportTimeout(timeoutMs);
+    this.limits = idleLimits(timeoutMs, {}, env);
     this.upstream = new URL(upstream);
     const loopback = ["127.0.0.1", "::1", "localhost"].includes(this.upstream.hostname);
     if (
@@ -217,6 +229,9 @@ export class TurnRelay {
     this.failure = undefined;
     this.failureDetail = undefined;
     this.waitFailure = undefined;
+    this.limits = idleLimits(this.timeoutMs, {}, this.env);
+    this.lastByteAt = Date.now();
+    this.bytesReceived = 0;
     this.attempts = 0;
     this.retries = 0;
     this.lastRetry = undefined;
@@ -317,6 +332,7 @@ export class TurnRelay {
       this.originalRequestBody = Buffer.from(body);
       if (this.transformRequest) body = this.transformRequest(body);
       this.requestBody = Buffer.from(body);
+      this.limits = idleLimits(this.timeoutMs, requestShape(this.requestBody), this.env);
       if (this.cancelled) return;
 
       const headers: http.OutgoingHttpHeaders = {};
@@ -371,12 +387,12 @@ export class TurnRelay {
             current.once("response", resolve);
             current.once("error", reject);
             current.end(body);
-          }), this.timeoutMs, "Claude Code upstream response headers", signal);
+          }), this.limits.firstByteMs, "Claude Code upstream response headers", signal, undefined, "idle");
         } catch (error) {
           this.sockets.delete(current);
           current.destroy();
-          if (!retryable || !isTransientNetworkError(error)) throw error;
-          this.noteRetry(`connection: ${describeError(error)}`);
+          if (!retryable || !(isTransientNetworkError(error) || isIdleWait(error))) throw error;
+          this.noteRetry(isIdleWait(error) ? `no response headers for ${formatSilence(this.limits.firstByteMs)}` : `connection: ${describeError(error)}`);
           await this.backoff(attempt);
           continue;
         }
@@ -403,14 +419,14 @@ export class TurnRelay {
         // Read the first chunk before committing headers to Claude Code.
         const source = upstreamResponse[Symbol.asyncIterator]();
         try {
-          const first = await waitForOperation(source.next(), this.timeoutMs, "Claude Code upstream first byte", signal);
+          const first = await waitForOperation(source.next(), this.limits.firstByteMs, "Claude Code upstream first byte", signal, undefined, "idle");
           if (!first.done) pending = [Buffer.isBuffer(first.value) ? first.value : Buffer.from(first.value)];
         } catch (error) {
           this.sockets.delete(upstreamResponse);
           this.sockets.delete(current);
           current.destroy();
-          if (!retryable || !isTransientNetworkError(error)) throw error;
-          this.noteRetry(`stream before first byte: ${describeError(error)}`);
+          if (!retryable || !(isTransientNetworkError(error) || isIdleWait(error))) throw error;
+          this.noteRetry(isIdleWait(error) ? `no first byte for ${formatSilence(this.limits.firstByteMs)}` : `stream before first byte: ${describeError(error)}`);
           await this.backoff(attempt);
           continue;
         }
@@ -422,6 +438,8 @@ export class TurnRelay {
       const forward = async (rawChunk: unknown) => {
         const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk as Uint8Array);
         this.onActivity?.();
+        this.lastByteAt = Date.now();
+        this.bytesReceived += chunk.length;
         if (this.status === 200) this.capture.feed(chunk);
         else if (this.errorBody.length < 65_536) {
           this.errorBody = Buffer.concat([this.errorBody, chunk]).subarray(0, 65_536);
@@ -430,7 +448,7 @@ export class TurnRelay {
       };
       for (const chunk of pending) await forward(chunk);
       for (;;) {
-        const next = await waitForOperation(iterator!.next(), this.timeoutMs, "Claude Code upstream stream idle", signal);
+        const next = await waitForOperation(iterator!.next(), this.limits.streamIdleMs, "Claude Code upstream stream idle", signal, undefined, "idle");
         if (next.done) break;
         await forward(next.value);
       }

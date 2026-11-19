@@ -160,6 +160,15 @@ class EventTranslator {
     private readonly toolNames: ClaudeToolNames,
   ) {}
 
+  /** An automatic recovery is asking again: drop what the stalled attempt streamed so the new reply starts clean. */
+  reset(): void {
+    this.output.content.length = 0;
+    this.nativeToContent.clear();
+    this.sawContentEvent = false;
+    this.output.stopReason = "pending";
+    this.output.errorMessage = undefined;
+  }
+
   event(event: AnthropicStreamEvent): void {
     switch (event.type) {
       case "message_start":
@@ -378,6 +387,7 @@ export function streamClaudeCode(
         toolNames: preparedTools.names,
         signal: options?.signal,
         timeoutMs: options?.timeoutMs,
+        upstreamUrl: loopbackUpstream((options as { upstreamUrl?: unknown } | undefined)?.upstreamUrl),
         env: options?.env,
         initialUserPrefix,
         initialSystemMessages,
@@ -385,6 +395,7 @@ export function streamClaudeCode(
         betas: nativeTranscript ? [NATIVE_TOOL_CHANGES_BETA] : undefined,
         sessionId: options?.cacheRetention === "none" ? undefined : options?.sessionId,
         onEvent: (event) => translator.event(event),
+        onRestart: () => translator.reset(),
       });
       translator.finish(
         response.message,
@@ -429,4 +440,15 @@ export function streamClaudeCode(
   })();
 
   return stream;
+}
+
+/** Test seam: a loopback HTTP fixture may stand in for the API. Anything else is ignored, so credentials never leave for another host. */
+function loopbackUpstream(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" && ["127.0.0.1", "::1", "[::1]", "localhost"].includes(url.hostname) ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }

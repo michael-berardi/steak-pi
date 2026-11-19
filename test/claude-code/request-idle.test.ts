@@ -99,7 +99,7 @@ async function fixture(mode: string, check: (input: Parameters<typeof runClaudeR
             { type: "assistant" as const, message: { role: "assistant" as const, content: [{ type: "text", text: "ok" }] } },
           ]).flat(), { type: "user" as const, message: { role: "user" as const, content: [{ type: "text", text: "now" }] } }]
         : [{ type: "user", message: { role: "user", content: [{ type: "text", text: "hello" }] }, ...(mode === "replay-chatter" ? { shouldQuery: false as const } : {}) }],
-      timeoutMs: 1_000, env: { PI_CLAUDE_CODE_COMMAND: executable, MODE: mode },
+      timeoutMs: 1_000, env: { PI_CLAUDE_CODE_COMMAND: executable, MODE: mode, ...(mode === "relay-retries-silent" ? { PI_CLAUDE_CODE_FIRST_BYTE_LIMIT_MS: "1000" } : {}) },
       upstreamUrl: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}` });
   } finally {
     await closeClaudeProcesses();
@@ -164,7 +164,8 @@ test("empty native error content retains sanitized event.error", () => fixture("
 test("a stalled relay retains a non-retryable cause after transient retries", () => fixture("relay-stuck", async input => {
   await assert.rejects(runClaudeRequest(input), error => {
     assert.ok(error instanceof Error);
-    assert.match(error.message, /upstream stream idle.*wait limit/);
+    // Recovery is spent first (two fresh attempts), then the error names the cause and what to do.
+    assert.match(error.message, /stream idle limit exceeded.*partway through the reply.*2 automatic recoveries tried.*resume/s);
     assert.equal(isRetryableAssistantError({ role: "assistant", stopReason: "error", errorMessage: error.message } as AssistantMessage), false);
     assert.doesNotMatch(error.message, /503|timed out|timeout/);
     return true;
