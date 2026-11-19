@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.38.2 (2026-11-19)
+
+- **`steak-pi local adapter <id> --lora <file | owner/repo[:file]>`** applies an adapter you choose to a model added before, such as a fine-tune of the base the adapter was trained on, which local mode never adapts by itself.
+- **An adapter you name is used the way it was trained.** With `--lora` (on `add` or `adapter`), when the adapter's model card says it was trained with thinking off, the model now starts with thinking off and its server defaults to off, as for an adapter local mode finds. Before, only found adapters got this.
+- Measured on a fine-tune of the 27B base with the published harness adapter (6 small bug-fix tasks, 2 rounds, thinking off): both setups solved 12 of 12; with the adapter, 0.76x the output tokens and 0.78x the time, fewer tokens in 11 of 12 pairs. With thinking on, no gain in one round of 6.
+
 ## 0.38.1 (2026-11-19)
 
 A local hold can be bypassed when you ask, and the adapter's thinking setting uses llama-server's current flag.

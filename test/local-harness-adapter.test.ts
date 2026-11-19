@@ -129,6 +129,21 @@ describe("local mode applies the harness adapter by itself", () => {
     expect(readProfile(state, "m")!.trainedThinking).toBeUndefined();
   });
 
+  it("--lora on an existing model (a fine-tune local mode skips) applies the named adapter and its card's thinking-off", async () => {
+    const { err, options, state, file } = setup([["general.name", "str", "Tuned-7B"], ["general.finetune", "str", "tuned"], ...BASE_IDENTITY.slice(1)]);
+    const listing = [{ type: "file", path: "Model-7B-pi-lora-F16.gguf", size: adapterBytes.length, lfs: { size: adapterBytes.length, oid: OID } }];
+    const h = hub({ "https://huggingface.co/lab/Model-7B-pi-GGUF/raw/main/README.md": "Evaluated with thinking off.", "https://huggingface.co/api/models/lab/Model-7B-pi-GGUF/tree/main?recursive=true": listing });
+    expect(await main(["add", file, "--name", "tuned"], { ...options, fetch: h.fetchFake, download: h.download })).toBe(0);
+    expect(readProfile(state, "tuned")!.adapters ?? []).toEqual([]);
+    const code = await main(["adapter", "tuned", "--lora", "lab/Model-7B-pi-GGUF"], { ...options, fetch: h.fetchFake, download: h.download });
+    expect(err, err.join("\n")).toEqual([]);
+    expect(code).toBe(0);
+    const profile = readProfile(state, "tuned")!;
+    expect(profile.adapters).toEqual([expect.objectContaining({ origin: "lab/Model-7B-pi-GGUF:Model-7B-pi-lora-F16.gguf" })]);
+    expect(profile.trainedThinking).toBe("off");
+    expect(serverArgs(profile)).toEqual(expect.arrayContaining(["--reasoning", "off"]));
+  });
+
   it("an adapter whose only GGUF form is from another publisher is not used", async () => {
     const { out, options, state, file } = setup();
     const h = hub({ [`https://huggingface.co/api/models?filter=${encodeURIComponent("base_model:adapter:lab/Model-7B-pi")}&filter=gguf&sort=downloads&limit=20`]: [{ id: "squatter/Model-7B-pi-GGUF", tags: ["gguf", "lora", "pi"] }] });

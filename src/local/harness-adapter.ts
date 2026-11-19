@@ -202,7 +202,7 @@ export async function findHarnessAdapter(info: GgufInfo, source: { kind: "file" 
 }
 
 /** True when the adapter's model card says it was trained or evaluated with thinking off. Read, never assumed. */
-async function trainedWithoutThinking(list: ListFetch, repos: Array<[string, string | undefined]>): Promise<boolean> {
+export async function trainedWithoutThinking(list: ListFetch, repos: Array<[string, string | undefined]>): Promise<boolean> {
   for (const [repo, sha] of repos) {
     const rev = sha && /^[0-9a-f]{40}$/.test(sha) ? sha : "main";
     const response = await list(`https://huggingface.co/${repo}/raw/${rev}/README.md`, { headers: hfHeaders(), signal: AbortSignal.timeout(20_000) }).catch(() => undefined);

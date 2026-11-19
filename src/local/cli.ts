@@ -12,7 +12,7 @@ import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { readGguf, type GgufInfo } from "./gguf.ts";
 import { adapterFromFile, adapterFromHub, type AdapterRef, type Download } from "./adapter.ts";
-import { findHarnessAdapter, type HarnessAdapterResult, type TrustPrompt } from "./harness-adapter.ts";
+import { findHarnessAdapter, trainedWithoutThinking, type HarnessAdapterResult, type TrustPrompt } from "./harness-adapter.ts";
 import { gib, totalMemory } from "./hardware.ts";
 import { HF_SPEC, readHfHeader, resolveHf, type Fetch } from "./hf.ts";
 import { DEFAULT_PORT, idFromSource, planProfile, PlanError, type Source } from "./profile.ts";
@@ -56,7 +56,7 @@ const USAGE = `usage: steak-pi local <command>
   bypass <N>m|h|d [reason] | bypass off
                   let the local model run for that long although a hold or the quiet rule says off (at most 7d;
                   the rules stay and apply again afterwards)
-  adapter [id] [--trust [publisher]] | adapter off [id]
+  adapter [id] [--trust [publisher]] | adapter <id> --lora <file | owner/repo[:file]> | adapter off [id]
                   look for this harness's adapter for a model added before (add does it by itself); --trust
                   trusts its publisher without asking (name it to trust only that one). 'off' stops using it`;
 
@@ -125,7 +125,7 @@ async function add(argv: string[], options: CliOptions, io: Io): Promise<number>
     adapters.push(ref);
     adapterLines.push(...lines, `lora      ${ref.origin} at scale ${loraScale}`);
   }
-  let trained: HarnessAdapterResult["trained"];
+  let trained: HarnessAdapterResult["trained"] = await chosenAdapterThinking(adapters, options.fetch, adapterLines);
   if (!loras.length && !values["no-adapter"]) {
     const found = await findHarnessAdapter(info, source.kind === "hf" ? source : { kind: "file" }, dir, { list: options.fetch, download: options.download, progress: (text) => io.out(text), modelId: id, trust: values.trust, ask: options.ask ?? terminalAsk() });
     if (found.ref) adapters.push(found.ref);
@@ -149,6 +149,20 @@ async function add(argv: string[], options: CliOptions, io: Io): Promise<number>
     `  wrote     ${modelsJson}${backup ? ` (backup ${basename(backup)})` : ""} and ${join(dir, "profiles", `${id}.json`)}`,
     `  use       pi --model local/${id}   (the server starts on demand and stops after an idle grace)`].join("\n"));
   return 0;
+}
+
+/**
+ * An adapter the operator named (--lora) is used the way it was trained, like one local mode found: when its card says
+ * it was trained with thinking off, the model starts there. Only a hub adapter has a card to read; a file has none.
+ */
+async function chosenAdapterThinking(adapters: AdapterRef[], fetchImpl: Fetch | undefined, lines: string[]): Promise<HarnessAdapterResult["trained"]> {
+  for (const adapter of adapters) {
+    const repo = /^([\w.-]+\/[\w.-]+):/.exec(adapter.origin)?.[1];
+    if (!repo) continue;
+    const off = await trainedWithoutThinking((fetchImpl ?? fetch) as never, [[repo, adapter.revision]]).catch(() => false);
+    if (off) { lines.push("thinking  off by default: the adapter's card says it was trained and measured with thinking off; /thinking turns it on"); return { thinking: "off" }; }
+  }
+  return undefined;
 }
 
 function readGgufOrThrow(path: string, tensors = false): GgufInfo {
@@ -224,6 +238,21 @@ export async function main(argv: string[], options: CliOptions = {}): Promise<nu
         const info = profile.source.kind === "file"
           ? { ...readGgufOrThrow(profile.source.path, true), fileBytes: profile.modelBytes }
           : { ...(await readHfHeader(await resolveHf(profile.source.spec, options.fetch), options.fetch, { tensors: true })), fileBytes: profile.modelBytes };
+        const reasoningEntry = Boolean(readModelEntry(options.modelsJson ?? modelsJsonPath(), id)?.reasoning);
+        // `adapter <id> --lora <file | owner/repo[:file]>`: apply the adapter the operator names to a model added before,
+        // with the same download, checksum and tensor checks as add --lora, and its card's thinking setting.
+        const loraAt = words.indexOf("--lora");
+        if (loraAt >= 0) {
+          const spec = words[loraAt + 1];
+          if (!spec) throw new LocalError("bad-option", "--lora needs a file or owner/repo[:file]");
+          const hub = !existsSync(resolve(spec)) && !spec.startsWith(".") && !spec.startsWith("/") && !spec.startsWith("~") && HF_SPEC.test(spec) && (spec.includes(":") || !/\.gguf$/i.test(spec));
+          const { ref, lines } = !hub ? adapterFromFile(spec, info, 1) : await adapterFromHub(spec, deps.dir, info, 1, { list: options.fetch, download: options.download, progress: (text) => io.out(text) });
+          const chosen: string[] = [];
+          const thinking = await chosenAdapterThinking([ref], options.fetch, chosen);
+          writeProfile(deps.dir, { ...profile, adapters: [ref], harnessAdapter: undefined, trainedThinking: thinking?.thinking === "off" && reasoningEntry ? "off" : undefined });
+          io.out([`local/${id}`, ...lines.map((line) => `  ${line}`), `  lora      ${ref.origin} at scale 1`, ...chosen.map((line) => `  ${line}`), "  applied   from the next start of the model server"].join("\n"));
+          return 0;
+        }
         const found = await findHarnessAdapter(info, profile.source.kind === "hf" ? profile.source : { kind: "file" }, deps.dir, { list: options.fetch, download: options.download, progress: (text) => io.out(text), strict: true, trust, modelId: id, ask: options.ask ?? terminalAsk() });
         const reasoning = Boolean(readModelEntry(options.modelsJson ?? modelsJsonPath(), id)?.reasoning);
         writeProfile(deps.dir, { ...profile, adapters: found.ref ? [found.ref] : [], harnessAdapter: undefined, trainedThinking: found.trained?.thinking === "off" && reasoning ? "off" : undefined });

@@ -126,7 +126,7 @@ describe("steak-pi local add --lora", () => {
     const downloads: string[] = [];
     const download: Download = async (url, _headers, target) => { downloads.push(url); writeFileSync(target, served); };
     expect(await main(["add", model, "--name", "m", "--lora", "owner/adapter-GGUF"], { ...options, fetch: fetchFake, download })).toBe(0);
-    expect(listed).toEqual(["https://huggingface.co/api/models/owner/adapter-GGUF/tree/main?recursive=true"]);
+    expect(listed).toEqual(["https://huggingface.co/api/models/owner/adapter-GGUF/tree/main?recursive=true", "https://huggingface.co/owner/adapter-GGUF/raw/main/README.md"]); // the listing, then the card (for its thinking setting)
     expect(downloads).toEqual(["https://huggingface.co/owner/adapter-GGUF/resolve/main/adapter-F16.gguf"]);
     const ref = readProfile(state, "m")!.adapters![0];
     expect(ref).toMatchObject({ origin: "owner/adapter-GGUF:adapter-F16.gguf", sha256: oid, scale: 1 });

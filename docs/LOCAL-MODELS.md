@@ -81,6 +81,7 @@ adapter: with the hub unreachable the model is added plain, and the output says 
 | Command | What it does |
 |---|---|
 | `local adapter [id] [--trust [publisher]]` | Look again for a model added before (or after an opt-out); `--trust <publisher>` trusts that publisher only, without asking. Refuses by name when there is none, or when the adapter found now comes from a different publisher. |
+| `local adapter <id> --lora <file \| owner/repo[:file]>` | Apply an adapter you choose to a model added before, for example a fine-tune of the base it was trained on (local mode never does that by itself). Same download, checksum and tensor checks; when the adapter's card says it was trained with thinking off, the model starts there. |
 | `local adapter off [id]` | Stop using it from the next start. |
 | `local add ... --no-adapter` | Add without looking. |
 | `local add ... --lora <file \| owner/repo[:file]> [--lora-scale S]` | Use an adapter you choose instead (same checksum and tensor checks). |
