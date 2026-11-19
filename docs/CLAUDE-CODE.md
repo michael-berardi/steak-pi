@@ -83,8 +83,16 @@ up to 9: 3 relay attempts in each of 3 processes). The budget is fixed; it is
 not an environment setting. A resend can be billed again, so there is no claim
 that a retry is free. When the budget is spent the error says the request was
 already sent 3 times. A line in the
-notifications says what happened, and while a turn is silent the status line
-shows `waiting on the model: N s since last event`.
+notifications says what happened when a recovery starts. A quiet turn shows nothing
+else: there is no waiting line at the bottom.
+
+Uploads: the first-byte limit starts when the request body has been handed to the
+network, not when it starts to upload, and does not run while the body is moving
+(progress also counts as activity for the outer idle limit). A body that stops
+moving for the limit fails with `request upload stalled at X of Y MB` and is not
+sent again. Large images (64 KB of base64 or more) older than the newest 4 to 7 are
+replaced by a short text naming the tool and path, in steps of 4 so the cache
+prefix stays stable; read the file again to see it.
 
 When recovery is spent the error names the cause: how long the reply was
 silent and in which stage, the last event seen, whether the process was alive,

@@ -28,8 +28,6 @@ export interface IdleLimits {
   streamIdleMs: number;
   /** Hard ceiling for the native stdout queue: the larger limit plus a margin, so the relay's named cause wins. */
   queueIdleMs: number;
-  /** Silence after which the operator is shown a waiting line. */
-  statusAfterMs: number;
   /** Automatic recoveries (kill only this child, replay, ask again) before the operator sees an error. */
   maxRecoveries: number;
   /** Total sends of one request to the API across the relay's quiet retries and every recovery. */
@@ -133,7 +131,6 @@ export function idleLimits(timeoutMs: number, shape: RequestShape = {}, env: Env
     firstByteMs,
     streamIdleMs,
     queueIdleMs: Math.min(MAX_TIMER_MS, Math.max(firstByteMs, streamIdleMs) + margin),
-    statusAfterMs: Math.max(25, Math.min(30_000, Math.round(Math.min(firstByteMs, streamIdleMs) / 3))),
     maxRecoveries: envCount(env, "PI_CLAUDE_CODE_MAX_RECOVERIES") ?? MAX_REQUEST_SENDS - 1,
     maxSends: MAX_REQUEST_SENDS,
     recoveryBackoffMs: [Math.min(2_000, Math.round(timeoutMs / 10)), Math.min(8_000, Math.round(timeoutMs / 4))],

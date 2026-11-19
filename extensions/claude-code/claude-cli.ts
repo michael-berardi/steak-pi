@@ -991,17 +991,6 @@ export function setClaudeCodeDiagnosticReporter(reporter: ((message: string) => 
   diagnosticReporter = reporter;
 }
 
-let statusReporter: ((text: string | undefined) => void) | undefined;
-
-/** The extension supplies a status-line sink; headless callers have none and show nothing. */
-export function setClaudeCodeStatusReporter(reporter: ((text: string | undefined) => void) | undefined): void {
-  statusReporter = reporter;
-}
-
-function reportClaudeCodeStatus(text: string | undefined): void {
-  try { statusReporter?.(text); } catch { /* a broken status line must never fail a turn */ }
-}
-
 /** One named line for the operator: the TUI-safe sink when a session supplied one, else stderr unless it is a terminal. */
 export function reportClaudeCodeDiagnostic(message: string): void {
   if (diagnosticReporter) diagnosticReporter(message);
@@ -1303,9 +1292,6 @@ class ClaudeProcess {
       input.onEvent?.(event);
     };
     this.queue.touch();
-    const statusAfterMs = () => this.relay.limits.statusAfterMs;
-    let waiting = false;
-    let ticker: NodeJS.Timeout | undefined;
     let begun = false;
     const canonicalInitialUser = input.frames.find((frame) => frame.type === "user")?.message.content ?? [];
     const abort = () => {
@@ -1321,18 +1307,6 @@ class ClaudeProcess {
     let hung = false;
 
     try {
-      // The ticker and the turn are armed inside the try, so an exception in either still clears the ticker.
-      ticker = setInterval(() => {
-        const silent = Date.now() - Math.max(this.queue.lastTouch, this.relay.lastByteAt);
-        if (silent >= statusAfterMs()) {
-          waiting = true;
-          reportClaudeCodeStatus(`waiting on the model: ${Math.round(silent / 1000)} s since last event`);
-        } else if (waiting) {
-          waiting = false;
-          reportClaudeCodeStatus(undefined);
-        }
-      }, Math.max(10, Math.min(1_000, Math.floor(statusAfterMs() / 3))));
-      ticker.unref?.();
       this.relay.beginTurn(
         deliver,
         buildRequestTransform({
@@ -1490,9 +1464,7 @@ class ClaudeProcess {
       }
       throw failure;
     } finally {
-      if (ticker) clearInterval(ticker);
       if (begun) this.sendsLastTurn = this.relay.attempts;
-      if (waiting) reportClaudeCodeStatus(undefined);
       input.signal?.removeEventListener("abort", abort);
       this.relay.finishTurn();
     }

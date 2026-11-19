@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.35.5 (2026-11-19)
+
+Fixes the stall that froze two long sessions with many screenshots, and removes a status line nobody asked for.
+
+- **The "waiting on the model: N s since last event" line at the bottom is gone.** It was added without being asked for. A quiet turn now shows nothing; a real recovery or failure is still named in a notice or in the error. A test fails if the text, the status sink or its timer comes back.
+- **A slow upload is no longer mistaken for a silent model.** Every turn re-sends the whole conversation, screenshots included (6.5 MB and 8.4 MB of base64 in the two frozen sessions). With the uplink busy (about 30 to 70 KB/s) that body could not finish inside the first-byte limit (90 to 190 s), which counted the upload as silence, so Steak Pi timed out, quietly re-sent the whole body and never got an answer. Now the first-byte limit starts when the body has been handed over, and while the body is moving it never runs. Upload progress also counts as activity for the outer idle limit.
+- **A body that stops moving fails with its own cause and is not sent again:** `request upload stalled at X of Y MB (... no progress for N s); not sent again, because that would only restart the upload`. Neither the relay nor the recovery loop resends it.
+- **Old screenshots are no longer re-sent in full.** Images of 64 KB or more (base64) older than the newest 4 to 7 are replaced with a short text naming the tool and path they came from (`read /path/shot.png`), so the model can open the file again. The rule depends only on the history, so two builds of the same history are byte-identical, and the cut moves in steps of 4 images so the prompt-cache prefix is unchanged between steps. No image library is added (Node has no image encoder, so re-encoding was not an option). Measured on a synthetic history of 400 KB images (no display was available for real screenshots): 10 images 3.9 MB to 2.35 MB, 21 images 8.2 MB to 1.96 MB, 40 images 15.6 MB to 1.58 MB.
+
 ## 0.35.4 (2026-11-19)
 
 Fixes from the final review of 0.35.3.

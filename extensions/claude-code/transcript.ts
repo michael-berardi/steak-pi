@@ -146,6 +146,63 @@ function projectionsEqual(left: AssistantProjection, right: AssistantProjection)
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+/** Images whose base64 is below this many characters are always sent: they are cheap and keep the prefix stable. */
+export const IMAGE_BOUND_MIN_CHARS = 64 * 1024;
+/** At least this many of the newest large images are always sent whole. */
+export const IMAGE_BOUND_KEEP = 4;
+/** The window of replaced images moves in steps of this many, so the request prefix stays byte-identical between steps (prompt cache). */
+export const IMAGE_BOUND_STEP = 4;
+
+const PATH_ARGUMENTS = ["path", "file_path", "filePath", "file", "filename", "url"];
+
+function toolCallSources(messages: Message[]): Map<string, string> {
+  const sources = new Map<string, string>();
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    for (const block of message.content) {
+      if (block.type !== "toolCall") continue;
+      const args = block.arguments as Record<string, unknown> | undefined;
+      const named = PATH_ARGUMENTS.map((key) => args?.[key]).find((value): value is string => typeof value === "string" && value.length > 0);
+      sources.set(block.id, named ? `${block.name} ${named}` : block.name);
+    }
+  }
+  return sources;
+}
+
+function omittedImage(block: ImageContent, source: string | undefined): TextContent {
+  const kb = Math.round((block.data.length * 3) / 4 / 1024);
+  const where = source ? `from ${source}` : "sent earlier in this conversation";
+  return { type: "text", text: `[image omitted to keep the request small: ${block.mimeType}, ${kb} KB, ${where}; open the file again if it is needed]` };
+}
+
+/**
+ * Every turn re-sends the whole history, base64 images included, and a slow uplink cannot finish that upload. Large images
+ * older than the newest few are replaced with a short text that names where they came from (the tool and its path), so the
+ * model can read the file again. The rule depends only on the history itself (never on time or on how many turns ran), and
+ * the boundary moves in whole steps of IMAGE_BOUND_STEP images, so two builds of the same history are byte-identical and
+ * the bytes before the boundary stay the same on most turns.
+ */
+export function boundImages(messages: Message[]): Message[] {
+  const large = (block: { type: string }): block is ImageContent => block.type === "image" && (block as ImageContent).data.length >= IMAGE_BOUND_MIN_CHARS;
+  let total = 0;
+  for (const message of messages) {
+    if ((message.role === "user" || message.role === "toolResult") && Array.isArray(message.content)) total += (message.content as Array<{ type: string }>).filter(large).length;
+  }
+  const replaced = Math.floor(Math.max(0, total - IMAGE_BOUND_KEEP) / IMAGE_BOUND_STEP) * IMAGE_BOUND_STEP;
+  if (replaced === 0) return messages;
+  const sources = toolCallSources(messages);
+  let ordinal = 0;
+  return messages.map((message) => {
+    if ((message.role !== "user" && message.role !== "toolResult") || !Array.isArray(message.content)) return message;
+    if (!(message.content as Array<{ type: string }>).some(large)) return message;
+    const source = message.role === "toolResult" ? sources.get(message.toolCallId) : undefined;
+    const content = (message.content as Array<TextContent | ImageContent>).map((block) =>
+      large(block) && ordinal++ < replaced ? omittedImage(block, source) : block,
+    );
+    return { ...message, content } as Message;
+  });
+}
+
 function imageBlock(block: ImageContent): Record<string, unknown> {
   return {
     type: "image",
@@ -220,7 +277,8 @@ function assistantContent(message: AssistantMessage): NativeContentBlock[] {
   return canonicalAssistantContent(message);
 }
 
-export function prepareFrames(messages: Message[]): NativeFrame[] {
+export function prepareFrames(history: Message[]): NativeFrame[] {
+  const messages = boundImages(history);
   const frames: NativeFrame[] = [];
 
   for (const message of messages) {

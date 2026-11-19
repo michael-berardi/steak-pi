@@ -127,6 +127,13 @@ const TRANSIENT_CODES = new Set([
   "UND_ERR_SOCKET", "ERR_STREAM_PREMATURE_CLOSE",
 ]);
 
+const UPLOAD_SLICE = 64 * 1024;
+const UPLOAD_WINDOW = 256 * 1024;
+
+function megabytes(bytes: number): string {
+  return `${(bytes / 1_048_576).toFixed(1)} MB`;
+}
+
 function describeError(error: unknown): string {
   if (!(error instanceof Error)) return String(error);
   const code = (error as NodeJS.ErrnoException).code;
@@ -389,11 +396,7 @@ export class TurnRelay {
         this.sockets.add(upstreamRequest);
         const current = upstreamRequest;
         try {
-          upstreamResponse = await waitForOperation(new Promise<http.IncomingMessage>((resolve, reject) => {
-            current.once("response", resolve);
-            current.once("error", reject);
-            current.end(body);
-          }), this.limits.firstByteMs, "Claude Code upstream response headers", signal, undefined, "idle");
+          upstreamResponse = await this.sendRequest(current, body, signal);
         } catch (error) {
           this.sockets.delete(current);
           current.destroy();
@@ -473,6 +476,81 @@ export class TurnRelay {
       this.sockets.delete(response);
       upstreamRequest?.destroy();
     }
+  }
+
+  /**
+   * Send the body and wait for the response headers. The first-byte limit measures silence from the last sign of upload
+   * progress (the socket flushing more of the body, or the request finishing), never from the start of the upload, so a
+   * slow but moving upload is not cut and is never sent again. A body that stops moving fails with a named, terminal cause
+   * (a resend would only restart the upload); nothing has left the machine yet when no byte moved at all, so that one
+   * stays a quiet, retryable silence.
+   */
+  private sendRequest(current: http.ClientRequest, body: Buffer, signal: AbortSignal): Promise<http.IncomingMessage> {
+    const limit = this.limits.firstByteMs;
+    const label = "Claude Code upstream response headers";
+    const total = body.length;
+    return new Promise<http.IncomingMessage>((resolve, reject) => {
+      let finished = false;
+      let sent = 0;
+      let lastProgress = Date.now();
+      let flushed = 0;
+      const measure = () => {
+        return finished ? total : flushed;
+      };
+      const note = () => {
+        const now = measure();
+        if (now > sent || (finished && sent < total)) {
+          sent = now;
+          lastProgress = Date.now();
+          this.onActivity?.();
+        }
+      };
+      const done = (settle: () => void) => {
+        clearInterval(poll);
+        signal.removeEventListener("abort", onAbort);
+        settle();
+      };
+      const onAbort = () => done(() => reject(signal.reason ?? new Error("Claude Code request aborted")));
+      const poll = setInterval(() => {
+        note();
+        if (Date.now() - lastProgress < limit) return;
+        if (finished) {
+          done(() => reject(new ClaudeWaitLimitError(`${label} exceeded its wait limit`, { kind: "idle", silentMs: limit, stage: label })));
+        } else if (sent === 0) {
+          done(() => reject(new ClaudeWaitLimitError(`${label} exceeded its wait limit (the connection took no byte of the ${megabytes(total)} request)`, { kind: "idle", silentMs: limit, stage: label })));
+        } else {
+          const error = new ClaudeWaitLimitError(
+            `Claude Code request upload stalled at ${megabytes(sent)} of ${megabytes(total)} (${sent} of ${total} bytes sent, no progress for ${formatSilence(limit)}); not sent again, because that would only restart the upload`,
+            { silentMs: limit, stage: "request upload" },
+          );
+          error.uploadStalled = true;
+          done(() => reject(error));
+        }
+      }, Math.max(5, Math.min(250, Math.floor(limit / 10))));
+      poll.unref?.();
+      current.once("finish", () => { finished = true; note(); });
+      current.once("response", (value) => done(() => resolve(value)));
+      current.once("error", (error) => done(() => reject(error)));
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) return onAbort();
+      // Written in slices with a small window in flight: a slice's write callback fires when the socket has taken it, so
+      // the count moves in small steps (one large write, or many queued at once, is one unit that only counts when done).
+      let next = 0;
+      const pump = () => {
+        while (next < total && next - flushed < UPLOAD_WINDOW && !current.destroyed) {
+          const slice = body.subarray(next, Math.min(total, next + UPLOAD_SLICE));
+          next += slice.length;
+          current.write(slice, (error) => {
+            if (error) return;
+            flushed += slice.length;
+            pump();
+          });
+        }
+        if (next >= total && !ended) { ended = true; current.end(); }
+      };
+      let ended = false;
+      pump();
+    });
   }
 
   private noteRetry(cause: string): void {

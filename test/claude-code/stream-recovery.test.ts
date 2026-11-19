@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isRetryableAssistantError, type AssistantMessage, type AssistantMessageEvent, type Context } from "@earendil-works/pi-ai";
 import { afterEach, test, vi } from "vitest";
-import { closeClaudeProcesses, runClaudeRequest, setClaudeCodeDiagnosticReporter, setClaudeCodeStatusReporter } from "../../extensions/claude-code/claude-cli.ts";
+import { closeClaudeProcesses, runClaudeRequest, setClaudeCodeDiagnosticReporter } from "../../extensions/claude-code/claude-cli.ts";
 import { effortRank, formatSilence, idleLimits, MAX_REQUEST_SENDS, requestShape } from "../../extensions/claude-code/idle-policy.ts";
 import { CLAUDE_CODE_MODELS } from "../../extensions/claude-code/model-catalog.ts";
 import { streamClaudeCode } from "../../extensions/claude-code/stream.ts";
@@ -61,7 +61,6 @@ const timers = new Set<NodeJS.Timeout>();
 afterEach(() => {
   for (const timer of timers) clearTimeout(timer);
   timers.clear();
-  setClaudeCodeStatusReporter(undefined);
   setClaudeCodeDiagnosticReporter(undefined);
 });
 
@@ -142,22 +141,21 @@ function alive(pid: number): boolean {
 }
 const textOf = (message: AssistantMessage) => message.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("");
 
-test("a healthy turn that is silent longer than the old limit still completes (and shows a waiting line)", () =>
+test("a healthy turn that is silent longer than the old limit still completes (and shows no waiting line)", () =>
   rig((_attempt, response) => {
     response.writeHead(200, { "content-type": "text/event-stream" });
     sse(response, START, textStart, textDelta("answer"));
     // 1.2 s of nothing at all: more than the old 1.0 s limit, less than the new 1.4 s one.
     later(1_200, () => { sse(response, ...FINISH); response.end(); });
   }, async (r) => {
-    const lines: Array<string | undefined> = [];
-    setClaudeCodeStatusReporter((text) => lines.push(text));
+    const notices: string[] = [];
+    setClaudeCodeDiagnosticReporter((text) => notices.push(text));
     const message = await r.run();
     assert.equal(message.stopReason, "stop", String(message.errorMessage));
     assert.equal(textOf(message), "answer");
     assert.equal(r.attempts(), 1);
     assert.equal((await r.spawns()).length, 1);
-    assert.ok(lines.some((line) => /^waiting on the model: \d+ s since last event$/.test(line ?? "")), `status lines: ${JSON.stringify(lines)}`);
-    assert.equal(lines.at(-1), undefined, "the waiting line is cleared when the turn ends");
+    assert.deepEqual(notices.filter((line) => /waiting on the model/.test(line)), [], "a quiet but alive turn shows nothing");
   }));
 
 test("thinking deltas, tool-input deltas and keepalive pings all count as activity", () =>
