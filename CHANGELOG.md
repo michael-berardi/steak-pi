@@ -1,13 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.38.0 (2026-11-19)
 
-Gemini models now run through Google's official Antigravity CLI (`agy`); the direct Antigravity OAuth provider is removed.
+Local mode now brings each model's harness adapter by itself, and Gemini models run through Google's official Antigravity CLI (`agy`).
+
+- **Local mode applies the harness adapter by itself.** `steak-pi local add <model>` works out exactly which model the file is, asks the Hugging Face index for an adapter trained for this agent on exactly that model, downloads it once (SHA-256 verified, matched tensor by tensor), applies it, and starts the model with thinking off, the setting these adapters are trained at. No flag; nothing is bundled; a model with no adapter, or a fine-tune of the base, is added plain with the reason printed. An unreachable hub never blocks `add`. `local adapter <id>` looks again for a model added before; `local adapter off` and `add --no-adapter` opt out; `--lora` still names one yourself.
+- **Thinking that really switches off.** A chat template with both a thinking switch and effort levels now gets both: Pi's "off" sends `enable_thinking: false` instead of mapping to the lowest effort. A model whose adapter was trained without thinking starts sessions at off (once per model; `/thinking` changes it), and its server defaults to off for clients that send no switch.
+- Verified on real files: a 1.7B model and the 27B base each got their published harness adapter by themselves (153 and 256 tensors matched); a fine-tune of the 27B base and another derived model were skipped. Pi, Steak DSH and Carl each completed a tool-calling task on the 1.7B model with its adapter, and Pi started at thinking off.
 
 - **New `agy` provider (`extensions/agy/`, `docs/AGY.md`).** Runs `agy -p ... --output-format stream-json` in the session directory. Models come from `agy models` at runtime; the provider is hidden while agy is missing or signed out. Text streams as it arrives, agy's tool steps appear as read-only progress lines, usage and stop reasons are mapped, and Pi's thinking level maps to `--effort`. `/agy-status` checks the install and sign-in.
 - **agy's tools run under agy's permission rules, outside Pi's approvals.** `--dangerously-skip-permissions` is never passed.
 - **Cancel kills the whole agy process group** (SIGINT, then SIGTERM, then SIGKILL, bounded); a timeout is named.
-- **Removed `extensions/antigravity/`, its tests and `docs/ANTIGRAVITY.md`.** Google's terms forbid accessing Antigravity through third-party software with its OAuth. A user whose `~/.config/ultraterm/antigravity.json` still enabled it sees one notice at session start.
+- **Removed the direct Antigravity provider (`extensions/antigravity/`, its tests and `docs/ANTIGRAVITY.md`).** Google's terms forbid accessing Antigravity through third-party software with its OAuth. A user whose `~/.config/ultraterm/antigravity.json` still enabled it sees one notice at session start.
 
 ## 0.37.0 (2026-11-19)
 
