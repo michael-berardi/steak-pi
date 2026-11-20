@@ -100,7 +100,7 @@ describe("authorized OpenCode Go routing", () => {
     } finally { setRoutingConfigOverride(undefined); clearRawModels(); }
   });
   it("still records exhaustion for a zero-price model the operator did not list as free", async () => {
-    const key = "synthetic-go-key-2";
+    const key = "fixture-account-2";
     const exhaustion = JSON.stringify({ status: 429, code: "subscription_quota_exceeded", scope: "subscription", remaining: 0,
       reset_at: new Date(Date.now() + 60_000).toISOString() });
     const { wrapped } = setup(exhaustion);
