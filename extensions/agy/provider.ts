@@ -1,4 +1,5 @@
 import { createProvider } from "@earendil-works/pi-ai";
+import { streamAgyAcp } from "./acp/stream.ts";
 import { AgyError } from "./errors.ts";
 import { API_ID, listAgyModels, PROVIDER_ID, toPiModel } from "./models.ts";
 import { streamAgy } from "./stream.ts";
@@ -34,7 +35,9 @@ export function createAgyProvider() {
     async fetchModels({ signal }) {
       return (await listAgyModels(process.env, signal)).map(toPiModel);
     },
-    api: { stream: streamAgy, streamSimple: streamAgy },
+    // streamSimple honours STEAK_PI_AGY_TRANSPORT / STEAK_DSH_AGY_TRANSPORT (acp | headless | auto).
+    // stream (non-simple) keeps the original headless behaviour.
+    api: { stream: streamAgy, streamSimple: streamAgyAcp },
   });
 }
 

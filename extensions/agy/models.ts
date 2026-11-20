@@ -1,5 +1,6 @@
 // The model list is whatever `agy models` prints for the signed-in account; no model id lives in this source.
 import type { Model } from "@earendil-works/pi-ai";
+import { learnedContextWindows, learnedEfforts } from "./acp/options.ts";
 import { AgyError, cleanAgyText, errorFromResult } from "./errors.ts";
 import { agyBin, runAgy } from "./process.ts";
 
@@ -53,7 +54,9 @@ export function toPiModel(m: AgyModel): Model<typeof API_ID> {
     reasoning: true,
     // Used through the signed-in account's plan, not billed per token by Steak Pi.
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: ASSUMED_CONTEXT_WINDOW,
+    // Real values learned from the ACP server replace the pre-first-turn guess.
+    contextWindow: learnedContextWindows.get(m.id) ?? ASSUMED_CONTEXT_WINDOW,
+    thinkingLevelMap: learnedEfforts.get(m.id),
     maxTokens: ASSUMED_MAX_OUTPUT,
   };
 }

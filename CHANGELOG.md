@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Optional ACP transport for the `agy` provider (`STEAK_PI_AGY_TRANSPORT` / `STEAK_DSH_AGY_TRANSPORT` = `acp` | `headless` | `auto`, default `auto`).** One long-lived `agy acp --process-per-session --disable-telemetry` child per Pi session runs `initialize`, `session/new`, streamed `session/prompt` updates and `session/cancel`; text and thinking stream as Pi events. Headless stays as the fallback when `agy acp --help` or ACP `initialize` fails, with the reason logged in both Pi and DSH routes.
+- **Pi's tools run through Pi's own pipeline.** A loopback HTTP MCP bridge bound to 127.0.0.1 on an ephemeral port uses a fresh 256-bit bearer token with constant-time comparison, and parks each `tools/call` until `ctx.executeTool()` has run it through Pi's approvals and emitted real Pi tool events. No credentials are read or copied, and no isolated agy home is used.
+- **No blanket permission bypass.** `--dangerously-skip-permissions` is never passed; agy's `session/request_permission` requests go to Pi's confirmation UI (denied when no dialog exists). Native agy tools are therefore not silently approved, though they remain present because a guaranteed native-tool-free agent would require an unverified isolated-home setup.
+- **Real server values and session hygiene.** Context size, model ids and Low/Medium/High/Extra/Max effort values are learned from ACP options/`usage_update`; cumulative prompt buckets are scaled to single-call occupancy. ACP sessions and bridges reset on session start/tree/compact and dispose on shutdown.
+- Verified offline only, against a fake ACP server (including an MCP round trip, `-32000`, cancel, permission and option list) plus the existing headless fixtures. Not verified live: agy is not installed or signed in here. See `docs/AGY.md`.
+
 ## 0.38.2 (2026-11-19)
 
 - **`steak-pi local adapter <id> --lora <file | owner/repo[:file]>`** applies an adapter you choose to a model added before, such as a fine-tune of the base the adapter was trained on, which local mode never adapts by itself.

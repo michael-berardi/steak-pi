@@ -30,6 +30,15 @@ if (posix) {
   }
 }
 
+/** A long-lived agy child (ACP) gets the same group tracking and exit cleanup as a headless turn. */
+export function spawnAgyChild(args: string[], cwd: string, env: Record<string, string | undefined> = process.env): ChildProcess {
+  const child = spawn(agyBin(env), args, { cwd, env: env as NodeJS.ProcessEnv, stdio: ["pipe", "pipe", "pipe"], detached: posix });
+  live.add(child);
+  child.once("exit", () => live.delete(child));
+  child.once("error", () => live.delete(child));
+  return child;
+}
+
 const exited = (child: ChildProcess) => child.exitCode !== null || child.signalCode !== null;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
