@@ -38,6 +38,7 @@ import { assertActiveModelSelector } from "../retired-model-selection.ts";
 import { assertWorkerDependencies, resolveWorkerDependency } from "./dependency-preflight.ts";
 import { loadWorkerProfiles } from "./model-selection.ts";
 import { recordedClassChain } from "./task-class.ts";
+import { modelGuidanceSettings, withModelGuidance } from "../model-guidance.ts";
 import {
   assertModelRoute,
   assertSubscriptionRequest,
@@ -1214,7 +1215,12 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
         return steering;
       });
       const tools = createGuardedPiWorkerTools({ cwd: run.cwd, task, relay: peer });
-      const systemPrompt = buildPiWorkerSystemPrompt({ ...run, model: `${runtime.model.provider}/${runtime.model.id}` }, task);
+      // Operator per-model guidance (steak-pi.json modelGuidance) reaches workers too: their isolated loader loads no extensions.
+      const systemPrompt = withModelGuidance(
+        buildPiWorkerSystemPrompt({ ...run, model: `${runtime.model.provider}/${runtime.model.id}` }, task),
+        runtime.model,
+        modelGuidanceSettings().rules,
+      );
       // Long-horizon leaves need native compaction to stay inside the context
       // window; retries stay capped so a flaky provider cannot eat the budget.
       const workerSettings = {

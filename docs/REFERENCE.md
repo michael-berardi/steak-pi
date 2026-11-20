@@ -167,6 +167,23 @@ Use the absolute path to `steak-pi` if it is not on the hook's `PATH`. The hook
 always exits 0, prints nothing unless it blocks, and honors the same settings.
 In Claude Code the plan is the last `TodoWrite` list.
 
+## Per-model guidance
+
+Some models do measurably better with one extra sentence that others do not need. List those
+sentences in `steak-pi.json`; Steak Pi adds each one only when the run's model matches:
+
+```json
+// ~/.pi/agent/steak-pi.json
+{ "modelGuidance": [ { "match": "^provider-a/fast-", "text": "Return the JSON shape the task names, not a bare list." } ] }
+```
+
+`match` is a case-insensitive regular expression over `provider/id`; every matching rule is added
+in file order (at most 16 rules, 600 characters each). It applies to interactive sessions,
+one-shot runs and USAP Pi workers, matched against the model selected for each run (a virtual
+router model is matched by its own name, and a USAP worker that falls back mid-task keeps its
+first model's lines). Steak Pi ships no rule.
+Keep a rule only when a before/after run on the same tasks shows it helps.
+
 ## Configuration
 
 | Setting | Default | Effect |
@@ -175,6 +192,8 @@ In Claude Code the plan is the last `TodoWrite` list.
 | `~/.pi/agent/ultracompress.json` | built-in | Compaction thresholds and recall budgets |
 | `~/.pi/agent/steak-pi.json` → `finishGuard` | on, 3 pushes | Finish guard (see above) |
 | `STEAK_PI_FINISH_GUARD=0` | on | Turn the finish guard off |
+| `~/.pi/agent/steak-pi.json` → `modelGuidance` | none | Per-model guidance (see below) |
+| `STEAK_PI_MODEL_GUIDANCE=off` | on | Leave per-model guidance out |
 | `STEAK_PI_WRITE_GUARD=off` | on | Allow `write` to replace a file the session has not read |
 | `STEAK_PI_WORK_RULES=off` | on | Leave the working rules out of the system prompt (`STEAK_PI_WORK_RULES_TEXT` replaces them) |
 | `STEAK_PI_WORK_RULES_BRIEF=0\|1` | follows the light shape | Short-reasoning line: on while a one-shot run is light, off once tools load; `1` forces it on (`run --lean` sets it), `0` keeps it out |

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.40.0 (2026-11-20)
+
+- **Per-model guidance (`modelGuidance` in `~/.pi/agent/steak-pi.json`).** A list of `{ "match", "text" }` rules adds short system-prompt lines for models whose `provider/id` matches `match` (a case-insensitive regular expression), in interactive sessions, one-shot runs and USAP Pi workers alike. Interactive and one-shot runs match the model selected for the run; a virtual router model is matched by its own name, and a USAP worker keeps its first model's lines if it falls back mid-task. Steak Pi ships no rule and names no model. A bad rule is named once and skipped; `STEAK_PI_MODEL_GUIDANCE=off` leaves them out.
+- Measured before shipping: on a pinned coding benchmark (MIT corpus from oh-my-hermes, its own graders), a one-sentence answer-shape rule for one fast model route lifted its search tasks from 26/48 to 47/48 and, loaded as this extension from config, a four-template mix from 35/48 to 44/48 at the same token use. The rule lives in the operator's config, not in Steak Pi.
+- Tests: `test/model-guidance.test.ts` (matching, order, once-only, malformed rules and file, switch-off, the extension hook).
+
 ## 0.39.0 (2026-11-20)
 
 The `agy` provider can run Google's Antigravity CLI as an ACP session in which Pi's own tools, approvals and events carry every tool call.
