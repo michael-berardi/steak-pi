@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.39.0 (2026-11-20)
+
+The `agy` provider can run Google's Antigravity CLI as an ACP session in which Pi's own tools, approvals and events carry every tool call.
 
 - **Optional ACP transport for the `agy` provider (`STEAK_PI_AGY_TRANSPORT` / `STEAK_DSH_AGY_TRANSPORT` = `acp` | `headless` | `auto`, default `auto`).** One long-lived `agy acp --process-per-session --disable-telemetry` child per Pi session runs `initialize`, `session/new`, streamed `session/prompt` updates and `session/cancel`; text and thinking stream as Pi events. Headless stays as the fallback when `agy acp --help` or ACP `initialize` fails, with the reason logged in both Pi and DSH routes.
 - **Pi's tools run through Pi's own provider tool loop.** A loopback HTTP MCP bridge bound to 127.0.0.1 on an ephemeral port uses a fresh 256-bit bearer token with constant-time comparison, advertises tools from the provider transcript, and parks each `tools/call` as SSE. The provider emits a normal Pi `toolCall` block, Pi executes it through its own approvals and events, and the next step's `toolResult` answers the parked call while agy's ACP prompt continues. No event-context tool borrowing, credentials, or isolated agy home is used.

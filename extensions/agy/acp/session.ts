@@ -1,12 +1,15 @@
 // One ACP session per Pi session: a long-lived `agy acp` child, session/new with the loopback MCP bridge,
 // session/prompt per turn, session/cancel on abort, and real model/effort/context values from session options.
 import type { ChildProcess } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { AgyError, cleanAgyText, missingMessage } from "../errors.ts";
 import { spawnAgyChild, stopChild } from "../process.ts";
 import { AcpRpcError, createJsonRpcPeer, type AcpPeer } from "./jsonrpc.ts";
 import { startMcpBridge, type BridgeTool, type BridgeToolResult, type McpBridge } from "./mcp-bridge.ts";
 import { contextWindowFromOptions, effortForAcp, normalizeAcpUsage, thinkingLevelMapFromOptions, type AcpConfigOption } from "./options.ts";
 import { AcpToolLoop, type TurnUpdate } from "./tool-loop.ts";
+
+const PACKAGE_VERSION = (JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
 export type { TurnUpdate } from "./tool-loop.ts";
 export type { BridgeToolResult } from "./mcp-bridge.ts";
@@ -102,7 +105,7 @@ export class AcpSession {
           protocolVersion: 1,
           // Deliberately no fs/terminal client capabilities: agy may only act through Pi tools and Pi's approvals.
           clientCapabilities: {},
-          clientInfo: { name: "steak-pi", title: "Steak Pi", version: "0.38.2" },
+          clientInfo: { name: "steak-pi", title: "Steak Pi", version: PACKAGE_VERSION },
         },
         { signal: options.signal, timeoutMs: options.timeoutMs ?? 20_000 },
       );
