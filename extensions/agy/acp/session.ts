@@ -4,8 +4,12 @@ import type { ChildProcess } from "node:child_process";
 import { AgyError, cleanAgyText, missingMessage } from "../errors.ts";
 import { spawnAgyChild, stopChild } from "../process.ts";
 import { AcpRpcError, createJsonRpcPeer, type AcpPeer } from "./jsonrpc.ts";
-import { startMcpBridge, type BridgeToolResult, type BridgeToolSource, type McpBridge } from "./mcp-bridge.ts";
+import { startMcpBridge, type BridgeTool, type BridgeToolResult, type McpBridge } from "./mcp-bridge.ts";
 import { contextWindowFromOptions, effortForAcp, normalizeAcpUsage, thinkingLevelMapFromOptions, type AcpConfigOption } from "./options.ts";
+import { AcpToolLoop, type TurnUpdate } from "./tool-loop.ts";
+
+export type { TurnUpdate } from "./tool-loop.ts";
+export type { BridgeToolResult } from "./mcp-bridge.ts";
 
 export interface AcpPermissionRequest {
   title: string;
@@ -14,10 +18,7 @@ export interface AcpPermissionRequest {
 }
 export type AcpPermissionHandler = (request: AcpPermissionRequest, signal?: AbortSignal) => Promise<string | undefined>;
 
-let toolSource: BridgeToolSource = { list: () => [], call: async (name) => { throw new Error(`Pi tool ${name} is unavailable in this context`); } };
 let permissionHandler: AcpPermissionHandler | undefined;
-export const setAcpToolSource = (source: BridgeToolSource) => { toolSource = source; };
-export const getAcpToolSource = () => toolSource;
 export const setAcpPermissionHandler = (handler: AcpPermissionHandler | undefined) => { permissionHandler = handler; };
 
 /** Turn text of ACP's authentication error into the same named cause as the headless route. */
@@ -35,13 +36,13 @@ export function acpError(error: unknown, phase: "initialize" | "prompt"): AgyErr
   return new AgyError("protocol", `ACP ${phase} failed: ${message}`, { cause: error });
 }
 
-export interface TurnUpdate { sessionUpdate: string; [key: string]: unknown }
-
 export interface AcpSessionOptions {
   bin: string;
   cwd: string;
   env: Record<string, string | undefined>;
-  toolSource?: BridgeToolSource;
+  /** Tool declarations from Pi's normalized transcript, advertised over the loopback MCP bridge. */
+  tools?: BridgeTool[];
+  toolLoop?: AcpToolLoop;
   onPermission?: AcpPermissionHandler;
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -52,29 +53,28 @@ export class AcpSession {
   readonly child: ChildProcess;
   readonly bridge: McpBridge;
   private readonly peer: AcpPeer;
-  private readonly source: BridgeToolSource;
+  readonly toolLoop: AcpToolLoop;
   private onPermission?: AcpPermissionHandler;
   private options: AcpConfigOption[];
-  private cancelled = false;
-  private updateSink?: (update: TurnUpdate) => void;
   turns = 0;
   closed = false;
   contextWindow?: number;
   lastUsage?: ReturnType<typeof normalizeAcpUsage>;
 
-  private constructor(init: { sessionId: string; child: ChildProcess; bridge: McpBridge; peer: AcpPeer; options: AcpConfigOption[]; source: BridgeToolSource; onPermission?: AcpPermissionHandler }) {
+  private constructor(init: { sessionId: string; child: ChildProcess; bridge: McpBridge; peer: AcpPeer; options: AcpConfigOption[]; toolLoop: AcpToolLoop; onPermission?: AcpPermissionHandler }) {
     this.sessionId = init.sessionId;
     this.child = init.child;
     this.bridge = init.bridge;
     this.peer = init.peer;
     this.options = init.options;
-    this.source = init.source;
+    this.toolLoop = init.toolLoop;
     this.onPermission = init.onPermission;
   }
 
   static async create(options: AcpSessionOptions): Promise<AcpSession> {
-    const source = options.toolSource ?? getAcpToolSource();
-    const bridge = await startMcpBridge(source);
+    const toolLoop = options.toolLoop ?? new AcpToolLoop();
+    toolLoop.setTools(options.tools ?? []);
+    const bridge = await startMcpBridge(toolLoop.source());
     let child: ChildProcess | undefined;
     let peer: AcpPeer | undefined;
     let self: AcpSession | undefined;
@@ -86,12 +86,13 @@ export class AcpSession {
       // permission requests are answered by Pi's own approval path (session/request_permission below).
       child = spawnAgyChild(["acp", "--process-per-session", "--disable-telemetry"], options.cwd, options.env);
       child.stderr?.setEncoding("utf8").on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-4_000); });
+      toolLoop.setCanceller(() => { peer?.notify("session/cancel", { sessionId: self?.sessionId }); });
       peer = createJsonRpcPeer({
         input: child.stdout!,
         // A child that cannot start must fail the initialize request, not hang it.
         onClose: () => {},
         output: child.stdin!,
-        onRequest: async (method, params) => method === "session/request_permission" ? await answerPermission(params, self?.onPermission ?? options.onPermission ?? permissionHandler, self?.cancelled ?? false) : null,
+        onRequest: async (method, params) => method === "session/request_permission" ? await answerPermission(params, self?.onPermission ?? options.onPermission ?? permissionHandler, self?.toolLoop.turn?.cancelled ?? false) : null,
         onNotification: (method, params: any) => { if (method === "session/update") self?.receiveUpdate(params?.update ?? {}); },
       });
       child.once("error", (error: NodeJS.ErrnoException) => { spawnError = error; peer?.close(error); });
@@ -121,7 +122,7 @@ export class AcpSession {
         }],
       }, { signal: options.signal, timeoutMs: options.timeoutMs ?? 20_000 });
       if (!created?.sessionId) throw new AgyError("protocol", "ACP session/new returned no sessionId");
-      const session = new AcpSession({ sessionId: created.sessionId, child, bridge, peer, options: created.configOptions ?? [], source, onPermission: options.onPermission });
+      const session = new AcpSession({ sessionId: created.sessionId, child, bridge, peer, options: created.configOptions ?? [], toolLoop, onPermission: options.onPermission });
       self = session;
       session.contextWindow = contextWindowFromOptions(session.options);
       return session;
@@ -142,7 +143,7 @@ export class AcpSession {
   get isFresh(): boolean { return this.turns === 0; }
 
   private receiveUpdate(update: TurnUpdate): void {
-    this.updateSink?.(update);
+    this.toolLoop.turn?.emit(update);
     if (update.sessionUpdate === "config_option_update" && Array.isArray(update.configOptions)) this.options = update.configOptions as AcpConfigOption[];
     if (update.sessionUpdate === "usage_update") {
       this.lastUsage = normalizeAcpUsage(update as never);
@@ -163,21 +164,18 @@ export class AcpSession {
     }
   }
 
+  /** Start one ACP prompt turn; Pi tool steps subscribe to its updates without starting a new prompt. */
   async prompt(text: string, options: {
     modelId?: string;
     reasoning?: string;
     signal?: AbortSignal;
-    onUpdate?: (update: TurnUpdate) => void;
     timeoutMs?: number;
     onPermission?: AcpPermissionHandler;
   } = {}): Promise<{ stopReason: string; usage?: ReturnType<typeof normalizeAcpUsage> }> {
-    this.cancelled = false;
-    this.updateSink = options.onUpdate;
+    const turn = this.toolLoop.turn;
+    if (!turn) throw new Error("ACP turn was not started");
     await this.configure(options.modelId, options.reasoning);
-    const onAbort = () => {
-      this.cancelled = true;
-      this.peer.notify("session/cancel", { sessionId: this.sessionId });
-    };
+    const onAbort = () => { this.cancelTurn("ACP turn cancelled"); };
     if (options.signal?.aborted) onAbort();
     else options.signal?.addEventListener("abort", onAbort, { once: true });
     try {
@@ -192,13 +190,16 @@ export class AcpSession {
       throw acpError(error, "prompt");
     } finally {
       options.signal?.removeEventListener("abort", onAbort);
-      this.updateSink = undefined;
     }
   }
+
+  /** Abort from any Pi step: answer parked MCP calls with errors and tell agy to cancel its prompt. */
+  cancelTurn(message = "ACP turn cancelled"): void { this.toolLoop.cancel(message); }
 
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.toolLoop.clear();
     this.peer.close();
     await stopChild(this.child);
     await this.bridge.close();
@@ -238,5 +239,3 @@ export async function resetAcpSessions(): Promise<void> {
   if (creating) { try { closing.push(await creating); } catch { /* creation already reports its own cause */ } }
   await Promise.all(closing.filter(Boolean).map((session) => session!.close()));
 }
-
-export type { BridgeToolResult, BridgeToolSource };

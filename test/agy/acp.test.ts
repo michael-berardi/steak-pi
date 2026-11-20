@@ -3,11 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { clearModelCache } from "../../extensions/agy/models.ts";
-import { AcpSession, resetAcpSessions, setAcpPermissionHandler, setAcpToolSource } from "../../extensions/agy/acp/session.ts";
+import { AcpSession, resetAcpSessions, setAcpPermissionHandler } from "../../extensions/agy/acp/session.ts";
 import { constantTimeEqual, startMcpBridge } from "../../extensions/agy/acp/mcp-bridge.ts";
 import { effortForAcp, normalizeAcpUsage } from "../../extensions/agy/acp/options.ts";
 import { acpLogs, clearAcpLog, probeAcpSupport, resolveTransport, setAcpLog } from "../../extensions/agy/acp/transport.ts";
 import { streamAgyAcp } from "../../extensions/agy/acp/stream.ts";
+import { normalizeContext } from "@earendil-works/pi-ai";
 import agyExtension from "../../extensions/agy/index.ts";
 
 const FAKE = new URL("./fake-acp.mjs", import.meta.url).pathname;
@@ -17,34 +18,26 @@ const log = join(dir, "acp.log");
 const saved = { ...process.env };
 
 const entries = () => readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
-const user = (text: string) => ({ role: "user", content: text, timestamp: 1 });
-const ctx = (...messages: unknown[]) => ({ messages }) as never;
+const user = (text: string) => ({ role: "user" as const, content: text, timestamp: 1 });
+const TOOLS = [{ name: "read", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } }];
+const ctx = (...messages: unknown[]) => normalizeContext({ messages: messages as never, tools: TOOLS as never }) as never;
 const model = () => ({ id: "gemini-x-high", api: "agy-stream-json", provider: "agy", contextWindow: 200_000, maxTokens: 64_000 }) as any;
 const waitFor = async (cond: () => boolean, ms = 6000) => {
   const end = Date.now() + ms;
   while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 20));
   if (!cond()) throw new Error("timed out waiting for fixture");
 };
-const toolInvocations: [string, unknown][] = [];
 const permissionAnswers: string[] = [];
-const source = () => ({
-  list: () => [{ name: "read", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } }],
-  call: async (name: string, args: unknown) => {
-    toolInvocations.push([name, args]);
-    return { content: [{ type: "text" as const, text: "file contents" }], details: {} };
-  },
-});
 
 beforeEach(() => {
   clearModelCache(); resetAcpSessionsForTest(); clearAcpLog(); logs.length = 0;
   writeFileSync(log, "");
-  toolInvocations.length = 0; permissionAnswers.length = 0;
+  permissionAnswers.length = 0;
   Object.assign(process.env, {
     STEAK_PI_AGY_BIN: FAKE, FAKE_ACP_LOG: log, FAKE_ACP_HEADLESS_BIN: HEADLESS_FAKE,
     FAKE_AGY_LOG: log, FAKE_AGY_SCENARIO: "success", STEAK_PI_AGY_TRANSPORT: "acp",
   });
   delete process.env.FAKE_ACP_SCENARIO; delete process.env.STEAK_DSH_AGY_TRANSPORT;
-  setAcpToolSource(source());
   setAcpPermissionHandler(async (request) => { permissionAnswers.push(request.title); return request.options.find((o) => o.kind === "allow_once")?.optionId; });
   setAcpLog((message) => { logs.push(message); });
 });
@@ -56,7 +49,14 @@ function resetAcpSessionsForTest() { void resetAcpSessions(); }
 async function collect(modelToUse = model(), messages: unknown[] = [user("hello")], options: Record<string, unknown> = {}) {
   const events: any[] = [];
   for await (const event of streamAgyAcp(modelToUse, ctx(...messages), options as never)) events.push(event);
-  return { events, message: (events.at(-1) as any)?.message ?? (events.at(-1) as any)?.error };
+  let message: any = (events.at(-1) as any)?.message ?? (events.at(-1) as any)?.error;
+  if (message?.stopReason === "toolUse") {
+    const calls = message.content.filter((block: any) => block.type === "toolCall");
+    const results = calls.map((block: any) => ({ role: "toolResult" as const, toolCallId: block.id, toolName: block.name, content: [{ type: "text" as const, text: "file contents" }], isError: false, timestamp: 3 }));
+    for await (const event of streamAgyAcp(modelToUse, ctx(...messages, message, ...results), options as never)) events.push(event);
+    message = (events.at(-1) as any)?.message ?? (events.at(-1) as any)?.error;
+  }
+  return { events, message };
 }
 
 describe("ACP transport and bridge", () => {
@@ -84,7 +84,7 @@ describe("ACP transport and bridge", () => {
     await expect(fetch(bridge.url, { method: "POST", headers: { authorization: `Bearer ${bridge.token}` }, body })).rejects.toThrow();
   });
   it("spawns one long-lived agy acp child with the documented flags and an HTTP MCP bridge", async () => {
-    const session = await AcpSession.create({ bin: FAKE, cwd: process.cwd(), env: process.env, toolSource: source() });
+    const session = await AcpSession.create({ bin: FAKE, cwd: process.cwd(), env: process.env, tools: TOOLS });
     const argv = entries().find((e) => e.event === "argv")?.args as string[];
     expect(argv.slice(0, 2)).toEqual(["acp", "--process-per-session"]);
     expect(argv).toContain("--disable-telemetry");
@@ -97,23 +97,21 @@ describe("ACP transport and bridge", () => {
     expect(server.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
     expect(server.auth).toMatch(/^Bearer /);
     expect(entries().find((e) => e.event === "mcp/tools/list").result).toEqual(["pi_read"]);
-    expect(entries().find((e) => e.event === "mcp/tools/call").result.content[0].text).toBe("file contents");
-    expect(toolInvocations).toEqual([["read", { path: "/tmp/agy-acp-fixture.txt" }]]);
     await session.close();
   });
 });
 
 describe("an ACP turn", () => {
-  it("streams thinking and text as Pi events, runs agy's tool call through Pi, and learns window/efforts", async () => {
+  it("streams thinking and text as Pi events, parks the tool call for Pi, and learns window/efforts", async () => {
+    process.env.FAKE_ACP_SCENARIO = "tool";
     const m = model();
     const { events, message } = await collect(m, [user("hello")], { reasoning: "high" });
     expect(events.filter((e) => e.type === "thinking_delta").map((e) => e.delta)).toEqual(["thinking about ", "the request"]);
     expect(events.filter((e) => e.type === "text_delta").map((e) => e.delta)).toEqual(["Here is ", "the answer."]);
-    expect(message.content.map((b: any) => b.type)).toEqual(["thinking", "text"]);
-    // The bridge already ran the tool through Pi: emitting toolcall blocks would make Pi execute it twice.
-    expect(events.some((e) => String(e.type).startsWith("toolcall"))).toBe(false);
-    expect(toolInvocations).toEqual([["read", { path: "/tmp/agy-acp-fixture.txt" }]]);
     expect(message.stopReason).toBe("stop");
+    expect(events.some((e) => e.type === "toolcall_start")).toBe(true);
+    expect(entries().filter((e) => e.event === "mcp/tools/call")).toHaveLength(1);
+    expect(entries().filter((e) => e.event === "prompt")).toHaveLength(1);
     expect(m.contextWindow).toBe(123456);
     expect(m.thinkingLevelMap).toMatchObject({ low: "Low", medium: "Medium", high: "High", xhigh: "Extra", max: "Max" });
     // ACP's prompt buckets are cumulative across steps; scale them to single-call occupancy.

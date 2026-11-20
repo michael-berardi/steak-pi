@@ -3,28 +3,11 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { INSTALL_COMMAND } from "./errors.ts";
 import { LEGACY_NOTICE, legacyEnabledConfig } from "./legacy.ts";
 import { agyStatus, createAgyProvider } from "./provider.ts";
-import { resetAcpSessions, setAcpPermissionHandler, setAcpToolSource } from "./acp/session.ts";
+import { resetAcpSessions, setAcpPermissionHandler } from "./acp/session.ts";
 import { setAcpLog } from "./acp/transport.ts";
 
-/** Pi's current context owns the tools and approvals; the ACP bridge borrows it for the active turn. */
+/** Event-handler contexts only carry approvals/logging; tool declarations and execution belong to the provider step. */
 function attachContext(ctx: ExtensionContext): void {
-  setAcpToolSource({
-    list: () => ((ctx as any).getCallableTools?.() ?? []) .map((tool: any) => ({
-      name: String(tool.name),
-      description: String(tool.description ?? ""),
-      parameters: tool.parameters as Record<string, unknown>,
-    })),
-    call: async (name, args) => {
-      const outcome = await (ctx as any).executeTool?.("steak-pi-agy-acp", name, args, { signal: ctx.signal });
-      if (!outcome) throw new Error(`Pi tool ${name} is not callable in this context`);
-      return {
-        content: (outcome.result?.content ?? []).map((part: any) => part?.type === "image"
-          ? { type: "image" as const, data: String(part.data ?? ""), mimeType: String(part.mimeType ?? "application/octet-stream") }
-          : { type: "text" as const, text: String(part?.text ?? "") }),
-        ...(outcome.isError || outcome.result?.isError ? { isError: true } : {}),
-      };
-    },
-  });
   setAcpPermissionHandler(async (request) => {
     const allowed = request.options.find((option) => String(option.kind ?? "").startsWith("allow"));
     if (!ctx.hasUI) return undefined; // no dialog: never auto-approve an agy tool
@@ -38,7 +21,7 @@ function attachContext(ctx: ExtensionContext): void {
 
 export default function agyExtension(pi: ExtensionAPI): void {
   pi.registerProvider(createAgyProvider());
-  // Capture the live context before any provider request; a new session/tree/compact replaces the ACP session.
+  // Approval/logging contexts are event-scoped; the tool loop reads Pi's normalized transcript on each provider step.
   for (const event of ["session_start", "agent_start", "before_provider_request", "context"] as const) {
     pi.on(event as never, ((_event: unknown, ctx: ExtensionContext) => {
       attachContext(ctx);

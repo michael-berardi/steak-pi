@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Fake `agy acp`: JSON-RPC 2.0 over stdio, with a real HTTP MCP tools/call round trip to the bridge.
-// Scenario: FAKE_ACP_SCENARIO = success | auth | prompt-auth | cancel | permission | no-acp-help.
-import { appendFileSync } from "node:fs";
+// Fake `agy acp`: JSON-RPC 2.0 over stdio, with real HTTP MCP tools/call round trips to the bridge.
+// A tools/call stays parked while Pi runs its own tool loop; only Pi's toolResult lets this ACP turn continue.
+// Scenarios: success | tool | parallel | missing | cancel | tool-cancel | permission | auth | prompt-auth | no-acp-help.
+import { appendFileSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const args = process.argv.slice(2);
@@ -27,16 +28,51 @@ const OPTIONS = [
   { id: "thought_level", name: "Thinking level", category: "thought_level", type: "select", currentValue: "Medium", options: ["Low", "Medium", "High", "Extra", "Max"].map((v) => ({ value: v, name: v })) },
 ];
 let mcpId = 100;
-async function mcpCall(url, headers, method, params) {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: Object.fromEntries(headers.map((h) => [h.name, h.value])),
-    body: JSON.stringify({ jsonrpc: "2.0", id: ++mcpId, method, params }),
-  });
+const headersFor = (headers) => Object.fromEntries(headers.map((h) => [h.name, h.value]));
+
+async function mcpJson(server, method, params) {
+  const response = await fetch(server.url, { method: "POST", headers: headersFor(server.headers), body: JSON.stringify({ jsonrpc: "2.0", id: ++mcpId, method, params }) });
   return await response.json();
 }
+
+/** Streamable HTTP tools/call: headers arrive immediately, keepalive comments arrive while parked. */
+async function mcpCall(server, name, arguments_) {
+  const id = ++mcpId;
+  const response = await fetch(server.url, {
+    method: "POST",
+    headers: headersFor(server.headers),
+    body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: arguments_ } }),
+  });
+  log({ event: "mcp/call-headers", status: response.status, contentType: response.headers.get("content-type") });
+  if (!response.ok || !response.body) return { error: `HTTP ${response.status}` };
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let reply;
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+    let at;
+    while ((at = buffer.indexOf("\n\n")) >= 0) {
+      const frame = buffer.slice(0, at);
+      buffer = buffer.slice(at + 2);
+      for (const line of frame.split("\n")) {
+        if (!line.startsWith("data:")) continue; // ': keepalive' frames are deliberately ignored
+        try {
+          const message = JSON.parse(line.slice(5).trim());
+          if (message.id === id) reply = message;
+        } catch { /* ignore malformed frame */ }
+      }
+    }
+    if (done) break;
+  }
+  return reply?.result ? { result: reply.result } : { error: reply?.error ?? "no MCP reply" };
+}
+
 const cancelled = [];
 let answeredPermission;
+let server;
+let promptCount = 0;
 
 async function handle(message) {
   const { method, params, id } = message;
@@ -48,13 +84,10 @@ async function handle(message) {
     return;
   }
   if (method === "session/new") {
-    const server = params.mcpServers?.[0];
+    server = params.mcpServers?.[0];
     log({ event: "session/new", params: { cwd: params.cwd, mcpServers: server ? [{ type: server.type, name: server.name, url: server.url, auth: server.headers?.find((h) => h.name === "Authorization")?.value }] : [] } });
-    const base = { jsonrpc: "2.0", id, params: {} };
-    const list = await mcpCall(server.url, server.headers, "tools/list", {});
+    const list = await mcpJson(server, "tools/list", {});
     log({ event: "mcp/tools/list", result: list.result?.tools?.map((t) => t.name) ?? list.error });
-    const called = await mcpCall(server.url, server.headers, "tools/call", { name: "pi_read", arguments: { path: "/tmp/agy-acp-fixture.txt" } });
-    log({ event: "mcp/tools/call", result: called.result ?? called.error });
     send({ jsonrpc: "2.0", id, result: { sessionId: "acp-session-1", configOptions: OPTIONS } });
     return;
   }
@@ -64,22 +97,40 @@ async function handle(message) {
     return;
   }
   if (method === "session/prompt") {
-    log({ event: "prompt", params });
+    log({ event: "prompt", count: ++promptCount, params });
     if (scenario === "prompt-auth") { send({ jsonrpc: "2.0", id, error: { code: -32000, message: "Authentication required" } }); return; }
     const chunk = (update) => send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: params.sessionId, update } });
     chunk({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking about " } });
     chunk({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "the request" } });
-    chunk({ sessionUpdate: "tool_call", toolCallId: "call_1", title: "read", name: "pi_read", status: "pending" });
-    chunk({ sessionUpdate: "tool_call_update", toolCallId: "call_1", status: "completed", content: [{ type: "content", content: { type: "text", text: "file contents" } }] });
-    chunk({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Here is " } });
+
+    const withTools = ["tool", "parallel", "missing", "tool-cancel", "permission"].includes(scenario);
+    if (withTools) {
+      const calls = scenario === "parallel"
+        ? [{ id: "call_1", name: "pi_read", args: { path: "/tmp/agy-acp-fixture.txt" } }, { id: "call_2", name: "pi_write", args: { path: "/tmp/agy-acp-out.txt", content: "written" } }]
+        : [{ id: "call_1", name: "pi_read", args: { path: "/tmp/agy-acp-fixture.txt" } }];
+      const replies = await Promise.all(calls.map(async (call) => {
+        chunk({ sessionUpdate: "tool_call", toolCallId: call.id, title: call.name, name: call.name, status: "pending" });
+        const reply = await mcpCall(server, call.name, call.args);
+        log({ event: "mcp/tools/call", name: call.name, ...reply });
+        chunk({ sessionUpdate: "tool_call_update", toolCallId: call.id, status: "completed", content: [{ type: "content", content: { type: "text", text: JSON.stringify(reply) } }] });
+        return reply;
+      }));
+      if (scenario === "missing") chunk({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "the answer despite a missing result." } });
+      else if (scenario === "parallel") chunk({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Both done." } });
+      else chunk({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Here is " } });
+      if (replies.some((r) => r.error || r.result?.isError) && scenario !== "missing") chunk({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "An error was reported. " } });
+    } else {
+      chunk({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Here is " } });
+    }
     chunk({ sessionUpdate: "usage_update", used: 70000, size: 123456, inputTokens: 70000, outputTokens: 300, cacheReadTokens: 20000, totalTokens: 70000 });
-    chunk({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "the answer." } });
+    chunk({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: withTools && scenario !== "missing" && scenario !== "parallel" ? "the answer." : scenario === "parallel" ? "" : scenario === "missing" ? "" : "the answer." } });
+
     if (scenario === "permission") {
       const answer = new Promise((resolve) => { answeredPermission = resolve; });
       send({ jsonrpc: "2.0", id: 900, method: "session/request_permission", params: { sessionId: params.sessionId, toolCall: { toolCallId: "call_1", title: "read a file", name: "pi_read" }, options: [{ optionId: "allow-once", name: "Allow once", kind: "allow_once" }, { optionId: "reject-once", name: "Reject", kind: "reject_once" }] } });
       await answer;
     }
-    if (scenario === "cancel") {
+    if (scenario === "cancel" || scenario === "tool-cancel") {
       await new Promise((resolve) => cancelled.push(resolve));
       send({ jsonrpc: "2.0", id, result: { stopReason: "cancelled" } });
       return;
