@@ -74,7 +74,7 @@ const allowedTechnicalLine = (path: string, text: string) =>
 // "repository", not routing choices. Only these URL forms in these files are exempt, and each
 // file is checked to still contain a real personal-name hit, so the exemption cannot cover
 // nothing or silently widen.
-const DISTRIBUTION_URL = /(?:https?:\/\/)?(?:github\.com\/michael-berardi\/(?:steak-pi|ultracompress)(?![\w-])[^\s)\]"']*|img\.shields\.io\/github\/(?:v\/release|license)\/michael-berardi\/steak-pi(?![\w-])[^\s)\]"']*|api\.github\.com\/repos\/michael-berardi\/steak-pi(?![\w-])[^\s)\]"']*|brew (?:install|upgrade) michael-berardi\/pareto-software-distribution\/steak-pi)/;
+const DISTRIBUTION_URL = /(?:https?:\/\/)?(?:github\.com\/michael-berardi\/(?:steak-pi|ultracompress|ultra-inference-optimization)(?![\w-])[^\s)\]"']*|img\.shields\.io\/github\/(?:v\/release|license)\/michael-berardi\/steak-pi(?![\w-])[^\s)\]"']*|api\.github\.com\/repos\/michael-berardi\/steak-pi(?![\w-])[^\s)\]"']*|brew (?:install|upgrade) michael-berardi\/pareto-software-distribution\/steak-pi)/;
 const DISTRIBUTION_FILES = [
   "README.md",
   "CONTRIBUTING.md",
@@ -85,6 +85,10 @@ const DISTRIBUTION_FILES = [
   "extensions/ultracompress/index.ts",
   "test/steak-pi-updater.test.ts",
   "test/documentation.test.ts",
+  // The optional tuner is a sibling project: its install command and link name its real GitHub owner.
+  "src/local/tune.ts",
+  "docs/LOCAL-MODELS.md",
+  "test/local-tune.test.ts",
 ];
 // A line is allowed only when every personal-name hit on it sits inside a distribution URL.
 // The shared regex is non-global so `.test()` is stateless; stripping uses a fresh case-insensitive
@@ -273,7 +277,7 @@ describe("shipped files are provider-neutral", () => {
     expect(module.map((path) => relative(root, path)).sort()).toEqual([
       "docs/LOCAL-MODELS.md", "extensions/local/index.ts", "src/local/adapter.ts", "src/local/cli.ts", "src/local/errors.ts", "src/local/gguf.ts",
       "src/local/gpu-probe.ts", "src/local/hardware.ts", "src/local/harness-adapter.ts", "src/local/hf.ts", "src/local/hold.ts", "src/local/limits.ts", "src/local/main.ts",
-      "src/local/profile.ts", "src/local/runtime.ts", "src/local/store.ts",
+      "src/local/profile.ts", "src/local/runtime.ts", "src/local/store.ts", "src/local/tune.ts",
     ]);
     const scanned = [...module, readme];
     const named = (pattern: RegExp) => hits(scanned, pattern).filter((hit) => hit.path !== "README.md" || section.includes(hit.text)).map(describeHit);

@@ -19,6 +19,7 @@ import { DEFAULT_PORT, idFromSource, planProfile, PlanError, type Source } from 
 import { check, ensure, manualHolder, pidHolder, release, status, stop, supervise, systemDeps, type Deps } from "./runtime.ts";
 import { promptCapTokens, resolveLimits } from "./limits.ts";
 import { activeHold, addQuiet, clearBypass, clearHold, describeHold, markQuietToday, parseDuration, removeQuiet, setBypass, setHold } from "./hold.ts";
+import { tuneModel } from "./tune.ts";
 import { checkId, listProfiles, localDir, LocalError, modelsJsonPath, readModelEntry, readProfile, upsertLocalModel, writeProfile } from "./store.ts";
 
 export interface Io { out(text: string): void; err(text: string): void }
@@ -49,6 +50,9 @@ const USAGE = `usage: steak-pi local <command>
   release <id>    let go of that lease (for ensure.release); the server stops after an idle grace
   hold <N>m|h|d [--replace] [reason]   switch the local model off until then (stops it now); a shorter hold never
                   shortens a longer one still in force unless --replace; 'hold off' ends it
+  tune <id> [--budget 45m] [--target decode|prefill|ttft|balanced] [--allow lossless|lossy] [--apply]
+                  optional: hill-climb this model's server settings with the uio tuner (exits 2 when uio is not
+                  installed, a hold is on, or a user holds the server); ensure/check refuse while it runs
   quiet           show the quiet-day rule: work the local model must not share the machine with
   quiet path <repo dir> | quiet process <name> | quiet remove <dir or name>
                   the first sign of that work on a day keeps the local model off until the next day
@@ -273,6 +277,11 @@ export async function main(argv: string[], options: CliOptions = {}): Promise<nu
           io.err(`steak-pi local: REFUSED (${error.code}): ${error.message}`);
           return error.code === "unknown-model" || error.code === "bad-id" ? 1 : 3;
         }
+      }
+      case "tune": {
+        const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { budget: { type: "string" }, target: { type: "string" }, allow: { type: "string" }, apply: { type: "boolean" } } });
+        if (!positionals[0]) { io.err(USAGE); return 1; }
+        return await tuneModel(deps, { id: checkId(positionals[0]), budget: values.budget, target: values.target, allow: values.allow, apply: values.apply, io });
       }
       case "release": {
         if (!rest[0]) { io.err(USAGE); return 1; }

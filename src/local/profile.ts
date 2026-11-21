@@ -37,6 +37,8 @@ export interface LaunchProfile {
   adapters?: AdapterRef[];
   /** `"off"`: the operator opted out of the harness adapter (`add --no-adapter`); `local adapter <id>` turns it back on. */
   harnessAdapter?: "off";
+  /** Written after an applied `local tune`: when, where the tuner kept its record, and the decode rate it measured. */
+  uioLastTune?: { at: string; workdir: string; decodeTokS: number };
   /** `"off"`: the applied adapter was trained with thinking off, so a session selecting this model starts there. */
   trainedThinking?: "off";
 }

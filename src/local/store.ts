@@ -81,7 +81,7 @@ export function checkId(id: string): string {
   return id;
 }
 
-const profilePath = (dir: string, id: string): string => join(dir, "profiles", `${checkId(id)}.json`);
+export const profilePath = (dir: string, id: string): string => join(dir, "profiles", `${checkId(id)}.json`);
 export const writeProfile = (dir: string, profile: LaunchProfile): void => writeAtomic(profilePath(dir, profile.id), `${JSON.stringify(profile, null, 2)}\n`);
 export const readProfile = (dir: string, id: string): LaunchProfile | undefined => readJson<LaunchProfile>(profilePath(dir, id));
 export function listProfiles(dir: string): LaunchProfile[] {

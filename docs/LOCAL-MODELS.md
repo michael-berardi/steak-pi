@@ -31,12 +31,24 @@ other Pi model: pick it with `--model` or `/model`.
 | `local hold <N>m\|h\|d [reason]` / `local hold off` | Switch the local model off until then (the running server is stopped at once); it comes back by itself. See [Holds](#holds-times-the-local-model-stays-off). |
 | `local bypass <N>m\|h\|d [reason]` / `local bypass off` | Run the local model anyway for that long, although a hold or the quiet-day rule says off; both apply again afterwards. |
 | `local quiet` / `quiet path <repo>` / `quiet process <name>` / `quiet remove <x>` / `quiet today [reason]` | The quiet-day rule: work the local model must not share the machine with. |
+| `local tune <id> [--budget 45m] [--target decode\|prefill\|ttft\|balanced] [--allow lossless\|lossy] [--apply]` | Optional: hill-climb the model's server settings with the separate `uio` tuner. See [Tuning](#tuning-optional). |
 | `local ensure <id>` / `local release <id>` | Take / give back one lease. For `routing.json` and hooks (below). |
 
 A Hugging Face spec is read without downloading the model: only the file list and the first few MiB of the chosen
 quant (the header) are fetched, with `HF_TOKEN` sent if set. The weights are downloaded by `llama-server` itself the
 first time it starts, so for a big model run that once by hand (or download the file and pass its path) before
 relying on the on-demand start; the health wait is bounded.
+
+## Tuning (optional)
+
+`steak-pi local tune <id>` hands one added model to [`uio`](https://github.com/michael-berardi/ultra-inference-optimization) (ultra-inference-optimization), a separate tool that measures the model on this machine and changes one server setting at a time, keeping only what is faster and passes its quality gates. Steak Pi adds nothing to the model and fetches nothing: it looks for `uio` in `STEAK_PI_UIO`, then on `PATH`, then `~/.local/bin/uio`. When it is not there, the command prints one line with the install command and exits 2.
+
+What Steak Pi does around the run:
+
+- It refuses, exactly as `local check` would, while a hold or the quiet-day rule is on.
+- It takes an exclusive "tuning" state. If any session or `local start` holds the server it refuses by name with the user count and changes nothing; otherwise it stops the idle server and marks `tuning.json` in the local folder. Until the run ends, `ensure` and `check` refuse with `tuning in progress (since <time>)`. The marker records the tuner's PID, so a crashed run (a dead PID) is not tuning and the next command clears it.
+- It streams `uio`'s progress, then prints a before/after table (decode, prefill, TTFT, percent of the hardware ceiling) from its JSON result. Exit codes: 0 done, 2 refused (by Steak Pi or by `uio`, for example on battery), 3 the tuner failed.
+- With `--apply`, `uio` rewrites the profile's `extraArgs` itself, only when every gate passed; Steak Pi re-reads the profile, confirms the new args, and records `uioLastTune: {at, workdir, decodeTokS}` in it (Steak DSH's `doctor` shows it). The new settings are used from the next server start. Without `--apply`, the best args are only printed.
 
 ## Harness adapters: built into local mode
 

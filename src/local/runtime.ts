@@ -205,6 +205,63 @@ async function preflight(deps: Deps, profile: LaunchProfile, running: ServerReco
   return { need, free };
 }
 
+// ---- tuning ---------------------------------------------------------------------------------------------------------
+
+/** The exclusive "tuning" state: one marker file, owned by the process doing the tuning (first this CLI, then the tuner it started). */
+export interface TuningRecord { id: string; pid: number; pidStart?: string; since: number }
+const tuningPath = (deps: Deps): string => join(deps.dir, "tuning.json");
+
+/** The tuning in progress, or undefined. A marker whose process is gone (a crash) is not tuning: it is removed here. */
+export function readTuning(deps: Deps): TuningRecord | undefined {
+  const record = readJson<TuningRecord>(tuningPath(deps));
+  if (!record) return undefined;
+  if (Number.isInteger(record.pid) && deps.alive(record.pid, record.pidStart)) return record;
+  rmSync(tuningPath(deps), { force: true });
+  return undefined;
+}
+
+/** Re-point the marker at another process (the tuner, once it is running). */
+export function retargetTuning(deps: Deps, pid: number): void {
+  const record = readJson<TuningRecord>(tuningPath(deps));
+  if (record) writeAtomic(tuningPath(deps), `${JSON.stringify({ ...record, pid, pidStart: deps.procStart(pid) })}\n`);
+}
+
+export function endTuning(deps: Deps): void { rmSync(tuningPath(deps), { force: true }); }
+
+const clockText = (ms: number): string => new Date(ms).toISOString().replace("T", " ").replace(/\..*$/, "") + " UTC";
+
+/** What keeps the model off right now: a hold or the quiet-day rule, or a tuning run. The one rule `ensure`, `check` and `tune` share. */
+export function startRefusal(deps: Deps, lockHeld = false): { code: string; detail: string } | undefined {
+  const held = activeHold(deps.dir, deps.now(), deps.holdProbe, lockHeld);
+  if (held) return held;
+  const tuning = readTuning(deps);
+  if (tuning) return { code: "tuning", detail: `tuning in progress (since ${clockText(tuning.since)}) for ${tuning.id}; it ends by itself, or when its process (pid ${tuning.pid}) is gone` };
+  return undefined;
+}
+
+/**
+ * Take the exclusive tuning state for `owner` (a live PID): refuse by name when a hold or the quiet-day rule is on, when
+ * another tuning runs, or when any user holds the server; otherwise stop the idle server Steak Pi started and write the marker.
+ */
+export async function beginTuning(deps: Deps, id: string, owner: number): Promise<{ stopped?: string }> {
+  return withLock(deps.dir, async () => {
+    const refusal = startRefusal(deps, true);
+    if (refusal) refuse(refusal.code, refusal.detail);
+    const record = runningServer(deps);
+    let stoppedId: string | undefined;
+    if (record) {
+      const { holders } = peekLeases(deps);
+      if (holders > 0) refuse("in-use", `local/${record.id} is in use by ${holders} user(s); tuning needs the machine to itself (end them, or stop with: steak-pi local stop)`);
+      const { portReleased } = await stopRecord(deps, record);
+      if (!portReleased) refuse("port-held", `port ${record.port} is still held after stopping local/${record.id}; check the process list`);
+      stoppedId = record.id;
+    }
+    const tuning: TuningRecord = { id, pid: owner, pidStart: deps.procStart(owner), since: deps.now() };
+    writeAtomic(tuningPath(deps), `${JSON.stringify(tuning)}\n`);
+    return { ...(stoppedId ? { stopped: stoppedId } : {}) };
+  });
+}
+
 export type StartPlan =
   | { kind: "attach"; running: ServerRecord }
   | { kind: "start"; stop?: ServerRecord; need: number; free: number };
@@ -216,7 +273,7 @@ export type StartPlan =
  */
 export async function planStart(deps: Deps, profile: LaunchProfile, lockHeld = false): Promise<StartPlan> {
   // A hold comes before everything, an attach included: a server still stopping must not be joined while the model is off.
-  const held = activeHold(deps.dir, deps.now(), deps.holdProbe, lockHeld);
+  const held = startRefusal(deps, lockHeld);
   if (held) refuse(held.code, held.detail);
   const record = readJson<ServerRecord>(serverPath(deps));
   const supervisorUp = !!record && deps.alive(record.supervisorPid, record.supervisorStart);
