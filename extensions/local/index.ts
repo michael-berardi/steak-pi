@@ -203,7 +203,9 @@ export function createLocalHook(deps: LocalHookDeps): (pi: ExtensionAPI) => void
         replaced = body;
         if (!saidClamp) {
           saidClamp = true;
-          notice(ctx, `local: output capped at ${verdict.to} tokens per request (asked for ${verdict.from}); override with limits.maxOutputTokens in the profile file`);
+          // Routine, and the same every session: a headless run logs it once, the interface shows nothing
+          // (`steak-pi local status` prints the limit).
+          if (ctx.hasUI === false) process.stderr.write(`local: output capped at ${verdict.to} tokens per request (asked for ${verdict.from}); override with limits.maxOutputTokens in the profile file\n`);
         }
       }
       const wait = await state.governor.beforeRequest(ctx.signal);

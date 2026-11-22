@@ -139,7 +139,7 @@ keep it from doing so, and all three are on by default for every local profile:
 
 | Rule | Default | What it does |
 |---|---|---|
-| Output cap | 4096 tokens per request | The model entry's `maxTokens`, so Pi never asks for more. A request that still asks for more is clamped to the cap and the clamp is reported once, never silently. |
+| Output cap | 4096 tokens per request | The model entry's `maxTokens`, so Pi never asks for more. A request that still asks for more is clamped to the cap; a headless run logs the clamp once, and `steak-pi local status` prints the limit. |
 | Prompt cap | 75% of the server's context | A prompt over the cap is **not** truncated: the session is compacted through Pi's own compaction path and the request is refused with `REFUSED (prompt-over-cap)`, naming the size and the cap. A local route therefore compacts earlier than a remote one. |
 | Duty cycle | 85% target, at most 10 s of idle | After a request finishes, the next one starts only after an idle gap derived from the previous request's duration (`duration x (1/target - 1)`), capped. The wait is shown in the status line (and the log in print mode), and the request's abort signal cancels it. |
 | GPU headroom | 95% high-water, 85% low-water, 2 samples, 30 s cap | At a request start the GPU is sampled once (macOS: `ioreg -r -d 1 -w 0 -c IOAccelerator`, unprivileged, about 0.01 s; no `powermetrics`, which needs root). At or above 95% the start waits until utilisation has been at or below 85% for two samples, at most 30 s, after which it proceeds and says so. Any other platform, a probe error or an unparsable answer means *unknown*: the check does nothing and says why once per session. |

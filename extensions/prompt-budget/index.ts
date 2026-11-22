@@ -13,6 +13,7 @@ import {
  * The budget is applied through the documented chained `systemPrompt` contract (the same one the skill catalog uses),
  * so a later handler still sees and can extend the result. The overage of project instructions — which are never
  * truncated — and any refused configuration value are reported once, with the numbers, in the status line and the log.
+ * A shrink that fits its budget is routine: a headless run logs it, the interface shows nothing.
  */
 export default function promptBudget(pi: ExtensionAPI): void {
   const { config, problems } = readPromptBudgetConfig(process.env);
@@ -37,7 +38,10 @@ export default function promptBudget(pi: ExtensionAPI): void {
     if (!budgetApplies(window, config)) return undefined; // large-context routes: nothing changes, not one byte
     const plan = planFixedPrompt({ text: event.systemPrompt, contextWindow: window as number, config });
     if (!plan.changed) return undefined;
-    say(ctx, "prompt-budget", describePromptBudget(plan), "info");
+    // A shrink that fit the budget is the route working as designed: it is logged for a headless run and shown
+    // nowhere in the interface. Only a prompt still over its budget is worth the operator's attention.
+    if (plan.unreducible !== undefined) say(ctx, "prompt-budget", describePromptBudget(plan), "warning");
+    else if (ctx.hasUI === false) process.stderr.write(`${describePromptBudget(plan)}\n`);
     if (plan.keptWhole !== undefined && !saidOverage) {
       saidOverage = true;
       say(ctx, "prompt-budget-overage",

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.41.2 (2026-11-22)
+
+- **A local session starts quietly.** The routine "prompt budget: fixed prompt … tokens" line and the "output capped at … tokens per request" line no longer appear as notices or in the status line of an interactive session; a headless run still logs each once to stderr, and `steak-pi local status` prints the limits. A fixed prompt that stays over its budget, project instructions kept whole and a refused budget setting are still shown.
+- Tests: `test/prompt-budget-extension.test.ts`, `test/local-governor.test.ts` (interactive shows nothing, headless logs once).
+
 ## 0.41.1 (2026-11-22)
 
 - **USAP worker launches recover from a removed jiti transpile cache.** Staged imports now validate an ENOENT that names a jiti cache file, recreate the cache directory and retry once; a persistent failure names the removed cache and the original cause. Claude-code, DSH, Pi worker and Codex account-selection paths use the same recovery.

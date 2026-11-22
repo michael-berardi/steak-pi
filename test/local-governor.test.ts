@@ -101,9 +101,22 @@ describe("the extension applies the local route's limits", () => {
     const payload = { messages: [{ role: "user", content: "hi" }], max_tokens: 16384 };
     const first = await h.fire("before_provider_request", { payload }) as { max_tokens: number };
     expect(first.max_tokens).toBe(4096);
-    expect(h.notices.filter(([, text]) => /output capped at 4096 tokens per request \(asked for 16384\)/.test(text))).toHaveLength(1);
-    await h.fire("before_provider_request", { payload: { messages: [], max_tokens: 16384 } });
-    expect(h.notices.filter(([, text]) => /output capped at/.test(text))).toHaveLength(1); // said once per session
+    const second = await h.fire("before_provider_request", { payload: { messages: [], max_tokens: 16384 } }) as { max_tokens: number };
+    expect(second.max_tokens).toBe(4096);
+    expect(h.notices.filter(([, text]) => /output capped at/.test(text))).toHaveLength(0); // routine: no toast in the interface
+  });
+
+  it("logs the clamp once on a headless run", async () => {
+    const h = harness();
+    (h.ctx as { hasUI?: boolean }).hasUI = false;
+    const lines: string[] = [];
+    const write = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array) => { lines.push(String(chunk)); return true; }) as typeof process.stderr.write;
+    try {
+      await h.fire("before_provider_request", { payload: { messages: [], max_tokens: 16384 } });
+      await h.fire("before_provider_request", { payload: { messages: [], max_tokens: 16384 } });
+    } finally { process.stderr.write = write; }
+    expect(lines.filter((line) => /output capped at 4096 tokens per request \(asked for 16384\)/.test(line))).toHaveLength(1);
   });
 
   it("compacts an over-cap prompt through the existing path and refuses the request by name", async () => {

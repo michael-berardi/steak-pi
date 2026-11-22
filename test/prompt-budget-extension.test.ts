@@ -69,11 +69,22 @@ describe("the fixed-prompt budget applies by context window", () => {
     const result = h.fire(text);
     expect(result?.systemPrompt).toBeDefined();
     expect(result!.systemPrompt!.length).toBeLessThan(text.length);
-    const note = h.notes.map(([, text]) => text).join("\n");
-    expect(note).toMatch(/prompt budget: fixed prompt \d+ -> \d+ tokens \(\d+(\.\d+)?% of the 65536-token window, budget 16384\)/);
-    expect(h.statuses.some(([key]) => key === "prompt-budget")).toBe(true);
+    // A shrink that fit is routine: no toast and no status line in the interface (only the one-time overage warning,
+    // which names the project instructions, may appear).
+    expect(h.notes.some(([, text]) => /prompt budget: fixed prompt/.test(text))).toBe(false);
+    expect(h.statuses.some(([key]) => key === "prompt-budget")).toBe(false);
     // The project instructions are still there, whole.
     expect(result!.systemPrompt!).toContain(text.slice(text.indexOf("<project_context>"), text.indexOf("</project_context>")));
+  });
+
+  it("logs the routine shrink on a headless run", () => {
+    const h = harness();
+    h.ctx.hasUI = false;
+    const lines: string[] = [];
+    const write = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array) => { lines.push(String(chunk)); return true; }) as typeof process.stderr.write;
+    try { h.fire(recordedPrompt()); } finally { process.stderr.write = write; }
+    expect(lines.join("")).toMatch(/prompt budget: fixed prompt \d+ -> \d+ tokens \(\d+(\.\d+)?% of the 65536-token window, budget 16384\)/);
   });
 
   it("leaves a 200k and a 1M route byte-identical: no replacement at all", () => {
