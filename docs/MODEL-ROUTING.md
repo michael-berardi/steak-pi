@@ -270,8 +270,9 @@ resolves the configured chain:
   the dispatch reads the account router once (`ut-provider-accounts status`) when the
   resolved route is in a metered `providerQuotaFallback` tier. A provider is
   **exhausted** only when every configured account is proven unavailable
-  (`state: "cooling-down"` or a live `cooldown.until`, `signedOut`, or a usage window at 100%
-  that has not reset). `eligible: true` always wins; busy, unmeasured, unlisted and
+  (`state: "cooling-down"` or a live `cooldown.until`, `signedOut`, `state: "unsupported"` (signed in
+  on a plan that cannot run the route's models, whatever headroom its usage window shows), or a usage
+  window at 100% that has not reset). `eligible: true` always wins; busy, unmeasured, unlisted and
   unreadable are **not** exhaustion. An exhausted route is never selected: `textWorkerChain`
   is re-resolved with that provider skipped, and the receipt carries the router cause in
   `selection.fallbackReason`. A parent on another account-leased tier may reach a `codex`-tier

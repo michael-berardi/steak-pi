@@ -2803,7 +2803,7 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
           expect(first.systemPrompt.startsWith("BASE\n\n")).toBe(true);
           expect(first.systemPrompt).toMatch(/Go[^;]*: COOLING until Mon 02:50/);
           expect(first.systemPrompt).toMatch(/Next usable route: GPT-6\.1 Terra/);
-          expect(first.systemPrompt).toMatch(/Omit model, profile and harness .* never pin a COOLING, HELD BACK or NOT ALLOWED route/);
+          expect(first.systemPrompt).toMatch(/Omit model, profile and harness .* never pin a COOLING, HELD BACK, UNAVAILABLE or NOT ALLOWED route/);
           // Every route named as usable is up: no cooling route appears after "Next usable route".
           expect(first.systemPrompt.split("Next usable route:")[1]).not.toMatch(/Go\b/);
           clock += 30_000;

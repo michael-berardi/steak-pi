@@ -27,13 +27,13 @@ Node.js and npm through the system package manager before running the installer.
 
 ## Install a downloaded archive
 
-Download `steak-pi-0.41.2.tgz` and its `.sha256` file from the
+Download `steak-pi-0.41.3.tgz` and its `.sha256` file from the
 [release page](../README.md#install) into an empty directory. With Node.js, npm
 and Pi already installed, run:
 
 ```sh
-shasum -a 256 -c steak-pi-0.41.2.tgz.sha256
-tar -xzf steak-pi-0.41.2.tgz
+shasum -a 256 -c steak-pi-0.41.3.tgz.sha256
+tar -xzf steak-pi-0.41.3.tgz
 npm ci --ignore-scripts --prefix "$PWD/package"
 pi install "$PWD/package"
 ```

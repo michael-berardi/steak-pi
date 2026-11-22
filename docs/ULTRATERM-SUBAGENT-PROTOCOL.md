@@ -532,8 +532,8 @@ The parent may choose either execution mode:
   checkpoint is marked delivered, so a reload queues no second completion. This
   applies to foreground dispatches as well.
 - **Quota-aware routing:** an implicit routine wave asks the account router first.
-  A provider whose every configured account is cooling down, signed out or at a
-  100% window is skipped (the configured `providerQuotaFallback` tiers in order; an
+  A provider whose every configured account is cooling down, signed out, on a plan
+  that cannot run the route or at a 100% window is skipped (the configured `providerQuotaFallback` tiers in order; an
   unmetered tier launches without a router read); when all of them are out the wave
   runs on the configured `claudeFallbackTier` (ordinary, or substantial for
   mayEdit+allowBash leaves, high/xhigh effort and reviewers), pinned on the

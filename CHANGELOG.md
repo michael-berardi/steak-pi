@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.41.3 (2026-11-22)
+
+- **An account signed in on a plan that cannot run a route counts as unavailable.** When the account router reports an account as `unsupported`, the provider is treated as out for that route whatever headroom its usage window shows, so the implicit worker chain skips it without a launch attempt. The per-turn availability line shows the step as `UNAVAILABLE` with the router's cause instead of `up` or `COOLING`.
+- Tests: `test/provider-quota.test.ts` (an unsupported account with 19% used is out; a second usable account keeps the provider usable; a second cooling account still gives a return time).
+
 ## 0.41.2 (2026-11-22)
 
 - **A local session starts quietly.** The routine "prompt budget: fixed prompt … tokens" line and the "output capped at … tokens per request" line no longer appear as notices or in the status line of an interactive session; a headless run still logs each once to stderr, and `steak-pi local status` prints the limits. A fixed prompt that stays over its budget, project instructions kept whole and a refused budget setting are still shown.

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { claudeLoginAccount, claudeLoginBlock, claudeQuotaBlock, isQuotaLaunchFailure, pickClaudeAccount, providerUsageLimit, quotaProviderOf, readProviderQuota, reportsSpentPlan, routeQuotaBlock } from "../src/subagents/provider-quota.ts";
+import { computeAvailability } from "../src/subagents/route-availability.ts";
 
 // Shapes mirror a live router `status` answer: every field below is one the router itself emits, and
 // nothing here is credential-bearing.
@@ -48,6 +49,32 @@ describe("provider quota (router status) exhaustion", () => {
     expect(quota.providers["opencode-go"]?.cause).toMatch(/Go 1: a usage window is at 100%; Go 2: signed out/);
     const stale = await read(status({ "opencode-go": [{ ...full, windows: [{ name: "five_hour", resetAt: NOW - 5, usedPercent: 100 }] }] }));
     expect(stale.providers["opencode-go"]?.exhausted).toBe(false);
+  });
+
+  it("counts an account signed in on a plan that cannot run the route as unavailable, whatever headroom its window shows", async () => {
+    // The live router answer for a free ChatGPT plan: 19% used of a 30-day window, and state "unsupported".
+    const freePlan = (id: string, label: string) => ({
+      configured: true, eligible: false, id, label, state: "unsupported", signedIn: true, signedOut: false, cooldown: null,
+      stateText: "signed in with a free plan, which cannot run the worker models; sign in again with the paid plan",
+      unsupported: "signed in with a free plan, which cannot run the worker models; sign in again with the paid plan",
+      usageKnown: true, usedPercent: 19, resetAt: NOW + 2_500_000, windows: [{ name: "30-day", resetAt: NOW + 2_500_000, usedPercent: 19 }],
+    });
+    const quota = await read(status({ codex: [freePlan("fallback", "GPT 1")] }));
+    expect(quota.providers.codex).toMatchObject({ exhausted: true, unsupported: true });
+    expect(quota.providers.codex?.earliestReturn).toBeUndefined(); // no window brings it back
+    expect(quota.providers.codex?.cause).toMatch(/every GPT account is unavailable \(GPT 1: signed in with a free plan/);
+    expect(routeQuotaBlock(quota, SOL)).toBe(quota.providers.codex?.cause);
+    const availability = computeAvailability({ snapshot: quota, chain: [SOL, GO], policy: {} });
+    expect(availability.steps[0]).toMatchObject({ state: "unavailable" });
+    expect(availability.next).toBe(availability.steps[1]?.label);
+    expect(availability.line).toMatch(/: UNAVAILABLE \(every GPT account is unavailable/);
+    expect(availability.line).not.toMatch(/: COOLING/);
+    // A second account that can launch keeps the provider usable; one that is only cooling down gives a return time.
+    const mixed = await read(status({ codex: [freePlan("fallback", "GPT 1"), eligible("primary", "GPT 2")] }));
+    expect(mixed.providers.codex?.exhausted).toBe(false);
+    expect(routeQuotaBlock(mixed, SOL)).toBeUndefined();
+    const waiting = await read(status({ codex: [freePlan("fallback", "GPT 1"), coolingDown("primary", "GPT 2")] }));
+    expect(computeAvailability({ snapshot: waiting, chain: [SOL], policy: {} }).steps[0]).toMatchObject({ state: "cooling", returnsAt: NOW + 434_000 });
   });
 
   it.each([

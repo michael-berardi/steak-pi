@@ -77,6 +77,9 @@ export interface ProviderQuota {
   unconfigured: boolean;
   /** The router itself marked every configured account `eligible: false` (the Claude guard). */
   ineligible: boolean;
+  /** Every configured account is out and at least one is out for its plan (no usage window will bring it back):
+   * the provider is unavailable until the operator signs in again, not cooling down. */
+  unsupported?: boolean;
   /** Epoch seconds when the earliest exhausted account returns, when the router said. */
   earliestReturn?: number;
   /** Named cause; empty unless the provider is exhausted, unconfigured or ineligible. */
@@ -111,7 +114,7 @@ function formatReturn(epochSeconds: number): string {
 /** Evidence that one account cannot launch now, read from the router's own fields only.
  * `eligible: true` is the router's verdict and always wins; `eligible: false` alone is NOT
  * evidence (an account can be ineligible for being busy or unmeasured). */
-function exhaustionEvidence(account: Record<string, unknown>, now: number): { detail: string; returnsAt?: number } | undefined {
+function exhaustionEvidence(account: Record<string, unknown>, now: number): { detail: string; returnsAt?: number; unsupported?: boolean } | undefined {
   if (account.eligible === true) return undefined;
   const cooldown = record(account.cooldown) ? account.cooldown : undefined;
   const until = finite(cooldown?.until);
@@ -120,6 +123,11 @@ function exhaustionEvidence(account: Record<string, unknown>, now: number): { de
     return { detail: printable(account.stateText, "cooling down"), ...(returnsAt !== undefined ? { returnsAt } : {}) };
   }
   if (account.signedOut === true) return { detail: "signed out" };
+  // Signed in on a plan that cannot run the route's models: the router names it, and its usage windows still show
+  // headroom. That headroom is not capacity; the account is out until the operator signs in on another plan.
+  if (account.state === "unsupported" || (typeof account.unsupported === "string" && account.unsupported.trim().length > 0)) {
+    return { detail: printable(account.unsupported, printable(account.stateText, "signed in on a plan that cannot run this route")), unsupported: true };
+  }
   const windows = Array.isArray(account.windows) ? account.windows.filter(record) : [];
   const full = windows.filter((window) => (finite(window.usedPercent) ?? 0) >= 100 && (finite(window.resetAt) ?? Infinity) > now);
   const topLevelFull = (finite(account.usedPercent) ?? 0) >= 100 && (finite(account.resetAt) ?? Infinity) > now;
@@ -169,6 +177,7 @@ function evaluateProvider(provider: QuotaProvider, block: unknown, now: number):
   });
   const exhausted = rows.every((row) => row.evidence !== undefined);
   const ineligible = rows.every((row) => row.eligibleFalse);
+  const unsupported = exhausted && rows.some((row) => row.evidence?.unsupported === true);
   const returns = rows.map((row) => row.evidence?.returnsAt).filter((value): value is number => value !== undefined);
   const earliestReturn = exhausted && returns.length > 0 ? Math.min(...returns) : undefined;
   const cause = exhausted
@@ -183,7 +192,7 @@ function evaluateProvider(provider: QuotaProvider, block: unknown, now: number):
     exhausted: row.evidence !== undefined,
     why: row.eligible === true ? "" : row.evidence?.detail ?? (row.eligible === false ? row.why : "the router did not report it eligible"),
   }));
-  return { provider, accounts: accounts.length, rows: listed, exhausted, unconfigured: false, ineligible, ...(earliestReturn !== undefined ? { earliestReturn } : {}), cause };
+  return { provider, accounts: accounts.length, rows: listed, exhausted, unconfigured: false, ineligible, ...(unsupported ? { unsupported: true } : {}), ...(earliestReturn !== undefined ? { earliestReturn } : {}), cause };
 }
 
 /** One router `status` read. Never throws: a router that is down, slow or incoherent is

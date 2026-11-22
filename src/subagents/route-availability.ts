@@ -40,7 +40,7 @@ export const AVAILABILITY_TTL_MS = 60_000;
 
 export interface AvailabilityStep {
   label: string;
-  state: "up" | "cooling" | "held" | "policy";
+  state: "up" | "cooling" | "held" | "policy" | "unavailable";
   /** Bounded cause for a step that is not up. */
   cause?: string;
   /** Epoch seconds the step returns, when the router said. */
@@ -99,7 +99,10 @@ export function computeAvailability(input: AvailabilityInput): Availability {
     const block = snapshot.known && !input.isFree?.(step) ? routeQuotaBlock(snapshot, step) : undefined;
     if (block === undefined) { steps.push({ label, state: "up" }); continue; }
     const provider = quotaProviderOf(step);
-    const returnsAt = provider ? snapshot.providers[provider]?.earliestReturn : undefined;
+    // Out for its plan, with no cooldown that ends by itself and none the other accounts are waiting on: unavailable.
+    const quota = provider ? snapshot.providers[provider] : undefined;
+    if (quota?.unsupported === true && quota.earliestReturn === undefined) { steps.push({ label, state: "unavailable", cause: block }); continue; }
+    const returnsAt = quota?.earliestReturn;
     steps.push({ label, state: "cooling", cause: block, ...(returnsAt !== undefined ? { returnsAt } : {}) });
   }
   if (input.claudeTier !== undefined) {
@@ -126,10 +129,11 @@ function renderAvailability(steps: readonly AvailabilityStep[], next: string | u
   const parts = steps.map((step) => step.state === "up" ? `${step.label}: up${step.note !== undefined ? ` (${step.note})` : ""}`
     : step.state === "held" ? `${step.label}: HELD BACK (${step.cause})`
     : step.state === "cooling" ? `${step.label}: COOLING${step.returnsAt !== undefined ? ` until ${clock(step.returnsAt)}` : ""}`
+    : step.state === "unavailable" ? `${step.label}: UNAVAILABLE (${step.cause})`
     : `${step.label}: NOT ALLOWED (project policy)`);
   return `USAP route availability${known ? "" : " (router unreadable, treat as unknown)"}: ${parts.join("; ")}. `
     + (next !== undefined ? `Next usable route: ${next}. ` : "No route is usable now; the implicit dispatch refuses once and names when each returns. ")
-    + "Omit model, profile and harness on ultraterm_subagents and let the router choose; never pin a COOLING, HELD BACK or NOT ALLOWED route.";
+    + "Omit model, profile and harness on ultraterm_subagents and let the router choose; never pin a COOLING, HELD BACK, UNAVAILABLE or NOT ALLOWED route.";
 }
 
 /** The one-shot refusal for an implicit wave with no allowed, available step: every skipped step and when it returns. */
