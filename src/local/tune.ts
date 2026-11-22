@@ -17,7 +17,7 @@ import { parseDuration } from "./hold.ts";
 import { LocalError, profilePath, readProfile, writeProfile } from "./store.ts";
 import { serverArgs, type LaunchProfile } from "./profile.ts";
 
-export const UIO_INSTALL = "curl -fsSL https://github.com/michael-berardi/ultra-inference-optimization/releases/latest/download/install.sh | sh";
+export const UIO_INSTALL = 'uv tool install "git+https://github.com/michael-berardi/ultra-inference-optimization@v0.1.0"   (or pipx install with the same URL)';
 export const TARGETS = ["decode", "prefill", "ttft", "balanced"] as const;
 export const ALLOWS = ["lossless", "lossy"] as const;
 
@@ -44,28 +44,30 @@ export function resolveUio(env: NodeJS.ProcessEnv = process.env): string | undef
 }
 
 interface Metrics { decode?: number; prefill?: number; ttft?: number }
-const num = (value: unknown): number | undefined => {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (value && typeof value === "object") for (const key of ["median", "value", "tokS", "max", "upper"]) { const inner = num((value as Record<string, unknown>)[key]); if (inner !== undefined) return inner; }
-  return undefined;
-};
+const num = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
+/** One side of the v2 result: `{args, decode, prefill, ttft}` (tok/s, tok/s, ms); a null or missing figure is unknown. */
 const metricsOf = (side: unknown): Metrics => {
   const o = (side && typeof side === "object" ? side : {}) as Record<string, unknown>;
-  return { decode: num(o.decodeTokS), prefill: num(o.prefillTokS), ttft: num(o.ttftMs) };
+  return { decode: num(o.decode), prefill: num(o.prefill), ttft: num(o.ttft) };
 };
 const cell = (value: number | undefined, digits = 1): string => (value === undefined ? "n/a" : value.toFixed(digits));
 
-export interface TuneResult { baseline?: unknown; best?: unknown; ceiling?: unknown; bestArgs?: unknown; accepted?: unknown[]; rejected?: unknown[]; plateau?: boolean; workdir?: string }
+export interface TuneResult {
+  baseline?: unknown; best?: unknown; ceiling?: unknown; percentOfCeiling?: number | null;
+  accepted?: unknown[]; rejected?: unknown[]; plateau?: boolean; stoppedBecause?: string; workdir?: string;
+  applied?: { written?: boolean; extraArgs?: string[] | null; backup?: string | null; reason?: string };
+  confirmation?: { ran?: boolean; gainRatio?: number | null; ci?: [number, number] | null; passed?: boolean | null };
+}
 
 export function beforeAfterTable(result: TuneResult): string {
-  const before = metricsOf(result.baseline), after = metricsOf(result.best), ceiling = metricsOf(result.ceiling);
-  const pct = (m: Metrics): string => (m.decode !== undefined && ceiling.decode ? `${((m.decode / ceiling.decode) * 100).toFixed(0)}%` : "n/a");
+  const before = metricsOf(result.baseline), after = metricsOf(result.best);
+  const pct = num(result.percentOfCeiling);
   const rows = [
     ["", "before", "after"],
     ["decode tok/s", cell(before.decode), cell(after.decode)],
     ["prefill tok/s", cell(before.prefill), cell(after.prefill)],
     ["TTFT ms", cell(before.ttft, 0), cell(after.ttft, 0)],
-    ["ceiling %", pct(before), pct(after)],
+    ["ceiling %", "", pct === undefined ? "n/a" : `${pct.toFixed(0)}%`],
   ];
   const widths = [0, 1, 2].map((i) => Math.max(...rows.map((r) => r[i].length)));
   return rows.map((r) => r.map((c, i) => c.padEnd(widths[i])).join("  ").trimEnd()).join("\n");
@@ -122,20 +124,25 @@ export async function tuneModel(deps: Deps, options: TuneOptions): Promise<numbe
     try { result = JSON.parse(run.stdout.trim().split("\n").filter(Boolean).pop() ?? "") as TuneResult; }
     catch { io.err("steak-pi local: uio tune succeeded but printed no JSON result"); return 3; }
     io.out(beforeAfterTable(result));
-    io.out(`${result.plateau ? "plateau reached" : "stopped at the budget"}; ${(result.accepted ?? []).length} change(s) accepted, ${(result.rejected ?? []).length} rejected${result.workdir ? `; record: ${result.workdir}` : ""}`);
+    io.out(`${result.plateau ? "plateau reached" : `stopped: ${result.stoppedBecause ?? "at the budget"}`}; ${(result.accepted ?? []).length} change(s) accepted, ${(result.rejected ?? []).length} rejected${result.workdir ? `; record: ${result.workdir}` : ""}`);
+    const applied = result.applied;
+    const testedArgs = result.best && typeof result.best === "object" && Array.isArray((result.best as { args?: unknown }).args) ? ((result.best as { args: string[] }).args) : [];
     if (!options.apply) {
-      const args2 = Array.isArray(result.bestArgs) ? result.bestArgs.join(" ") : "";
-      io.out(`not applied; best extraArgs: ${args2 || "(unchanged)"}\nrun again with --apply to write them into the profile`);
+      io.out(`not applied; tested arguments (the full server command line uio measured): ${testedArgs.join(" ") || "(unchanged)"}\nrun again with --apply to write the change into the profile's extraArgs`);
+      return 0;
+    }
+    if (!applied || applied.written !== true) {
+      io.out(`not applied: ${applied?.reason || "uio reported no reason"}`);
       return 0;
     }
     const after: LaunchProfile | undefined = readProfile(deps.dir, id);
-    if (!after || !sameArgs(after.extraArgs, result.bestArgs)) {
-      io.err(`steak-pi local: uio reported success but the profile's extraArgs are not the best args (${after ? JSON.stringify(after.extraArgs) : "profile missing"}); nothing else was changed`);
+    if (!after || !Array.isArray(applied.extraArgs) || !sameArgs(after.extraArgs, applied.extraArgs)) {
+      io.err(`steak-pi local: uio reported the profile was written but its extraArgs are not the ones uio reported (profile: ${after ? JSON.stringify(after.extraArgs) : "missing"}; uio: ${JSON.stringify(applied.extraArgs ?? null)}); nothing else was changed`);
       return 3;
     }
     const decode = metricsOf(result.best).decode;
-    writeProfile(deps.dir, { ...after, uioLastTune: { at: new Date(deps.now()).toISOString(), workdir: result.workdir ?? "", decodeTokS: decode ?? 0 } });
-    io.out(`applied: local/${id} extraArgs are now ${JSON.stringify(after.extraArgs)} (confirmed from the profile; used from the next server start)`);
+    if (decode !== undefined) writeProfile(deps.dir, { ...after, uioLastTune: { at: new Date(deps.now()).toISOString(), workdir: result.workdir ?? "", decodeTokS: decode } });
+    io.out(`applied: local/${id} written extraArgs are now ${JSON.stringify(after.extraArgs)} (confirmed from the profile; used from the next server start)`);
     return 0;
   } catch (error) {
     if (error instanceof LocalError) throw error;

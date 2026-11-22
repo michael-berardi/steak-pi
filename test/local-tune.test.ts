@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { sameProcess, systemDeps } from "../src/local/runtime.ts";
 import { main, type Io } from "../src/local/cli.ts";
 import { readProfile, writeAtomic } from "../src/local/store.ts";
 import { fakeMachine, seedProfile, tempDir } from "./helpers/local-fixture.ts";
@@ -8,7 +9,18 @@ import { fakeMachine, seedProfile, tempDir } from "./helpers/local-fixture.ts";
 const dirs: Array<{ cleanup(): void }> = [];
 afterEach(() => { while (dirs.length) dirs.pop()?.cleanup(); delete process.env.STEAK_PI_UIO; delete process.env.FAKE_UIO_MODE; });
 
-const RESULT = { baseline: { decodeTokS: { median: 20 }, prefillTokS: 200, ttftMs: 900 }, best: { decodeTokS: { median: 24 }, prefillTokS: 210, ttftMs: 800 }, ceiling: { decodeTokS: { median: 40 } }, bestArgs: ["--flash-attn", "on"], accepted: [{}], rejected: [{}, {}], plateau: true, workdir: "/tmp/uio-work" };
+const LAUNCH = ["-np", "1", "-ngl", "999", "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0", "--jinja", "--cache-ram", "2048", "--no-webui", "--batch-size", "512", "--ubatch-size", "128", "--metrics"];
+const WRITTEN = ["--spec-type", "draft-mtp", "--spec-draft-n-max", "5"];
+/** A v2-shaped result (CONTRACT-v2), modelled on a captured `uio tune` stdout. */
+const RESULT = {
+  baseline: { args: LAUNCH, decode: 20, prefill: 200, ttft: 900 },
+  best: { args: [...LAUNCH, ...WRITTEN], decode: 24, prefill: 210, ttft: 800 },
+  ceiling: { decodeTokS: { weightsOnly: 40, atCtx: 33.6, speculative: null, ctx: 65536 }, kvBytesPerToken: 69632 },
+  percentOfCeiling: 60,
+  accepted: [{ lever: "speculative-draft-length" }], rejected: [{}, {}], plateau: true, stoppedBecause: "plateau", workdir: "/tmp/uio-work",
+  applied: { written: true, extraArgs: WRITTEN, backup: "/tmp/uio-work/backup.json", reason: "applied" },
+  confirmation: { ran: true, gainRatio: 1.2, ci: [1.1, 1.3], passed: true },
+};
 
 /** A fake `uio`: a node script whose behaviour follows FAKE_UIO_MODE; it logs its argv and whether the tuning marker existed. */
 function fakeUio(dir: string, state: string): string {
@@ -19,14 +31,17 @@ const argv = process.argv.slice(2);
 fs.writeFileSync(${JSON.stringify(join(dir, "argv.json"))}, JSON.stringify({ argv, marker: fs.existsSync(${JSON.stringify(join(state, "tuning.json"))}) }));
 const mode = process.env.FAKE_UIO_MODE || "ok";
 console.error("round 1: control");
+const result = ${JSON.stringify(RESULT)};
+if (mode === "notwritten") result.applied = { written: false, extraArgs: null, backup: null, reason: "confirmation failed" };
+if (mode === "nulldecode") result.best.decode = null;
 if (mode === "refuse") { console.error("on battery"); process.exit(2); }
 if (mode === "fail") { console.error("server crashed"); process.exit(3); }
-if (argv.includes("--apply") && mode !== "noapply") {
+if (argv.includes("--apply") && mode !== "noapply" && mode !== "notwritten") {
   const file = argv[argv.indexOf("--profile") + 1];
-  const p = JSON.parse(fs.readFileSync(file, "utf8")); p.extraArgs = ${JSON.stringify(RESULT.bestArgs)};
+  const p = JSON.parse(fs.readFileSync(file, "utf8")); p.extraArgs = mode === "mismatch" ? ["--other"] : ${JSON.stringify(WRITTEN)};
   fs.writeFileSync(file, JSON.stringify(p));
 }
-console.log(JSON.stringify(${JSON.stringify(RESULT)}));
+console.log(JSON.stringify(result));
 `);
   chmodSync(path, 0o755);
   return path;
@@ -62,8 +77,8 @@ describe("steak-pi local tune", () => {
     const text = out.join("\n");
     expect(text).toMatch(/uio: round 1: control/);
     expect(text).toMatch(/decode tok\/s\s+20\.0\s+24\.0/);
-    expect(text).toMatch(/ceiling %\s+50%\s+60%/);
-    expect(text).toMatch(/not applied/);
+    expect(text).toMatch(/ceiling %\s+60%/);
+    expect(text).toMatch(/not applied; tested arguments .*--spec-draft-n-max 5/);
     expect(existsSync(join(state, "tuning.json"))).toBe(false);
     expect(readProfile(state, "model-a")?.extraArgs).toEqual([]);
   });
@@ -73,16 +88,40 @@ describe("steak-pi local tune", () => {
     process.env.STEAK_PI_UIO = uio;
     expect(await main(["tune", "model-a", "--apply"], options)).toBe(0);
     const profile = readProfile(state, "model-a");
-    expect(profile?.extraArgs).toEqual(["--flash-attn", "on"]);
+    expect(profile?.extraArgs).toEqual(WRITTEN);
     expect(profile?.uioLastTune).toMatchObject({ workdir: "/tmp/uio-work", decodeTokS: 24 });
-    expect(out.join("\n")).toMatch(/applied: local\/model-a extraArgs are now \["--flash-attn","on"\]/);
+    expect(out.join("\n")).toMatch(/applied: local\/model-a written extraArgs are now \["--spec-type"/);
   });
 
   it("--apply fails (exit 3) when the profile does not carry the best args afterwards", async () => {
     const { err, options, uio } = setup();
     process.env.STEAK_PI_UIO = uio; process.env.FAKE_UIO_MODE = "noapply";
     expect(await main(["tune", "model-a", "--apply"], options)).toBe(3);
-    expect(err.join("\n")).toMatch(/not the best args/);
+    expect(err.join("\n")).toMatch(/not the ones uio reported/);
+  });
+
+  it("--apply fails (exit 3) when the profile's extraArgs differ from applied.extraArgs", async () => {
+    const { err, options, uio } = setup();
+    process.env.STEAK_PI_UIO = uio; process.env.FAKE_UIO_MODE = "mismatch";
+    expect(await main(["tune", "model-a", "--apply"], options)).toBe(3);
+    expect(err.join("\n")).toMatch(/not the ones uio reported/);
+  });
+
+  it("--apply with applied.written false prints 'not applied: <reason>', exits 0 and records nothing", async () => {
+    const { out, err, options, state, uio } = setup();
+    process.env.STEAK_PI_UIO = uio; process.env.FAKE_UIO_MODE = "notwritten";
+    expect(await main(["tune", "model-a", "--apply"], options)).toBe(0);
+    expect(out.join("\n")).toMatch(/not applied: confirmation failed/);
+    expect(err).toEqual([]);
+    expect(readProfile(state, "model-a")?.uioLastTune).toBeUndefined();
+  });
+
+  it("does not record uioLastTune when best.decode is not a number", async () => {
+    const { options, state, uio } = setup();
+    process.env.STEAK_PI_UIO = uio; process.env.FAKE_UIO_MODE = "nulldecode";
+    expect(await main(["tune", "model-a", "--apply"], options)).toBe(0);
+    expect(readProfile(state, "model-a")?.extraArgs).toEqual(WRITTEN);
+    expect(readProfile(state, "model-a")?.uioLastTune).toBeUndefined();
   });
 
   it("passes uio's refusal (exit 2) through and releases the state", async () => {
@@ -106,7 +145,7 @@ describe("steak-pi local tune", () => {
     process.env.STEAK_PI_UIO = join(dir, "nope");
     expect(await main(["tune", "model-a"], options)).toBe(2);
     expect(err).toHaveLength(1);
-    expect(err[0]).toContain("curl -fsSL https://github.com/michael-berardi/ultra-inference-optimization/releases/latest/download/install.sh | sh");
+    expect(err[0]).toContain('uv tool install "git+https://github.com/michael-berardi/ultra-inference-optimization@v0.1.0"');
   });
 
   it("refuses by name, with the user count, when a lease holds the server; the server is left alone", async () => {
@@ -162,9 +201,15 @@ describe("steak-pi local tune", () => {
   });
 });
 
-describe("provider neutrality", () => {
-  it("the tune module names no model, publisher, repo or quant", () => {
-    const text = readFileSync(join(__dirname, "..", "src", "local", "tune.ts"), "utf8");
-    expect(text).not.toMatch(/qwen|llama-?3|mistral|gemma|phi-?\d|deepseek|unsloth|bartowski|Q4_K|Q5_K|Q8_0|huggingface\.co\/[a-z]/i);
+describe("tuner liveness", () => {
+  it("an unknown start time counts as the same process; a known different one does not", () => {
+    expect(sameProcess("Mon 1", undefined)).toBe(true);
+    expect(sameProcess(undefined, "Mon 1")).toBe(true);
+    expect(sameProcess("Mon 1", "Mon 1")).toBe(true);
+    expect(sameProcess("Mon 1", "Tue 2")).toBe(false);
+  });
+  it("systemDeps.alive is true for a live PID with no recorded start", () => {
+    expect(systemDeps("/nonexistent").alive(process.pid)).toBe(true);
+    expect(systemDeps("/nonexistent").alive(process.pid, "bogus start")).toBe(false);
   });
 });

@@ -45,7 +45,9 @@ function files(dir: string): string[] {
   });
 }
 const ROOT_FILES = ["README.md", "CONTRIBUTING.md", "SECURITY.md"];
-const shipped = [...SHIPPED_DIRS.flatMap((dir) => files(join(root, dir))), ...ROOT_FILES.map((name) => join(root, name))].filter(existsSync);
+// The tune module's own test is scanned too: it ships with the module and must not name a model family either.
+const LOCAL_TESTS = [join(root, "test", "local-tune.test.ts")].filter(existsSync);
+const shipped = [...SHIPPED_DIRS.flatMap((dir) => files(join(root, dir))), ...LOCAL_TESTS, ...ROOT_FILES.map((name) => join(root, name))].filter(existsSync);
 
 // Concrete model ids and routes only an operator should choose.
 const MODEL_CHOICE = /\b(?:gpt-\d[\w.-]*|deepseek[\w./-]*|opencode-go\/|openrouter\/[\w~]|:exacto\b|mimo[-.]?v?\d|glm[-.]?\d|claude-[a-z]+-\d-\d|gemini-\d|gemini-[a-z]+-\d|(?:GLM|MiMo|Codex|GPT|Opus|Sonnet|Haiku|Claude) [Vv]?[0-9][.0-9]*)/i;

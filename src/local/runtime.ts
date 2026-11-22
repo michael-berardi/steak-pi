@@ -543,6 +543,11 @@ const envSeconds = (name: string, fallback: number): number => {
   return Number.isFinite(value) && value > 0 ? value * 1000 : fallback;
 };
 
+/** An unknown start time (recorded or current) cannot prove the PID was reused, so a live PID then counts as alive. */
+export function sameProcess(recorded: string | undefined, current: string | undefined): boolean {
+  return recorded === undefined || current === undefined || recorded === current;
+}
+
 export function systemDeps(dir: string): Deps {
   return {
     dir,
@@ -551,7 +556,7 @@ export function systemDeps(dir: string): Deps {
     procStart,
     alive: (pid, start) => {
       try { process.kill(pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EPERM") return false; }
-      return start === undefined || procStart(pid) === start;
+      return sameProcess(start, procStart(pid));
     },
     signal: (pid, signal, group) => { try { process.kill(group ? -pid : pid, signal); } catch { /* already gone */ } },
     health: async (port) => {

@@ -41,14 +41,14 @@ relying on the on-demand start; the health wait is bounded.
 
 ## Tuning (optional)
 
-`steak-pi local tune <id>` hands one added model to [`uio`](https://github.com/michael-berardi/ultra-inference-optimization) (ultra-inference-optimization), a separate tool that measures the model on this machine and changes one server setting at a time, keeping only what is faster and passes its quality gates. Steak Pi adds nothing to the model and fetches nothing: it looks for `uio` in `STEAK_PI_UIO`, then on `PATH`, then `~/.local/bin/uio`. When it is not there, the command prints one line with the install command and exits 2.
+`steak-pi local tune <id>` hands one added model to [`uio`](https://github.com/michael-berardi/ultra-inference-optimization) (ultra-inference-optimization), a separate tool that measures the model on this machine and changes one server setting at a time, keeping only what is faster and passes its quality gates. Steak Pi adds nothing to the model and fetches nothing: it looks for `uio` in `STEAK_PI_UIO`, then on `PATH`, then `~/.local/bin/uio`. When it is not there, the command prints one line with the pinned install command (`uv tool install "git+https://github.com/michael-berardi/ultra-inference-optimization@v0.1.0"`, or `pipx install` with the same URL) and exits 2.
 
 What Steak Pi does around the run:
 
 - It refuses, exactly as `local check` would, while a hold or the quiet-day rule is on.
 - It takes an exclusive "tuning" state. If any session or `local start` holds the server it refuses by name with the user count and changes nothing; otherwise it stops the idle server and marks `tuning.json` in the local folder. Until the run ends, `ensure` and `check` refuse with `tuning in progress (since <time>)`. The marker records the tuner's PID, so a crashed run (a dead PID) is not tuning and the next command clears it.
 - It streams `uio`'s progress, then prints a before/after table (decode, prefill, TTFT, percent of the hardware ceiling) from its JSON result. Exit codes: 0 done, 2 refused (by Steak Pi or by `uio`, for example on battery), 3 the tuner failed.
-- With `--apply`, `uio` rewrites the profile's `extraArgs` itself, only when every gate passed; Steak Pi re-reads the profile, confirms the new args, and records `uioLastTune: {at, workdir, decodeTokS}` in it (Steak DSH's `doctor` shows it). The new settings are used from the next server start. Without `--apply`, the best args are only printed.
+- With `--apply`, `uio` rewrites the profile's `extraArgs` itself, only when every gate passed. When its result says `applied.written` is true, Steak Pi re-reads the profile, confirms its `extraArgs` equal `applied.extraArgs`, and records `uioLastTune: {at, workdir, decodeTokS}` (only when the tuned decode speed is a number; Steak DSH's `doctor` shows it). When nothing was written it prints `not applied: <reason>` and exits 0. The new settings are used from the next server start. Without `--apply`, the tested arguments are only printed.
 
 ## Harness adapters: built into local mode
 
