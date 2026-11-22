@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.41.0 (2026-11-21)
+
+- **Optional local-inference tuning: `steak-pi local tune <id> [--budget 45m] [--target decode|prefill|ttft|balanced] [--allow lossless|lossy] [--apply]`.**
+  Hands an added local model to the separate `uio` tuner (ultra-inference-optimization; see docs/LOCAL-MODELS.md), which measures the
+  ceiling, changes one launch flag at a time against interleaved controls, gates the winner (needle retrieval, greedy equivalence, output sanity), confirms
+  the gain in a fresh round and only then writes the profile's `extraArgs`. Steak Pi passes its own launch flags (`--launch-args`) so the baseline is the
+  server as it runs today, holds an exclusive tuning state (`ensure`/`check` refuse "tuning in progress" until it ends; a dead tuner is detected by PID and
+  start time), refuses under a hold or the quiet-day rule exactly like `check`, and prints a before/after table. `uio` is optional: when missing, the
+  command prints the pinned install line and exits 2. Nothing is installed or run otherwise.
+- Tests: `test/local-tune.test.ts` (a fake uio that writes `extraArgs` the way the real one does: refusal, failure, missing binary, lease held, hold,
+  crash recovery of the tuning marker, apply verification); the neutrality scan now covers the local module's tests for model names.
+
 ## 0.40.0 (2026-11-20)
 
 - **Per-model guidance (`modelGuidance` in `~/.pi/agent/steak-pi.json`).** A list of `{ "match", "text" }` rules adds short system-prompt lines for models whose `provider/id` matches `match` (a case-insensitive regular expression), in interactive sessions, one-shot runs and USAP Pi workers alike. Interactive and one-shot runs match the model selected for the run; a virtual router model is matched by its own name, and a USAP worker keeps its first model's lines if it falls back mid-task. Steak Pi ships no rule and names no model. A bad rule is named once and skipped; `STEAK_PI_MODEL_GUIDANCE=off` leaves them out.
