@@ -148,7 +148,7 @@ describe("local model hook", () => {
 
   it("a refused start stops the run before any request with the refusal as its error, holds nothing, and tries again on the next prompt", async () => {
     let failing = true;
-    const reason = "starting swift-1-5 needs about 16.4 GiB but only 14.2 GiB is free or reclaimable";
+    const reason = "starting my-model needs about 16.4 GiB but only 14.2 GiB is free or reclaimable";
     const h = harness({ fail: () => (failing ? reason : undefined) });
     h.ctx.model = model("local", "model-a");
     await h.fire("session_start");

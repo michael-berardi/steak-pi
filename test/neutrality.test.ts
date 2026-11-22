@@ -281,9 +281,14 @@ describe("shipped files are provider-neutral", () => {
       "src/local/gpu-probe.ts", "src/local/hardware.ts", "src/local/harness-adapter.ts", "src/local/hf.ts", "src/local/hold.ts", "src/local/limits.ts", "src/local/main.ts",
       "src/local/profile.ts", "src/local/runtime.ts", "src/local/store.ts", "src/local/tune.ts",
     ]);
+    // The local module's own tests ship in the repo too: they name no model family, repo or quant either.
+    const localTests = readdirSync(join(root, "test")).filter((name) => /^local-.*\.test\.ts$/.test(name)).map((name) => join(root, "test", name));
     const scanned = [...module, readme];
     const named = (pattern: RegExp) => hits(scanned, pattern).filter((hit) => hit.path !== "README.md" || section.includes(hit.text)).map(describeHit);
     expect(named(MODEL_FAMILY)).toEqual([]);
+    // Fixtures use placeholder repos and file names (owner/x-GGUF); a real model family or id never appears in them.
+    expect(hits(localTests, MODEL_FAMILY).map(describeHit)).toEqual([]);
+    expect(hits(localTests, /\bswift-\d|\bqwen\d|\bllama-?\d|\bgemma-?\d|\bmistral\b/i).map(describeHit)).toEqual([]);
     expect(named(HF_REPO_LITERAL)).toEqual([]);
     expect(named(QUANT_FILE)).toEqual([]);
     expect(hits(module, SERVICE).filter((hit) => hit.path !== "docs/LOCAL-MODELS.md").map(describeHit)).toEqual([]);
