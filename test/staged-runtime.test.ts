@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "vitest";
-import { ACTIVE_RUNTIME_FILE, captureStagedRuntimeIdentity, resolveStagedModule, type StagedRuntimeIdentity } from "../src/subagents/staged-runtime.ts";
+import { ACTIVE_RUNTIME_FILE, captureStagedRuntimeIdentity, importStagedModule, resolveStagedModule, type StagedRuntimeIdentity } from "../src/subagents/staged-runtime.ts";
 
 const version = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 const relativePath = "src/subagents/pi-worker.ts";
@@ -90,4 +91,79 @@ test("identical entry points do not authorize changed imported helpers", async (
   const changed = await stage("steak-pi-composer1-other", version);
   await writeFile(join(changed, "src/subagents/helper.ts"), "export const changed = true;\n");
   assert.throws(() => resolveStagedModule(relativePath, { moduleUrl, runtimeRoot: root, identity }), /different build.*integrity/);
+}));
+
+test("a deleted jiti cache file is regenerated on the next worker launch", async () => fixture(async (root, _original, moduleUrl, stage, identity) => {
+  await stage("steak-pi-composer1-new", version);
+  const cacheDirectory = join(root, "jiti");
+  const cacheFile = join(cacheDirectory, "subagents-claude-worker.8ecac393.mjs");
+  await mkdir(cacheDirectory, { recursive: true });
+  await writeFile(cacheFile, "// cached transpile output\n");
+  let launches = 0;
+  const importModule = async () => {
+    launches += 1;
+    try {
+      await readFile(cacheFile, "utf8");
+    } catch (error) {
+      if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error;
+      // Jiti writes a fresh transpile file when its cache directory exists; the
+      // missing directory is what made that write fail in the incident.
+      await writeFile(cacheFile, "// regenerated transpile output\n");
+    }
+    return { launches };
+  };
+  const options = { moduleUrl, runtimeRoot: root, identity, importModule };
+  assert.equal((await importStagedModule(relativePath, options)).launches, 1);
+  await rm(cacheDirectory, { recursive: true, force: true });
+  assert.equal((await importStagedModule(relativePath, options)).launches, 3);
+  assert.match(await readFile(cacheFile, "utf8"), /regenerated transpile output/);
+}));
+
+test("a persistent jiti cache failure names the removed cache and the cause", async () => fixture(async (root, _original, moduleUrl, stage, identity) => {
+  await stage("steak-pi-composer1-new", version);
+  const cacheFile = join(root, "jiti", "subagents-claude-worker.8ecac393.mjs");
+  let launches = 0;
+  const importModule = async () => {
+    launches += 1;
+    throw Object.assign(new Error(`ENOENT: no such file or directory, open '${cacheFile}'`), { code: "ENOENT", path: cacheFile });
+  };
+  await assert.rejects(
+    importStagedModule(relativePath, { moduleUrl, runtimeRoot: root, identity, importModule }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      for (const evidence of ["jiti", cacheFile, "recreated", "ENOENT"]) assert.ok(error.message.includes(evidence));
+      return true;
+    },
+  );
+  assert.equal(launches, 2);
+}));
+
+test("an ENOENT outside a jiti cache is re-thrown without creating a directory", async () => fixture(async (root, _original, moduleUrl, stage, identity) => {
+  await stage("steak-pi-composer1-new", version);
+  const outside = join(root, "not-a-jiti-cache");
+  const missingFile = join(outside, "subagents-worker.8ecac393.mjs");
+  const original = Object.assign(new Error(`ENOENT: no such file or directory, open '${missingFile}'`), { code: "ENOENT", path: missingFile });
+  let launches = 0;
+  const importModule = async () => {
+    launches += 1;
+    throw original;
+  };
+  await assert.rejects(importStagedModule(relativePath, { moduleUrl, runtimeRoot: root, identity, importModule }), error => error === original);
+  assert.equal(launches, 1);
+  assert.equal(existsSync(outside), false);
+}));
+
+test("a non-ENOENT error on a jiti path is not mistaken for a removed cache", async () => fixture(async (root, _original, moduleUrl, stage, identity) => {
+  await stage("steak-pi-composer1-new", version);
+  const cacheDirectory = join(root, "jiti");
+  const cacheFile = join(cacheDirectory, "subagents-claude-worker.8ecac393.mjs");
+  const original = Object.assign(new Error(`EACCES: permission denied, open '${cacheFile}'`), { code: "EACCES", path: cacheFile });
+  let launches = 0;
+  const importModule = async () => {
+    launches += 1;
+    throw original;
+  };
+  await assert.rejects(importStagedModule(relativePath, { moduleUrl, runtimeRoot: root, identity, importModule }), error => error === original);
+  assert.equal(launches, 1);
+  assert.equal(existsSync(cacheDirectory), false);
 }));

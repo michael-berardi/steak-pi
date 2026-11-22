@@ -204,7 +204,7 @@ export default function(pi) {
     appendEntry: (...args) => pi.appendEntry(...args), sendMessage: (...args) => pi.sendMessage(...args),
   });
   pi.registerCommand("usap-smoke", { description: "Offline completion proof", handler: async (_args, ctx) => {
-    await tools.get("ultraterm_subagents").execute("proof", { goal: "offline completion proof", model: "offline-fixture/fixture-model", background: true, tasks: [{ label: "Completion delivery verified", task: "offline" }] }, undefined, undefined, {
+    await tools.get("ultraterm_subagents").execute("proof", { goal: "offline completion proof", model: "offline-fixture/fixture-model", routeReason: "This offline smoke fixture injects its own provider, so the configured worker chain cannot serve it.", background: true, tasks: [{ label: "Completion delivery verified", task: "offline" }] }, undefined, undefined, {
       ...ctx, model, thinkingLevel: "medium",
       modelRegistry: { isUsingOAuth: () => false, hasConfiguredAuth: () => true, getAvailable: () => [model], find: () => model, getProvider: () => ({ streamSimple() {} }) },
     });

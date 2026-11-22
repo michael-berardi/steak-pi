@@ -1,5 +1,5 @@
 import { setSubagentCountReader, subagentActivityChanged } from "../src/tui/subagent-activity.ts";
-import { resolveStagedModule } from "../src/subagents/staged-runtime.ts";
+import { importStagedModule } from "../src/subagents/staged-runtime.ts";
 import { registryForSolSelection, type CreateIsolatedModelRuntime } from "../src/subagents/codex-selection.ts";
 import { GO_ACCOUNT_ROUTER_TIMEOUT_MS, type AccountCommand } from "../src/subagents/provider-accounts.ts";
 import { claudeLoginBlock, claudeQuotaBlock, CODEX_QUOTA, isClaudeRouteStep, isMeteredQuota, isQuotaLaunchFailure, isProvenFreeModel, pickClaudeAccount, rankClaudeAccounts, quotaChain, quotaProviderOf, readProviderQuota, routeQuotaBlock, type ClaudeAccountPick, type QuotaProvider, type QuotaSnapshot } from "../src/subagents/provider-quota.ts";
@@ -1348,7 +1348,7 @@ export function defaultWorkerRunner(
   let dshRunner: Promise<WorkerRunner> | undefined;
   return async (context) => {
     if (harnessOf(context.run.harness) === "steak-dsh") {
-      dshRunner ??= import(resolveStagedModule("src/subagents/dsh-worker.ts").url)
+      dshRunner ??= importStagedModule<DshWorkerModule>("src/subagents/dsh-worker.ts")
         .then((module) => {
           const factory = (module as unknown as Partial<DshWorkerModule>).createDshWorkerRunner;
           if (typeof factory !== "function") {
@@ -1369,7 +1369,7 @@ export function defaultWorkerRunner(
       return runner(context);
     }
     if (harnessOf(context.run.harness) === "claude-code") {
-      claudeRunner ??= import(resolveStagedModule("src/subagents/claude-worker.ts").url)
+      claudeRunner ??= importStagedModule<ClaudeWorkerModule>("src/subagents/claude-worker.ts")
         .then((module) => {
           const factory = (module as unknown as Partial<ClaudeWorkerModule>).createClaudeWorkerRunner;
           if (typeof factory !== "function") {
@@ -1398,10 +1398,10 @@ export function defaultWorkerRunner(
   };
   async function runPi(context: Parameters<WorkerRunner>[0], fallback?: PiWorkerRuntime) {
     if (fallback) {
-      const module = await import(resolveStagedModule("src/subagents/pi-worker.ts").url);
+      const module = await importStagedModule<PiWorkerModule>("src/subagents/pi-worker.ts");
       return module.createPiWorkerRunner({ relay, accountCommand, sessionFactory, resolveRuntime: () => fallback })(context);
     }
-    piRunner ??= import(resolveStagedModule("src/subagents/pi-worker.ts").url)
+    piRunner ??= importStagedModule<PiWorkerModule>("src/subagents/pi-worker.ts")
       .then((module) => {
         const factory = (module as unknown as Partial<PiWorkerModule>).createPiWorkerRunner;
         if (typeof factory !== "function") {

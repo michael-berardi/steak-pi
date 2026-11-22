@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.41.1 (2026-11-22)
+
+- **USAP worker launches recover from a removed jiti transpile cache.** Staged imports now validate an ENOENT that names a jiti cache file, recreate the cache directory and retry once; a persistent failure names the removed cache and the original cause. Claude-code, DSH, Pi worker and Codex account-selection paths use the same recovery.
+- **The offline TUI smoke fixture supplies a route reason for its explicit injected model**, so the full verify gate passes with USAP route validation.
+- Tests: `test/staged-runtime.test.ts` (four synthetic fixtures: regeneration across launches, persistent failure and cause, non-jiti ENOENT, non-ENOENT error; the first was observed failing before the fix), `test/subagent-codex-selection.test.ts`, plus the full `npm run verify` gate.
+
 ## 0.41.0 (2026-11-21)
 
 - **Optional local-inference tuning: `steak-pi local tune <id> [--budget 45m] [--target decode|prefill|ttft|balanced] [--allow lossless|lossy] [--apply]`.**

@@ -74,13 +74,8 @@ describe("fresh Go parent isolated Codex Sol admission", () => {
 
 
 it("resolves the isolated Codex worker SDK through the staged-runtime resolver", async () => {
-  const model = JSON.stringify(sol);
-  const source = `export async function loadPiSdk() { return { ModelRuntime: { create: async () => ({
-    getModel: () => (${model}), getModels: () => [${model}], getAvailableSnapshot: () => [${model}],
-    isUsingOAuth: () => true, hasConfiguredAuth: () => true, getProvider: () => ({})
-  }) } }; }`;
-  const resolver = vi.spyOn(stagedRuntime, "resolveStagedModule").mockReturnValue({
-    url: `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`, runtime: "fixture", replaced: true, tried: [],
+  const resolver = vi.spyOn(stagedRuntime, "importStagedModule").mockResolvedValue({
+    loadPiSdk: async () => ({ ModelRuntime: { create: async () => runtime() } }),
   });
   try {
     const command = async () => ({ ok: true, account: { id: "primary", agentDir: isolatedCodexAgentDir("primary") } });

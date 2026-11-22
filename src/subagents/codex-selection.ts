@@ -1,6 +1,6 @@
 import { registerCatalogExtras } from "../catalog-extras.ts";
 import type { ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { resolveStagedModule } from "./staged-runtime.ts";
+import { importStagedModule } from "./staged-runtime.ts";
 import { assertSubscriptionRequest } from "../model-route-policy.ts";
 import { isolatedAgentPaths, selectCodexAccount, type AccountCommand } from "./provider-accounts.ts";
 import { configuredWorkerProfiles, type WorkerProfile, type WorkerSelector } from "./model-selection.ts";
@@ -29,7 +29,7 @@ export async function registryForAccountSelection(
   const existing = registry.find(providerId, modelId);
   if (existing && registry.hasConfiguredAuth(existing) && registry.isUsingOAuth(existing)) return registry;
   const account = await selectCodexAccount(command);
-  const create = createRuntime ?? (await (await import(resolveStagedModule("src/subagents/pi-worker.ts").url)).loadPiSdk()).ModelRuntime.create;
+  const create = createRuntime ?? (await (await importStagedModule<typeof import("./pi-worker.ts")>("src/subagents/pi-worker.ts")).loadPiSdk()).ModelRuntime.create;
   const runtime = await create(isolatedAgentPaths(account.agentDir));
   registerCatalogExtras(runtime);
   const model = runtime.getModel(providerId, modelId);

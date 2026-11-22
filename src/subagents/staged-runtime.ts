@@ -17,9 +17,9 @@
  *     tried, and the cause ("the staged runtime was replaced") is in the message.
  */
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** Optional pointer for launchers that publish one; UltraTerm uses content-addressed trees. */
@@ -209,4 +209,90 @@ export function resolveStagedModule(
     `The staged runtime ${packageRoot} was replaced and no current runtime could be resolved for ${relativePath}. ` +
       `Tried: ${[...tried, ...refused].join(", ")}.`,
   );
+}
+
+interface JitiCacheFailure {
+  file: string;
+  directory: string;
+}
+
+function errorFilePath(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const message = error instanceof Error ? error.message : String(error);
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === "string" ? code !== "ENOENT" : !message.includes("ENOENT")) return undefined;
+  const path = (error as { path?: unknown }).path;
+  if (typeof path === "string" && isAbsolute(path)) return path;
+  const match = message.match(/(?:open|stat|access|read)\s+'([^']+)'/);
+  return match && isAbsolute(match[1]) ? match[1] : undefined;
+}
+
+function within(root: string, path: string): boolean {
+  const rest = relative(root, path);
+  return rest === "" || (!rest.startsWith("..") && !isAbsolute(rest));
+}
+
+/** Only a real jiti cache path is recreated; an arbitrary ENOENT stays untouched. */
+function jitiCacheFailure(error: unknown): JitiCacheFailure | undefined {
+  const file = errorFilePath(error);
+  if (!file) return undefined;
+  const name = basename(file);
+  if (!name.includes("-") || !/\.[a-f0-9]{6,}\.(?:m|c)?js$/iu.test(name)) return undefined;
+  const directory = resolve(dirname(file));
+  for (const variable of ["JITI_FS_CACHE", "JITI_CACHE"]) {
+    const configured = process.env[variable]?.replace(/^["']|["']$/g, "");
+    if (configured && isAbsolute(configured) && directory === resolve(configured)) return { file, directory };
+  }
+  if (basename(directory) !== "jiti") return undefined;
+  if (within(resolve(tmpdir()), directory)) return { file, directory };
+  if (directory.endsWith(join("node_modules", ".cache", "jiti"))) return { file, directory };
+  return undefined;
+}
+
+/**
+ * Import a staged worker module, recovering from a jiti cache directory that was
+ * removed while this session still held the worker path.
+ *
+ * Jiti creates its transpile-cache directory once, then writes one rebuilt cache
+ * file per source module. If another cleanup removes that directory mid-session,
+ * the next worker import fails with ENOENT naming a cache file under it. Recreating
+ * the validated cache directory lets jiti regenerate the file on one retry.
+ */
+export async function importStagedModule<T>(
+  relativePath: string,
+  options: {
+    moduleUrl?: string;
+    runtimeRoot?: string;
+    identity?: StagedRuntimeIdentity;
+    importModule?: (url: string) => T | Promise<T>;
+  } = {},
+): Promise<T> {
+  const resolved = resolveStagedModule(relativePath, options);
+  const load = options.importModule ?? ((url: string) => import(url) as Promise<T>);
+  let failure: JitiCacheFailure | undefined;
+  try {
+    return await load(resolved.url);
+  } catch (error) {
+    failure = jitiCacheFailure(error);
+    if (!failure) throw error;
+    try {
+      mkdirSync(failure.directory, { recursive: true });
+    } catch (recreateError) {
+      const cause = recreateError instanceof Error ? recreateError.message : String(recreateError);
+      throw new Error(
+        `The staged worker ${relativePath} could not start because the jiti transpile cache ${failure.file} was removed and its directory ${failure.directory} could not be recreated: ${cause}`,
+        { cause: recreateError },
+      );
+    }
+  }
+  try {
+    return await load(resolved.url);
+  } catch (retryError) {
+    const cause = retryError instanceof Error ? retryError.message : String(retryError);
+    throw new Error(
+      `The staged worker ${relativePath} could not start because the jiti transpile cache ${failure!.file} was removed while this session held its worker path. ` +
+        `The cache directory ${failure!.directory} was recreated, but importing ${resolved.url} once more failed: ${cause}`,
+      { cause: retryError },
+    );
+  }
 }
