@@ -52,7 +52,13 @@ describe("steak-pi local tune", () => {
     expect(await main(["tune", "model-a", "--budget", "30m", "--target", "decode", "--allow", "lossless"], options)).toBe(0);
     const seen = JSON.parse(readFileSync(join(dir, "argv.json"), "utf8"));
     expect(seen.marker).toBe(true);
-    expect(seen.argv).toEqual(["tune", "--profile", join(state, "profiles", "model-a.json"), "--budget", "30m", "--target", "decode", "--allow", "lossless"]);
+    expect(seen.argv.slice(0, 3)).toEqual(["tune", "--profile", join(state, "profiles", "model-a.json")]);
+    expect(seen.argv[3]).toBe("--launch-args");
+    // The baseline is the server Steak Pi really launches: its fixed flags go to uio, never the model path, host, port or ctx.
+    const launch = JSON.parse(seen.argv[4]) as string[];
+    expect(launch).toEqual(expect.arrayContaining(["-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0", "--jinja"]));
+    for (const flag of ["-m", "-hf", "--host", "--port", "-c"]) expect(launch).not.toContain(flag);
+    expect(seen.argv.slice(5)).toEqual(["--budget", "30m", "--target", "decode", "--allow", "lossless"]);
     const text = out.join("\n");
     expect(text).toMatch(/uio: round 1: control/);
     expect(text).toMatch(/decode tok\/s\s+20\.0\s+24\.0/);

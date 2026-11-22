@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { findOnPath, beginTuning, endTuning, retargetTuning, type Deps } from "./runtime.ts";
 import { parseDuration } from "./hold.ts";
 import { LocalError, profilePath, readProfile, writeProfile } from "./store.ts";
-import type { LaunchProfile } from "./profile.ts";
+import { serverArgs, type LaunchProfile } from "./profile.ts";
 
 export const UIO_INSTALL = "curl -fsSL https://github.com/michael-berardi/ultra-inference-optimization/releases/latest/download/install.sh | sh";
 export const TARGETS = ["decode", "prefill", "ttft", "balanced"] as const;
@@ -91,7 +91,12 @@ export async function tuneModel(deps: Deps, options: TuneOptions): Promise<numbe
   const onTerm = forward("SIGTERM"), onInt = forward("SIGINT");
   process.on("SIGTERM", onTerm); process.on("SIGINT", onInt);
   try {
-    const args = ["tune", "--profile", profilePath(deps.dir, id),
+    // Measure the server Steak Pi really launches: its fixed flags (flash attention, KV cache type, cache-ram, batch sizes,
+    // slots) go to uio as --launch-args, so the baseline is the model as it runs today and only extraArgs is written back.
+    const launch = serverArgs(profile);
+    const fixed = launch.slice(0, launch.length - (profile.extraArgs ?? []).length)
+      .filter((_arg, i, all) => !["-m", "-hf", "--host", "--port", "-c"].includes(all[i]) && !["-m", "-hf", "--host", "--port", "-c"].includes(all[i - 1] ?? ""));
+    const args = ["tune", "--profile", profilePath(deps.dir, id), "--launch-args", JSON.stringify(fixed),
       ...(options.budget ? ["--budget", options.budget] : []),
       ...(options.target ? ["--target", options.target] : []),
       ...(options.allow ? ["--allow", options.allow] : []),
