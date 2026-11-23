@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.41.4 (2026-11-23)
+
+- **The commit-identity guard checks what it claims to check.** It now also refuses trailing-dot hosts, `*.localhost` and `*.localdomain` addresses. When `origin/main..HEAD` is empty, it checks the tip commit instead of reporting a vacuous pass. A missing `--repo` value or a revision that looks like a git option now fails with a named error and exit code 2 instead of a stack trace or an option being interpreted by git.
+- Tests: `test/commit-identity.test.ts` added real-commit fixtures for the empty-range case and synthetic checks for the expanded local-address pattern and argument errors. `test/agy/agy.test.ts` now times only the abort-to-resolution window; fixture startup under full-gate load no longer gets charged to that assertion.
+
 ## 0.41.3 (2026-11-22)
 
 - **An account signed in on a plan that cannot run a route counts as unavailable.** When the account router reports an account as `unsupported`, the provider is treated as out for that route whatever headroom its usage window shows, so the implicit worker chain skips it without a launch attempt. The per-turn availability line shows the step as `UNAVAILABLE` with the router's cause instead of `up` or `COOLING`.

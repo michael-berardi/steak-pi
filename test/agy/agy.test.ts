@@ -233,10 +233,11 @@ describe("cancellation", () => {
   it("a timeout still fires while a gentler stop is pending", async () => {
     const controller = new AbortController();
     process.env.FAKE_AGY_SCENARIO = "stubborn";
-    const started = Date.now();
     const events: any[] = [];
-    const stream = streamAgy(model, ctx(user("go")), { signal: controller.signal, timeoutMs: 700 } as never);
-    await waitFor(() => pidList().length >= 2);
+    const stream = streamAgy(model, ctx(user("go")), { signal: controller.signal, timeoutMs: 2000 } as never);
+    await waitFor(() => pidList().length >= 2, 1500);
+    expect(pidList()).toHaveLength(2);
+    const started = Date.now(); // measure only abort -> timeout -> stream resolution; fixture startup is not this behavior
     controller.abort(); // stop() is now pending (agy ignores SIGINT/SIGTERM); the timeout must not wait for it
     for await (const e of stream) events.push(e);
     expect(Date.now() - started).toBeLessThan(2500);
