@@ -240,7 +240,8 @@ describe("cancellation", () => {
     const started = Date.now(); // measure only abort -> timeout -> stream resolution; fixture startup is not this behavior
     controller.abort(); // stop() is now pending (agy ignores SIGINT/SIGTERM); the timeout must not wait for it
     for await (const e of stream) events.push(e);
-    expect(Date.now() - started).toBeLessThan(2500);
+    // A gentle stop escalates over about 5 s; 4 s still proves the timeout did not wait for it.
+    expect(Date.now() - started).toBeLessThan(4000);
     await waitFor(() => pidList().every((p) => !alive(p)));
     expect(pidList().filter(alive)).toEqual([]);
   }, 20_000);

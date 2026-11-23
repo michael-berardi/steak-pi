@@ -37,11 +37,19 @@ function runGuard(repo: string, ...args: string[]) {
   return spawnSync(process.execPath, [SCRIPT, "--repo", repo, ...args], { encoding: "utf8" });
 }
 
-/** Makes the only commit also the remote tip, reproducing a release cut from main. */
-function pointOriginMainAtHead(repo: string): void {
+function headOf(repo: string): string {
   const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", HOME: repo };
-  const head = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { env, encoding: "utf8" }).trim();
-  execFileSync("git", ["-C", repo, "update-ref", "refs/remotes/origin/main", head], { env, encoding: "utf8" });
+  return execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { env, encoding: "utf8" }).trim();
+}
+
+/** Makes a chosen commit the remote tip, reproducing a release cut from main. */
+function pointOriginMainAt(repo: string, ref: string): void {
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", HOME: repo };
+  execFileSync("git", ["-C", repo, "update-ref", "refs/remotes/origin/main", ref], { env, encoding: "utf8" });
+}
+
+function pointOriginMainAtHead(repo: string): void {
+  pointOriginMainAt(repo, "HEAD");
 }
 
 describe("commit identity guard", () => {
@@ -70,7 +78,11 @@ describe("commit identity guard", () => {
   });
 
   it("does not refuse a lookalike domain that merely contains local", () => {
-    expect(findLocalIdentities(["abc\tone@localhost.example.com\tone@locally.dev\tone@localdomain.example.com"])).toEqual([]);
+    expect(findLocalIdentities([
+      "abc\tone@localhost.example.com\tone@locally.dev",
+      "abc\tone@localdomain.example.com\tok@example.com",
+      "abc\tx@example.com.\tok@example.com",
+    ])).toEqual([]);
   });
 
   it("checks the tip commit when the default release range is empty", () => {
@@ -90,6 +102,24 @@ describe("commit identity guard", () => {
     expect(r.stdout).toMatch(/HEAD\^\.\.HEAD/);
   });
 
+  it("keeps the full-history check when there is no origin/main ref", () => {
+    const repo = repoWithCommit("Steak Pi worker", "worker@localhost");
+    addCommit(repo, "public.txt", "Release", "release@users.noreply.github.com");
+    const r = runGuard(repo);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/author uses a machine-local identity/);
+  });
+
+  it("checks a non-empty origin/main..HEAD release range", () => {
+    const repo = repoWithCommit("Base release", "release@users.noreply.github.com");
+    const base = headOf(repo);
+    addCommit(repo, "local.txt", "Steak Pi worker", "worker@localhost");
+    pointOriginMainAt(repo, base);
+    const r = runGuard(repo);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/author uses a machine-local identity/);
+  });
+
   it("reports malformed arguments without a stack trace", () => {
     const missingRepo = spawnSync(process.execPath, [SCRIPT, "--repo"], { encoding: "utf8" });
     expect(missingRepo.status).toBe(2);
@@ -101,5 +131,10 @@ describe("commit identity guard", () => {
     expect(optionRange.status).toBe(2);
     expect(optionRange.stderr).toMatch(/unexpected option/);
     expect(optionRange.stderr).not.toContain("\n    at ");
+
+    const escapedRange = spawnSync(process.execPath, [SCRIPT, "--repo", repo, "--", "-3"], { encoding: "utf8" });
+    expect(escapedRange.status).toBe(2);
+    expect(escapedRange.stderr).toMatch(/check-commit-identity:/);
+    expect(escapedRange.stderr).not.toContain("\n    at ");
   });
 });

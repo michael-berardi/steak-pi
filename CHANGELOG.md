@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.41.5 (2026-11-23)
+
+- **The commit-identity guard keeps its pre-push coverage.** When no `origin/main` ref exists it still checks all local history; only an empty release range falls back to the release commit. Argument handling and the range helpers are covered for non-empty ranges, missing remotes and revisions after `--`.
+- Tests: `test/commit-identity.test.ts` adds those range and `--` cases and makes the public trailing-dot lookalike an actual three-field identity row. `test/agy/agy.test.ts` keeps a wider timing margin while still proving the timeout does not wait for a gentle stop.
+
 ## 0.41.4 (2026-11-23)
 
 - **The commit-identity guard checks what it claims to check.** It now also refuses trailing-dot hosts, `*.localhost` and `*.localdomain` addresses. When `origin/main..HEAD` is empty, it checks the tip commit instead of reporting a vacuous pass. A missing `--repo` value or a revision that looks like a git option now fails with a named error and exit code 2 instead of a stack trace or an option being interpreted by git.

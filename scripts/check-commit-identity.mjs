@@ -2,7 +2,8 @@
 // Refuses commits whose author or committer email is machine-local (@localhost, @local, *.local, *.localhost, *.localdomain).
 // Such identities expose the host and job names and are rejected by the public release audit.
 // Usage: node scripts/check-commit-identity.mjs [revision-range] [--repo <dir>]
-//   default range: origin/main..HEAD when that range has commits, else HEAD (the pre-push check).
+//   default range: origin/main..HEAD when that range has commits, else HEAD^..HEAD on a release cut,
+//                 or HEAD when there is no origin/main ref (the pre-push check).
 // Exit 0 = every commit in range is attributed; exit 1 = names each refused commit (no secrets printed).
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -42,11 +43,15 @@ function tipRange(repo) {
 function defaultRange(repo) {
   try {
     git(repo, ["rev-parse", "--verify", "--quiet", "origin/main"]);
-    if (Number(git(repo, ["rev-list", "--count", "origin/main..HEAD"]).trim()) > 0) return "origin/main..HEAD";
+    try {
+      if (Number(git(repo, ["rev-list", "--count", "origin/main..HEAD"]).trim()) > 0) return "origin/main..HEAD";
+    } catch {
+      // Fall through to the tip commit if the range cannot be counted.
+    }
+    return tipRange(repo); // release cut from main: verify the release commit, not a vacuous empty range
   } catch {
-    // Fall through to the tip commit; an empty release range is not verification.
+    return "HEAD"; // no origin/main: the original pre-push check covers all local history
   }
-  return tipRange(repo);
 }
 
 function parseArgs(args) {
