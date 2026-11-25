@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, existsSync, fchmodSync, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fchmodSync, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, readdirSync, renameSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { isClaudeAccountId } from "./claude-account.ts";
@@ -381,6 +381,7 @@ export class CheckpointStore {
       // ever removed, never another owner's (live or unknown) lock.
       if (owner.token === this.token) unlinkSync(lock);
     } catch { /* Never remove another host's lock. */ }
+    try { sweepDeadNamespaces(dirname(this.directory), { skipDir: this.directory }); } catch { /* Best-effort hygiene. */ }
   }
 
   private atomic(id: string, checkpoint: Checkpoint): void {
@@ -421,6 +422,86 @@ export class CheckpointStore {
       }
     }
   }
+}
+
+const NAMESPACE_DIR_RE = /^[0-9a-f]{64}$/;
+export const DEFAULT_NAMESPACE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function newestMtimeInNamespace(dir: string, dirMtimeMs: number): number {
+  let newest = dirMtimeMs;
+  for (const child of readdirSync(dir)) {
+    if (child === ".claim") continue;
+    const childPath = join(dir, child);
+    try {
+      const cst = lstatSync(childPath);
+      newest = Math.max(newest, cst.mtimeMs);
+      if (child === "sessions" && cst.isDirectory() && !cst.isSymbolicLink()) {
+        for (const grand of readdirSync(childPath)) {
+          try { newest = Math.max(newest, lstatSync(join(childPath, grand)).mtimeMs); } catch { /* ignore */ }
+        }
+      }
+    } catch { /* ignore */ }
+  }
+  return newest;
+}
+
+/**
+ * Bounded, owner-safe cleanup of expired dead USAP namespace directories under `rootDir` (e.g. `~/.pi/agent/usap`).
+ * Only inspects 64-hex namespace subdirectories owned by the current user; serializes on `.claim` like the
+ * constructor, fails closed on unreadable/missing-pid locks, skips symlinks and live owners, and removes only
+ * namespaces whose newest file (including `sessions/`) is at least `maxAgeMs` old.
+ */
+export function sweepDeadNamespaces(
+  rootDir: string,
+  opts?: { maxAgeMs?: number; now?: number; maxRemovals?: number; skipDir?: string },
+): number {
+  const maxAgeMs = opts?.maxAgeMs ?? DEFAULT_NAMESPACE_TTL_MS;
+  const now = opts?.now ?? Date.now();
+  const maxRemovals = opts?.maxRemovals ?? 32;
+  const skip = opts?.skipDir ? resolve(opts.skipDir) : undefined;
+  let names: string[];
+  try { names = readdirSync(rootDir); } catch { return 0; }
+  let removed = 0;
+  for (const name of names) {
+    if (removed >= maxRemovals) break;
+    if (!NAMESPACE_DIR_RE.test(name)) continue;
+    const dir = join(rootDir, name);
+    if (skip && resolve(dir) === skip) continue;
+    try {
+      const st = lstatSync(dir);
+      if (st.isSymbolicLink() || !st.isDirectory()) continue;
+      if (process.getuid && st.uid !== process.getuid()) continue;
+      // Check age before acquiring `.claim` so sweeping never bumps mtime on young namespaces.
+      const preNewest = newestMtimeInNamespace(dir, st.mtimeMs);
+      if (now - preNewest < maxAgeMs) continue;
+      const claim = join(dir, ".claim");
+      try { mkdirSync(claim, { mode: 0o700 }); } catch { continue; }
+      let deleted = false;
+      try {
+        const lock = join(dir, "owner.json");
+        if (existsSync(lock)) {
+          let owner: { pid?: unknown };
+          try {
+            owner = JSON.parse(readPrivate(lock, 1024)) as { pid?: unknown };
+          } catch {
+            continue; // Unreadable lock: fail closed.
+          }
+          if (typeof owner.pid !== "number" || alive(owner.pid)) continue;
+        }
+        const newest = newestMtimeInNamespace(dir, st.mtimeMs);
+        if (now - newest >= maxAgeMs) {
+          rmSync(dir, { recursive: true, force: true });
+          deleted = true;
+          removed += 1;
+        }
+      } finally {
+        if (!deleted) {
+          try { rmdirSync(claim); } catch { /* ignore */ }
+        }
+      }
+    } catch { /* Never break callers on concurrent filesystem changes. */ }
+  }
+  return removed;
 }
 
 export function recoveredRun(checkpoint: Checkpoint): RunRecord {

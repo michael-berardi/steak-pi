@@ -295,9 +295,19 @@ export function isProvenFreeModel(model: { provider?: string; id?: string; cost?
     && isListedFreeRoute(model.provider, model.id) && hasExplicitZeroPrice(model) && rawModelHasZeroCostRow(model.provider, model.id);
 }
 
+/** Why `step`'s provider cannot run worker models at all (e.g. account on an unsupported plan).
+ * Applies even to zero-price routes on that provider. */
+export function routeUnsupportedBlock(snapshot: QuotaSnapshot, step: { provider: string; id: string }): string | undefined {
+  const provider = quotaProviderOf(step);
+  const quota = provider ? snapshot.providers[provider] : undefined;
+  return quota?.unsupported === true ? quota.cause : undefined;
+}
+
 /** Why `step` cannot launch, or undefined (including for unknown, busy and ungated routes).
  * An unconfigured provider is blocked too: no account can ever be reserved on it. */
 export function routeQuotaBlock(snapshot: QuotaSnapshot, step: { provider: string; id: string; cost?: unknown }): string | undefined {
+  const unsupported = routeUnsupportedBlock(snapshot, step);
+  if (unsupported !== undefined) return unsupported;
   if (isProvenFreeModel(step)) return undefined;
   const provider = quotaProviderOf(step);
   const quota = provider ? snapshot.providers[provider] : undefined;

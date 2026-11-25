@@ -17,6 +17,7 @@
  * The random source and the clock are injected, so every decision is reproducible.
  */
 import type { TaskClassConfig } from "../routing-config.ts";
+import { isRetiredRoute } from "../retired-model-selection.ts";
 import type { EvidenceView, FailureKind, TaskEvidence } from "./route-evidence.ts";
 import type { TaskClassDecision, TaskClassEstimate } from "./types.ts";
 
@@ -182,7 +183,10 @@ export interface RouteHealth {
  * `demoted` until its cooldown (counted from the last failure or the last re-probe marker) ends, then `probe-due`.
  */
 export function routeHealth(tasks: readonly TaskEvidence[], probeTimes: readonly number[], settings: RankSettings, now: number): RouteHealth {
-  const decided = tasks.filter((task) => task.outcome !== "unknown");
+  // Exclude unknown outcomes and input content-filter refusals from both consecutive-failure demotion and the
+  // rolling pass-rate floor window. Provider-config and stalled-stream failures stay classified distinctly for
+  // reporting while still demoting persistently broken or hanging routes.
+  const decided = tasks.filter((task) => task.outcome !== "unknown" && !(task.outcome === "fail" && task.failureKind === "content-filter"));
   let consecutive = 0; let windowStart = 0;
   let demoted: { reason: NonNullable<RouteHealth["reason"]>; cause: string; since: number } | undefined;
   const need = Math.min(settings.window, FLOOR_MIN_SAMPLES);
@@ -192,8 +196,6 @@ export function routeHealth(tasks: readonly TaskEvidence[], probeTimes: readonly
       if (demoted) { demoted = undefined; windowStart = index; }
       return;
     }
-    // A provider content-filter refusal names this input, not the route: it neither counts toward a demotion nor demotes.
-    if (task.failureKind === "content-filter") return;
     consecutive += 1;
     if (demoted) { demoted = { ...demoted, since: task.at }; return; }
     const window = decided.slice(Math.max(windowStart, index + 1 - settings.window), index + 1);
@@ -397,7 +399,11 @@ export interface ClassReport { taskClass: string; settings: Omit<RankSettings, "
 /** The read-only per-class estimate table the hub prints: no draws, no exploration, just the store. */
 export function classReport(taskClass: string, entries: readonly string[], settings: RankSettings, view: EvidenceView, now: number): ClassReport {
   const classTasks = view.tasks.filter((task) => task.taskClass === taskClass);
-  const known = [...new Set([...entries, ...classTasks.map((task) => task.route)])];
+  const configuredSet = new Set(entries);
+  const known = [...new Set([
+    ...entries,
+    ...classTasks.map((task) => task.route).filter((route) => configuredSet.has(route) || !isRetiredRoute(route)),
+  ])];
   const rows = known.map((entry) => {
     const tasks = classTasks.filter((task) => task.route === entry);
     const probes = view.probes.filter((probe) => probe.taskClass === taskClass && probe.route === entry).map((probe) => probe.at);

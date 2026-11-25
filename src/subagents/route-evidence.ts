@@ -29,7 +29,7 @@ export type EvidenceSource = "verification" | "test-gate" | "operator" | "worker
  * the two alike); it has its own name so a store can tell tasks that ran out of budget from tasks that broke.
  * `timeout`: the task hit its wall-clock deadline. It is a quality failure (no verified result) and a speed failure (its
  * whole wall time is recorded), so it counts toward demotion and the pass rate like any other failure. */
-export const FAILURE_KINDS = ["empty-output", "reasoning-exhausted", "tool-error", "http-4xx", "http-5xx", "quota", "rate-limit", "content-filter", "budget", "timeout", "other"] as const;
+export const FAILURE_KINDS = ["empty-output", "reasoning-exhausted", "tool-error", "http-4xx", "http-5xx", "quota", "rate-limit", "content-filter", "provider-config", "stalled-stream", "budget", "timeout", "other"] as const;
 export type FailureKind = (typeof FAILURE_KINDS)[number];
 
 export interface TaskEvidence {
@@ -254,6 +254,10 @@ export function classifyFailure(error: string | undefined): FailureKind {
   if (/\b429\b|too many requests|rate.?limit/i.test(message)) return "rate-limit";
   // Before the generic 4xx: an HTTP 400 that names a content-inspection code is the input refused, not a malformed request.
   if (isContentFilterRefusal(message)) return "content-filter";
+  // Account/plan/auth configuration refusals say nothing about model quality and must not poison route health.
+  if (/not (?:available|supported) (?:on|for|with) (?:your|this) (?:plan|account)|free [a-z0-9 _-]*plan[^.\n]{0,80}cannot run|sign in again|not logged in|not authenticated|no configured authentication|credentials? (?:missing|not found|unavailable)/i.test(message)) return "provider-config";
+  // Pi's stream stall watchdog aborts when no model or tool activity arrives.
+  if (/no model or tool activity/i.test(message)) return "stalled-stream";
   if (/\b5\d\d\b|overloaded|service unavailable|bad gateway|gateway time-?out/i.test(message)) return "http-5xx";
   if (/\b4\d\d\b/i.test(message)) return "http-4xx";
   if (/no final output|produced no (?:final )?(?:output|answer)|empty (?:reply|response|output)/i.test(message)) return "empty-output";

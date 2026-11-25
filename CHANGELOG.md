@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.41.6 (2026-11-24)
+
+- **Unsupported providers are blocked consistently across availability and dispatch without breaking free routes on exhausted tiers.** Added `routeUnsupportedBlock` separate from `routeQuotaBlock` and wired it across `computeAvailability` and all USAP dispatch/fallback sites (including implicit worker resolution for free routes on metered providers). Proven-free routes remain usable on exhausted tiers while unsupported plans are consistently reported and blocked everywhere.
+- **Distinct failure classification for provider configuration errors and stalled streams.** Added `provider-config` and `stalled-stream` to `FailureKind` for clear reporting while continuing to demote persistently broken or hanging routes; `classReport` now filters retired evidence-only routes.
+- **Bounded, owner-safe cleanup of expired dead USAP checkpoint namespaces.** `sweepDeadNamespaces` runs on `CheckpointStore.close()`, checks newest file mtime (including `sessions/`) before acquiring `.claim` so young namespaces never get their mtime bumped, fails closed on unreadable or missing-pid locks, skips symlinks, and removes dead namespaces after 7 days. Regression tests in `test/usap-health-and-cleanup.test.ts`.
+
 ## 0.41.5 (2026-11-23)
 
 - **The commit-identity guard keeps its pre-push coverage.** When no `origin/main` ref exists it still checks all local history; only an empty release range falls back to the release commit. Argument handling and the range helpers are covered for non-empty ranges, missing remotes and revisions after `--`.

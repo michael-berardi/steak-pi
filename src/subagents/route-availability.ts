@@ -2,7 +2,7 @@ import { onlyWhenSkipReason, type WorkerRouteStep } from "../model-route-policy.
 import { dshRouteModel } from "./dsh-routes.ts";
 import { DEFAULT_FREE_ROUTE_COOLDOWN_MINUTES, routeKey, type RouteStep, routeLabel, routingConfigOrEmpty } from "../routing-config.ts";
 import { noClaudeCause, planOnlyCause, type ProjectPolicy } from "./project-policy.ts";
-import { claudeQuotaBlock, quotaProviderOf, routeQuotaBlock, type QuotaSnapshot } from "./provider-quota.ts";
+import { claudeQuotaBlock, quotaProviderOf, routeQuotaBlock, routeUnsupportedBlock, type QuotaSnapshot } from "./provider-quota.ts";
 
 /** Free routes held out after a pre-output 429/limit refusal: route -> epoch ms the hold ends. Shared by every
  * dispatch in this process, so the next dispatch does not retry a route that just refused. */
@@ -94,9 +94,12 @@ export function computeAvailability(input: AvailabilityInput): Availability {
     if (policy.planOnly !== undefined && input.isPaid?.(step)) { steps.push({ label, state: "policy", cause: planOnlyCause(policy) }); continue; }
     const onlyWhen = step.onlyWhen ? onlyWhenSkipReason(step.onlyWhen, { quotaSnapshot: snapshot }) : undefined;
     if (onlyWhen !== undefined) { steps.push({ label, state: "held", cause: onlyWhen }); continue; }
-    const heldUntil = input.isFree?.(step) ? freeRouteHeldUntil(step, input.now ?? Date.now()) : undefined;
+    const free = input.isFree?.(step) === true;
+    const heldUntil = free ? freeRouteHeldUntil(step, input.now ?? Date.now()) : undefined;
     if (heldUntil !== undefined) { steps.push({ label, state: "cooling", cause: "free route refused a request (rate limit) and is cooling down", returnsAt: Math.ceil(heldUntil / 1000) }); continue; }
-    const block = snapshot.known && !input.isFree?.(step) ? routeQuotaBlock(snapshot, step) : undefined;
+    const block = snapshot.known
+      ? (free ? routeUnsupportedBlock(snapshot, step) : routeQuotaBlock(snapshot, step))
+      : undefined;
     if (block === undefined) { steps.push({ label, state: "up" }); continue; }
     const provider = quotaProviderOf(step);
     // Out for its plan, with no cooldown that ends by itself and none the other accounts are waiting on: unavailable.

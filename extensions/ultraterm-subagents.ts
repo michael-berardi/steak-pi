@@ -2,7 +2,7 @@ import { setSubagentCountReader, subagentActivityChanged } from "../src/tui/suba
 import { importStagedModule } from "../src/subagents/staged-runtime.ts";
 import { registryForSolSelection, type CreateIsolatedModelRuntime } from "../src/subagents/codex-selection.ts";
 import { GO_ACCOUNT_ROUTER_TIMEOUT_MS, type AccountCommand } from "../src/subagents/provider-accounts.ts";
-import { claudeLoginBlock, claudeQuotaBlock, CODEX_QUOTA, isClaudeRouteStep, isMeteredQuota, isQuotaLaunchFailure, isProvenFreeModel, pickClaudeAccount, rankClaudeAccounts, quotaChain, quotaProviderOf, readProviderQuota, routeQuotaBlock, type ClaudeAccountPick, type QuotaProvider, type QuotaSnapshot } from "../src/subagents/provider-quota.ts";
+import { claudeLoginBlock, claudeQuotaBlock, CODEX_QUOTA, isClaudeRouteStep, isMeteredQuota, isQuotaLaunchFailure, isProvenFreeModel, pickClaudeAccount, rankClaudeAccounts, quotaChain, quotaProviderOf, readProviderQuota, routeQuotaBlock, routeUnsupportedBlock, type ClaudeAccountPick, type QuotaProvider, type QuotaSnapshot } from "../src/subagents/provider-quota.ts";
 import { isContentFilterRefusal } from "../src/content-filter-refusal.ts";
 import { noClaudeCause, planOnlyCause, resolveProjectPolicy, type ProjectPolicy } from "../src/subagents/project-policy.ts";
 import { AVAILABILITY_TTL_MS, computeAvailability, freeRouteHeldUntil, holdFreeRoute } from "../src/subagents/route-availability.ts";
@@ -672,7 +672,7 @@ async function resolveImplicitWorkerRoute(
     // with its named reason, whatever the quota meter says about the step's own provider.
     const onlyWhen = step.onlyWhen ? onlyWhenSkipReason(step.onlyWhen, { quotaSnapshot: snapshot }) : undefined;
     if (onlyWhen !== undefined) return onlyWhen;
-    if (free ?? isFree(step)) return undefined;
+    if (free ?? isFree(step)) return snapshot ? routeUnsupportedBlock(snapshot, step) : undefined;
     const provider = quotaProviderOf(step);
     const quotaBlock = snapshot && routeQuotaBlock(snapshot, step);
     if (provider === undefined || !spent.has(provider)) return quotaBlock;
@@ -693,8 +693,9 @@ async function resolveImplicitWorkerRoute(
   // A parent on another account-leased tier needs a cross-store Codex-tier lookup. Read quota before
   // opening it, so a proven-exhausted plan is never offered an isolated runtime.
   const parentTier = quotaProviderOf(ctx.model!);
-  // A class step that is router-gated or carries an `onlyWhen` is judged on the same snapshot as the default chain.
-  const classNeedsQuota = walk?.steps.some((entry) => entry.step.onlyWhen !== undefined || (!isFree(entry.step) && isMeteredQuota(quotaProviderOf(entry.step) ?? ""))) === true;
+  // A class step that is router-gated (including free routes on metered providers, which still check unsupported)
+  // or carries an `onlyWhen` is judged on the same snapshot as the default chain.
+  const classNeedsQuota = walk?.steps.some((entry) => entry.step.onlyWhen !== undefined || isMeteredQuota(quotaProviderOf(entry.step) ?? "")) === true;
   let quota: QuotaSnapshot | undefined = (parentTier !== undefined && parentTier !== CODEX_QUOTA && isMeteredQuota(parentTier)) || classNeedsQuota ? await readQuota() : undefined;
   /** Why a class step did not serve the wave, in the words of a receipt. */
   const classStepCause = (entry: TaskClassStep): string =>
@@ -730,7 +731,7 @@ async function resolveImplicitWorkerRoute(
   if (first) {
     const step: WorkerRouteStep = { ...stepOfSelection(first.selection), ...(first.selection.harness === "steak-dsh" ? { harness: "steak-dsh" as const } : {}) };
     const free = isProvenFreeModel(first.model);
-    const gated = free ? undefined : quotaProviderOf(step);
+    const gated = quotaProviderOf(step);
     // A route a profile `ensure` refusal already held out is left even when it is not router-gated (a profile
     // default can land on it again), by the same forced re-resolution an exhausted route gets.
     const refused = heldBlock(step);
@@ -2424,7 +2425,9 @@ export function createUltratermSubagentsExtension(
       if (claudeUnavailable) {
         // The review fallback may launch on a reserved router account: refuse now, naming both
         // causes, instead of dying at launch after `Started`.
-        const fallbackBlock = freeStepPredicate(ctx)(fallbackStep!) ? undefined : routeQuotaBlock(reviewQuota!, fallbackStep!);
+        const fallbackBlock = freeStepPredicate(ctx)(fallbackStep!)
+          ? routeUnsupportedBlock(reviewQuota!, fallbackStep!)
+          : routeQuotaBlock(reviewQuota!, fallbackStep!);
         if (fallbackBlock !== undefined) {
           throw new Error(`USAP implicit review cannot run: Claude subscription tier: ${claudeBlock} | ${routeStepLabel(fallbackStep!)} review fallback: ${fallbackBlock}. No review was started and no fallback was selected; wait for a window to return or name a route explicitly.`);
         }
@@ -2505,7 +2508,9 @@ export function createUltratermSubagentsExtension(
       // The review fallback may launch on a reserved router account too: when the router proves every
       // such account unavailable it is not installed (a Claude quota/auth failure would only trade one
       // refusal for another after `Started`), and the dispatch says so.
-      const reviewFallbackBlock = reviewTextFallback && reviewQuota && !claudeUnavailable && !freeStepPredicate(ctx)(fallbackStep!) ? routeQuotaBlock(reviewQuota, fallbackStep!) : undefined;
+      const reviewFallbackBlock = reviewTextFallback && reviewQuota && !claudeUnavailable
+        ? (freeStepPredicate(ctx)(fallbackStep!) ? routeUnsupportedBlock(reviewQuota, fallbackStep!) : routeQuotaBlock(reviewQuota, fallbackStep!))
+        : undefined;
       const reviewFallbackSkipNote = reviewFallbackBlock !== undefined
         ? `Review note: the ${routeStepLabel(fallbackStep!)} review fallback is unavailable (${reviewFallbackBlock}); a Claude quota or auth failure ends this review without falling back.\n` : "";
       // The wave this call is retrying says so, and names why the first attempt died: a parent reading only the
@@ -2542,7 +2547,11 @@ export function createUltratermSubagentsExtension(
           throw new Error(`USAP explicit route ${params.model} cannot launch: ${noClaudeCause(dshPolicy)}. No worker was started and no fallback was selected.`);
         }
         const innerStep = dshModel;
-        const cause = isProvenFreeModel(innerStep) || quotaProviderOf(innerStep) === undefined ? undefined : routeQuotaBlock(await readQuota(), innerStep);
+        const cause = quotaProviderOf(innerStep) === undefined
+          ? undefined
+          : isProvenFreeModel(innerStep)
+            ? routeUnsupportedBlock(await readQuota(), innerStep)
+            : routeQuotaBlock(await readQuota(), innerStep);
         if (cause !== undefined) {
           throw new Error(`USAP explicit route ${params.model} cannot launch: ${cause}. Explicit routes are never rerouted, so no worker was started and no fallback was selected; wait for the window to return or choose another route yourself.`);
         }
@@ -2589,7 +2598,11 @@ export function createUltratermSubagentsExtension(
         // An explicit route stays exact: never rerouted, but never launched into a provider the
         // router has proven exhausted either. The refusal names the router's own cause.
         const step = piResolved.model;
-        const cause = isProvenFreeModel(step) || quotaProviderOf(step) === undefined ? undefined : routeQuotaBlock(await readQuota(), step);
+        const cause = quotaProviderOf(step) === undefined
+          ? undefined
+          : isProvenFreeModel(step)
+            ? routeUnsupportedBlock(await readQuota(), step)
+            : routeQuotaBlock(await readQuota(), step);
         if (cause !== undefined) {
           throw new Error(`USAP explicit route ${routeOfStep(step)} cannot launch: ${cause}. Explicit routes are never rerouted, so no worker was started and no fallback was selected; wait for the window to return or choose another route yourself.`);
         }
@@ -2825,7 +2838,11 @@ export function createUltratermSubagentsExtension(
         if (reviewRefusal !== undefined) {
           // Ask the router NOW, not at dispatch time: a CLI can refuse a plan the snapshot still showed as launchable.
           const fresh = await readProviderQuota(dependencies.accountCommand, dependencies.now?.());
-          const fallbackBlockNow = fallbackStep === undefined ? "no implicitReview.fallback is configured" : freeStepPredicate(ctx)(fallbackStep) ? undefined : routeQuotaBlock(fresh, fallbackStep);
+          const fallbackBlockNow = fallbackStep === undefined
+            ? "no implicitReview.fallback is configured"
+            : freeStepPredicate(ctx)(fallbackStep)
+              ? routeUnsupportedBlock(fresh, fallbackStep)
+              : routeQuotaBlock(fresh, fallbackStep);
           if (fallbackBlockNow === undefined) {
             return { fallThrough: { runId: run.id, route: model, providers: [], cause: boundedReason(failureText, 240), kind: "review" as const, reviewReason: reviewRefusal } satisfies QuotaFallThrough };
           }
