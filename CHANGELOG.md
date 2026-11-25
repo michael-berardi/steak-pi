@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.41.7 (2026-11-25)
+
+- **USAP workers drop inherited operator `TMUX` and `TMUX_PANE` and prefer `~/.ultraterm/bin` on `PATH`.** Both Pi SDK bash tool spawns (`piWorkerBashEnv` via `createBashToolDefinition` `spawnHook`) and Claude Code headless worker spawns (`claudeWorkerEnv`) now strip `TMUX`/`TMUX_PANE` and prepend `~/.ultraterm/bin`, preventing subagent workers from accidentally targeting the operator's live tmux server when probing tmux. Regression tests in `test/worker-tmux-env.test.ts`.
+
 ## 0.41.6 (2026-11-24)
 
 - **Unsupported providers are blocked consistently across availability and dispatch without breaking free routes on exhausted tiers.** Added `routeUnsupportedBlock` separate from `routeQuotaBlock` and wired it across `computeAvailability` and all USAP dispatch/fallback sites (including implicit worker resolution for free routes on metered providers). Proven-free routes remain usable on exhausted tiers while unsupported plans are consistently reported and blocked everywhere.
