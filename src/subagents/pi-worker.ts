@@ -703,6 +703,7 @@ export function createGuardedPiWorkerTools(options: GuardedToolOptions): AnyTool
       async execute(id, raw, signal, update, ctx) {
         const base = await nativeTool("bash", (native) => native.createBashToolDefinition(cwd, {
           exposeSessionEnvironment: false,
+          spawnHook: (context) => ({ ...context, env: piWorkerBashEnv(context.env) }),
         }));
         return base.execute(id, raw as { command: string; timeout?: number }, signal, update, ctx);
       },
@@ -710,6 +711,34 @@ export function createGuardedPiWorkerTools(options: GuardedToolOptions): AnyTool
   }
   tools.push(createUltratermRelayTool(relay, task));
   return tools;
+}
+
+/**
+ * Prepend ~/.ultraterm/bin ahead of Homebrew on PATH when that directory exists,
+ * so managed UltraTerm wrappers (such as the tmux live-server guard) always win
+ * in worker child processes.
+ */
+export function prependUltratermBin(pathValue: string | undefined, home = homedir()): string | undefined {
+  const utBin = join(home, ".ultraterm", "bin");
+  if (!existsSync(utBin)) return pathValue;
+  const sepChar = process.platform === "win32" ? ";" : ":";
+  const parts = (pathValue ?? "").split(sepChar).filter((entry) => entry && entry !== utBin);
+  return [utBin, ...parts].join(sepChar);
+}
+
+/**
+ * Environment for a Pi USAP worker's bash tool: drop operator TMUX/TMUX_PANE
+ * (workers never need the operator's pane server) and keep ~/.ultraterm/bin
+ * ahead of Homebrew on PATH so managed wrappers such as the tmux live-server
+ * guard take precedence.
+ */
+export function piWorkerBashEnv(base: NodeJS.ProcessEnv = process.env, home = homedir()): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base };
+  delete env.TMUX;
+  delete env.TMUX_PANE;
+  const nextPath = prependUltratermBin(env.PATH, home);
+  if (nextPath !== undefined) env.PATH = nextPath;
+  return env;
 }
 
 export function truncatePiWorkerOutput(output: string, limit = OUTPUT_LIMIT): {
