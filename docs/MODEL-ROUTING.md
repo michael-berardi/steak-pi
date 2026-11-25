@@ -143,7 +143,9 @@ JavaScript sources, case-insensitive unless noted. Unknown keys are ignored
 
   // Claude Code CLI adapter choices (routes are the adapter's pinned claude-code/<model> ids).
   "claudeFallbackTier": { "ordinary": "claude-code/<small-model>", "substantial": "claude-code/<medium-model>" },
-  "claudeCodeDefaults": { "worker": "claude-code/<medium-model>", "reviewer": "claude-code/<large-model>" },
+  "claudeCodeDefaults": { "worker": "claude-code/<medium-model>", "reviewer": "claude-code/<large-model>",
+    // Exact Claude model id -> effort, chosen by the operator; no reason needed for a configured default.
+    "effort": { "<exact-claude-model-id>": "xhigh" } },
   // Implicit all-reviewer waves run route; fallback is the Pi route used only on proven
   // Claude quota/auth unavailability before output (read-only reviewers only).
   "implicitReview": { "route": "claude-code/<large-model>", "fallback": "provider-x/model-name" },
@@ -193,12 +195,14 @@ What each key replaces, and what happens without it:
 | `subscriptionFirstProvider` | no subscription-first veto |
 | `interactiveChainModel` | no virtual model is registered; interactive slots keep today's exact-selection behaviour |
 | `claudeFallbackTier` | an implicit wave whose chain is out fails naming every cause |
-| `claudeCodeDefaults` | `harness: "claude-code"` needs an explicit `model` |
+| `claudeCodeDefaults` | `harness: "claude-code"` needs an explicit `model`; no per-model effort default (runs at medium unless `thinking` asks for more) |
 | `implicitReview` | implicit all-reviewer waves resolve the native reviewer chain |
 | `verificationGates` | no worker is told to request a verification |
 | `freeRoutes` | no route is treated as free; every route is gated by its plan quota as before (a listed route also needs its all-zero cost row in models.json, else it is gated the same way) |
 | `freeRouteCooldownMinutes` | a free route that refused with a rate limit is held out for 10 minutes (one hold per route, shared by dispatch and the availability line, including `steak-dsh/` routes) |
 | `routeLabels` | notes show `provider/model` |
+
+`claudeCodeDefaults.effort` maps an **exact Claude model id** (the id the adapter passes to the CLI, without the `claude-code/` route prefix) to `medium`, `high` or `xhigh`. A claude-code run with no `thinking` uses that model's entry, else medium; a configured default needs no `thinkingReason` because the operator chose it. An explicit `thinking` always wins and `high`/`xhigh` still need a concrete `thinkingReason`. The dispatch note and receipt name the effective effort and its source (for example `effort xhigh (claudeCodeDefaults.effort)`), and a resume keeps the recorded effort. Steak Pi ships no such table: if the key is absent, every model runs at medium unless the dispatch says otherwise.
 
 Provider-specific *adapter* code stays: the Claude Code CLI adapter keeps its
 own pinned model catalog (`src/subagents/claude-code-models.ts`,
@@ -279,7 +283,7 @@ resolves the configured chain:
   step through an isolated, router-reserved account store.
 - **Claude tier.** When no chain step can launch, an implicit routine text wave (no reviewer,
   no `requireImages`) runs on `claudeFallbackTier` through the
-  official Claude Code subscription CLI (medium effort, or the requested high/xhigh) with no parent re-dispatch: `ordinary` for plain leaves,
+  official Claude Code subscription CLI (the operator's `claudeCodeDefaults.effort` for that model, else medium, unless the dispatch asks for high/xhigh with a reason) with no parent re-dispatch: `ordinary` for plain leaves,
   `substantial` for a leaf that may both edit and run a shell, a requested high/xhigh effort, or
   a reviewer. The choice reads only declared capabilities, never task text. The worker is pinned
   on a router-eligible Claude account (one the router marks `spill.draining` first, then least-used
@@ -324,7 +328,7 @@ without advertised image input are rejected.
 ### Implicit review
 
 When `implicitReview.route` is set, implicit all-reviewer waves run it on the
-official Claude Code CLI at medium effort unless the dispatch asks for high/xhigh with a reason. The wave asks
+official Claude Code CLI at the operator's `claudeCodeDefaults.effort` for that model, else medium, unless the dispatch asks for high/xhigh with a reason. The wave asks
 the router first and **pins an eligible Claude account** for the review, like the implicit worker tier, so a
 review never runs on this session's own login while another account can take it; the pin is recorded as an
 automatic pick, never as an operator choice. Only a router status proving every Claude account ineligible, a

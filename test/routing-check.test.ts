@@ -31,6 +31,16 @@ describe("steak-pi routing check", () => {
     expect(bad.code).toBe(1);
     expect(bad.out).toContain("freeRoutes[0].evidence");
   });
+  it("accepts a valid claudeCodeDefaults.effort map and rejects a bad effort", () => {
+    const good = write("effort-ok.json", { claudeCodeDefaults: { worker: "claude-code/model-b", effort: { "model-a": "xhigh", "model-b": "high" } } });
+    expect(run(good)).toMatchObject({ code: 0 });
+    const badEffort = run(write("effort-bad.json", { claudeCodeDefaults: { effort: { "model-a": "extreme" } } }));
+    expect(badEffort.code).toBe(1);
+    expect(badEffort.out).toContain("claudeCodeDefaults.effort.model-a");
+    const badShape = run(write("effort-shape.json", { claudeCodeDefaults: { effort: ["xhigh"] } }));
+    expect(badShape.code).toBe(1);
+    expect(badShape.out).toContain("claudeCodeDefaults.effort");
+  });
   it("rejects a file that is not JSON", () => {
     const p = join(dir, "broken.json"); writeFileSync(p, "{");
     expect(run(p).code).toBe(1);

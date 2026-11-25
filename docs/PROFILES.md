@@ -41,7 +41,7 @@ nothing configured an implicit dispatch fails with the key to set; explicit
 profile is the neutral virtual `steak-pi/preferred-free`.
 
 When `implicitReview.route` is configured, all-reviewer waves with no explicit
-harness/model/profile run it on the official Claude Code CLI at medium effort (high/xhigh when the dispatch asks with a reason) with
+harness/model/profile run it on the official Claude Code CLI at the operator's `claudeCodeDefaults.effort` for that model, else medium (high/xhigh when the dispatch asks with a reason) with
 existing subscription authentication on an account the router shows eligible
 (the wave pins it, so the review never runs on a spent session login while another
 account can take it); only the

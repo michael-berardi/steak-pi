@@ -12,9 +12,11 @@ Running Claude Code workers accept `ultraterm_hub send` and `redirect` without
 cancelling or restarting. Replies appear in the run's hub inbox. Redirects do not
 change permissions, file ownership or budgets.
 
-Claude Code workers (`harness: "claude-code"`) run at medium effort by default; high or
-xhigh only when the dispatch asks with `thinking` and a `thinkingReason`. A resume keeps
-the effort the run was recorded with.
+Claude Code workers (`harness: "claude-code"`) run at the operator's
+`claudeCodeDefaults.effort` for that model, else medium, unless `thinking` asks for
+high/xhigh with a `thinkingReason`. A configured default needs no reason; an explicit
+`thinking` wins. The dispatch note and receipt name the effective effort and its source,
+and a resume keeps the effort the run was recorded with.
 
 `ultraterm_subagents` runs bounded Pi workers inside the parent process. The
 parent plans, integrates and signs off; each worker gets one exact task and

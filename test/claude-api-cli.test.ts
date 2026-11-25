@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { setRoutingConfigOverride } from "../src/routing-config.ts";
 import { NoopSlots } from "../src/subagents/machine-slots.ts";
 import { Scheduler } from "../src/subagents/scheduler.ts";
 import { parseWaveSpec, resumeClaudeApiRun, runClaudeApiWave, summarizeRun, type ClaudeApiWaveDeps } from "../src/subagents/claude-api-cli.ts";
@@ -240,6 +241,18 @@ describe("runClaudeApiWave (native coordinator)", () => {
     t.f.writeConfig();
     // The failed attempt did not consume the resume.
     await expect(resumeClaudeApiRun(first.run.id, { ...t.deps, spawn: ({ args }) => { const c = new Fake(); t.calls.push({ args, env: {}, child: c }); queueMicrotask(() => { c.out(initFrame()); c.out(reply("ok")); c.out(result("ok")); c.exit(); }); return c; } })).resolves.toMatchObject({ exitCode: 0 });
+  });
+
+  it("uses the operator's per-model effort when the wave names none and reports its source", async () => {
+    setRoutingConfigOverride({ claudeCodeDefaults: { effort: { "claude-sonnet-5-5": "xhigh" } } });
+    try {
+      const t = setup((child) => { child.out(initFrame()); child.out(reply("ok")); child.out(result("ok")); child.exit(); });
+      const outcome = await runClaudeApiWave(t.spec, t.deps);
+      expect(outcome.exitCode).toBe(0);
+      expect(outcome.run.thinkingLevel).toBe("xhigh");
+      expect(t.calls[0].args[t.calls[0].args.indexOf("--effort") + 1]).toBe("xhigh");
+      expect(outcome.summary.effort).toEqual({ level: "xhigh", source: "claudeCodeDefaults.effort" });
+    } finally { setRoutingConfigOverride(undefined); }
   });
 
   it("refuses to resume an unknown run", async () => {

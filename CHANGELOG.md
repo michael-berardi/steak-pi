@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.42.0 (2026-11-25)
+
+- **Per-model default effort for Claude Code runs (`claudeCodeDefaults.effort`).** routing.json may map an exact Claude model id to `medium`, `high` or `xhigh`. A `harness: claude-code` (or claude-code-api) run that names no `thinking` uses the configured effort for its resolved model, else medium; an explicit `thinking` still wins and still needs a `thinkingReason` for high/xhigh, while a configured default needs none. The dispatch note and receipt name the effective effort and its source (`thinking`, `claudeCodeDefaults.effort` or `default medium`). `steak-pi routing check` validates the map with named errors. No model id ships in a default table (provider-neutrality test).
+- Test fixtures: quota snapshots carry `accounts`; install docs name the current archive.
+
 ## 0.41.7 (2026-11-25)
 
 - **USAP workers drop inherited operator `TMUX` and `TMUX_PANE` and prefer `~/.ultraterm/bin` on `PATH`.** Both Pi SDK bash tool spawns (`piWorkerBashEnv` via `createBashToolDefinition` `spawnHook`) and Claude Code headless worker spawns (`claudeWorkerEnv`) now strip `TMUX`/`TMUX_PANE` and prepend `~/.ultraterm/bin`, preventing subagent workers from accidentally targeting the operator's live tmux server when probing tmux. Regression tests in `test/worker-tmux-env.test.ts`.

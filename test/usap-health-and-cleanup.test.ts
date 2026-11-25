@@ -72,6 +72,7 @@ describe("USAP health classification, unsupported block, and namespace cleanup",
       providers: {
         "opencode-go": {
           provider: "opencode-go",
+          accounts: 1,
           exhausted: true,
           unconfigured: false,
           ineligible: false,
@@ -96,6 +97,7 @@ describe("USAP health classification, unsupported block, and namespace cleanup",
       providers: {
         "opencode-go": {
           provider: "opencode-go",
+          accounts: 1,
           exhausted: true,
           unconfigured: false,
           ineligible: true,

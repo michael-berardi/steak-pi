@@ -152,7 +152,7 @@ USAP uses one coordinator, hub, capacity limiter, checkpoint store and telemetry
 surface for Pi workers, the official headless Claude Code CLI, and the steak-dsh harness (the DSH headless CLI with the Steak DSH bundle). An absent
 `harness` means Pi except for an all-reviewer wave with no explicit route when
 the operator configured `implicitReview.route`: that wave runs the configured
-Claude Code route on a router-eligible account at medium effort (high/xhigh only when the dispatch asks with a reason). The [automatic text-review exception](./MODEL-ROUTING.md#implicit-review) alone permits `implicitReview.fallback` evidence when Claude is proven unavailable; it is not expert approval.
+Claude Code route on a router-eligible account at the operator's `claudeCodeDefaults.effort` for that model, else medium (high/xhigh only when the dispatch asks with a reason). The [automatic text-review exception](./MODEL-ROUTING.md#implicit-review) alone permits `implicitReview.fallback` evidence when Claude is proven unavailable; it is not expert approval.
 Explicit Pi/model/profile selections still win.
 
 `harness: "claude-code"` runs the operator's `claudeCodeDefaults.worker` for
@@ -161,8 +161,10 @@ an explicit `model` naming a `claude-code/<model>` route wins (a pinned route, a
 model in the Claude Code catalog, or one a registered profile names), and with neither the dispatch fails naming the key. Each route runs
 `claude --print` with `--model <model> --effort <level>`, and the served model is
 checked against the route. The level is the dispatch's `thinking` (`medium`, `high` or
-`xhigh`; high/xhigh need a `thinkingReason`) and `medium` when none is given; it is
-recorded as the run's `thinkingLevel` and a resume keeps it. Any other level (for
+`xhigh`; high/xhigh need a `thinkingReason`), otherwise the operator's
+`claudeCodeDefaults.effort` for that exact model, else `medium` (a configured
+default needs no reason). It is recorded as the run's `thinkingLevel`, named with
+its source in the dispatch note and receipt, and kept by a resume. Any other level (for
 example `low` or `max`) is not in the tool schema's `thinking` enum, so it is rejected there; should one reach the
 code anyway, a `ClaudeCodeEffortError` refuses it before a run starts (dispatch and the API wave CLI) or fails the task
 before inference (the worker, a resume included), and a resume whose checkpoint records another level is refused with
@@ -313,7 +315,7 @@ retry rather than sleeping an idle worker.
 | Relay / hub send, redirect and inbox | Supported | Stream-json stdin; run-local replies |
 | Worker history continuation | Native Pi session | Own persisted Claude session only; no cross-harness resume |
 | Image review admission | Capability-checked | Exact pinned routes only; staged files via native Read |
-| Model selection | Native registry | Exact pinned adapter route; medium effort by default, high/xhigh when the dispatch asks with a reason |
+| Model selection | Native registry | Exact pinned adapter route; the operator's `claudeCodeDefaults.effort` for that model, else medium, high/xhigh when the dispatch asks with a reason |
 
 **Claude running-worker steering.** Use `ultraterm_hub` with `action: "send"`
 (or `"redirect"` to append updated instructions), the live run ID, a task ID or

@@ -704,6 +704,36 @@ describe("synthetic: UltraTerm Subagent Protocol Pi extension", () => {
     expect(runner).toHaveBeenCalledTimes(launched);
     await h.handlers.get("session_shutdown")!({}, h.ctx);
   });
+
+  it("uses the operator's per-model effort by default and reports its source in the note and receipt", async () => {
+    const fixture = routingFixture();
+    setRoutingConfigOverride({ ...fixture, claudeCodeDefaults: { ...(fixture.claudeCodeDefaults as Record<string, unknown>),
+      effort: { "claude-sonnet-5-5": "xhigh", "claude-opus-5-5": "high" } } });
+    const runner = vi.fn(async (_context: Parameters<WorkerRunner>[0]) => ({ state: "done" as const, output: "ok", turns: 1, usage: emptyUsage() }));
+    const h = harness(() => runner);
+    const work = [{ label: "Work", task: "Inspect", role: "worker" }];
+    const dispatch = h.tools.get("ultraterm_subagents");
+    try {
+      // No thinking: the worker model's configured xhigh needs no thinkingReason.
+      const configured = await dispatch.execute("configured", { goal: "configured effort", harness: "claude-code", tasks: work }, undefined, undefined, h.ctx);
+      expect(configured.details.run.thinkingLevel).toBe("xhigh");
+      expect(configured.details.summary.effort).toEqual({ level: "xhigh", source: "claudeCodeDefaults.effort" });
+      expect(configured.content[0].text).toContain("effort xhigh (claudeCodeDefaults.effort)");
+      expect(runner.mock.calls.at(-1)?.[0].run.thinkingLevel).toBe("xhigh");
+      // An explicit thinking still wins and is named as such.
+      const explicit = await dispatch.execute("explicit", { goal: "explicit effort", harness: "claude-code", thinking: "medium", tasks: work }, undefined, undefined, h.ctx);
+      expect(explicit.details.run.thinkingLevel).toBe("medium");
+      expect(explicit.details.summary.effort).toEqual({ level: "medium", source: "thinking" });
+      expect(explicit.content[0].text).toContain("effort medium (thinking)");
+      // The configured effort follows the exact model, not the harness alone.
+      const other = await dispatch.execute("other", { goal: "other model", model: "claude-code/claude-opus-5-5", routeReason: "Explicit route under test: this case exercises the named route itself.", tasks: work }, undefined, undefined, h.ctx);
+      expect(other.details.run.thinkingLevel).toBe("high");
+      expect(other.details.summary.effort).toEqual({ level: "high", source: "claudeCodeDefaults.effort" });
+    } finally {
+      setRoutingConfigOverride(undefined);
+      await h.handlers.get("session_shutdown")!({}, h.ctx);
+    }
+  });
   it("refuses every foreign-session hub action and dispatch before exposing a run", async () => {
     const runner = vi.fn(async () => ({ state: "done" as const, output: "owner-only evidence", turns: 1, usage: emptyUsage() }));
     const h = harness(() => runner);

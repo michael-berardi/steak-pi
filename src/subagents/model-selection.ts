@@ -163,8 +163,8 @@ export { CLAUDE_CODE_OPUS_MODEL, CLAUDE_CODE_SONNET_MODEL, CLAUDE_CODE_HAIKU_MOD
   CLAUDE_CODE_OPUS_ROUTE, CLAUDE_CODE_SONNET_ROUTE, CLAUDE_CODE_HAIKU_ROUTE, CLAUDE_CODE_FABLE_ROUTE, CLAUDE_CODE_ROUTE, CLAUDE_CODE_ROUTES,
   claudeCodeModelOf, claudeCodeModelName, claudeCodeRouteModel, claudeCodeRouteOfProfile, claudeCodeRouteRefusal, claudeCodeServableModel,
   admitClaudeCodeRoute, claudeFallbackTier, defaultClaudeCodeRoute, resolveClaudeCodeSelection,
-  ClaudeCodeEffortError, isClaudeCodeEffort, resolveClaudeCodeEffort,
-  assertClaudeCodeImageAdmission, type ClaudeCodeEffort, type ClaudeCodeModel, type ClaudeCodeFallbackRoute, type ClaudeFallbackTier,
+  ClaudeCodeEffortError, isClaudeCodeEffort, resolveClaudeCodeEffort, resolveClaudeCodeEffortDetail,
+  assertClaudeCodeImageAdmission, type ClaudeCodeEffort, type ClaudeCodeEffortSource, type ResolvedClaudeCodeEffort, type ClaudeCodeModel, type ClaudeCodeFallbackRoute, type ClaudeFallbackTier,
   type ClaudeCodeRouteAdmission, type ClaudeCodeRouteProfile, type ClaudeCodeRouteSource } from "./claude-code-models.ts";
 
 function route(model: Model): string { return `${model.provider}/${model.id}`; }

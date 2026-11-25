@@ -8,7 +8,8 @@
  */
 import { isClaudeCodeCatalogModel } from "../../extensions/claude-code/model-catalog.ts";
 import type { DispatchInput, ModelSelection, SubagentTaskInput } from "./types.ts";
-import { missingConfigKey, routingConfig, RoutingConfigError } from "../routing-config.ts";
+import { CLAUDE_CODE_EFFORTS, missingConfigKey, routingConfig, RoutingConfigError, type ClaudeCodeEffort } from "../routing-config.ts";
+export { CLAUDE_CODE_EFFORTS, type ClaudeCodeEffort };
 
 /** Exact spellings pinned by the candidate manifest (docs/opus-5-5.models.json):
  * model ids `claude-sonnet-5-5` and `claude-opus-5-5`. The `claude-code`
@@ -27,10 +28,7 @@ export const CLAUDE_CODE_HAIKU_MODEL = "claude-haiku-5-5" as const;
 export const CLAUDE_CODE_FABLE_MODEL = "claude-fable-5-2" as const;
 /** The largest pinned model, kept under its historical name for callers. */
 export const CLAUDE_CODE_MODEL = CLAUDE_CODE_OPUS_MODEL;
-/** Reasoning efforts a claude-code run may carry; anything else is refused by name. */
-export const CLAUDE_CODE_EFFORTS = ["medium", "high", "xhigh"] as const;
-export type ClaudeCodeEffort = (typeof CLAUDE_CODE_EFFORTS)[number];
-/** Operator rule: every Claude model runs at medium effort unless the dispatch asks for more. */
+/** Fallback when neither the dispatch nor the operator chose an effort. No model is named here. */
 export const CLAUDE_CODE_DEFAULT_EFFORT: ClaudeCodeEffort = "medium";
 export const CLAUDE_CODE_OPUS_ROUTE = `claude-code/${CLAUDE_CODE_OPUS_MODEL}` as const;
 export const CLAUDE_CODE_SONNET_ROUTE = `claude-code/${CLAUDE_CODE_SONNET_MODEL}` as const;
@@ -112,18 +110,33 @@ export function isClaudeCodeEffort(value: unknown): value is ClaudeCodeEffort {
   return typeof value === "string" && (CLAUDE_CODE_EFFORTS as readonly string[]).includes(value);
 }
 
-/** The effort a claude-code (or claude-code-api) dispatch runs at: its own `thinking` when given,
- * else medium. high/xhigh need a concrete reason, like on the native route; low, max and every
- * other level are refused. */
-export function resolveClaudeCodeEffort(thinking?: unknown, reason?: string): ClaudeCodeEffort {
-  if (thinking === undefined) return CLAUDE_CODE_DEFAULT_EFFORT;
+/** Where an effort came from, recorded on the run and named in its dispatch note and receipt. */
+export type ClaudeCodeEffortSource = "thinking" | "claudeCodeDefaults.effort" | "default";
+export interface ResolvedClaudeCodeEffort { effort: ClaudeCodeEffort; source: ClaudeCodeEffortSource }
+
+/** The effort a claude-code (or claude-code-api) dispatch runs at and its provenance. An explicit
+ * `thinking` wins and high/xhigh need a concrete reason, like on the native route; low, max and
+ * every other level are refused. With no `thinking`, the operator's `claudeCodeDefaults.effort`
+ * entry for the exact resolved model wins (it needs no reason: the operator chose it), else medium. */
+export function resolveClaudeCodeEffortDetail(thinking?: unknown, reason?: string, model?: string): ResolvedClaudeCodeEffort {
+  if (thinking === undefined) {
+    const configured = model === undefined ? undefined : routingConfig().claudeCodeDefaults?.effort?.[model];
+    return configured === undefined
+      ? { effort: CLAUDE_CODE_DEFAULT_EFFORT, source: "default" }
+      : { effort: configured, source: "claudeCodeDefaults.effort" };
+  }
   if (!isClaudeCodeEffort(thinking)) {
     throw new ClaudeCodeEffortError(`Claude Code effort must be ${CLAUDE_CODE_EFFORTS.join(", ")}, not ${JSON.stringify(String(thinking).slice(0, 32))}; no run was started.`);
   }
   if (thinking !== CLAUDE_CODE_DEFAULT_EFFORT && (!reason || reason.trim().length < 16)) {
     throw new ClaudeCodeEffortError(`Claude Code ${thinking} effort needs a concrete task benefit in thinkingReason; it runs at ${CLAUDE_CODE_DEFAULT_EFFORT} by default.`);
   }
-  return thinking;
+  return { effort: thinking, source: "thinking" };
+}
+
+/** The effort alone, for callers that do not report provenance. */
+export function resolveClaudeCodeEffort(thinking?: unknown, reason?: string, model?: string): ClaudeCodeEffort {
+  return resolveClaudeCodeEffortDetail(thinking, reason, model).effort;
 }
 
 /** The pinned Claude model behind a `claude-code/…` route, or undefined for
@@ -201,8 +214,8 @@ export function defaultClaudeCodeRoute(tasks: readonly { role?: string }[]): str
 }
 
 /** The explicit foreign-harness routes in this USAP slice: the official headless
- * Claude Code CLI on one of its pinned models, at medium effort unless the
- * dispatch asks for high/xhigh (see {@link resolveClaudeCodeEffort}). Each is
+ * Claude Code CLI on one of its pinned models, at the dispatch's effort, an
+ * operator-configured default or medium (see {@link resolveClaudeCodeEffortDetail}). Each is
  * override-provenance, never an automatic chain step, and none falls back to
  * another or to any other model. */
 export function resolveClaudeCodeSelection(model: ClaudeCodeModel = CLAUDE_CODE_OPUS_MODEL): ModelSelection {

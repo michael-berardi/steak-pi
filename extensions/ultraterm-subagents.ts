@@ -22,7 +22,7 @@ import { SubagentCoordinator, CoordinatorWaitTimeoutError } from "../src/subagen
 import { normalizeDispatch, SubagentPolicyError } from "../src/subagents/policy.ts";
 import { assertKnownClaudeAccount, resolveClaudeAccount } from "../src/subagents/claude-account.ts";
 import { assertActiveModelSelector } from "../src/retired-model-selection.ts";
-import { loadWorkerProfiles, resolveWorkerSelection, resolveClaudeCodeSelection, assertClaudeCodeImageAdmission, admitClaudeCodeRoute, claudeCodeModelName, claudeCodeRouteModel, claudeCodeRouteOfProfile, claudeFallbackTier, defaultClaudeCodeRoute, isClaudeCodeEffort, resolveClaudeCodeEffort, CLAUDE_CODE_EFFORTS, CLAUDE_CODE_ROUTES, type ClaudeFallbackTier, type WorkerProfile } from "../src/subagents/model-selection.ts";
+import { loadWorkerProfiles, resolveWorkerSelection, resolveClaudeCodeSelection, assertClaudeCodeImageAdmission, admitClaudeCodeRoute, claudeCodeModelName, claudeCodeRouteModel, claudeCodeRouteOfProfile, claudeFallbackTier, defaultClaudeCodeRoute, isClaudeCodeEffort, resolveClaudeCodeEffortDetail, CLAUDE_CODE_EFFORTS, CLAUDE_CODE_ROUTES, type ClaudeFallbackTier, type ResolvedClaudeCodeEffort, type WorkerProfile } from "../src/subagents/model-selection.ts";
 import { admitClaudeApiRoute, claudeApiConcurrency, claudeApiModelOf, CLAUDE_API_ROUTES, formatClaudeApiReceipt, isClaudeApiRoute, resolveClaudeApiSelection, stampClaudeApiRun } from "../src/subagents/claude-api-route.ts";
 import { AUTOMATIC_CHAIN_APPROVAL, NoChainRouteError, defaultWorkerChain, dshStepBlockReason, isDefaultChainExhausted, onlyWhenSkipReason, type ChainOptions, type TaskClassStep, type TaskClassWalk, type WorkerRouteStep } from "../src/model-route-policy.ts";
 import { admitDshRoute, dshEffortOf, dshRouteModel, dshRouteOf, dshRouteShapeRefusal, resolveDshEffort } from "../src/subagents/dsh-routes.ts";
@@ -146,7 +146,7 @@ export const ultratermSubagentsSchema = Type.Object({
   model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Exact authenticated provider/model for all tasks; mutually exclusive with profile." })),
   claudeAccount: Type.Optional(Type.String({ pattern: "^[a-z0-9]+(-[a-z0-9]+)*$", minLength: 1, maxLength: 24, description: "Claude subscription account id from claude-accounts.json, e.g. primary, b, team-2. Task-scoped. Requires a Claude subscription route; unknown, unavailable, Pi and API selections fail closed. Never changes defaults or enables credits." })),
   profile: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Native harness/profile route (e.g. steak-pi/profile-name); mutually exclusive with model. Operator-retired routes are rejected." })),
-  harness: Type.Optional(Type.Unsafe<HarnessId>({ type: "string", enum: [...HARNESS_IDS], description: "Execution harness. pi (default) is the native runner; claude-code is the official headless Claude CLI on the operator's claudeCodeDefaults model unless model names one of its pinned routes, at medium effort unless thinking asks for high/xhigh with a thinkingReason; workers, scouts and reviewers alike, with CLI-enforced ownedPaths; no Bash for read-only reviewers. Image review reads staged files under cwd with native Read. steak-dsh is the DSH headless CLI with the Steak DSH bundle on an exact steak-dsh/<provider>/<model-id> registry route (model may also be the inner provider/model with this harness); CLI-enforced ownedPaths, no shell unless allowBash, no relay steering or resume." })),
+  harness: Type.Optional(Type.Unsafe<HarnessId>({ type: "string", enum: [...HARNESS_IDS], description: "Execution harness. pi (default) is the native runner; claude-code is the official headless Claude CLI on the operator's claudeCodeDefaults model unless model names one of its pinned routes, at the operator's claudeCodeDefaults.effort for that model, else medium, unless thinking asks for high/xhigh with a thinkingReason; workers, scouts and reviewers alike, with CLI-enforced ownedPaths; no Bash for read-only reviewers. Image review reads staged files under cwd with native Read. steak-dsh is the DSH headless CLI with the Steak DSH bundle on an exact steak-dsh/<provider>/<model-id> registry route (model may also be the inner provider/model with this harness); CLI-enforced ownedPaths, no shell unless allowBash, no relay steering or resume." })),
   requireImages: Type.Optional(Type.Boolean({ description: "Require advertised image input; no silent fallback. Claude Code uses native Read on staged image files under cwd or a read-only artifact root declared with readPaths, not inline attachments." })),
   constraints: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4_000 }), { maxItems: 64 })),
   contract: Type.Optional(Type.String({ minLength: 1, maxLength: 8_000 })),
@@ -156,7 +156,7 @@ export const ultratermSubagentsSchema = Type.Object({
   maxTurns: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_WORKER_TURNS, description: "Per-worker request budget; default 64. Increase explicitly for long-horizon work." })),
   background: Type.Optional(Type.Boolean({ default: false })),
   thinking: Type.Optional(stringEnum(["medium", "high", "xhigh"] as const)),
-  thinkingReason: Type.Optional(Type.String({ minLength: 16, maxLength: 2_000, description: "Why high/xhigh reasoning benefits this task. Required with high/xhigh; every run is medium by default." })),
+  thinkingReason: Type.Optional(Type.String({ minLength: 16, maxLength: 2_000, description: "Why high/xhigh reasoning benefits this task. Required with an explicit high/xhigh; a configured default effort needs none." })),
   routeReason: Type.Optional(Type.String({ minLength: ROUTE_REASON_MIN_LENGTH, maxLength: ROUTE_REASON_MAX_LENGTH, description: "Why the configured worker chain is not right for this wave. Required when model or profile is named and any task is a worker or scout (reviewer-only waves are exempt); recorded in the receipt. Routine workers should omit model and profile so the configured chain chooses and spills to the next tier at a limit; an explicit route is for hard or review work and is never rerouted." })),
 }, { additionalProperties: false });
 
@@ -283,6 +283,8 @@ export interface DispatchDetails {
     harness: HarnessId;
     profile: string | null;
     thinking: string;
+    /** Effective Claude Code effort and its provenance; absent on Pi and DSH runs. */
+    effort?: { level: string; source: string };
     background: boolean;
     /** How a declared task class steered (or did not steer) the route. */
     taskClass?: TaskClassSelection;
@@ -564,6 +566,9 @@ function taskClassNote(receipt: TaskClassSelection | undefined, wave: WaveTaskCl
   const evidence = receipt.decision ? ` Route evidence: ${describeDecision(receipt.decision)}.` : "";
   return `Task class ${receipt.name}: ${receipt.outcome === "served" ? "served" : receipt.outcome === "fallback" ? "not served" : "ignored"}; ${receipt.reason}.${evidence}${gate}${note}${riders}${unknown}\n`;
 }
+/** Where an effective Claude effort came from, in a dispatch note or receipt. */
+const effortSourceLabel = (source: ResolvedClaudeCodeEffort["source"]): string =>
+  source === "claudeCodeDefaults.effort" ? "claudeCodeDefaults.effort" : source === "thinking" ? "thinking" : "default medium";
 /** The dispatch-note line naming the harness a task class chose for the wave and why, from the class's own decision. */
 function harnessChoiceNote(receipt: TaskClassSelection, harness: HarnessId): string {
   const decision = receipt.decision!;
@@ -773,7 +778,7 @@ async function resolveImplicitWorkerRoute(
   }
   const claudeBlock = claudeQuotaBlock(quota);
   const effortBlock = (() => {
-    try { resolveClaudeCodeEffort(requested.thinking, requested.thinkingReason); return undefined; }
+    try { resolveClaudeCodeEffortDetail(requested.thinking, requested.thinkingReason); return undefined; }
     catch (error) { return error instanceof Error ? error.message : String(error); }
   })();
   // A tier worker launched without a pinned account would run on the parent's default login, which
@@ -1293,6 +1298,8 @@ function dispatchDetails(run: RunRecord, persistence: Persistence): DispatchDeta
       harness: harnessOf(run.harness),
       profile: run.selection?.profile ?? null,
       thinking: run.thinkingLevel,
+      ...(run.harness === "claude-code" ? { effort: { level: run.thinkingLevel,
+        source: effortSourceLabel(run.selection?.effortSource ?? "thinking") } } : {}),
       background: run.background,
       ...(run.selection?.taskClass ? { taskClass: { ...run.selection.taskClass } } : {}),
       ...(run.selection?.routeReason ? { routeReason: run.selection.routeReason } : {}),
@@ -2493,9 +2500,10 @@ export function createUltratermSubagentsExtension(
         // route reaches the admission gate (which names every source) instead of the native registry.
         ...((!reviewFallbackActive && opusReviewDefault || claudeWorkerTier || (requested.harness === undefined && (claudeCodeRouteModel(requested.model) !== undefined || CLAUDE_API_ROUTES.includes(requested.model ?? "")))) ? { harness: "claude-code" as const } : {}),
       };
-      // A Claude Code run takes the dispatch's own effort and medium when it names none; low, max and
-      // an unexplained high/xhigh are refused here, before any approval, checkpoint or worker exists.
-      const claudeEffort = params.harness === "claude-code" ? resolveClaudeCodeEffort(params.thinking, params.thinkingReason) : undefined;
+      // Refuse an invalid or unexplained explicit effort here, before any approval, checkpoint or
+      // worker exists. The model is not resolved until after the quota walk, so its operator-configured
+      // default effort is applied below, where the exact model is known.
+      if (params.harness === "claude-code") resolveClaudeCodeEffortDetail(params.thinking, params.thinkingReason);
       const dshHarness = params.harness === "steak-dsh";
       const dshEffort = dshHarness ? resolveDshEffort(params.thinking, params.thinkingReason) : undefined;
       const current = ensureRuntime(ctx);
@@ -2521,13 +2529,6 @@ export function createUltratermSubagentsExtension(
       const fallThroughReason = fallThroughs.length > 0 ? `automatic fall-through after ${fallThroughCause(fallThroughs)}; ` : "";
       const fallThroughNote = fallThroughs.length > 0
         ? `Fall-through: ${fallThroughSummary(fallThroughs)}. The same tasks were re-run here on the next tier, with no parent re-dispatch.\n` : "";
-      const routeNote = fallThroughNote + reviewFallThroughNote + taskClassNote(taskClassReceipt, waveClasses) + (claudeTier
-        ? `Route note: none of ${tierTried.map(routeStepLabel).join(", ")} could launch (${quotaCauses.join(" | ")}), so this implicit wave runs ${claudeTier.route} at ${claudeEffort} effort (subscription) on the ${tierName} tier: ${claudeTier.reason}. `
-          + `Claude account: ${tierAccount ? `${tierAccount.label} (an eligible account in the router snapshot, the least used)` : "the parent's own Claude login (the router listed no Claude account to pin)"}. `
-          + `${tierName} work needs verification: review it with an expert reviewer wave${reviewRoute ? ` (all-reviewer waves default to model ${reviewRoute})` : ""}.\n`
-        : nativeResolved && quotaCauses.length > 0
-          ? `Route note: ${quotaCauses.join(" | ")}; this implicit wave continues down the default chain on ${nativeResolved.model.provider}/${nativeResolved.model.id}.\n`
-          : "") + reviewFallbackSkipNote;
       // Foreign-harness routing happens before native selection: the claude-code
       // CLI route is explicit and fixed, and the native Pi registry is never
       // consulted for it (it cannot resolve, and must not appear to).
@@ -2574,6 +2575,21 @@ export function createUltratermSubagentsExtension(
       const claudeRoute = foreignHarness ? params.model ?? (claudeTier ? claudeTier.route : opusReviewDefault ? reviewRoute! : defaultClaudeCodeRoute(params.tasks)) : undefined;
       const apiRoute = foreignHarness && isClaudeApiRoute(claudeRoute);
       const claudeModel = apiRoute ? claudeApiModelOf(claudeRoute) : claudeAdmittedModel(claudeRoute);
+      // The exact model is known now: an explicit thinking wins, otherwise the operator's default for
+      // this model applies (with no reason needed), otherwise medium. The same provenance is recorded
+      // on the run and named in the dispatch note and receipt.
+      const claudeEffortResolution: ResolvedClaudeCodeEffort | undefined = foreignHarness
+        ? resolveClaudeCodeEffortDetail(params.thinking, params.thinkingReason, claudeModel) : undefined;
+      const claudeEffort = claudeEffortResolution?.effort;
+      const effortNote = claudeEffortResolution === undefined ? ""
+        : `Effort note: effort ${claudeEffortResolution.effort} (${effortSourceLabel(claudeEffortResolution.source)}).\n`;
+      const routeNote = fallThroughNote + reviewFallThroughNote + taskClassNote(taskClassReceipt, waveClasses) + (claudeTier
+        ? `Route note: none of ${tierTried.map(routeStepLabel).join(", ")} could launch (${quotaCauses.join(" | ")}), so this implicit wave runs ${claudeTier.route} at ${claudeEffort} effort (subscription) on the ${tierName} tier: ${claudeTier.reason}. `
+          + `Claude account: ${tierAccount ? `${tierAccount.label} (an eligible account in the router snapshot, the least used)` : "the parent's own Claude login (the router listed no Claude account to pin)"}. `
+          + `${tierName} work needs verification: review it with an expert reviewer wave${reviewRoute ? ` (all-reviewer waves default to model ${reviewRoute})` : ""}.\n`
+        : nativeResolved && quotaCauses.length > 0
+          ? `Route note: ${quotaCauses.join(" | ")}; this implicit wave continues down the default chain on ${nativeResolved.model.provider}/${nativeResolved.model.id}.\n`
+          : "") + reviewFallbackSkipNote + effortNote;
       // A read-only reviewer never gets a shell on Claude. Refuse a requested shell here, at dispatch, so the parent
       // sees the refusal before any checkpoint or worker exists (the run-time withhold alone is silent to the parent).
       const namedClaude = requested.harness === "claude-code" || claudeCodeRouteModel(requested.model) !== undefined || CLAUDE_API_ROUTES.includes(requested.model ?? "");
@@ -2720,7 +2736,8 @@ export function createUltratermSubagentsExtension(
         ...(opusReviewDefault ? { source: reviewFallbackActive ? "automatic-review-fallback" as const : "automatic-review" as const, automaticReview: true, reviewRequiresImages: requested.requireImages === true,
           ...(reviewPick?.account !== undefined ? { accountAutomatic: true as const } : {}) } : {}),
         ...(taskClassReceipt ? { taskClass: taskClassReceipt } : {}),
-        ...(routeReason !== undefined ? { routeReason } : {}) };
+        ...(routeReason !== undefined ? { routeReason } : {}),
+        ...(claudeEffortResolution ? { effortSource: claudeEffortResolution.source } : {}) };
       if (reviewFallbackActive) for (const task of run.tasks) recordReviewFallback(task, forcedReviewFallback
         ? reviewFallThrough!.reviewReason ?? "quota" : claudeUnavailableReason);
       if (reviewFallbackRuntime) current.workerRuntimes.set(`${run.id}:review-fallback`, Object.freeze(reviewFallbackRuntime));
@@ -2910,7 +2927,7 @@ export function createUltratermSubagentsExtension(
         "The operator's routing.json decides the default worker chain, the expert reviewer and which routes need a bounded expert verification (verificationGates); a worker on a gated route is told which reviewer route to request through the parent. Read-only and report-only work need no automatic gate.",
         "taskClass (per task) names an operator-configured class from routing.json taskClasses so an implicit text worker wave runs the route the operator measured best for that class; omit it when unsure. Give every task of a wave the same class (or none), dispatch different classes as separate waves, and when the dispatch note says the class requires a test gate, run that gate before accepting the work.",
         "model or profile picks an explicit authenticated route (mutually exclusive, overrides roles). A model family the operator pinned to one subscription route (subscriptionRouteChecks modelPattern) runs only there. Routine text work stays on the configured automatic chain; do not pick the configured expert reviewer for routine work. An explicit model or profile on a wave with any worker or scout task needs routeReason (why the configured chain is not right for this wave) or the dispatch is refused; reviewer-only waves need none. requireImages=true for visual critics or render inspection.",
-        "harness claude-code (or an exact claude-code/<model> route) runs the official CLI at medium effort unless thinking asks for high/xhigh with a thinkingReason. When no step of the configured chain can launch, an implicit routine wave runs on the configured claudeFallbackTier with no re-dispatch; verify that work with an expert review. Explicit routes never fall back. Read the Dispatch reference in the ultraterm-subagent-protocol skill before using a claude-code-api route, image review, relay steering or account pinning.",
+        "harness claude-code (or an exact claude-code/<model> route) runs the official CLI at the operator's claudeCodeDefaults.effort for that model, else medium, unless thinking asks for high/xhigh with a thinkingReason. When no step of the configured chain can launch, an implicit routine wave runs on the configured claudeFallbackTier with no re-dispatch; verify that work with an expert review. Explicit routes never fall back. Read the Dispatch reference in the ultraterm-subagent-protocol skill before using a claude-code-api route, image review, relay steering or account pinning.",
         "Background only when the parent can integrate while children run, then one bounded ultraterm_hub wait. Never start a background run merely to wait immediately. `Started` means no launched worker died in its first ~25 s; a worker that fails before its first model output makes the call throw with that cause and cancels its siblings.",
         "For read-only tasks omit ownedPaths and state the read scope in task text, or name the exact folders with readPaths when the evidence sits outside the run cwd (private agent homes only, never a project checkout); mayEdit requires ownedPaths and cannot be combined with readPaths. allowBash bypasses ownedPaths — grant only when operator-level shell access is necessary.",
       ],
@@ -3143,7 +3160,8 @@ export function createUltratermSubagentsExtension(
             && routingConfigOrEmpty().workerProfiles?.some((profile) => profile.id === recordedProfile && profile.ensure !== undefined && profile.model === snapshot.model) === true
             ? recordedProfile : undefined;
           run.selection = { ...resumeSelection, ...(automaticSource ? { source: automaticSource } : {}), ...(snapshot.selection?.independence ? { independence: snapshot.selection.independence } : {}),
-            ...(ensureProfile ? { profile: ensureProfile } : {}), ...(snapshot.selection?.taskClass ? { taskClass: { ...snapshot.selection.taskClass } } : {}) };
+            ...(ensureProfile ? { profile: ensureProfile } : {}), ...(snapshot.selection?.taskClass ? { taskClass: { ...snapshot.selection.taskClass } } : {}),
+            ...(snapshot.selection?.effortSource ? { effortSource: snapshot.selection.effortSource } : {}) };
           run.resumedFrom = runId;
           if (run.maxTurns > snapshot.maxTurns || run.timeoutMs > snapshot.timeoutMs) throw new Error("Resume refused: a resume never raises the original turn or time budget");
           run.ownerSessionId = current.ownerSessionId;

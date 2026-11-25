@@ -186,7 +186,16 @@ export interface InteractiveChainModelConfig {
   chain?: "textWorkerChain" | "multimodalWorkerChain";
 }
 export interface ClaudeFallbackTierConfig { ordinary: string; substantial: string }
-export interface ClaudeCodeDefaultsConfig { worker?: string; reviewer?: string }
+/** Reasoning efforts the Claude Code CLI accepts. Shared with the adapter so config validation and
+ * dispatch cannot drift apart; neither list names a model or selects one by default. */
+export const CLAUDE_CODE_EFFORTS = ["medium", "high", "xhigh"] as const;
+export type ClaudeCodeEffort = (typeof CLAUDE_CODE_EFFORTS)[number];
+export interface ClaudeCodeDefaultsConfig {
+  worker?: string;
+  reviewer?: string;
+  /** Exact Claude model id -> effort, chosen by the operator. No shipped entry selects a model. */
+  effort?: Readonly<Record<string, ClaudeCodeEffort>>;
+}
 export interface ImplicitReviewConfig { route: string; fallback?: string }
 export interface VerificationGateConfig { match: RegExp; reviewer: string; fallback?: string }
 
@@ -634,10 +643,23 @@ export function parseRoutingConfig(raw: unknown): RoutingConfig {
   }
   if (raw.claudeCodeDefaults !== undefined) {
     const entry = raw.claudeCodeDefaults;
-    if (!object(entry)) return fail("claudeCodeDefaults", "expected { worker, reviewer }");
+    if (!object(entry)) return fail("claudeCodeDefaults", "expected { worker, reviewer, effort }");
+    let effort: Readonly<Record<string, ClaudeCodeEffort>> | undefined;
+    if (entry.effort !== undefined) {
+      if (!object(entry.effort)) return fail("claudeCodeDefaults.effort", 'expected { "<exact Claude model id>": "medium" | "high" | "xhigh" }');
+      effort = Object.fromEntries(Object.entries(entry.effort).map(([model, value]) => {
+        const key = `claudeCodeDefaults.effort.${model}`;
+        text(model, key);
+        if (typeof value !== "string" || !(CLAUDE_CODE_EFFORTS as readonly string[]).includes(value)) {
+          return fail(key, `expected ${CLAUDE_CODE_EFFORTS.join(", ")}`);
+        }
+        return [model, value as ClaudeCodeEffort];
+      }));
+    }
     config.claudeCodeDefaults = {
       ...(entry.worker !== undefined ? { worker: text(entry.worker, "claudeCodeDefaults.worker") } : {}),
       ...(entry.reviewer !== undefined ? { reviewer: text(entry.reviewer, "claudeCodeDefaults.reviewer") } : {}),
+      ...(effort !== undefined ? { effort } : {}),
     };
   }
   if (raw.implicitReview !== undefined) {

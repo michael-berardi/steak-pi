@@ -1,4 +1,5 @@
 import type { ClaudeAccountId } from "./claude-account.ts";
+import type { ClaudeCodeEffortSource } from "./claude-code-models.ts";
 import type { MachineCapacitySnapshot } from "./machine-slots.ts";
 
 /** Reviewer launch waits are bounded independently of the execution budget. */
@@ -237,6 +238,8 @@ export interface ModelSelection {
   routeReason?: string;
   /** Foreign runners keep their harness identity instead of a native route. */
   harness?: HarnessId;
+  /** On Claude Code runs, where the recorded effort came from; absent on Pi/DSH runs. */
+  effortSource?: ClaudeCodeEffortSource;
   images: boolean;
   tools: boolean;
 }

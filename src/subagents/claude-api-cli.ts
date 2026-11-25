@@ -17,7 +17,7 @@ import { CheckpointStore } from "./checkpoints.ts";
 import { RelayBroker, type RelayPeer } from "./relay.ts";
 import { normalizeDispatch } from "./policy.ts";
 import { createClaudeWorkerRunner, type ClaudeSpawn } from "./claude-worker.ts";
-import { CLAUDE_CODE_EFFORTS, isClaudeCodeEffort, resolveClaudeCodeEffort, type ClaudeCodeEffort } from "./claude-code-models.ts";
+import { CLAUDE_CODE_EFFORTS, isClaudeCodeEffort, resolveClaudeCodeEffortDetail, type ClaudeCodeEffort, type ClaudeCodeEffortSource } from "./claude-code-models.ts";
 import {
   admitClaudeApiRoute, claudeApiConcurrency, claudeApiModelOf, CLAUDE_API_ROUTES, CLAUDE_API_SONNET_ROUTE, formatClaudeApiReceipt,
   resolveClaudeApiSelection, stampClaudeApiRun, type ClaudeApiAdmission, type ClaudeApiConfigOptions,
@@ -39,7 +39,7 @@ export interface ClaudeApiWaveSpec {
   concurrency?: number;
   timeoutMs?: number;
   maxTurns?: number;
-  /** Effort of the wave: medium unless it asks for high/xhigh with a thinkingReason. */
+  /** Effort of the wave: the operator's default for the exact route, else medium, unless it asks for high/xhigh with a thinkingReason. */
   thinking?: ClaudeCodeEffort;
   thinkingReason?: string;
 }
@@ -59,7 +59,7 @@ export function parseWaveSpec(text: string): ClaudeApiWaveSpec {
   const route = spec.route === undefined ? CLAUDE_API_SONNET_ROUTE : spec.route;
   if (typeof route !== "string" || !CLAUDE_API_ROUTES.includes(route)) throw new Error(`wave spec route must be one of ${CLAUDE_API_ROUTES.join(", ")}`);
   if (spec.thinkingReason !== undefined && typeof spec.thinkingReason !== "string") throw new Error("wave spec thinkingReason must be a string");
-  resolveClaudeCodeEffort(spec.thinking, spec.thinkingReason as string | undefined);
+  resolveClaudeCodeEffortDetail(spec.thinking, spec.thinkingReason as string | undefined, claudeApiModelOf(route));
   if (!Array.isArray(spec.tasks)) throw new Error("wave spec needs a tasks array");
   for (const [index, task] of spec.tasks.entries()) {
     if (task === null || typeof task !== "object" || Array.isArray(task)) throw new Error(`tasks[${index}] must be an object`);
@@ -100,10 +100,15 @@ export interface ClaudeApiWaveOutcome {
   text: string;
 }
 
+const effortSourceLabel = (source: ClaudeCodeEffortSource): string =>
+  source === "claudeCodeDefaults.effort" ? "claudeCodeDefaults.effort" : source === "thinking" ? "thinking" : "default medium";
+
 /** Sanitized, JSON-safe digest: ids, states, usage and receipts; no task text, no credentials. */
 export function summarizeRun(run: RunRecord) {
   return {
     runId: run.id, state: run.state, route: run.model, harness: run.harness ?? "pi", thinking: run.thinkingLevel,
+    ...(run.harness === "claude-code" ? { effort: { level: run.thinkingLevel,
+      source: effortSourceLabel(run.selection?.effortSource ?? "thinking") } } : {}),
     totalTokens: run.usage.totalTokens, totalCostUsd: Math.round(run.usage.cost.total * 1e6) / 1e6,
     ...(run.resumedFrom ? { resumedFrom: run.resumedFrom } : {}),
     tasks: run.tasks.map((task) => ({
@@ -186,7 +191,8 @@ export async function runClaudeApiWave(spec: ClaudeApiWaveSpec, deps: ClaudeApiW
   const admission = admitClaudeApiRoute({ route: spec.route, taskCount: spec.tasks.length, roles: spec.tasks.map((task) => task.role ?? "worker") }, deps.api);
   const model = claudeApiModelOf(spec.route)!;
   const now = deps.now?.() ?? Date.now();
-  const effort = resolveClaudeCodeEffort(spec.thinking, spec.thinkingReason);
+  const effortResolution = resolveClaudeCodeEffortDetail(spec.thinking, spec.thinkingReason, model);
+  const effort = effortResolution.effort;
   const run = normalizeDispatch({
     goal: spec.goal, harness: "claude-code", model: spec.route, thinking: effort, background: false, tasks: spec.tasks,
     ...(spec.thinkingReason === undefined ? {} : { thinkingReason: spec.thinkingReason }),
@@ -195,7 +201,7 @@ export async function runClaudeApiWave(spec: ClaudeApiWaveSpec, deps: ClaudeApiW
     ...(spec.timeoutMs === undefined ? {} : { timeoutMs: spec.timeoutMs }), ...(spec.maxTurns === undefined ? {} : { maxTurns: spec.maxTurns }),
   }, spec.cwd, spec.route, effort, now, deps.idFactory);
   stampClaudeApiRun(run, admission);
-  run.selection = resolveClaudeApiSelection(model);
+  run.selection = { ...resolveClaudeApiSelection(model), effortSource: effortResolution.source };
   const store = open(deps);
   let coordinator: SubagentCoordinator | undefined;
   try {
