@@ -31,6 +31,13 @@ const forbidden = [
   /\bpi\.dev\/api\/report-install\b/i,
 ];
 const violations = (text: string): string[] => forbidden.filter((pattern) => pattern.test(text)).map(String);
+/** Non-blank lines of a Markdown section, excluding its heading and the next section. */
+function sectionLines(text: string, heading: string): string[] {
+  const lines = text.split("\n");
+  const rest = lines.slice(lines.indexOf(heading) + 1);
+  const end = rest.findIndex((line) => line.startsWith("## "));
+  return rest.slice(0, end < 0 ? rest.length : end).map((line) => line.trim()).filter(Boolean);
+}
 
 function shippedFiles(dir: string): string[] {
   return readdirSync(resolve(root, dir), { withFileTypes: true }).flatMap((entry) => {
@@ -108,15 +115,23 @@ describe("privacy guard", () => {
     }
   });
 
-  it("documents privacy in the README with the verified local paths", () => {
-    const readme = read("README.md");
-    expect(readme).toContain("## Privacy");
-    for (const path of [".steak-pi/snaps/", "~/.cache/steak-pi/verification/", "~/.cache/steak-pi/update-check.json", "~/.pi/agent/local/"]) {
-      expect(readme).toContain(path);
-    }
+  it("keeps README Privacy short and moves the verified fine print into PRIVACY.md", () => {
+    const readme = read("README.md"), privacy = read("PRIVACY.md");
+    const lines = sectionLines(readme, "## Privacy");
+    expect(lines.length).toBeGreaterThanOrEqual(3);
+    expect(lines.length).toBeLessThanOrEqual(6);
+    for (const line of lines) expect(line.length, line).toBeLessThan(160);
+    expect(readme).toContain("[PRIVACY.md](PRIVACY.md)");
     expect(readme).toContain("STEAK_PI_NO_UPDATE_CHECK=1");
-    expect(readme).toContain("PI_TELEMETRY=0");
-    expect(readme).toContain("PI_OFFLINE=1");
-    expect(readme).toContain("HF_TOKEN");
+    expect(readme.toLowerCase()).not.toContain("no update check");
+    expect(privacy).toContain("at most once per six hours");
+    expect(privacy).toContain("STEAK_PI_NO_UPDATE_CHECK=1");
+    for (const path of ["~/.pi/agent/", "~/.pi/agent/local/", ".steak-pi/snaps/", "~/.cache/steak-pi/verification/", "~/.cache/steak-pi/update-check.json", "~/.ultraterm/ui-streams/"]) {
+      expect(privacy).toContain(path);
+    }
+    for (const detail of ["PI_TELEMETRY=0", "PI_OFFLINE=1", "HF_TOKEN", "24 hours", "14 days", "7 days", "8 MiB", "| Delete it |"]) {
+      expect(privacy).toContain(detail);
+    }
+    expect(JSON.parse(read("package.json")).files).toContain("PRIVACY.md");
   });
 });

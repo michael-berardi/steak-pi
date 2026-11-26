@@ -1,8 +1,8 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { checkForUpdate, isNewer, updateCheckDisabled } from "../src/update-check.ts";
+import { checkForUpdate, isNewer, UPDATE_TEMP_TTL_MS, updateCheckDisabled } from "../src/update-check.ts";
 import { noticeText } from "../extensions/update-notice.ts";
 
 const cachePath = () => join(mkdtempSync(join(tmpdir(), "steak-update-")), "update-check.json");
@@ -57,9 +57,29 @@ describe("update check", () => {
     expect(state.available).toBe(false);
   });
 
+  it("sweeps crash-left update temps without touching live or unrelated files", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "steak-update-temps-"));
+    try {
+      const path = join(dir, "update-check.json");
+      const now = 2_000_000;
+      const old = new Date(now - 2 * UPDATE_TEMP_TTL_MS);
+      const stale = `${path}.424242.tmp`, fresh = `${path}.999999.tmp`, unrelated = join(dir, "other.tmp");
+      for (const file of [stale, fresh, unrelated]) writeFileSync(file, "{}", { mode: 0o600 });
+      for (const file of [stale, unrelated]) utimesSync(file, old, old);
+      await checkForUpdate("0.16.0", { now, cachePath: path, fetchImpl: reply("v0.16.0") });
+      expect(existsSync(stale)).toBe(false);
+      expect(existsSync(fresh)).toBe(true);
+      expect(existsSync(unrelated)).toBe(true);
+      expect(existsSync(path)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("can be turned off", () => {
     expect(updateCheckDisabled({ STEAK_PI_NO_UPDATE_CHECK: "1" })).toBe(true);
     expect(updateCheckDisabled({ CI: "true" })).toBe(true);
+    expect(updateCheckDisabled({ PI_OFFLINE: "1" })).toBe(false); // Pi's offline mode is not the background-check opt-out
     expect(updateCheckDisabled({})).toBe(false);
   });
 });

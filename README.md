@@ -40,7 +40,7 @@ If the installer prints a PATH instruction, apply it before continuing.
 Already have Pi? Install the current package directly:
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.44.0
+pi install git:github.com/michael-berardi/steak-pi@v0.45.0
 ```
 
 Requires Node.js 22.19+ and Pi 0.87+; development checks use Pi 1.0.4.
@@ -113,42 +113,10 @@ their loaded runtime. `STEAK_PI_NO_UPDATE_CHECK=1` disables background update ch
 
 ## Privacy
 
-Steak Pi sends nothing on its own except one public HTTPS GET to GitHub's
-"latest release" endpoint from interactive sessions, at most every six hours.
-It uses the fixed user-agent `steak-pi-update-check`; its result and check time are
-cached locally. It sends no prompts, paths, machine IDs or unique IDs.
-Set `STEAK_PI_NO_UPDATE_CHECK=1` to disable it. `steak-pi update` and
-`steak-pi update --check` contact GitHub only when you run them; updates fetch a
-pinned git tag, and the release installers verify SHA-256 checksums. Install and
-update commands disable npm and Homebrew analytics.
-
-There is no telemetry, analytics, crash reporter or install ID in Steak Pi.
-`steak-pi run` and the installers set `PI_TELEMETRY=0` and `PI_OFFLINE=1` for Pi:
-the first turns off Pi's install beacon and provider attribution headers, the
-second stops Pi's automatic version and package-update checks, `fd`/`rg` downloads,
-model-catalog refresh from pi.dev and automatic install of missing packages at
-startup. `pi install` and `steak-pi update --models` still work when you run them. Set either variable yourself to restore that behavior. If you start
-`pi` directly, set both to get the same privacy defaults.
-
-Your model provider receives the prompts, file contents and tool results you
-send through Pi. `steak-pi local add` and `steak-pi local adapter` query Hugging
-Face for a matching model or adapter (a local GGUF's own base-model metadata is
-used for that lookup); that adapter is downloaded only after you trust its
-publisher, while a model or adapter you name explicitly is fetched when you ask.
-`HF_TOKEN` is sent only to huggingface.co when you set it. Your
-configured model-catalog refresh and temporary free-route checks contact their
-provider when you use them; with `PI_OFFLINE=0`, Pi's own startup checks also
-run.
-
-Everything else stays on disk: Pi's session transcripts under `~/.pi/agent/` (or
-`PI_CODING_AGENT_DIR`), local model profiles, the server log (`server.log`, rotated to `server.log.1`
-past 8 MiB) and downloaded models under `~/.pi/agent/local/`, compaction snapshots in each project's
-`.steak-pi/snaps/` (directories 0700, files 0600, at most 10 files and 14 days
-old), verification output in `~/.cache/steak-pi/verification/` (0600, at most 32
-runs and 7 days old), and the update cache at
-`~/.cache/steak-pi/update-check.json` (0600, version and timestamp only). Steak Pi
-does not log tokens or credentials. Delete those files or folders to remove local
-data; `steak-pi remove` only unregisters the Pi package and leaves them in place.
+Steak Pi has no telemetry, analytics, crash reporter or install ID.
+Anonymous release check: at most one GitHub GET per 6h in interactive sessions; opt out with `STEAK_PI_NO_UPDATE_CHECK=1`.
+Your provider sees the prompts and files you send; other requests happen only when you run a command.
+Local sessions, models, logs and snapshots stay on disk; see [PRIVACY.md](PRIVACY.md) for retention and deletion.
 
 ## Reference
 

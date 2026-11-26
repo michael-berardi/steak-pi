@@ -1,12 +1,14 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 /** Where Steak Pi publishes releases. The check reads only GitHub's public "latest release" record. */
 export const RELEASES_API = "https://api.github.com/repos/michael-berardi/steak-pi/releases/latest";
 /** At most one network check per interval, across every Pi session on the machine (shared cache file). */
 export const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 export const CHECK_TIMEOUT_MS = 4_000;
+/** A process killed between writing its temp and renaming it leaves one behind; sweep those after a day. */
+export const UPDATE_TEMP_TTL_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_CACHE_PATH = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "steak-pi", "update-check.json");
 
 export interface UpdateCache {
@@ -46,8 +48,29 @@ export function readCache(path = DEFAULT_CACHE_PATH): UpdateCache | undefined {
   } catch { return undefined; }
 }
 
-function writeCache(cache: UpdateCache, path: string): void {
+/** Remove only this cache's own, old, private temp files; live writers and unrelated files are untouched. */
+export function sweepStaleUpdateTemps(path: string, now = Date.now(), ttlMs = UPDATE_TEMP_TTL_MS): string[] {
+  const removed: string[] = [];
+  const dir = dirname(path);
+  const prefix = `${basename(path)}.`;
+  const uid = process.getuid?.();
   try {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const suffix = entry.name.startsWith(prefix) ? entry.name.slice(prefix.length) : "";
+      if (!/^\d+\.tmp$/.test(suffix)) continue;
+      const file = join(dir, entry.name);
+      const stat = lstatSync(file);
+      if (!stat.isFile() || (uid !== undefined && stat.uid !== uid) || (stat.mode & 0o077) || now - stat.mtimeMs < ttlMs) continue;
+      try { unlinkSync(file); removed.push(entry.name); } catch { /* another writer already cleaned it */ }
+    }
+  } catch { /* Best-effort hygiene, like the cache write itself. */ }
+  return removed;
+}
+
+function writeCache(cache: UpdateCache, path: string, now = Date.now()): void {
+  try {
+    sweepStaleUpdateTemps(path, now);
     mkdirSync(dirname(path), { recursive: true });
     const tmp = `${path}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(cache), { mode: 0o600 });
@@ -85,7 +108,7 @@ export async function checkForUpdate(current: string, options: {
       const previous = readCache(path);
       cache = { checkedAt: now, latest: previous?.latest, error: error instanceof Error ? error.message : String(error) };
     }
-    writeCache(cache, path);
+    writeCache(cache, path, now);
   }
   return { current, latest: cache.latest, available: isNewer(cache.latest, current), checkedAt: cache.checkedAt, error: cache.error };
 }

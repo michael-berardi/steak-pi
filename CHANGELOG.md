@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.45.0 (2026-11-26)
+
+- The README `## Privacy` section is now four plain lines with a link to a new `PRIVACY.md`, which carries every network path and a table of local writes with contents, lifetime, automatic retention and deletion method. The README guard in `test/privacy.test.ts` checks the line count and the moved details.
+- The anonymous update-check cache now sweeps crash-left `update-check.json.<pid>.tmp` files older than 24 hours before its next write, so the cache cannot grow without bound. Focused coverage in `test/update-check.test.ts`.
+
 ## 0.44.0 (2026-11-26)
 
 Privacy hardening: no telemetry is enabled by Steak Pi.
