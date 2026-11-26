@@ -141,8 +141,8 @@ provider when you use them; with `PI_OFFLINE=0`, Pi's own startup checks also
 run.
 
 Everything else stays on disk: Pi's session transcripts under `~/.pi/agent/` (or
-`PI_CODING_AGENT_DIR`), local model profiles, server logs and downloaded models
-under `~/.pi/agent/local/`, compaction snapshots in each project's
+`PI_CODING_AGENT_DIR`), local model profiles, the server log (`server.log`, rotated to `server.log.1`
+past 8 MiB) and downloaded models under `~/.pi/agent/local/`, compaction snapshots in each project's
 `.steak-pi/snaps/` (directories 0700, files 0600, at most 10 files and 14 days
 old), verification output in `~/.cache/steak-pi/verification/` (0600, at most 32
 runs and 7 days old), and the update cache at

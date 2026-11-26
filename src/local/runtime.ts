@@ -12,7 +12,7 @@
  * Everything that touches the machine goes through `Deps`, so the rules are testable with a fake clock and server.
  */
 import { execFileSync, spawn } from "node:child_process";
-import { accessSync, closeSync, constants, existsSync, openSync, readFileSync, rmSync } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, openSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { createServer } from "node:net";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -72,6 +72,23 @@ const refuse = (code: string, detail: string): never => { throw new Refused(code
 const leasePath = (deps: Deps): string => join(deps.dir, "leases.json");
 const serverPath = (deps: Deps): string => join(deps.dir, "server.json");
 export const logPath = (deps: Deps): string => join(deps.dir, "server.log");
+
+/** server.log is rotated to server.log.1 once it passes this size, so the local server log stays bounded (two files). */
+export const SERVER_LOG_MAX_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Keep the server log bounded: past the cap it becomes `<log>.1` (replacing the previous one) before a new supervisor
+ * starts. A rename is safe while an older supervisor or server still appends: its descriptor follows the renamed file.
+ */
+export function rotateServerLog(log: string, maxBytes = SERVER_LOG_MAX_BYTES): boolean {
+  try {
+    if (statSync(log).size <= maxBytes) return false;
+    renameSync(log, `${log}.1`);
+    return true;
+  } catch {
+    return false; // missing log or a failed rename: the supervisor still starts and appends as before
+  }
+}
 
 function readLeases(deps: Deps): LeaseFile {
   const file = readJson<LeaseFile>(leasePath(deps));
@@ -589,6 +606,7 @@ export function systemDeps(dir: string): Deps {
       // launchd/init, not to the Pi session that asked for it. Closing that session (UltraTerm stops a slot's whole process
       // tree) then leaves the server to its idle grace instead of stopping it on the spot (2026-11-02).
       const log = join(dir, "server.log");
+      rotateServerLog(log);
       const main = fileURLToPath(new URL("./main.ts", import.meta.url));
       let node: string;
       try { node = stableNodePath(); } catch (error) { throw new LocalError("supervisor-spawn", error instanceof Error ? error.message : String(error)); }

@@ -6,6 +6,7 @@ Privacy hardening: no telemetry is enabled by Steak Pi.
 
 - `steak-pi run` and both installers now default `PI_TELEMETRY=0` and `PI_OFFLINE=1`, disabling Pi's install beacon, provider attribution headers and automatic startup version/tool/catalog network access unless the operator explicitly sets them; npm/Homebrew analytics are disabled for toolchains Steak Pi invokes (`DO_NOT_TRACK=1`, `HOMEBREW_NO_ANALYTICS=1`). Model calls to configured providers still work.
 - Pre-compaction snapshots in `<project>/.steak-pi/snaps/` are now created with private 0700 directories and 0600 files, including when the paths already existed.
+- The local model server log `~/.pi/agent/local/server.log` is rotated to `server.log.1` past 8 MiB when a server starts, so it stays bounded.
 - Added `## Privacy` to the README and a guard test against reintroducing analytics/telemetry packages or endpoints in shipped source.
 
 ## 0.43.0 (2026-11-25)

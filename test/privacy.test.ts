@@ -8,6 +8,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { snapFileName, writeSnap, writeSnapEntries } from "../extensions/ultracompress/src/snapshot.ts";
+import { rotateServerLog } from "../src/local/runtime.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const read = (path: string) => readFileSync(resolve(root, path), "utf8");
@@ -88,6 +89,22 @@ describe("privacy guard", () => {
       expect(statSync(dir).mode & 0o777).toBe(0o700);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("rotates the local server log past its cap so it stays bounded", () => {
+    const dir = mkdtempSync(join(tmpdir(), "steak-privacy-log-"));
+    try {
+      const log = join(dir, "server.log");
+      writeFileSync(log, "x".repeat(10));
+      expect(rotateServerLog(log, 64)).toBe(false);
+      writeFileSync(join(dir, "server.log.1"), "older");
+      writeFileSync(log, "y".repeat(100));
+      expect(rotateServerLog(log, 64)).toBe(true);
+      expect(readFileSync(join(dir, "server.log.1"), "utf8")).toBe("y".repeat(100));
+      expect(rotateServerLog(log, 64)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 
