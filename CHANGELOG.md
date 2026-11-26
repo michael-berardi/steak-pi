@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.45.0 (2026-11-26)
+
+- **`verificationGates` entries take an optional `mode`: `"fix"` or `"review"`.** In fix mode, a writable leaf on a gated route is told the parent must run a review-and-fix pass on the gate's reviewer route: a writable leaf (mayEdit, the same ownedPaths) that checks the work against the task, fixes or reworks every defect itself, reruns the checks and reports what it changed. A findings-only review does not count, and the named fallback is requested as a review-and-fix pass too. The dispatch note says the same. Without `mode`, a route listed in `freeRoutes` defaults to `fix` and every other route to `review` (one bounded verification, as before). `steak-pi routing check` rejects any other value and names the key. No route names ship in code; the operator's routing.json supplies them.
+
 ## 0.44.0 (2026-11-26)
 
 - **Model discovery no longer turns telemetry or non-essential traffic back on.** The Claude Code model-catalog probe used to delete `DISABLE_TELEMETRY` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` so the CLI would fetch a live catalog: a startup network call with telemetry re-enabled, against the privacy rule the request environment already follows. Discovery now runs in the same quiet environment as every request and accepts Claude Code's built-in catalog, which is what the CLI answers with while both switches are on (the same trade-off `steak-dsh` and `codex-on-claude-code` already make). The newest models keep reaching `/model` through the shipped rows in `model-catalog.ts`, with their window and output budget. Regression tests in `test/claude-code/discovery-environment.test.ts` fail if either switch is dropped from the discovery environment or if the probe would make a network catalog fetch, and the wording that described a live list now says built-in catalog.
