@@ -150,9 +150,13 @@ JavaScript sources, case-insensitive unless noted. Unknown keys are ignored
   // Claude quota/auth unavailability before output (read-only reviewers only).
   "implicitReview": { "route": "claude-code/<large-model>", "fallback": "provider-x/model-name" },
 
-  // Routes whose writable work needs a bounded expert verification through the parent.
+  // Routes whose writable work needs an expert gate through the parent. `mode` is optional: "fix" asks the parent for a
+  // writable review-and-fix pass on the reviewer route (mayEdit, same ownedPaths; it fixes or reworks every defect itself,
+  // findings-only does not count), "review" for one bounded read-only verification. Absent: "fix" when the dispatched
+  // route is listed in `freeRoutes`, otherwise "review".
   "verificationGates": [
-    { "match": "^provider-a/", "reviewer": "claude-code/<large-model>", "fallback": "provider-x/model-name" }
+    { "match": "^provider-a/", "reviewer": "claude-code/<large-model>", "fallback": "provider-x/model-name" },
+    { "match": "^provider-c/", "reviewer": "claude-code/<large-model>", "mode": "fix" }
   ],
 
   // Routes the operator declares free of plan quota. This allowlist IS the gate: a route is treated as free only when

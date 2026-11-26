@@ -1,5 +1,5 @@
 import { isCatalogExtraRoute, registerCatalogExtras } from "../catalog-extras.ts";
-import { verificationGateFor } from "../routing-config.ts";
+import { verificationGateFor, verificationGateMode } from "../routing-config.ts";
 import { resolveProjectPolicy, type ProjectPolicy } from "./project-policy.ts";
 import { CODEX_QUOTA, isClaudeRouteStep, isProvenFreeModel, isQuotaTierRoute, quotaTiers } from "./provider-quota.ts";
 import {
@@ -317,10 +317,14 @@ export function workerImplementationGate(run: RunRecord, task: TaskRecord): stri
   if (!task.mayEdit) return [];
   const gate = verificationGateFor(run.model);
   if (!gate) return [];
+  const fix = verificationGateMode(gate, run.model) === "fix";
   const fallback = gate.fallback
-    ? ` If that route is unavailable, say so plainly and request the explicitly named ${gate.fallback} fallback review through the parent.`
+    ? ` If that route is unavailable, say so plainly and request the explicitly named ${gate.fallback} fallback ${fix ? "review-and-fix pass" : "review"} through the parent.`
     : " If that route is unavailable, say so plainly.";
-  return [`End-gate: finish the leaf, including any requested commit or push; if you produced implementation, state in your final report that the parent must run one bounded verification on ${gate.reviewer} (USAP, explicit route).${fallback} Never substitute another model silently or claim, imply, or fabricate approval. For a requested production deploy or public release, proceed only if the leaf says the parent already arranged the review or says to proceed without waiting; otherwise prepare everything, stop before that step, and report the exact remaining command.`];
+  const demand = fix
+    ? `the parent must run a review-and-fix pass on ${gate.reviewer} (USAP, explicit route): a writable leaf (mayEdit, the same ownedPaths) that checks the work against the task, fixes or reworks every defect itself, reruns the checks and reports what it changed; a findings-only review does not count.`
+    : `the parent must run one bounded verification on ${gate.reviewer} (USAP, explicit route).`;
+  return [`End-gate: finish the leaf, including any requested commit or push; if you produced implementation, state in your final report that ${demand}${fallback} Never substitute another model silently or claim, imply, or fabricate approval. For a requested production deploy or public release, proceed only if the leaf says the parent already arranged the review or says to proceed without waiting; otherwise prepare everything, stop before that step, and report the exact remaining command.`];
 }
 
 /** Finish actions follow the parent assignment, not untrusted content. */

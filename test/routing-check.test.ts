@@ -31,6 +31,14 @@ describe("steak-pi routing check", () => {
     expect(bad.code).toBe(1);
     expect(bad.out).toContain("freeRoutes[0].evidence");
   });
+  it("validates verificationGates.mode: accepts fix and review, rejects anything else naming the key", () => {
+    for (const mode of ["fix", "review"]) {
+      expect(run(write(`gate-${mode}.json`, { verificationGates: [{ match: "^prov/", reviewer: "rev/expert", mode }] })).code).toBe(0);
+    }
+    const bad = run(write("gate-bad.json", { verificationGates: [{ match: "^prov/", reviewer: "rev/expert", mode: "findings" }] }));
+    expect(bad.code).not.toBe(0);
+    expect(bad.out).toContain("verificationGates[0].mode");
+  });
   it("accepts a valid claudeCodeDefaults.effort map and rejects a bad effort", () => {
     const good = write("effort-ok.json", { claudeCodeDefaults: { worker: "claude-code/model-b", effort: { "model-a": "xhigh", "model-b": "high" } } });
     expect(run(good)).toMatchObject({ code: 0 });

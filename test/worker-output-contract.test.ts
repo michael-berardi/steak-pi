@@ -8,6 +8,8 @@ import { buildClaudeWorkerPrompt, classifyClaudeWorkerState } from "../src/subag
 import { Coordinator, finalWorkerReport } from "../src/subagents/coordinator.ts";
 import { Scheduler } from "../src/subagents/scheduler.ts";
 import { RelayBroker } from "../src/subagents/relay.ts";
+import { setRoutingConfigOverride } from "../src/routing-config.ts";
+import { routingFixture as fixtureRouting } from "./helpers/routing-fixture.ts";
 import { USAP_VERSION, emptyUsage, type RunRecord, type TaskRecord } from "../src/subagents/types.ts";
 
 function leaf(overrides: Partial<TaskRecord> = {}): TaskRecord {
@@ -101,6 +103,25 @@ describe("synthetic: worker output contract", () => {
           }
         },
       );
+      it("synthetic: a free-route gate demands a review-and-fix pass; mode review keeps a bounded verification", () => {
+        const task = leaf({ mayEdit: true, ownedPaths: [join(process.cwd(), "synthetic-owned.txt")] });
+        const gates = [{ match: "^prov-free/", reviewer: "rev/expert", fallback: "rev/backup" }];
+        try {
+          setRoutingConfigOverride({ ...fixtureRouting(), freeRoutes: [{ route: "prov-free/m1", source: "s", evidence: "e" }], verificationGates: gates });
+          const fix = build(run(task, "prov-free/m1"), task);
+          expect(fix).toContain("the parent must run a review-and-fix pass on rev/expert (USAP, explicit route): a writable leaf (mayEdit, the same ownedPaths) that checks the work against the task, fixes or reworks every defect itself, reruns the checks and reports what it changed; a findings-only review does not count.");
+          expect(fix).toContain("request the explicitly named rev/backup fallback review-and-fix pass through the parent");
+          // An unlisted route on the same gate stays a bounded verification.
+          const plain = build(run(task, "prov-free/m2"), task);
+          expect(plain).toContain("parent must run one bounded verification on rev/expert");
+          expect(plain).not.toContain("review-and-fix");
+          // Explicit modes win over the freeRoutes default.
+          setRoutingConfigOverride({ ...fixtureRouting(), freeRoutes: [{ route: "prov-free/m1", source: "s", evidence: "e" }], verificationGates: [{ ...gates[0], mode: "review" }] });
+          expect(build(run(task, "prov-free/m1"), task)).toContain("parent must run one bounded verification on rev/expert");
+          setRoutingConfigOverride({ ...fixtureRouting(), verificationGates: [{ ...gates[0], mode: "fix" }] });
+          expect(build(run(task, "prov-free/m2"), task)).toContain("review-and-fix pass on rev/expert");
+        } finally { setRoutingConfigOverride(undefined); }
+      });
       it.each(["task", "contract"])("honors an explicit JSON %s format over default prose headings", source => {
         const task = leaf(), record = run(task);
         const format = 'Return exactly JSON matching {"accepted": boolean, "reason": string}, with no prose.';

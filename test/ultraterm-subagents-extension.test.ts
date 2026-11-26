@@ -2304,7 +2304,19 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
       try {
         const result = await dispatch(h, { tasks: [{ label: "edit", task: "Implement", mayEdit: true, ownedPaths: ["src/example.ts"] }] });
         expect(result.details.run.model).toBe(firstRoute);
-        expect(result.content[0].text).toContain(`Verification required: have ${OPUS_ROUTE} review implementation on ${firstRoute} before shipping (configured fallback if unavailable: ${SOL_ROUTE})`);
+        // A listed free route defaults to a review-and-fix gate.
+        expect(result.content[0].text).toContain(`Verification required: have ${OPUS_ROUTE} review and fix implementation on ${firstRoute} before shipping (configured fallback if unavailable: ${SOL_ROUTE}): a writable leaf (mayEdit, the same ownedPaths) that fixes or reworks every defect itself; a findings-only review does not count.`);
+      } finally { setRoutingConfigOverride(undefined); await shutdown(h); }
+    });
+
+    it("keeps a read-only verification note when the gate sets mode review on a free route", async () => {
+      setRoutingConfigOverride({ ...routingFixture(), textWorkerChain: [firstRoute, SOL_ROUTE],
+        freeRoutes: [listed(firstRoute)], verificationGates: [{ match: `^${firstRoute}$`, reviewer: OPUS_ROUTE, mode: "review" }] });
+      const { h } = quotaHarness(status({ go: goOut, codex: solUp }), done(), {}, undefined, [first]);
+      try {
+        const result = await dispatch(h, { tasks: [{ label: "edit", task: "Implement", mayEdit: true, ownedPaths: ["src/example.ts"] }] });
+        expect(result.content[0].text).toContain(`Verification required: have ${OPUS_ROUTE} review implementation on ${firstRoute} before shipping.`);
+        expect(result.content[0].text).not.toContain("review and fix");
       } finally { setRoutingConfigOverride(undefined); await shutdown(h); }
     });
 
@@ -2343,7 +2355,7 @@ describe("synthetic: quota-aware implicit routing and synchronous launch failure
       const { h } = quotaHarness(status({ go: goOut, codex: solUp }), done(), {}, undefined, [first]);
       try {
         const result = await dispatch(h, { tasks: [{ label: "edit", task: "Implement", mayEdit: true, ownedPaths: ["src/example.ts"] }] });
-        expect(result.content[0].text).toContain(`Verification required: have ${OPUS_ROUTE} review implementation on ${firstRoute}`);
+        expect(result.content[0].text).toContain(`Verification required: have ${OPUS_ROUTE} review and fix implementation on ${firstRoute}`);
       } finally { setRoutingConfigOverride(undefined); await shutdown(h); }
     });
 

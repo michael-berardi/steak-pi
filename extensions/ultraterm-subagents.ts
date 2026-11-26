@@ -9,7 +9,7 @@ import { AVAILABILITY_TTL_MS, computeAvailability, freeRouteHeldUntil, holdFreeR
 import { CLAUDE_REVIEW_SHELL_REFUSED, isClaudeReadOnlyReview } from "../src/subagents/claude-review-permissions.ts";
 import { requireRouteReason, ROUTE_REASON_MAX_LENGTH, ROUTE_REASON_MIN_LENGTH } from "../src/subagents/route-reason.ts";
 import { canFallbackReview, implicitReviewFallbackRoute, implicitReviewRoute, isReadOnlyReviewWave, recordReviewFallback } from "../src/subagents/reviewer-fallback.ts";
-import { parseRoute, routeLabel, routingConfigOrEmpty, DSH_ROUTE_PREFIX, TASK_CLASS_MAX_LENGTH, verificationGateFor } from "../src/routing-config.ts";
+import { parseRoute, routeLabel, routingConfigOrEmpty, DSH_ROUTE_PREFIX, TASK_CLASS_MAX_LENGTH, verificationGateFor, verificationGateMode } from "../src/routing-config.ts";
 import { existsSync, statSync, unlinkSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { PersistenceHealth } from "../src/subagents/persistence-health.ts";
@@ -2761,7 +2761,9 @@ export function createUltratermSubagentsExtension(
       const gate = freeWorkerRoute && params.tasks.some((task) => task.mayEdit === true)
         ? verificationGateFor(`${(piResolved?.model ?? dshModel)!.provider}/${(piResolved?.model ?? dshModel)!.id}`) : undefined;
       const verificationNote = gate
-        ? `Verification required: have ${gate.reviewer} review implementation on ${model} before shipping${gate.fallback ? ` (configured fallback if unavailable: ${gate.fallback})` : ""}.\n`
+        ? (verificationGateMode(gate, `${(piResolved?.model ?? dshModel)!.provider}/${(piResolved?.model ?? dshModel)!.id}`) === "fix"
+          ? `Verification required: have ${gate.reviewer} review and fix implementation on ${model} before shipping${gate.fallback ? ` (configured fallback if unavailable: ${gate.fallback})` : ""}: a writable leaf (mayEdit, the same ownedPaths) that fixes or reworks every defect itself; a findings-only review does not count.\n`
+          : `Verification required: have ${gate.reviewer} review implementation on ${model} before shipping${gate.fallback ? ` (configured fallback if unavailable: ${gate.fallback})` : ""}.\n`)
         : "";
       const thinking = resolvedThinking;
       // The dispatch note names the harness whenever it is not Pi, and whenever a task class chose it: then it also
@@ -3075,7 +3077,7 @@ export function createUltratermSubagentsExtension(
         "Fan out by default: independent leaves (disjoint files, modules, screens, angles) dispatch in ONE parallel wave, one task per leaf however many there are; never trim or pad a wave to a fixed number. Capacity (machine size, the operator's usap-caps.json, a provider that throttles) decides how many run at once and queues the rest.",
         "Delegation must buy completion speed; modest token premiums for real throughput are correct. Trivial or tightly coupled edits and direct answers stay in the parent.",
         "Parent owns decomposition, integration, verification; workers own leaves end to end. With exact disjoint paths and acceptance contracts in hand, dispatch in the first tool turn without pre-reading child-owned files; do not duplicate child discovery in the parent.",
-        "The operator's routing.json decides the default worker chain, the expert reviewer and which routes need a bounded expert verification (verificationGates); a worker on a gated route is told which reviewer route to request through the parent. Read-only and report-only work need no automatic gate.",
+        "The operator's routing.json decides the default worker chain, the expert reviewer and which routes need a bounded expert verification (verificationGates); a worker on a gated route is told which reviewer route to request through the parent; a gate in fix mode (default for free routes) needs a writable review-and-fix leaf on that reviewer, never findings-only. Read-only and report-only work need no automatic gate.",
         "taskClass (per task) names an operator-configured class from routing.json taskClasses so an implicit text worker wave runs the route the operator measured best for that class; omit it when unsure. Give every task of a wave the same class (or none), dispatch different classes as separate waves, and when the dispatch note says the class requires a test gate, run that gate before accepting the work.",
         "model or profile picks an explicit authenticated route (mutually exclusive, overrides roles). A model family the operator pinned to one subscription route (subscriptionRouteChecks modelPattern) runs only there. Routine text work stays on the configured automatic chain; do not pick the configured expert reviewer for routine work. An explicit model or profile on a wave with any worker or scout task needs routeReason (why the configured chain is not right for this wave) or the dispatch is refused; reviewer-only waves need none. requireImages=true for visual critics or render inspection.",
         "harness claude-code (or an exact claude-code/<model> route) runs the official CLI at the operator's claudeCodeDefaults.effort for that model, else medium, unless thinking asks for high/xhigh with a thinkingReason. When no step of the configured chain can launch, an implicit routine wave runs on the configured claudeFallbackTier with no re-dispatch; verify that work with an expert review. Explicit routes never fall back. Read the Dispatch reference in the ultraterm-subagent-protocol skill before using a claude-code-api route, image review, relay steering or account pinning.",

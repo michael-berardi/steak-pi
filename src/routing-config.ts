@@ -197,7 +197,10 @@ export interface ClaudeCodeDefaultsConfig {
   effort?: Readonly<Record<string, ClaudeCodeEffort>>;
 }
 export interface ImplicitReviewConfig { route: string; fallback?: string }
-export interface VerificationGateConfig { match: RegExp; reviewer: string; fallback?: string }
+/** `fix`: the parent runs a writable review-and-fix pass on the reviewer route (findings-only does not count);
+ * `review`: one bounded read-only verification. Absent: `fix` for a route listed in `freeRoutes`, else `review`. */
+export type VerificationGateMode = "fix" | "review";
+export interface VerificationGateConfig { match: RegExp; reviewer: string; fallback?: string; mode?: VerificationGateMode }
 
 /** The validated operator configuration. Every key is optional; absent means "no choice". */
 /** One operator-declared free route: where the zero price comes from and the evidence for it. */
@@ -671,10 +674,12 @@ export function parseRoutingConfig(raw: unknown): RoutingConfig {
   if (raw.verificationGates !== undefined) {
     config.verificationGates = array(raw.verificationGates, "verificationGates").map((entry, index) => {
       const key = `verificationGates[${index}]`;
-      if (!object(entry)) return fail(key, "expected { match, reviewer, fallback }");
+      if (!object(entry)) return fail(key, "expected { match, reviewer, fallback, mode }");
+      if (entry.mode !== undefined && entry.mode !== "fix" && entry.mode !== "review") return fail(`${key}.mode`, "expected \"fix\" or \"review\"");
       return {
         match: regex(entry.match, `${key}.match`), reviewer: text(entry.reviewer, `${key}.reviewer`),
         ...(entry.fallback !== undefined ? { fallback: text(entry.fallback, `${key}.fallback`) } : {}),
+        ...(entry.mode !== undefined ? { mode: entry.mode as VerificationGateMode } : {}),
       };
     });
   }
@@ -752,6 +757,13 @@ export function setRoutingConfigOverride(config: Record<string, unknown> | undef
 /** First configured verification gate for the exact dispatched route. */
 export function verificationGateFor(route: string): VerificationGateConfig | undefined {
   return routingConfigOrEmpty().verificationGates?.find((gate) => gate.match.test(route));
+}
+
+/** Effective gate mode for a route: the gate's explicit `mode`, else `fix` for a route listed in `freeRoutes`, else `review`. */
+export function verificationGateMode(gate: VerificationGateConfig, route: string): VerificationGateMode {
+  if (gate.mode) return gate.mode;
+  const slash = route.indexOf("/");
+  return slash > 0 && isListedFreeRoute(route.slice(0, slash), route.slice(slash + 1)) ? "fix" : "review";
 }
 
 /** True when the operator listed this exact route in `freeRoutes`. */

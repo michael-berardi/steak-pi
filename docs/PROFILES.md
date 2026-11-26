@@ -65,7 +65,10 @@ worker on approved API credits, never a default or fallback, and never offered
 as an interactive profile. See [CLAUDE-API-ROUTE.md](./CLAUDE-API-ROUTE.md).
 
 Writable work on a route listed in `verificationGates` is told to request one
-bounded verification on the gate's reviewer route through the parent; other
+bounded verification on the gate's reviewer route through the parent, or, when
+the gate's `mode` is `fix` (the default for a route listed in `freeRoutes`), a
+writable review-and-fix pass on that route (mayEdit, same ownedPaths) that fixes
+or reworks every defect itself; a findings-only review does not count. Other
 routes and read-only leaves receive no automatic end-gate. Explicit task or
 contract output formats override default report headings. USAP never grants
 permission by itself: edit-and-shell leaves follow their parent's explicit finish request, within named or owned repositories and paths. Gated commits and pushes proceed; production deploys and public releases wait unless the leaf says review is arranged or to proceed without waiting. Explicit native Pi model/profile selections remain exact,
