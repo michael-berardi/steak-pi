@@ -105,14 +105,17 @@ describe("bounded cross-request live transform keys", () => {
     vi.mocked(runUltraCompress).mockResolvedValue({ ok: true, data: { ops: [{ ...snap, message_index: 0 }] } });
     const result = await hooks.context([{ role: "toolResult", content: [text(a)] }]);
     expect(transforms.cacheKey).toHaveBeenCalledTimes(1);
-    expect(result.messages[0].content).toEqual([...transforms.snapTextReplacement({ ...snap, message_index: 0 }), ...transforms.snapFrameBlocks(snap)]);
+    expect(result.messages[0].content).toEqual([...transforms.snapTextReplacement({ ...snap, message_index: 0 }), ...(transforms.snapFrameBlocks(snap) ?? [])]);
   });
 
   it("preserves duplicate response precedence and fallback on bridge failure", async () => {
     const settings = structuredClone(DEFAULT_SETTINGS);
     settings.snap.placement = "inline";
     const hooks = register(settings);
-    const input = () => [{ role: "toolResult", content: [text(a), text(a)] }];
+    const input = () => [
+      { role: "user", content: "go" },
+      { role: "toolResult", content: [text(a), text(a)] },
+    ];
     vi.mocked(runUltraCompress).mockResolvedValueOnce({ ok: false, error: "cancelled or unavailable" });
     const untouched = input();
     expect(await hooks.context(untouched)).toBeUndefined();
@@ -122,12 +125,14 @@ describe("bounded cross-request live transform keys", () => {
       ops: [{ ...snap, message_index: 0 }, { ...snap, message_index: 1, head: "last occurrence" }],
     } });
     const result = await hooks.context(input());
-    expect(result.messages[0].content).toEqual([
+    // Both duplicate blocks take the last op's text and carry their own frames inline.
+    expect(result.messages[1].content).toEqual([
       ...transforms.snapTextReplacement({ ...snap, message_index: 1, head: "last occurrence" }),
-      ...transforms.snapFrameBlocks(snap),
+      ...(transforms.snapFrameBlocks(snap) ?? []),
       ...transforms.snapTextReplacement({ ...snap, message_index: 1, head: "last occurrence" }),
-      ...transforms.snapFrameBlocks(snap),
+      ...(transforms.snapFrameBlocks(snap) ?? []),
     ]);
+    expect(result.messages[0].content).toBe("go");
   });
 
   it("recomputes exact settings/calibration-sensitive keys on subsequent requests", async () => {
@@ -152,21 +157,22 @@ describe("bounded cross-request live transform keys", () => {
     expect(runUltraCompress).toHaveBeenCalledTimes(4);
   });
 
-  it("preserves existing model vision gating and latch across requests", async () => {
+  it("re-evaluates vision on a model switch instead of latching it", async () => {
     vi.mocked(runUltraCompress).mockResolvedValue({ ok: true, data: { ops: [{ ...snap, message_index: 0 }] } });
     const model = { provider: "anthropic", input: ["text", "image"] };
     const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.snap.placement = "inline";
     const hooks = register(settings, model);
     const input = () => [{ role: "toolResult", content: [text(a)] }];
-    await hooks.context(input());
-    const first = vi.mocked(transforms.cacheKey).mock.results[0].value;
+    const first = await hooks.context(input());
+    expect(JSON.stringify(first.messages)).toContain('"data":"Zmlyc3Q="');
+    // Operator switches to a text-only model: cached frames must not be shipped to it.
     model.input = ["text"];
-    await hooks.context(input());
-    expect(transforms.cacheKey).toHaveBeenCalledTimes(1); // Existing visionKnown latch.
-    const other = register(settings, model);
-    await other.context(input());
-    expect(transforms.cacheKey).toHaveBeenLastCalledWith({ p: "auto", v: false, s: 8192, cpt: undefined }, a);
-    expect(vi.mocked(transforms.cacheKey).mock.results[1].value).not.toBe(first);
-    expect(runUltraCompress).toHaveBeenCalledTimes(2);
+    expect(await hooks.context(input())).toBeUndefined();
+    // Back on a vision model the memoized snap applies again without a new spawn.
+    model.input = ["text", "image"];
+    expect(JSON.stringify((await hooks.context(input())).messages)).toContain('"data":"Zmlyc3Q="');
+    expect(runUltraCompress).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(transforms.cacheKey).mock.calls.every(([, hashed]) => hashed === a)).toBe(true);
   });
 });

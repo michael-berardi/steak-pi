@@ -811,7 +811,9 @@ describe("B3: intra-wave bounded DAG dependsOn", () => {
   });
 });
 
-describe("B4: automatic isolated git worktrees", () => {
+// Each case creates repositories and worktrees with real git commands; on a busy machine that
+// alone can pass the default 5 s, which failed the case with no assertion ever running.
+describe("B4: automatic isolated git worktrees", { timeout: 30_000 }, () => {
   it("handles auto/shared/worktree modes, dirty parent fallback, sequential writers, safety bounds, and session-scoped orphan sweep", () => {
     const repo = initGitRepo("b4-repo-auto");
     const wtRoot = join(rootTmp, "b4-wt-root");

@@ -490,17 +490,23 @@ test("Escape during the backoff between recoveries stops the turn: aborted, no f
     for (const pid of await r.spawns()) assert.equal(alive(pid), false);
   }));
 
-test("Escape during a quiet stretch is an abort, not a stall, and nothing is recovered", () =>
-  rig((_attempt, response) => {
+test("Escape during a quiet stretch is an abort, not a stall, and nothing is recovered", () => {
+  // Escape is timed from the moment the stream goes quiet (the request reached the API and the
+  // ping was sent), not from the start of the run: on a busy machine the process can take longer
+  // than a fixed delay to send its request, and Escape then landed before any request existed.
+  const controller = new AbortController();
+  let quietSince = 0;
+  return rig((_attempt, response) => {
     response.writeHead(200, { "content-type": "text/event-stream" });
     sse(response, START, { type: "ping" });
-  }, async (r) => {
-    const controller = new AbortController();
+    quietSince = Date.now();
     later(500, () => controller.abort(new Error("operator pressed Escape")));
-    const started = Date.now();
+  }, async (r) => {
     const message = await r.run({}, undefined, controller.signal);
     assert.equal(message.stopReason, "aborted");
-    assert.ok(Date.now() - started < 1_300, "ended at Escape, before the 1.4 s stall limit");
+    assert.ok(quietSince > 0, "the request reached the API before Escape");
+    assert.ok(Date.now() - quietSince < 1_300, "ended at Escape, before the 1.4 s stall limit");
     assert.equal(r.attempts(), 1);
     assert.equal((await r.spawns()).length, 1);
-  }));
+  });
+});

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.43.1 (2026-11-26)
+
+UltraCompress extension fixes (ported from UltraCompress 0.7.0):
+
+- **Snap frames were sent without their image data.** The extension read `pngBase64` while the CLI writes `png_base64`, so a large tool result was replaced by its first and last lines plus an image block with no data: the middle was gone. Frames now carry their data, and a block is left as text whenever its frames cannot be delivered (no data, or no user message to carry them).
+- **A block the CLI left as text is remembered.** Before, every such block was sent to the CLI again on every model request. The CLI is not started at all for a model without image input or under the `vcc` policy, and a block whose transform fails twice is left alone for the session.
+- Image support is re-checked on every request, so a model switch no longer reuses the first model's answer. Calibration and caches reset at session start.
+- Debug output works (it used `require` inside an ES module and wrote nothing), and `/ultracompress-stats` shows the real version.
+- Tests: two cases failed on a busy machine without any product fault. The Escape test timed its abort from the start of the run and could fire before the request existed; it now times it from the moment the stream goes quiet. The worktree cases get 30 s for their real git commands instead of the default 5 s.
+
 ## 0.43.0 (2026-11-25)
 
 Provider-neutral automatic swarm capabilities for USAP runs (zero extra LLM agents, zero hardcoded routes or model preferences):

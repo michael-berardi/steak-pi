@@ -67,12 +67,21 @@ describe("session-local recall contract", () => {
 describe("fresh read and bash break-even policy", () => {
   it.each(["read", "bash"])("exempts fresh %s even on a cached transform, but archives older output", (toolName) => {
     const text = "explicitly requested text ".repeat(400);
-    const op: SnapOp = { op: "snap", message_index: 0, block_index: 0, head: "head", tail: "tail", frames: [], tokens_before: 1500, tokens_after: 100 };
+    const op: SnapOp = {
+      op: "snap", message_index: 0, block_index: 0, head: "head", tail: "tail",
+      // A snap always carries the archived middle as a frame payload; a frames-less op is not a snap.
+      frames: [{ id: "f1", width: 1, height: 1, png_base64: "aGk=" }],
+      tokens_before: 1500, tokens_after: 100,
+    };
     const cache = new Map([["k", { op, blocks: snapTextReplacement(op) }]]);
-    const messages = [{ role: "assistant", content: [] }, { role: "toolResult", toolName, content: [{ type: "text", text }] }];
+    const messages = [
+      { role: "user", content: "go" },
+      { role: "assistant", content: [] },
+      { role: "toolResult", toolName, content: [{ type: "text", text }] },
+    ];
     expect(collectCandidates(messages, 8192, () => "k")).toEqual([]);
     const result = applyTransforms(structuredClone(messages), cache, () => "k", "nextUser");
-    expect(result.snapApplied).toBe(0); expect(result.messages[1].content).toEqual([{ type: "text", text }]);
+    expect(result.snapApplied).toBe(0); expect(result.messages[2].content).toEqual([{ type: "text", text }]);
     const older = [...messages, { role: "assistant", content: [] }];
     expect(collectCandidates(older, 8192, () => "k")).toHaveLength(1);
     expect(applyTransforms(structuredClone(older), cache, () => "k", "nextUser").snapApplied).toBe(1);

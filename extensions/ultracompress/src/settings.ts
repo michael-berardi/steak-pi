@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { DEFAULT_SNAPSHOT_RETENTION, normalizeSnapshotRetention, type SnapshotRetention } from "./snapshot";
 
 export interface SnapSettings {
@@ -108,8 +109,32 @@ export function loadSettings(settingsPath = SETTINGS_PATH): UltraCompressSetting
   }
 }
 
+/** Directory of this module; percent-decoded so paths with spaces or unicode resolve. */
+export function moduleDir(url: string = import.meta.url): string {
+  return path.dirname(fileURLToPath(url));
+}
+
+/**
+ * Nearest package.json at or above `startDir`, so reported versions never drift. Vendored here the
+ * extension has no manifest of its own, so this resolves to the hosting package (Steak Pi).
+ */
+export function packageVersion(startDir: string = moduleDir()): string {
+  let dir = startDir;
+  for (;;) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")) as { version?: unknown };
+      if (typeof pkg.version === "string" && pkg.version) return pkg.version;
+    } catch {
+      // no manifest here — keep walking up
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return "unknown";
+    dir = parent;
+  }
+}
+
 /** Resolve the UltraCompress binary: env → config → UltraTerm-managed → local → dev → PATH. */
-export function resolveUltraCompressBin(settings: UltraCompressSettings, extensionDir = path.dirname(new URL(import.meta.url).pathname)): string {
+export function resolveUltraCompressBin(settings: UltraCompressSettings, extensionDir = moduleDir()): string {
   const candidates: string[] = [];
   if (process.env.ULTRACOMPRESS_BIN) candidates.push(process.env.ULTRACOMPRESS_BIN);
   if (settings.ultracompressBin) {
