@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -51,11 +52,11 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
 }
 `;
 
-async function within<T>(promise: Promise<T>, ms: number): Promise<T> {
+async function within<T>(promise: Promise<T>, ms: number, message = "turn never ended; steering remains queued"): Promise<T> {
   let timer: NodeJS.Timeout;
   try {
     return await Promise.race([promise, new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error("turn never ended; steering remains queued")), ms);
+      timer = setTimeout(() => reject(new Error(message)), ms);
     })]);
   } finally { clearTimeout(timer!); }
 }
@@ -68,8 +69,13 @@ for (const mode of ["error", "abort", "exit"] as const) {
     await writeFile(executable, FAKE);
     await chmod(executable, 0o755);
     await writeFile(holders, "");
+    // First launch of a fresh executable is scanned by the OS (about 200 ms extra on an idle Mac, more on a busy one);
+    // do it outside the timed turns, as the stream-recovery rig does.
+    await new Promise<void>((done, fail) => execFile(executable, ["auth", "status"], (error) => (error ? fail(error) : done())));
     const controller = new AbortController();
     let queued = false;
+    let stalledTurnStarted!: () => void;
+    const stalledTurn = new Promise<void>((done) => { stalledTurnStarted = done; });
     const errors: string[] = [];
     const starts: string[] = [];
     let abortTask: Promise<void> | undefined;
@@ -95,6 +101,7 @@ for (const mode of ["error", "abort", "exit"] as const) {
         });
         if (failed && !queued) {
           queued = true;
+          stalledTurnStarted();
           agent.steer({ role: "user", content: "It's not Gmail. I use Apple Mail.", timestamp: Date.now() });
           if (mode === "abort") abortTask = within((async () => {
             while (!(await readFile(holders, "utf8")).trim()) await new Promise(r => setTimeout(r, 10));
@@ -114,6 +121,12 @@ for (const mode of ["error", "abort", "exit"] as const) {
     let settled = false;
     void running.then(() => { settled = true; }, () => { settled = true; });
     try {
+      // The wedge clock starts with the stalled turn (the one after the failed bash, where the inherited stdout is).
+      // Started at the prompt, its 10 s also had to cover the first turn (the fake CLI's auth check and launch, two Node
+      // processes, then the bash), none of which touches the inherited pipe. On a loaded host (the full suite) those
+      // launches ate the budget and a turn that was still progressing was reported as wedged. The first turn gets its
+      // own bound, so a slow launch fails with its own message and never as a wedge.
+      await within(Promise.race([stalledTurn, running]), 15_000, "the first turn never reached the failed bash");
       await within(running, 10_000);
       await abortTask;
       assert.equal(queued, true);

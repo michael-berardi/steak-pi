@@ -490,17 +490,30 @@ test("Escape during the backoff between recoveries stops the turn: aborted, no f
     for (const pid of await r.spawns()) assert.equal(alive(pid), false);
   }));
 
-test("Escape during a quiet stretch is an abort, not a stall, and nothing is recovered", () =>
-  rig((_attempt, response) => {
+test("Escape during a quiet stretch is an abort, not a stall, and nothing is recovered", () => {
+  const controller = new AbortController();
+  let quietFrom = 0;
+  return rig((attempt, response) => {
     response.writeHead(200, { "content-type": "text/event-stream" });
     sse(response, START, { type: "ping" });
+    // Escape 500 ms into the quiet stretch that follows the first bytes. Timed from the start of the run instead, it
+    // raced the launch: before the first send a run starts two Node processes (the `claude auth status` check and the
+    // fake CLI itself), and on a loaded host (the full suite) they took longer than 500 ms, so Escape landed before the
+    // request was ever sent (0 sends, not 1) and the test no longer exercised a quiet stretch at all.
+    if (attempt === 1) {
+      quietFrom = Date.now();
+      later(500, () => controller.abort(new Error("operator pressed Escape")));
+    }
   }, async (r) => {
-    const controller = new AbortController();
-    later(500, () => controller.abort(new Error("operator pressed Escape")));
-    const started = Date.now();
+    const diagnostics: string[] = [];
+    setClaudeCodeDiagnosticReporter((line) => diagnostics.push(line));
     const message = await r.run({}, undefined, controller.signal);
     assert.equal(message.stopReason, "aborted");
-    assert.ok(Date.now() - started < 1_300, "ended at Escape, before the 1.4 s stall limit");
+    assert.ok(quietFrom > 0, "the request reached the API and its first bytes arrived before Escape");
+    // The stall limit (1.4 s) counts from the last byte, which is no earlier than quietFrom.
+    assert.ok(Date.now() - quietFrom < 1_300, "ended at Escape, before the 1.4 s stall limit");
     assert.equal(r.attempts(), 1);
     assert.equal((await r.spawns()).length, 1);
-  }));
+    assert.deepEqual(diagnostics.filter((line) => /asking again/.test(line)), [], "no recovery was started");
+  });
+});
