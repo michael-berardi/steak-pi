@@ -18,6 +18,8 @@ import {
 } from "./provider-accounts.ts";
 import { readFile } from "node:fs/promises";
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { forkWorkerSessionFile } from "./checkpoints.ts";
+export { forkWorkerSessionFile };
 import { findPackageJSON } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -291,11 +293,12 @@ interface GuardedToolOptions {
 }
 
 interface RelayToolInput {
-  operation: "send" | "request" | "reply" | "receive" | "list";
+  operation: "send" | "request" | "reply" | "receive" | "read" | "list";
   to?: string;
   body?: string;
   replyTo?: string;
   afterSeq?: number;
+  seqs?: number[];
   limit?: number;
 }
 
@@ -528,13 +531,14 @@ export function createUltratermRelayTool(relay: RelayPeer, task: TaskRecord): An
   return {
     name: "ultraterm_relay",
     label: "UltraTerm Relay",
-    description: "Send, request, reply, receive, or list short messages among peers in this USAP run.",
+    description: "Send, request, reply, receive, read (non-destructive), or list short messages among peers in this USAP run.",
     parameters: Type.Object({
-      operation: Type.String({ description: "send, request, reply, receive, or list" }),
+      operation: Type.String({ description: "send, request, reply, receive, read, or list" }),
       to: Type.Optional(Type.String({ description: "Peer task ID, or #run for broadcast" })),
       body: Type.Optional(Type.String({ description: "Concise message body" })),
       replyTo: Type.Optional(Type.String({ description: "Request envelope ID answered by reply" })),
       afterSeq: Type.Optional(Type.Integer({ minimum: 0 })),
+      seqs: Type.Optional(Type.Array(Type.Integer({ minimum: 1 }), { maxItems: 64, description: "Exact sequence numbers to read non-destructively (operation: read)" })),
       limit: Type.Optional(Type.Integer({ minimum: 0 })),
     }),
     async execute(_toolCallId, rawParams) {
@@ -564,6 +568,13 @@ export function createUltratermRelayTool(relay: RelayPeer, task: TaskRecord): An
           const inbox = relay.inbox(params.afterSeq, params.limit);
           task.relayReceived += inbox.messages.length;
           return relayResult(inbox);
+        }
+        case "read": {
+          return relayResult(relay.read({
+            ...(params.afterSeq === undefined ? {} : { afterSeq: params.afterSeq }),
+            ...(params.seqs === undefined ? {} : { seqs: params.seqs }),
+            ...(params.limit === undefined ? {} : { limit: params.limit }),
+          }));
         }
         case "list":
           return relayResult({ peers: relay.peers() });
@@ -863,7 +874,8 @@ function openWorkerSession(
   cwd: string,
   task: TaskRecord,
   sessionDir: string | undefined,
-): PiSessionManager {
+  allowEmptyOnFailover = false,
+): { sessionManager: PiSessionManager; hasHistory: boolean } {
   const file = typeof task.sessionFile === "string" && task.sessionFile.trim().length > 0
     ? task.sessionFile.trim()
     : undefined;
@@ -873,11 +885,29 @@ function openWorkerSession(
     const stat = lstatSync(file);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size === 0) throw new Error("Worker checkpoint is missing or unsafe");
     const restored = manager.open(file, sessionDir);
-    if (!restored.getEntries().some((entry) => entry.type === "message")) throw new Error("Worker checkpoint contains no conversation history; refusing silent replay");
-    return restored;
+    const hasMessages = restored.getEntries().some((entry) => entry.type === "message");
+    if (!hasMessages) {
+      if (allowEmptyOnFailover) return { sessionManager: restored, hasHistory: false };
+      throw new Error("Worker checkpoint contains no conversation history; refusing silent replay");
+    }
+    return { sessionManager: restored, hasHistory: true };
   }
   const dir = typeof sessionDir === "string" && sessionDir.trim().length > 0 ? sessionDir.trim() : undefined;
-  return dir === undefined ? manager.inMemory(cwd) : manager.create(cwd, dir);
+  return { sessionManager: dir === undefined ? manager.inMemory(cwd) : manager.create(cwd, dir), hasHistory: false };
+}
+
+/**
+ * Compact prompt for a warm-forked leaf: carries prior conversation history as
+ * read-only background context while executing the new leaf under its own permissions.
+ */
+export function buildPiWorkerForkPrompt(task: TaskRecord): string {
+  const source = task.forkFrom ? `${task.forkFrom.runId}/${task.forkFrom.taskId}` : "a prior task";
+  return [
+    `This session was forked from ${source} so prior investigation context is preserved above.`,
+    `Now execute the new assigned leaf "${task.label}" (task ${task.id}).`,
+    "Treat prior conversation messages and tool outputs as historical context only; your permissions and owned paths are strictly those of this new leaf.",
+    "Return the required concise final report for this new leaf.",
+  ].join("\n");
 }
 
 /**
@@ -885,9 +915,12 @@ function openWorkerSession(
  * original leaf prompt and never assumes prior tools executed.
  */
 export function buildPiWorkerContinuationPrompt(task: TaskRecord): string {
+  const hopped = (task.routeFallbacks?.length ?? 0) > 0;
   return [
     `Continue the exact assigned leaf "${task.label}" (task ${task.id}).`,
-    "This session was resumed from persisted history; the original prompt is not replayed.",
+    hopped
+      ? "This session is continuing in place on a fallback model route with prior conversation history preserved above; the original prompt is not replayed."
+      : "This session was resumed from persisted history; the original prompt is not replayed.",
     "Your permissions are exactly those of the original assignment; resuming neither widens nor narrows them.",
     ...(task.ownedPaths.length > 0
       ? ["Before acting, review the conversation history above and the current on-disk state of every owned path:", ...task.ownedPaths.map((value) => `- ${value}`)]
@@ -1216,10 +1249,11 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
         await accountCommand(["bind", "--lease", account.lease, "--session", task.id]);
         signal.throwIfAborted();
       }
+      const taskCwd = task.cwd ?? run.cwd;
       // A catalog-free refusal belongs to the dispatch walk, not a per-worker
       // hop that could bypass quota preflight or split a wave across routes.
       const chain = account || free ? undefined : workerChainFallback(run.selection, runtime.model, chainFallback,
-        resolveProjectPolicy(run.cwd, task.ownedPaths ?? []));
+        resolveProjectPolicy(taskCwd, task.ownedPaths ?? []));
       const sdk = options.sessionFactory ? undefined : await initialize(loadPiSdk());
       signal.throwIfAborted();
       const nativeManagers = sdk ?? managers;
@@ -1243,10 +1277,10 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
         );
         return steering;
       });
-      const tools = createGuardedPiWorkerTools({ cwd: run.cwd, task, relay: peer });
+      const tools = createGuardedPiWorkerTools({ cwd: taskCwd, task, relay: peer });
       // Operator per-model guidance (steak-pi.json modelGuidance) reaches workers too: their isolated loader loads no extensions.
       const systemPrompt = withModelGuidance(
-        buildPiWorkerSystemPrompt({ ...run, model: `${runtime.model.provider}/${runtime.model.id}` }, task),
+        buildPiWorkerSystemPrompt({ ...run, cwd: taskCwd, model: `${runtime.model.provider}/${runtime.model.id}` }, task),
         runtime.model,
         modelGuidanceSettings().rules,
       );
@@ -1261,7 +1295,8 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
         cacheWarming: "off" as const,
       };
       const settingsManager = nativeManagers.SettingsManager.inMemory(workerSettings);
-      const sessionManager = openWorkerSession(nativeManagers.SessionManager, run.cwd, task, sessionDir);
+      const openedSession = openWorkerSession(nativeManagers.SessionManager, taskCwd, task, sessionDir, reply?.alternate !== undefined);
+      const sessionManager = openedSession.sessionManager;
       const createRuntime = options.createModelRuntime ?? sdk?.ModelRuntime.create;
       const modelRuntime = createRuntime ? await initialize(createRuntime({ signal, ...(account ? isolatedAgentPaths(account.agentDir) : {}) })) : undefined;
       if (modelRuntime) {
@@ -1280,7 +1315,7 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
       signal.throwIfAborted();
       if (leaseFailure) throw leaseFailure;
       const created = await initialize(sessionFactory({
-        cwd: run.cwd,
+        cwd: taskCwd,
         ...(account ? { agentDir: account.agentDir } : {}),
         model: runtime.model,
         ...(modelRuntime ? { modelRuntime } : {}),
@@ -1404,11 +1439,15 @@ export function createPiWorkerRunner(options: PiWorkerRunnerOptions): WorkerRunn
           releasePromptWait();
           void abortSession();
         }, Math.max(10, Math.min(30_000, Math.floor(stallMs / 4))));
+        const initialFork = openedSession.hasHistory && task.forkFrom !== undefined
+          && (task.autoResumes?.length ?? 0) === 0 && (task.routeFallbacks?.length ?? 0) === 0 && reply === undefined;
         await Promise.race([
           session.prompt(
-            resuming
-              ? buildPiWorkerContinuationPrompt(task)
-              : "Execute the exact assigned leaf and return the required concise report.",
+            initialFork
+              ? buildPiWorkerForkPrompt(task)
+              : openedSession.hasHistory
+                ? buildPiWorkerContinuationPrompt(task)
+                : "Execute the exact assigned leaf and return the required concise report.",
             { expandPromptTemplates: false },
           ),
           terminalized,

@@ -161,6 +161,69 @@ export function canonicalSessionFile(file: string): string {
   }
 }
 
+/**
+ * Copy ONLY a validated Pi JSONL session file into a fresh owner-only file in `sessionsDirectory`.
+ * Never copies scratch, workspace, or build directories; fails closed on symlinks, non-regular
+ * files, missing session headers, or empty transcripts.
+ */
+export function forkWorkerSessionFile(sourcePath: string, sessionsDirectory: string, cwd: string): string {
+  const resolvedSource = resolve(sourcePath);
+  const resolvedDir = resolve(sessionsDirectory);
+  const fd = openSync(resolvedSource, constants.O_RDONLY | constants.O_NOFOLLOW);
+  let raw: string;
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size === 0 || (process.getuid && stat.uid !== process.getuid())) {
+      throw new Error("Source worker session file is missing, empty, or unsafe");
+    }
+    raw = readFileSync(fd, "utf8");
+  } finally {
+    closeSync(fd);
+  }
+  const lines = raw.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  const entries: Array<Record<string, unknown>> = [];
+  for (const line of lines) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(line); } catch { throw new Error("Source worker session file contains invalid JSONL"); }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("Source worker session file contains a malformed entry");
+    }
+    entries.push(parsed as Record<string, unknown>);
+  }
+  const header = entries.find((entry) => entry.type === "session");
+  if (!header) throw new Error("Source worker session file has no session header");
+  if (!entries.some((entry) => entry.type === "message")) {
+    throw new Error("Source worker session file contains no conversation history to fork");
+  }
+  const newId = randomUUID();
+  const timestamp = new Date().toISOString();
+  const fileTimestamp = timestamp.replace(/[:.]/g, "-");
+  const targetPath = join(resolvedDir, `${fileTimestamp}_${newId}.jsonl`);
+  if (!targetPath.startsWith(resolvedDir + sep) || dirname(targetPath) !== resolvedDir) {
+    throw new Error("Forked worker session path escaped sessions directory");
+  }
+  const newHeader = {
+    type: "session",
+    version: typeof header.version === "number" ? header.version : 3,
+    id: newId,
+    timestamp,
+    cwd: resolve(cwd),
+    parentSession: resolvedSource,
+  };
+  const payload = [
+    JSON.stringify(newHeader),
+    ...entries.filter((entry) => entry.type !== "session").map((entry) => JSON.stringify(entry)),
+  ].join("\n") + "\n";
+  const outFd = openSync(targetPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try {
+    writeFileSync(outFd, payload, "utf8");
+    fsyncSync(outFd);
+  } finally {
+    closeSync(outFd);
+  }
+  return targetPath;
+}
+
 /** Admit legacy path-only data only with native filename AND header proof. */
 function provesLegacyOwner(file: string, id: string): boolean {
   if (!/^[0-9a-f-]{36}$/i.test(id) || !basename(file).endsWith(`_${id}.jsonl`)) return false;
@@ -293,7 +356,7 @@ export class CheckpointStore {
     if (!ID.test(run.id)) throw new Error("Invalid checkpoint run ID");
     const now = Date.now();
     // Queue transitions are durable metadata; elapsed time is derived on reads.
-    const state = run.state + ":" + run.tasks.map((task) => `${task.state}:${task.sessionFile ?? ""}:${task.claudeSessionId ?? ""}:${task.autoResumes?.length ?? 0}:${JSON.stringify([task.launchQueue, task.lastLaunchQueue, task.subscriptionReceipt])}`).join("|");
+    const state = run.state + ":" + run.tasks.map((task) => `${task.state}:${task.sessionFile ?? ""}:${task.claudeSessionId ?? ""}:${task.dshSessionId ?? ""}:${task.autoResumes?.length ?? 0}:${JSON.stringify([task.launchQueue, task.lastLaunchQueue, task.subscriptionReceipt, task.worktree])}`).join("|");
     const previous = this.writes.get(run.id);
     const copy = structuredClone(run);
     if (this.ownerSessionId) {
@@ -314,17 +377,23 @@ export class CheckpointStore {
   }
 
   /** Write-ahead reservation: execution may start only after both records commit. */
-  prepareResume(id: string, successor: RunRecord): void {
+  prepareResume(id: string, successor: RunRecord, options?: { allowModelOverride?: boolean }): void {
     const checkpoint = this.cache.get(id);
     if (!checkpoint || checkpoint.resumedAs || checkpoint.pendingResume) throw new Error("Checkpoint is already resumed or reserved");
     // The single choke point for the bounded-resume contract: a successor may
-    // continue one predecessor, only once, and never with a larger or different
-    // budget or route. Callers cannot widen it by building a different record.
+    // continue one predecessor, only once, and never with a larger budget or
+    // different harness. An explicit operator model override is allowed only
+    // when explicitly opted in by the hub resume action on the Pi harness.
     const original = checkpoint.run;
     if (original.resumedFrom) throw new Error(`Resume refused: ${id} is already a resumed attempt of ${original.resumedFrom}; a task is resumed at most once`);
     if (successor.resumedFrom !== id) throw new Error("Resume refused: the successor does not record the run it resumes");
     if (successor.maxTurns > original.maxTurns || successor.timeoutMs > original.timeoutMs) throw new Error("Resume refused: a resume never raises the original turn or time budget");
-    if (successor.model !== original.model || successor.thinkingLevel !== original.thinkingLevel || (successor.harness ?? "pi") !== (original.harness ?? "pi")) throw new Error("Resume refused: a resume stays on the original route");
+    const allowOverride = options?.allowModelOverride === true && (original.harness ?? "pi") === "pi" && (successor.harness ?? "pi") === "pi";
+    if ((successor.harness ?? "pi") !== (original.harness ?? "pi")
+      || successor.thinkingLevel !== original.thinkingLevel
+      || (!allowOverride && successor.model !== original.model)) {
+      throw new Error("Resume refused: a resume stays on the original route");
+    }
     if (successor.claudeAccount !== original.claudeAccount) throw new Error("Resume refused: a resume stays on the original Claude subscription account");
     for (const task of successor.tasks) {
       const predecessor = original.tasks.find((item) => item.id === task.resumedFrom);
@@ -365,6 +434,15 @@ export class CheckpointStore {
       if (!stat.isFile() || (process.getuid && stat.uid !== process.getuid())) throw new Error("Unsafe worker session checkpoint");
       fchmodSync(fd, 0o600);
     } finally { closeSync(fd); }
+  }
+
+  /**
+   * Fork ONLY a validated Pi JSONL session file in this store into a fresh owner-only
+   * session file in `this.sessionsDirectory`. Never copies scratch or workspace directories.
+   */
+  forkSession(sourcePath: string, cwd: string): string {
+    this.validateSession(sourcePath);
+    return forkWorkerSessionFile(sourcePath, this.sessionsDirectory, cwd);
   }
 
   close(): void {
@@ -524,41 +602,98 @@ export function recoveredRun(checkpoint: Checkpoint): RunRecord {
   return run;
 }
 
-export function diagnoseRun(run: RunRecord, now = Date.now()) {
+export const DEFAULT_DIAGNOSE_STALE_MS = 120_000;
+
+export interface DiagnoseRunOptions {
+  /** Inactivity threshold (ms) after which an active task without progress is flagged stalled. Default 120s. */
+  staleThresholdMs?: number;
+  /** Unanswered relay requests observed in the live relay broker for this run. */
+  unansweredRequests?: ReadonlyArray<{ id: string; seq: number; from: string; to: string; ageMs: number }>;
+}
+
+export function diagnoseRun(run: RunRecord, now = Date.now(), options: DiagnoseRunOptions = {}) {
+  const staleThresholdMs = options.staleThresholdMs ?? DEFAULT_DIAGNOSE_STALE_MS;
+  const taskById = new Map(run.tasks.map((task) => [task.id, task]));
+  const stalledTasks: Array<{ taskId: string; label: string; state: RunRecord["tasks"][number]["state"]; silentMs: number; currentTool: string | null; reason: string }> = [];
+  const awaitingDependencies: Array<{ taskId: string; label: string; waitingOn: Array<{ taskId: string; label: string; state: RunRecord["tasks"][number]["state"] }> }> = [];
+
+  const tasks = run.tasks.map((task) => {
+    const error = task.error ?? "";
+    const active = ["queued", "starting", "running", "waiting"].includes(task.state);
+    const activeQueue = active ? task.launchQueue : undefined;
+    const unmetDeps = task.state === "queued" && task.dependsOn?.length
+      ? task.dependsOn
+        .map((depId) => taskById.get(depId))
+        .filter((dep): dep is NonNullable<typeof dep> => dep !== undefined && dep.state !== "done")
+      : [];
+    if (unmetDeps.length > 0) {
+      awaitingDependencies.push({
+        taskId: task.id,
+        label: task.label,
+        waitingOn: unmetDeps.map((dep) => ({ taskId: dep.id, label: dep.label, state: dep.state })),
+      });
+    }
+    const lastActivity = task.lastProgressAt ?? task.startedAt;
+    const silentMs = lastActivity === undefined ? null : Math.max(0, now - lastActivity);
+    if (["starting", "running", "waiting"].includes(task.state) && !activeQueue && silentMs !== null && silentMs >= staleThresholdMs) {
+      stalledTasks.push({
+        taskId: task.id,
+        label: task.label,
+        state: task.state,
+        silentMs,
+        currentTool: task.currentTool ?? null,
+        reason: task.currentTool ? `silent during tool ${task.currentTool}` : "no model or tool progress update",
+      });
+    }
+    const reason = /Host interrupted|Coordinator shut down/i.test(error) ? "host_interrupted"
+      : unmetDeps.length > 0 ? "awaiting_dependencies"
+      : activeQueue ? (activeQueue.tier === "machine" ? "launch_capacity" : "session_capacity")
+      : /launch.queue.*(?:budget|deadline|exceed|exhaust)|(?:budget|deadline).*launch.queue/i.test(error) ? "launch_capacity"
+      : TURN_BUDGET_ERROR.test(error) ? "turn_budget"
+      : task.state === "timed_out" ? "deadline"
+      : task.state === "aborted" ? "cancelled"
+      : /Cannot find package|ERR_MODULE_NOT_FOUND|worker dependencies/i.test(error) ? "initialization_dependency"
+      : /launch.slots|launch capacity|maximum.*active runs/i.test(error) ? "launch_capacity"
+      : /usage.limit|quota.(?:limit|exhaust|exceed)|insufficient.quota/i.test(error) ? "provider_quota"
+      : /429|rate.limit/i.test(error) ? "provider_rate_limit"
+      : /unsupported.*(?:model|account|organization)|model.*not.*(?:supported|available)/i.test(error) ? "provider_configuration"
+      : /payload.*(?:large|budget)|context.*(?:length|window)|request.*too.large/i.test(error) ? "context_budget"
+      : /No model or tool activity/i.test(error) ? "stalled_stream"
+      : /fetch failed|incomplete.stream|connection.*(?:reset|closed)|ECONNRESET|transport failure; connection or request did not complete/i.test(error) ? "transport"
+      : /auth|401|403|credential/i.test(error) ? "provider_auth"
+      : task.toolErrors && !task.toolSuccesses ? "tool_failures"
+      : task.state === "failed" ? "worker_failure" : task.state;
+    return { taskId: task.id, label: task.label, role: task.role, state: task.state,
+      ...(task.outcome ? { outcome: task.outcome, partialReason: task.partialReason ?? null, partialSummary: task.partialSummary ?? null } : {}),
+      ...(task.resumedFrom ? { resumedFrom: task.resumedFrom } : {}),
+      ...(task.dependsOn?.length ? { dependsOn: [...task.dependsOn] } : {}),
+      ...(task.routeFallbacks?.length ? { routeFallbacks: [...task.routeFallbacks] } : {}),
+      ...(task.worktree ? { worktree: { branch: task.worktree.branch, worktreePath: task.worktree.worktreePath, dirty: task.worktree.dirty, committed: task.worktree.committed ?? false, cleaned: task.worktree.cleaned ?? false } } : {}),
+      reason, turns: task.turns,
+      ...(task.launchQueue ? { launchQueue: queueDiagnostic(task.launchQueue, Math.min(now, task.endedAt ?? now)) } : {}),
+      ...(task.lastLaunchQueue ? { lastLaunchQueue: queueDiagnostic(task.lastLaunchQueue, Math.min(now, task.endedAt ?? now)) } : {}),
+      ...(reason === "provider_quota" && run.harness === "claude-code"
+        ? { recovery: "Check Claude usage before debugging; retry the same route only after the usage reset. No paid fallback or review approval." } : {}),
+      toolSuccesses: task.toolSuccesses ?? 0, toolErrors: task.toolErrors ?? 0,
+      retryAttempt: task.retryAttempt ?? 0, retryDelayMs: task.retryDelayMs ?? 0, compactions: task.compactions ?? 0,
+      lastProgressAgeMs: task.lastProgressAt === undefined ? null : Math.max(0, now - task.lastProgressAt),
+      checkpoint: Boolean(task.sessionFile || task.claudeSessionId || task.dshSessionId), autoResumes: task.autoResumes?.length ?? 0, truncated: task.truncated };
+  });
+
+  const unansweredRequests = (options.unansweredRequests ?? []).map((req) => ({
+    id: req.id,
+    seq: req.seq,
+    from: req.from,
+    to: req.to,
+    ageMs: Math.max(0, req.ageMs),
+  }));
+
   return {
     runId: run.id, state: run.state, timeoutMs: run.timeoutMs, maxTurns: run.maxTurns,
     usageCoverage: "observed assistant events; auxiliary provider billing may not be included",
-    tasks: run.tasks.map((task) => {
-      const error = task.error ?? "";
-      const activeQueue = ["queued", "starting", "running", "waiting"].includes(task.state) ? task.launchQueue : undefined;
-      const reason = /Host interrupted|Coordinator shut down/i.test(error) ? "host_interrupted"
-        : activeQueue ? (activeQueue.tier === "machine" ? "launch_capacity" : "session_capacity")
-        : /launch.queue.*(?:budget|deadline|exceed|exhaust)|(?:budget|deadline).*launch.queue/i.test(error) ? "launch_capacity"
-        : TURN_BUDGET_ERROR.test(error) ? "turn_budget"
-        : task.state === "timed_out" ? "deadline"
-        : task.state === "aborted" ? "cancelled"
-        : /Cannot find package|ERR_MODULE_NOT_FOUND|worker dependencies/i.test(error) ? "initialization_dependency"
-        : /launch.slots|launch capacity|maximum.*active runs/i.test(error) ? "launch_capacity"
-        : /usage.limit|quota.(?:limit|exhaust|exceed)|insufficient.quota/i.test(error) ? "provider_quota"
-        : /429|rate.limit/i.test(error) ? "provider_rate_limit"
-        : /unsupported.*(?:model|account|organization)|model.*not.*(?:supported|available)/i.test(error) ? "provider_configuration"
-        : /payload.*(?:large|budget)|context.*(?:length|window)|request.*too.large/i.test(error) ? "context_budget"
-        : /fetch failed|incomplete.stream|connection.*(?:reset|closed)|ECONNRESET|transport failure; connection or request did not complete/i.test(error) ? "transport"
-        : /auth|401|403|credential/i.test(error) ? "provider_auth"
-        : task.toolErrors && !task.toolSuccesses ? "tool_failures"
-        : task.state === "failed" ? "worker_failure" : task.state;
-      return { taskId: task.id, label: task.label, role: task.role, state: task.state,
-        ...(task.outcome ? { outcome: task.outcome, partialReason: task.partialReason ?? null, partialSummary: task.partialSummary ?? null } : {}),
-        ...(task.resumedFrom ? { resumedFrom: task.resumedFrom } : {}),
-        reason, turns: task.turns,
-        ...(task.launchQueue ? { launchQueue: queueDiagnostic(task.launchQueue, Math.min(now, task.endedAt ?? now)) } : {}),
-        ...(task.lastLaunchQueue ? { lastLaunchQueue: queueDiagnostic(task.lastLaunchQueue, Math.min(now, task.endedAt ?? now)) } : {}),
-        ...(reason === "provider_quota" && run.harness === "claude-code"
-          ? { recovery: "Check Claude usage before debugging; retry the same route only after the usage reset. No paid fallback or review approval." } : {}),
-        toolSuccesses: task.toolSuccesses ?? 0, toolErrors: task.toolErrors ?? 0,
-        retryAttempt: task.retryAttempt ?? 0, retryDelayMs: task.retryDelayMs ?? 0, compactions: task.compactions ?? 0,
-        lastProgressAgeMs: task.lastProgressAt === undefined ? null : Math.max(0, now - task.lastProgressAt),
-        checkpoint: Boolean(task.sessionFile || task.claudeSessionId), autoResumes: task.autoResumes?.length ?? 0, truncated: task.truncated };
-    }),
+    stalledTasks,
+    unansweredRequests,
+    awaitingDependencies,
+    tasks,
   };
 }

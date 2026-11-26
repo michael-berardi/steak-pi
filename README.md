@@ -40,7 +40,7 @@ If the installer prints a PATH instruction, apply it before continuing.
 Already have Pi? Install the current package directly:
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.42.0
+pi install git:github.com/michael-berardi/steak-pi@v0.43.0
 ```
 
 Requires Node.js 22.19+ and Pi 0.87+; development checks use Pi 1.0.4.
@@ -68,7 +68,7 @@ projects and review [the security model](SECURITY.md) before granting access.
 
 | Feature | Use |
 | --- | --- |
-| Subagents | Delegate exact tasks with ownership, deadlines, cancellation and a message relay |
+| Subagents | Delegate bounded tasks with ownership, intra-wave DAG dependencies, automatic git worktree isolation, non-destructive relay board reads, warm session forks, and mid-run failover |
 | Compaction | Use an optional local binary instead of a model call; retain raw-session recall |
 | Verify after edit | Run a configured project check and return failures to the agent |
 | Session plan | Keep phased todos visible and saved with the session |

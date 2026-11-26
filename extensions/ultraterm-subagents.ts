@@ -10,7 +10,8 @@ import { CLAUDE_REVIEW_SHELL_REFUSED, isClaudeReadOnlyReview } from "../src/suba
 import { requireRouteReason, ROUTE_REASON_MAX_LENGTH, ROUTE_REASON_MIN_LENGTH } from "../src/subagents/route-reason.ts";
 import { canFallbackReview, implicitReviewFallbackRoute, implicitReviewRoute, isReadOnlyReviewWave, recordReviewFallback } from "../src/subagents/reviewer-fallback.ts";
 import { parseRoute, routeLabel, routingConfigOrEmpty, DSH_ROUTE_PREFIX, TASK_CLASS_MAX_LENGTH, verificationGateFor } from "../src/routing-config.ts";
-import { statSync } from "node:fs";
+import { existsSync, statSync, unlinkSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { PersistenceHealth } from "../src/subagents/persistence-health.ts";
 import { deferredToolsEnabled, setToolActive } from "../src/deferred-tools.ts";
 import { signalStart } from "../src/adaptive-tools.ts";
@@ -18,7 +19,7 @@ import { hideSkill, toolIsOffered } from "../src/skill-visibility.ts";
 import { setPinnedPanel } from "../src/tui/pinned-panels.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
-import { SubagentCoordinator, CoordinatorWaitTimeoutError } from "../src/subagents/coordinator.ts";
+import { SubagentCoordinator, CoordinatorWaitTimeoutError, reportBody } from "../src/subagents/coordinator.ts";
 import { normalizeDispatch, SubagentPolicyError } from "../src/subagents/policy.ts";
 import { assertKnownClaudeAccount, resolveClaudeAccount } from "../src/subagents/claude-account.ts";
 import { assertActiveModelSelector } from "../src/retired-model-selection.ts";
@@ -38,6 +39,7 @@ import {
 } from "../src/subagents/relay.ts";
 import { SessionScheduler } from "../src/subagents/scheduler.ts";
 import { canonicalSessionFile, CheckpointStore, diagnoseRun, isInProcessCheckpointCollision, recoveredRun, type Checkpoint } from "../src/subagents/checkpoints.ts";
+import { defaultWorktreeRoot, isSafeWorktreeReceipt, resolveGitRepo, sweepOrphanWorktrees } from "../src/subagents/worktree.ts";
 import { renderSubagentCall, renderSubagentResult, renderSubagentLive } from "../src/subagents/render.ts";
 import type { PiWorkerRuntime, PiWorkerRunnerOptions, PiWorkerSessionFactory } from "../src/subagents/pi-worker.ts";
 import type { ClaudeSpawn, ClaudeWorkerRunnerOptions } from "../src/subagents/claude-worker.ts";
@@ -53,6 +55,7 @@ import {
   PARTIAL_SUMMARY_LIMIT,
   RELAY_MAILBOX_LIMIT,
   TURN_BUDGET_ERROR,
+  WORKSPACE_MODES,
   harnessOf,
   type DispatchInput,
   type HarnessId,
@@ -60,10 +63,13 @@ import {
   type PartialReason,
   type RunRecord,
   type TaskClassSelection,
+  type TaskForkSource,
   type TaskOutcome,
   type TaskRecord,
+  type TaskWorktreeReceipt,
   type UsageTotals,
   type WorkerRunner,
+  type WorkspaceMode,
 } from "../src/subagents/types.ts";
 
 export const PARENT_RELAY_ID = "parent" as const;
@@ -122,6 +128,7 @@ const HubActionSchema = stringEnum(["list", "status", "wait", "cancel", "send", 
 const OutcomeSchema = stringEnum(["pass", "fail"] as const);
 const OutcomeSourceSchema = stringEnum(["verification", "test-gate", "operator"] as const);
 const WaitModeSchema = stringEnum(["next", "all"] as const);
+const WorkspaceSchema = stringEnum(WORKSPACE_MODES);
 
 const TaskSchema = Type.Object({
   label: Type.String({ minLength: 1, maxLength: 80 }),
@@ -138,6 +145,14 @@ const TaskSchema = Type.Object({
   )),
   allowBash: Type.Optional(Type.Boolean({ description: "Enable unsandboxed shell access in the operator trust domain; defaults to false. Claude read-only reviewers never receive Bash; stage git evidence for Read/Grep/Glob." })),
   taskClass: Type.Optional(Type.String({ pattern: "^[a-z0-9]+(-[a-z0-9]+)*$", minLength: 1, maxLength: TASK_CLASS_MAX_LENGTH, description: "Operator-named task class (a lowercase slug from taskClasses in routing.json). An implicit text worker wave whose class is configured walks that class's chain first, then the normal route; the receipt and dispatch note say which. A class the operator did not configure is ignored with a note, never an error. One run uses one route: tasks of one wave may not name two configured classes, and a class steers only a wave whose every task carries it, that fits the class's slots and, for a maxScope small class, has no task that may both edit and run a shell; otherwise the normal route runs and the note says why." })),
+  dependsOn: Type.Optional(Type.Array(
+    Type.String({ minLength: 1, maxLength: 160 }),
+    { maxItems: MAX_TASKS, description: "Optional sibling task labels or IDs that must finish (state=done) before this task starts. Validated acyclic at dispatch; compact predecessor pointers are injected automatically when unblocked, and dependent tasks abort cleanly if a dependency fails, aborts, or times out." },
+  )),
+  forkFrom: Type.Optional(Type.Object({
+    runId: Type.String({ minLength: 1, maxLength: 128 }),
+    taskId: Type.String({ minLength: 1, maxLength: 160 }),
+  }, { additionalProperties: false, description: "Optional prior task in this same parent session whose persisted Pi JSONL transcript is forked into a fresh session file (Pi harness only; never copies scratch or workspace directories)." })),
 }, { additionalProperties: false });
 
 /** Public dispatcher schema, exported so contract tests do not have to load Pi. */
@@ -146,7 +161,8 @@ export const ultratermSubagentsSchema = Type.Object({
   model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Exact authenticated provider/model for all tasks; mutually exclusive with profile." })),
   claudeAccount: Type.Optional(Type.String({ pattern: "^[a-z0-9]+(-[a-z0-9]+)*$", minLength: 1, maxLength: 24, description: "Claude subscription account id from claude-accounts.json, e.g. primary, b, team-2. Task-scoped. Requires a Claude subscription route; unknown, unavailable, Pi and API selections fail closed. Never changes defaults or enables credits." })),
   profile: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Native harness/profile route (e.g. steak-pi/profile-name); mutually exclusive with model. Operator-retired routes are rejected." })),
-  harness: Type.Optional(Type.Unsafe<HarnessId>({ type: "string", enum: [...HARNESS_IDS], description: "Execution harness. pi (default) is the native runner; claude-code is the official headless Claude CLI on the operator's claudeCodeDefaults model unless model names one of its pinned routes, at the operator's claudeCodeDefaults.effort for that model, else medium, unless thinking asks for high/xhigh with a thinkingReason; workers, scouts and reviewers alike, with CLI-enforced ownedPaths; no Bash for read-only reviewers. Image review reads staged files under cwd with native Read. steak-dsh is the DSH headless CLI with the Steak DSH bundle on an exact steak-dsh/<provider>/<model-id> registry route (model may also be the inner provider/model with this harness); CLI-enforced ownedPaths, no shell unless allowBash, no relay steering or resume." })),
+  harness: Type.Optional(Type.Unsafe<HarnessId>({ type: "string", enum: [...HARNESS_IDS], description: "Execution harness. pi (default) is the native runner; claude-code is the official headless Claude CLI on the operator's claudeCodeDefaults model unless model names one of its pinned routes, at the operator's claudeCodeDefaults.effort for that model, else medium, unless thinking asks for high/xhigh with a thinkingReason; workers, scouts and reviewers alike, with CLI-enforced ownedPaths; no Bash for read-only reviewers. Image review reads staged files under cwd with native Read. steak-dsh is the DSH headless CLI with the Steak DSH bundle on an exact steak-dsh/<provider>/<model-id> registry route (model may also be the inner provider/model with this harness); CLI-enforced ownedPaths, no shell unless allowBash, session continuity via --session-id, no relay steering." })),
+  workspace: Type.Optional(Type.Unsafe<WorkspaceMode>({ ...WorkspaceSchema, description: "Workspace isolation mode: auto (default) isolates >=2 mayEdit tasks in per-task git worktrees outside the repo while single-writer and read-only waves stay shared; worktree forces isolated git worktrees (fails closed outside git); shared disables worktree isolation. Never auto-pushes." })),
   requireImages: Type.Optional(Type.Boolean({ description: "Require advertised image input; no silent fallback. Claude Code uses native Read on staged image files under cwd or a read-only artifact root declared with readPaths, not inline attachments." })),
   constraints: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4_000 }), { maxItems: 64 })),
   contract: Type.Optional(Type.String({ minLength: 1, maxLength: 8_000 })),
@@ -179,7 +195,9 @@ export const ultratermHubSchema = Type.Object({
   kind: Type.Optional(RelayKindSchema),
   replyTo: Type.Optional(Type.String({ minLength: 1, maxLength: 160, description: "Required request envelope ID when kind is reply" })),
   afterSeq: Type.Optional(Type.Integer({ minimum: 0 })),
+  seqs: Type.Optional(Type.Array(Type.Integer({ minimum: 1 }), { maxItems: 64, description: "inbox: exact relay sequence numbers to read non-destructively from the run board log" })),
   limit: Type.Optional(Type.Integer({ minimum: 0, maximum: RELAY_MAILBOX_LIMIT })),
+  model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "resume: optional explicit provider/model override (Pi harness) to recover a quota-stalled checkpoint without losing history" })),
 }, { additionalProperties: false });
 
 export const dispatchSchema = ultratermSubagentsSchema;
@@ -200,7 +218,9 @@ export interface UltratermHubParams {
   kind?: "message" | "request" | "reply" | "status";
   replyTo?: string;
   afterSeq?: number;
+  seqs?: number[];
   limit?: number;
+  model?: string;
 }
 
 export interface SettledTaskView {
@@ -215,6 +235,9 @@ export interface SettledTaskView {
   partialSummary?: string;
   /** Predecessor task this attempt continues (explicit bounded resume). */
   resumedFrom?: string;
+  dependsOn?: string[];
+  forkFrom?: TaskForkSource;
+  worktree?: TaskWorktreeReceipt;
   output: string;
   error?: string;
   currentTool?: string;
@@ -358,6 +381,7 @@ export interface UltratermSubagentsDependencies {
   now?: () => number;
   idFactory?: () => string;
   checkpointRoot?: string;
+  worktreeRoot?: string;
   shutdownGraceMs?: number;
 }
 
@@ -743,8 +767,23 @@ async function resolveImplicitWorkerRoute(
     // An unmetered tier has no router meter to consult, so its launch is never gated by a router read
     // (its own 402/no-endpoint refusal is the only evidence it spent).
     if (gated !== undefined && isMeteredQuota(gated)) quota ??= await readQuota();
+    const filterAlternates = async (selection: NativeSelection): Promise<NativeSelection> => {
+      if (!selection.alternates?.length) return selection;
+      const altNeedsQuota = selection.alternates.some((alt) => {
+        const altStep = alt.step ?? { provider: alt.model.provider, id: alt.model.id };
+        return altStep.onlyWhen !== undefined || isMeteredQuota(quotaProviderOf(altStep) ?? "");
+      });
+      if (altNeedsQuota) quota ??= await readQuota();
+      const filtered = selection.alternates.filter((alt) => {
+        const altStep = alt.step ?? { provider: alt.model.provider, id: alt.model.id };
+        return !skipStep(altStep, quota);
+      });
+      return { ...selection, alternates: filtered.length > 0 ? filtered : undefined };
+    };
     const cause = refused ?? tierBlock(quota, step, free);
     if (cause === undefined) {
+      // Filter pre-resolved alternates against quota, policy, and `onlyWhen` so exhausted or ineligible routes are omitted.
+      first = await filterAlternates(first);
       const selectedRoute = step.harness === "steak-dsh" ? dshRouteOf(step) : routeOfStep(step);
       const earlier = first.selection.taskClass?.outcome === "served" ? [] : first.selection.chainRoutes?.slice(0, first.selection.chainRoutes.indexOf(selectedRoute)) ?? [];
       const causes = earlier.flatMap(route => {
@@ -760,7 +799,7 @@ async function resolveImplicitWorkerRoute(
     }
     // The resolved route is out of quota: leave it, continue down the default chain.
     try {
-      const next = await resolveNativeSelection(ctx, requested, dependencies, { forceDefaultChain: true, skipRoute: step => skipStep(step, quota), quotaSnapshot: quota });
+      const next = await filterAlternates(await resolveNativeSelection(ctx, requested, dependencies, { forceDefaultChain: true, skipRoute: step => skipStep(step, quota), quotaSnapshot: quota }));
       return withClass({ resolved: next, tried: [], causes: [`${routeStepLabel(step)}: ${cause}`] });
     } catch (error) {
       if (!isDefaultChainExhausted(error)) throw error;
@@ -1149,6 +1188,9 @@ function taskView(task: TaskRecord): SettledTaskView {
       ...(task.partialSummary ? { partialSummary: task.partialSummary } : {}),
     } : {}),
     ...(task.resumedFrom ? { resumedFrom: task.resumedFrom } : {}),
+    ...(task.dependsOn?.length ? { dependsOn: [...task.dependsOn] } : {}),
+    ...(task.forkFrom ? { forkFrom: { ...task.forkFrom } } : {}),
+    ...(task.worktree ? { worktree: { ...task.worktree } } : {}),
     output: task.output,
     ...(task.error === undefined ? {} : { error: task.error }),
     ...(task.currentTool ? { currentTool: task.currentTool.slice(0, 80) } : {}),
@@ -1213,7 +1255,15 @@ function terminalCount(run: RunRecord): number {
 export function renderRunProgress(run: RunRecord): string {
   const done = terminalCount(run);
   const partial = run.tasks.filter((task) => task.outcome === "partial").length;
-  return `USAP ${run.id}: ${done}/${run.tasks.length} settled · ${run.state}${partial ? ` · ${partial} partial` : ""}`;
+  const hops = run.tasks.reduce((sum, task) => sum + (task.routeFallbacks?.length ?? 0), 0);
+  const worktrees = run.tasks.filter((task) => task.worktree !== undefined).length;
+  const taskById = new Map(run.tasks.map((task) => [task.id, task]));
+  const awaitingDeps = run.tasks.filter((task) => task.state === "queued" && (task.dependsOn?.some((depId) => taskById.get(depId)?.state !== "done") ?? false)).length;
+  return `USAP ${run.id}: ${done}/${run.tasks.length} settled · ${run.state}`
+    + `${partial ? ` · ${partial} partial` : ""}`
+    + `${hops ? ` · ${hops} route hop${hops === 1 ? "" : "s"}` : ""}`
+    + `${worktrees ? ` · ${worktrees} worktree${worktrees === 1 ? "" : "s"}` : ""}`
+    + `${awaitingDeps ? ` · ${awaitingDeps} awaiting deps` : ""}`;
 }
 
 function appendBounded(target: string, addition: string, limit: number): { text: string; truncated: boolean } {
@@ -1252,10 +1302,15 @@ export function renderRunResult(run: RunRecord, limit = MAX_TOOL_CONTENT): strin
     const apiReceipt = task.apiReceipt ? `\n${formatClaudeApiReceipt(task.apiReceipt)}` : "";
     const routeReceipt = task.reviewFallback ? `\nactual review route: ${task.reviewFallback.to} (automatic fallback: ${task.reviewFallback.reason}; not Opus approval)` : "";
     const accountReceipt = task.providerAccount ? `\naccount: ${task.providerAccount.label} (${task.providerAccount.provider}/${task.providerAccount.id}); lease=${task.providerAccount.lease}` : "";
+    const worktreeReceipt = task.worktree
+      ? `\nworktree: ${task.worktree.branch} (${task.worktree.worktreePath}; ${task.worktree.cleaned ? "cleaned" : task.worktree.dirty ? "dirty" : task.worktree.committed ? "committed" : "clean"})`
+        + (task.worktree.diffStat ? `\n${task.worktree.diffStat}` : "")
+      : "";
+    const hopReceipt = task.routeFallbacks?.length ? `\nroute hops: ${task.routeFallbacks.join(", ")}` : "";
     const retained = task.partialSummary ? `\nretained: ${task.partialSummary}` : "";
     const queue = task.launchQueue;
     const queued = queue ? `\nlaunch queue: ${queue.tier}/${queue.provider} · ${queue.reason} · ${Math.max(0, (task.endedAt ?? Date.now()) - queue.since)}ms elapsed` : "";
-    const block = `\n\n[${task.label}] ${task.state}${suffix}${queued}${error}${retained}${routeReceipt}${apiReceipt}${accountReceipt}${task.subscriptionReceipt ? `\nClaude subscription: ${task.subscriptionReceipt.account ?? "inherited"}; namespace=${task.subscriptionReceipt.configMode}; identity=${task.subscriptionReceipt.identityHash}; preflight=verified; init=${task.subscriptionReceipt.attested.init ? "verified" : "unverified"}` : ""}\n${task.output || "(no output)"}`;
+    const block = `\n\n[${task.label}] ${task.state}${suffix}${queued}${error}${retained}${hopReceipt}${routeReceipt}${worktreeReceipt}${apiReceipt}${accountReceipt}${task.subscriptionReceipt ? `\nClaude subscription: ${task.subscriptionReceipt.account ?? "inherited"}; namespace=${task.subscriptionReceipt.configMode}; identity=${task.subscriptionReceipt.identityHash}; preflight=verified; init=${task.subscriptionReceipt.attested.init ? "verified" : "unverified"}` : ""}\n${task.output || "(no output)"}`;
     const next = appendBounded(text, block, limit);
     text = next.text;
     if (next.truncated) {
@@ -1883,27 +1938,34 @@ export function createUltratermSubagentsExtension(
       const runner = withProfileEnsure(dependencies.createRunner?.(pi, relay)
         ?? defaultWorkerRunner(relay, workerRuntimes, dependencies.claudeSpawn, dependencies.accountCommand, undefined, claudeAdmittedModel, dependencies.dshSpawn),
       dependencies.ensureExec ? { exec: dependencies.ensureExec } : {});
+      const worktreeRoot = dependencies.worktreeRoot ?? (store ? join(store.directory, "worktrees") : defaultWorktreeRoot());
       const coordinator = new SubagentCoordinator(runner, {
         scheduler,
         now: dependencies.now,
         sessionDir: () => store?.sessionsDirectory,
+        predecessorRelaySeqs: (runId, senderId, viewerId) => relay.seqsBySender(runId, senderId, viewerId),
+        worktreeRoot,
         // Each settled task of a classed wave leaves its evidence; a reply that comes back empty is retried once with
         // a higher output budget, then moves to the next ranked route the dispatch froze for this run.
         onTaskSettled: (run, task) => { recordSettledTask(evidenceStoreOf(dependencies), run, task, (dependencies.now ?? Date.now)()); },
         replyPolicy: (run, task) => {
           const receipt = run.selection?.taskClass;
           const classed = receipt !== undefined && receipt.outcome === "served" && task.taskClass === receipt.name;
-          // An implicit (non-explicit-route) wave continues a content-filter refusal
-          // on its next configured route at any point, in the same worker session.
-          // An explicit route never reroutes, so it gets no policy at all.
+          // An implicit (non-explicit-route) wave continues mid-run quota, 5xx, and
+          // content-filter refusals on its next configured chain route in place,
+          // preserving the worker session. Pre-output refusals on non-classed implicit
+          // waves remain owned by the wave-level tier fall-through in dispatch.
+          // Explicit routes (`override`) never reroute.
           const implicit = run.selection?.source !== undefined && run.selection.source !== "override";
           if (!classed && !implicit) return undefined;
+          if (!classed && task.outputStarted !== true) return undefined;
           const alternates = (workerRuntimes.get(run.id)?.alternates ?? []).map((item) => `${item.model.provider}/${item.model.id}`);
           if (!classed && alternates.length === 0) return undefined;
           const retryMaxTokens = classed ? configuredTaskClass(receipt!.name)?.retryMaxTokens : undefined;
           // The empty-reply boost retry stays a classed-run contract; an implicit
-          // wave without a class only gains the content-filter continuation.
-          return { ...(retryMaxTokens !== undefined ? { maxTokens: retryMaxTokens } : {}), alternates, ...(classed ? {} : { emptyReplyRetry: false }) };
+          // wave without a class hops on mid-run quota/5xx/content-filter refusals
+          // only when a persisted worker sessionFile exists to continue in place.
+          return { ...(retryMaxTokens !== undefined ? { maxTokens: retryMaxTokens } : {}), alternates, ...(classed ? {} : { emptyReplyRetry: false, requireSession: true }) };
         },
         onChange: (run) => {
           if (!created || created.closed) return;
@@ -1948,6 +2010,20 @@ export function createUltratermSubagentsExtension(
             created.completionBuffer.push({ runId: recovered.id, text: renderCompletionMessage(recovered) });
           }
         }
+        const sweepRoot = dependencies.worktreeRoot ?? join(candidate.directory, "worktrees");
+        const retainedPaths = new Set<string>();
+        for (const checkpoint of candidate.list()) {
+          for (const task of checkpoint.run.tasks) {
+            if (task.worktree && !task.worktree.cleaned) retainedPaths.add(task.worktree.worktreePath);
+          }
+        }
+        const activeRunIds = new Set(coordinator.activeRuns().map((item) => item.id));
+        const sweepOwner = created.ownerSessionId;
+        setImmediate(() => {
+          try {
+            sweepOrphanWorktrees(sweepRoot, { ownerSessionId: sweepOwner, activeRunIds, retainedWorktreePaths: retainedPaths, maxRemovals: 8 });
+          } catch { /* Best-effort startup worktree hygiene. */ }
+        }).unref?.();
       };
       created = {
         owner,
@@ -2607,9 +2683,31 @@ export function createUltratermSubagentsExtension(
         : undefined;
       if (apiRoute) params.concurrency = claudeApiConcurrency(params.concurrency, params.tasks.length);
       if (foreignHarness && params.requireImages === true && !apiRoute) assertClaudeCodeImageAdmission(claudeRoute, claudeAdmittedModel);
-      const piResolved = foreignHarness || dshHarness
+      let piResolved = foreignHarness || dshHarness
         ? undefined
         : nativeResolved ?? await resolveNativeSelection(ctx, params, dependencies);
+      // Implicit non-quotaRouted chain selections (e.g. native all-reviewer chain when no
+      // implicitReview.route is configured) must filter alternates against project policy,
+      // `onlyWhen`, and metered quota just like `resolveImplicitWorkerRoute` does.
+      if (!nativeResolved && piResolved && piResolved.selection.source === "chain" && piResolved.alternates?.length) {
+        const altPolicy = projectPolicyOf(ctx, params, dependencies);
+        const altNeedsQuota = piResolved.alternates.some((alt) => {
+          const altStep = alt.step ?? { provider: alt.model.provider, id: alt.model.id };
+          return altStep.onlyWhen !== undefined || isMeteredQuota(quotaProviderOf(altStep) ?? "");
+        });
+        const altQuota = altNeedsQuota ? await readQuota() : undefined;
+        const filtered = piResolved.alternates.filter((alt) => {
+          const altStep = alt.step ?? { provider: alt.model.provider, id: alt.model.id };
+          if (altPolicy.noClaude !== undefined && isClaudeRouteStep(altStep)) return false;
+          if (altStep.onlyWhen && onlyWhenSkipReason(altStep.onlyWhen, { quotaSnapshot: altQuota }) !== undefined) return false;
+          if (altQuota) {
+            const block = isProvenFreeModel(alt.model) ? routeUnsupportedBlock(altQuota, altStep) : routeQuotaBlock(altQuota, altStep);
+            if (block !== undefined) return false;
+          }
+          return true;
+        });
+        piResolved = { ...piResolved, alternates: filtered.length > 0 ? filtered : undefined };
+      }
       if (piResolved && !implicitRoute) {
         // An explicit route stays exact: never rerouted, but never launched into a provider the
         // router has proven exhausted either. The refusal names the router's own cause.
@@ -2671,7 +2769,7 @@ export function createUltratermSubagentsExtension(
       const classChoice = taskClassReceipt?.outcome === "served" && taskClassReceipt.decision ? taskClassReceipt : undefined;
       const harnessWhy = classChoice && piResolved ? harnessChoiceNote(classChoice, harnessOf(piResolved.selection.harness)) : "";
       const harnessNote = harnessWhy + ((dshHarness || classedDsh)
-        ? `Harness note: this wave runs on the steak-dsh harness (the DSH headless CLI) on ${model}; relay steering (hub send/redirect) and resume are unsupported on this harness in v1.\n`
+        ? `Harness note: this wave runs on the steak-dsh harness (the DSH headless CLI) on ${model}; relay steering (hub send/redirect) is unsupported on this harness (session continuity uses --session-id).\n`
         : "");
       // An explicit route for routine workers must say why the configured chain is not right. Checked after the
       // route itself is admitted (so a wrong selector gets its own refusal first), and before any checkpoint,
@@ -2743,15 +2841,67 @@ export function createUltratermSubagentsExtension(
       if (reviewFallbackRuntime) current.workerRuntimes.set(`${run.id}:review-fallback`, Object.freeze(reviewFallbackRuntime));
       run.ownerSessionId = current.ownerSessionId;
       run.ownerSessionFile = current.ownerSessionFile;
+      // B5: Warm context-preserving `forkFrom` (Pi harness only, strictly validated inside same parent session).
+      const forkedFiles: string[] = [];
+      const cleanupForkedFiles = () => {
+        for (const file of forkedFiles) {
+          try { unlinkSync(file); } catch { /* ignore */ }
+        }
+        forkedFiles.length = 0;
+      };
+      try {
+        for (const task of run.tasks) {
+          if (!task.forkFrom) continue;
+          if (harnessOf(run.harness) !== "pi") {
+            throw new Error(`forkFrom on task ${JSON.stringify(task.label)} is supported only on the native Pi harness`);
+          }
+          if (!current.store || current.checkpointError) {
+            throw new Error(`forkFrom on task ${JSON.stringify(task.label)} requires healthy durable checkpoints in this session`);
+          }
+          const sourceRun = current.coordinator.snapshot(task.forkFrom.runId)
+            ?? current.store.get(task.forkFrom.runId)?.run;
+          if (!sourceRun) {
+            throw new Error(`forkFrom run ${task.forkFrom.runId} was not found in this session`);
+          }
+          if (current.ownerSessionId && sourceRun.ownerSessionId && sourceRun.ownerSessionId !== current.ownerSessionId) {
+            throw new Error(`forkFrom run ${task.forkFrom.runId} belongs to another session; cross-session fork is refused`);
+          }
+          if (harnessOf(sourceRun.harness) !== "pi") {
+            throw new Error(`forkFrom run ${task.forkFrom.runId} uses harness ${harnessOf(sourceRun.harness)}, not pi`);
+          }
+          const sourceTask = sourceRun.tasks.find((candidate) => candidate.id === task.forkFrom!.taskId);
+          if (!sourceTask) {
+            throw new Error(`forkFrom task ${task.forkFrom.taskId} was not found in run ${task.forkFrom.runId}`);
+          }
+          if (!SETTLED_TASK_STATES.includes(sourceTask.state)) {
+            throw new Error(`forkFrom task ${task.forkFrom.taskId} in run ${task.forkFrom.runId} is still ${sourceTask.state}; wait for it to settle before forking`);
+          }
+          if (!sourceTask.sessionFile) {
+            throw new Error(`forkFrom task ${task.forkFrom.taskId} in run ${task.forkFrom.runId} has no persisted Pi session file`);
+          }
+          const forkedPath = current.store.forkSession(sourceTask.sessionFile, run.cwd);
+          forkedFiles.push(forkedPath);
+          task.sessionFile = forkedPath;
+        }
+      } catch (error) {
+        cleanupForkedFiles();
+        throw error;
+      }
       // An Esc during this tier's router reads (quota status, Claude account select) must not still
       // launch it: nothing is saved or started for a cancelled dispatch.
       if (signal?.aborted) {
+        cleanupForkedFiles();
         throw new Error(fallThroughs.length > 0
           ? `USAP dispatch cancelled before the fall-through to the next tier launched (${fallThroughs.map((step) => step.cause).join("; ")}).`
           : "USAP dispatch cancelled before any worker launched.");
       }
       // Never launch a supposedly durable run whose initial checkpoint failed.
-      saveCheckpoint(current, run, true, "initial", true);
+      try {
+        saveCheckpoint(current, run, true, "initial", true);
+      } catch (error) {
+        cleanupForkedFiles();
+        throw error;
+      }
       // Foreign-harness runs have no frozen Pi runtime: their runner branches on
       // run.harness and never consults the Pi registry or the relay workers. A steak-dsh run freezes
       // its inner registry model plus Pi's own auth resolution instead (the runner re-checks at launch).
@@ -2785,6 +2935,7 @@ export function createUltratermSubagentsExtension(
         parent.close();
         current.relay.cleanupRun(run.id);
         current.workerRuntimes.delete(run.id); current.workerRuntimes.delete(`${run.id}:review-fallback`);
+        cleanupForkedFiles();
         throw error;
       }
 
@@ -3046,8 +3197,9 @@ export function createUltratermSubagentsExtension(
 
         if (params.action === "diagnose") {
           const warning = sessionWarning(current);
+          const now = (dependencies.now ?? Date.now)();
           const diagnostics = {
-            ...diagnoseRun(snapshot),
+            ...diagnoseRun(snapshot, now, { unansweredRequests: current.relay.unansweredRequests(runId, now) }),
             persistence: persistenceOf(current),
             // True when this view came from a lease this session may not write.
             readOnly: !current.store && current.checkpointDegraded,
@@ -3065,9 +3217,17 @@ export function createUltratermSubagentsExtension(
           assertActiveModelSelector(snapshot.model);
           assertActiveModelSelector(snapshot.selection?.modelId);
           assertActiveModelSelector(snapshot.selection?.profile);
+          const overrideModel = typeof params.model === "string" && params.model.trim().length > 0
+            ? params.model.trim() : undefined;
+          if (overrideModel !== undefined) assertActiveModelSelector(overrideModel);
           if (snapshot.state === "running") throw new Error("Run is still active; resume would duplicate work");
-          if (harnessOf(snapshot.harness) === "steak-dsh") {
-            throw new Error("Resume refused: harness steak-dsh keeps no resumable worker session in v1; inspect the retained partial work and dispatch a new task.");
+          const snapshotHarness = harnessOf(snapshot.harness);
+          const dshResume = snapshotHarness === "steak-dsh";
+          if (overrideModel !== undefined && snapshotHarness !== "pi") {
+            throw new Error(`Resume refused: explicit model override on hub resume is supported only for native Pi checkpoints, not harness ${snapshotHarness}.`);
+          }
+          if (dshResume && snapshot.tasks.some((task) => task.state !== "done" && task.startedAt !== undefined && !task.dshSessionId)) {
+            throw new Error("Resume refused: harness steak-dsh keeps no resumable worker session for this checkpoint (no dshSessionId recorded); inspect the retained partial work and dispatch a new task.");
           }
           if (checkpoint?.resumedAs) throw new Error(`Already resumed as ${checkpoint.resumedAs}; a task is resumed at most once, so inspect that run instead`);
           if (checkpoint?.pendingResume) throw new Error("Resume reservation interrupted; reload the host to recover it before retrying");
@@ -3095,68 +3255,151 @@ export function createUltratermSubagentsExtension(
           }
           for (const task of unfinished) {
             if (snapshot.harness === "claude-code" && !isClaudeApiRoute(snapshot.model) && task.claudeSessionId && !task.subscriptionReceipt) throw new Error(`Resume refused: ${JSON.stringify(task.label)} has no authenticated Claude account receipt; inspect legacy work before a new dispatch`);
-            if (task.startedAt !== undefined && !task.sessionFile && !task.claudeSessionId) throw new Error(`No native checkpoint for ${task.label}${snapshot.harness === "claude-code" ? " (this Claude CLI task ran before resumable sessions)" : ""}; inspect partial work before a new dispatch`);
+            if (task.startedAt !== undefined && !task.sessionFile && !task.claudeSessionId && !task.dshSessionId) throw new Error(`No native checkpoint for ${task.label}${snapshot.harness === "claude-code" ? " (this Claude CLI task ran before resumable sessions)" : ""}; inspect partial work before a new dispatch`);
             if (task.sessionFile) current.store.validateSession(task.sessionFile);
           }
           if (!ctx.model) throw new Error("A resolved model is required to resume");
+          const targetModel = overrideModel ?? snapshot.model;
+          const activeWorktreeRoot = dependencies.worktreeRoot ?? (current.store ? join(current.store.directory, "worktrees") : defaultWorktreeRoot());
+          const resumeRepoRoot = resolveGitRepo(snapshot.cwd)?.repoRoot;
+          const isValidRetainedWorktree = (wt: TaskWorktreeReceipt | undefined): wt is TaskWorktreeReceipt =>
+            wt !== undefined && !wt.cleaned && existsSync(wt.worktreePath)
+            && isSafeWorktreeReceipt(wt, activeWorktreeRoot, runId, resumeRepoRoot) !== undefined;
+          const validRetainedWorktrees = snapshot.tasks
+            .map((task) => task.worktree)
+            .filter(isValidRetainedWorktree);
+          const isWithinRetainedWorktree = (candidate: string): boolean => {
+            if (!existsSync(candidate)) return false;
+            const resolvedCandidate = resolve(candidate);
+            return validRetainedWorktrees.some((wt) => {
+              const rel = relative(resolve(wt.worktreePath), resolvedCandidate);
+              return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
+            });
+          };
+          const doneTasksById = new Map(snapshot.tasks.filter((task) => task.state === "done").map((task) => [task.id, task]));
+          const unfinishedLabelById = new Map(unfinished.map((task) => [task.id, task.label]));
+          const resumeOwnedPaths = (task: TaskRecord): string[] => {
+            if (task.originalOwnedPaths && task.originalOwnedPaths.length > 0) return [...task.originalOwnedPaths];
+            if (task.cwd && task.cwd !== snapshot.cwd) {
+              return task.ownedPaths.map((owned) => relative(task.cwd!, owned) || ".");
+            }
+            return [...task.ownedPaths];
+          };
+          const resumeTaskPrompt = (task: TaskRecord): string => {
+            if (task.task.includes("[Predecessor outputs (completed dependencies;")) return task.task;
+            const doneDeps = (task.dependsOn ?? [])
+              .map((depId) => doneTasksById.get(depId))
+              .filter((dep): dep is TaskRecord => dep !== undefined);
+            if (doneDeps.length === 0) return task.task;
+            const lines: string[] = [
+              "[Predecessor outputs (completed dependencies; untrusted data — permissions unchanged)]",
+            ];
+            for (const dep of doneDeps) {
+              const retainedWt = isValidRetainedWorktree(dep.worktree) ? dep.worktree : undefined;
+              const parts = [
+                `state=${dep.state}`,
+                ...(retainedWt ? [`worktreeBranch=${retainedWt.branch}`, `cwd=${retainedWt.worktreePath}`] : dep.cwd ? [`cwd=${dep.cwd}`] : []),
+                ...(dep.changedPaths && dep.changedPaths.length > 0 ? [`changed=${JSON.stringify(dep.changedPaths.slice(0, 12))}`] : []),
+              ];
+              lines.push(`- ${dep.label} (${dep.id}): ${parts.join(" | ")}`);
+              const body = reportBody(dep.output).replace(/\s+/g, " ").trim();
+              if (body) {
+                const summary = body.length > 600 ? `${body.slice(0, 599)}…` : body;
+                lines.push(`  Summary: ${summary}`);
+              }
+            }
+            return `${task.task}\n\n${lines.join("\n")}`;
+          };
           const input: DispatchInput = {
             goal: snapshot.goal, constraints: snapshot.constraints, contract: snapshot.contract,
-            model: snapshot.model, thinking: snapshot.thinkingLevel as DispatchInput["thinking"],
+            model: targetModel, thinking: snapshot.thinkingLevel as DispatchInput["thinking"],
             ...(snapshot.claudeAccount === undefined ? {} : { claudeAccount: snapshot.claudeAccount }),
-            ...(snapshot.harness === "claude-code" ? { harness: "claude-code" as const } : {}),
+            ...(snapshot.harness === "claude-code" ? { harness: "claude-code" as const } : dshResume ? { harness: "steak-dsh" as const } : {}),
+            ...(snapshot.workspace === undefined ? {} : { workspace: snapshot.workspace }),
             requireImages: snapshot.selection?.images === true,
-            thinkingReason: "Continue the explicitly budgeted checkpoint on its original model and reasoning level.",
+            thinkingReason: overrideModel !== undefined && overrideModel !== snapshot.model
+              ? "Continue the explicitly budgeted checkpoint on the explicit override model at the original reasoning level."
+              : "Continue the explicitly budgeted checkpoint on its original model and reasoning level.",
             concurrency: snapshot.concurrency, timeoutMs: snapshot.timeoutMs, maxTurns: snapshot.maxTurns,
-            background: true, tasks: unfinished.map((task) => ({ label: task.label, task: task.task, role: task.role, mayEdit: task.mayEdit, ...(task.mayEdit ? { ownedPaths: task.ownedPaths } : {}), ...((task.readPaths?.length ?? 0) > 0 ? { readPaths: task.readPaths } : {}), allowBash: task.allowBash, ...(task.taskClass ? { taskClass: task.taskClass } : {}) })),
+            background: true,
+            tasks: unfinished.map((task) => {
+              // Preserve dependency edges between unfinished tasks; dependencies on already-done tasks are satisfied.
+              const pendingDeps = (task.dependsOn ?? [])
+                .map((depId) => unfinishedLabelById.get(depId))
+                .filter((label): label is string => label !== undefined);
+              return {
+                label: task.label, task: resumeTaskPrompt(task), role: task.role, mayEdit: task.mayEdit,
+                ...(task.mayEdit ? { ownedPaths: resumeOwnedPaths(task) } : {}),
+                ...((task.readPaths?.length ?? 0) > 0 ? { readPaths: task.readPaths } : {}),
+                allowBash: task.allowBash,
+                ...(task.taskClass ? { taskClass: task.taskClass } : {}),
+                ...(pendingDeps.length > 0 ? { dependsOn: pendingDeps } : {}),
+              };
+            }),
           };
           // Resume preserves the original harness: claude-code checkpoints ride
           // the same explicit CLI route and continue their session with
-          // `--resume`. Tasks started before resumable sessions have no
-          // history, so the check above fails closed; never-started tasks
-          // may start fresh.
+          // `--resume`; steak-dsh checkpoints continue with `--session-id`.
           const claudeResume = snapshot.harness === "claude-code";
-          const resolved = claudeResume
+          const dshPolicy = dshResume ? projectPolicyOf(ctx, input, dependencies) : undefined;
+          const dshResolvedModel = dshResume
+            ? await admitDshRoute(snapshot.model, ctx.modelRegistry, {
+                approvePaidRoute: dshPolicy?.planOnly !== undefined ? () => false : (dependencies.approvePaidRoute ?? AUTOMATIC_CHAIN_APPROVAL),
+                env: dependencies.env ?? process.env,
+              })
+            : undefined;
+          const resolved = claudeResume || dshResume
             ? undefined
             : await resolveNativeSelection(ctx, input, dependencies);
           // The explicit API route resumes only on itself, after the operator approval,
           // settings contract and the leaf's remaining budget are admitted again.
           const resumeApi = claudeResume && isClaudeApiRoute(snapshot.model);
-          const resumeSelection = resolved ? resolved.selection
+          const resumeSelection: ModelSelection = resolved ? resolved.selection
+            : dshResume && dshResolvedModel ? { provider: dshResolvedModel.provider, modelId: dshResolvedModel.id, source: "override" as const, harness: "steak-dsh" as const, images: false, tools: true }
             : resumeApi ? resolveClaudeApiSelection(claudeApiModelOf(snapshot.model)!)
             : resolveClaudeCodeSelection(claudeAdmittedModel(snapshot.model)!);
-          // Same subscription route as the original, or no resume: a changed or
-          // paid route is refused before the one resume is spent.
-          const originalRoute = snapshot.selection ? `${snapshot.selection.provider}/${snapshot.selection.modelId}` : snapshot.model;
-          const refuseRoute = (why: string): never => {
-            throw new Error(`Resume refused: ${why}. A resume continues only on the original ${resumeApi ? "explicit API" : "subscription"} route (${originalRoute}, ${snapshot.thinkingLevel}); dispatch a new task to change it.`);
-          };
+          // Same subscription route as the original unless an explicit Pi model override was supplied.
+          // Even with an explicit Pi model override, reasoning level and subscription/local admission are strictly enforced!
+          const originalRoute = snapshot.selection
+            ? (dshResume ? dshRouteOf({ provider: snapshot.selection.provider, id: snapshot.selection.modelId }) : `${snapshot.selection.provider}/${snapshot.selection.modelId}`)
+            : snapshot.model;
           if (resumeApi) {
             for (const task of unfinished) {
               admitClaudeApiRoute({ route: snapshot.model, taskCount: snapshot.tasks.length, roles: [task.role],
                 priorSpendUsd: task.usage.cost.total + (task.priorSpendUsd ?? 0), ...(task.apiLeafCapUsd === undefined ? {} : { leafCapLimitUsd: task.apiLeafCapUsd }) }, dependencies.now ? { now: dependencies.now } : {});
             }
           }
-          const resumedRoute = resolved ? `${resolved.model.provider}/${resolved.model.id}` : `${resumeSelection.provider}/${resumeSelection.modelId}`;
-          if (originalRoute !== snapshot.model || resumedRoute !== snapshot.model) refuseRoute(`the route changed (checkpoint ${originalRoute}, run ${snapshot.model}, now ${resumedRoute})`);
+          const resumedRoute = resolved ? `${resolved.model.provider}/${resolved.model.id}`
+            : dshResume && dshResolvedModel ? dshRouteOf({ provider: dshResolvedModel.provider, id: dshResolvedModel.id })
+            : `${resumeSelection.provider}/${resumeSelection.modelId}`;
+          const modelOverridden = overrideModel !== undefined && resumedRoute !== snapshot.model;
+          const refuseRoute = (why: string): never => {
+            throw new Error(`Resume refused: ${why}. A resume continues only on ${modelOverridden ? "a subscription or local route at the same reasoning level" : `the original ${resumeApi ? "explicit API" : dshResume ? "steak-dsh" : "subscription"} route (${originalRoute}, ${snapshot.thinkingLevel})`}; dispatch a new task to change it.`);
+          };
+          if (!modelOverridden && (originalRoute !== snapshot.model || resumedRoute !== snapshot.model)) {
+            refuseRoute(`the route changed (checkpoint ${originalRoute}, run ${snapshot.model}, now ${resumedRoute})`);
+          }
           if (resolved) {
             if (String(resolved.thinkingLevel) !== snapshot.thinkingLevel) refuseRoute(`the reasoning level changed (${snapshot.thinkingLevel} → ${String(resolved.thinkingLevel)})`);
             if (!isSubscriptionOrLocalRoute(resolved.model, resolved.registry.isUsingOAuth(resolved.model))) refuseRoute(`${resumedRoute} is no longer a subscription route (paid or API-key billing)`);
-          } else if (!isClaudeCodeEffort(snapshot.thinkingLevel)) {
+          } else if (claudeResume && !isClaudeCodeEffort(snapshot.thinkingLevel)) {
             refuseRoute(`Claude Code runs only at ${CLAUDE_CODE_EFFORTS.join(", ")}, not ${snapshot.thinkingLevel}`);
           }
           if (snapshot.claudeAccount !== undefined) await resolveClaudeAccount(snapshot.claudeAccount, dependencies.accountCommand);
-          const run = normalizeDispatch(input, snapshot.cwd, snapshot.model, resolved ? String(resolved.thinkingLevel) : snapshot.thinkingLevel, dependencies.now?.() ?? Date.now(), dependencies.idFactory);
+          const effectiveModel = modelOverridden ? resumedRoute : snapshot.model;
+          const effectiveThinking = resolved ? String(resolved.thinkingLevel) : snapshot.thinkingLevel;
+          const run = normalizeDispatch(input, snapshot.cwd, effectiveModel, effectiveThinking, dependencies.now?.() ?? Date.now(), dependencies.idFactory);
           // The resume pins the original route: a recorded automatic chain is not
           // carried over, so no pre-output hop can move the session to another route.
           // Provenance follows the run: a resumed automatic review (or its configured fallback) was never
           // operator-requested, so it keeps its automatic source instead of the resume's pinned `override`.
           // `automaticReview` is not carried over, so the resume never re-arms the Claude review fallback.
-          const automaticSource = snapshot.selection?.source === "automatic-review" || snapshot.selection?.source === "automatic-review-fallback" ? snapshot.selection.source : undefined;
+          const automaticSource = !modelOverridden && (snapshot.selection?.source === "automatic-review" || snapshot.selection?.source === "automatic-review-fallback") ? snapshot.selection.source : undefined;
           // Independence follows the work, not the route: a resumed Claude-tier run still needs Opus verification.
           // A resume names its route explicitly, so the profile that served the original run is carried only when it
           // is still an operator profile with an `ensure` hook for this exact route: the worker needs its server again.
           const recordedProfile = snapshot.selection?.profile;
-          const ensureProfile = recordedProfile !== undefined && !resumeApi && !claudeResume
+          const ensureProfile = !modelOverridden && recordedProfile !== undefined && !resumeApi && !claudeResume && !dshResume
             && routingConfigOrEmpty().workerProfiles?.some((profile) => profile.id === recordedProfile && profile.ensure !== undefined && profile.model === snapshot.model) === true
             ? recordedProfile : undefined;
           run.selection = { ...resumeSelection, ...(automaticSource ? { source: automaticSource } : {}), ...(snapshot.selection?.independence ? { independence: snapshot.selection.independence } : {}),
@@ -3167,30 +3410,68 @@ export function createUltratermSubagentsExtension(
           run.ownerSessionId = current.ownerSessionId;
           run.ownerSessionFile = current.ownerSessionFile;
           run.tasks.forEach((task, index) => {
-            task.sessionFile = unfinished[index].sessionFile;
-            task.providerAccount = unfinished[index].providerAccount ? { ...unfinished[index].providerAccount } : undefined;
-            task.claudeSessionId = unfinished[index].claudeSessionId;
-            if (unfinished[index].subscriptionReceipt) task.subscriptionReceipt = structuredClone(unfinished[index].subscriptionReceipt);
+            const prev = unfinished[index];
+            task.sessionFile = prev.sessionFile;
+            task.providerAccount = !modelOverridden && prev.providerAccount ? { ...prev.providerAccount } : undefined;
+            task.claudeSessionId = prev.claudeSessionId;
+            task.dshSessionId = prev.dshSessionId;
+            // Reuse any validated retained isolated worktree so partial edits in that worktree are preserved.
+            if (isValidRetainedWorktree(prev.worktree)) {
+              task.originalOwnedPaths = [...task.ownedPaths];
+              task.cwd = prev.cwd && isWithinRetainedWorktree(prev.cwd) ? prev.cwd : prev.worktree.worktreePath;
+              task.worktree = { ...prev.worktree };
+              task.ownedPaths = [...prev.ownedPaths];
+            } else if (!task.mayEdit) {
+              // Preserve a read-only dependent's worktree folder when it already ran inside a retained worktree,
+              // or point it at its single predecessor's retained worktree (counting all dependencies with valid
+              // retained worktrees, matching the coordinator's normal-run rule).
+              if (prev.cwd && isWithinRetainedWorktree(prev.cwd)) {
+                task.cwd = prev.cwd;
+              } else {
+                const allWorktreeDeps = (prev.dependsOn ?? [])
+                  .map((depId) => snapshot.tasks.find((candidate) => candidate.id === depId))
+                  .filter((dep): dep is TaskRecord => dep !== undefined && isValidRetainedWorktree(dep.worktree));
+                if (allWorktreeDeps.length === 1) {
+                  const dep = allWorktreeDeps[0];
+                  task.cwd = dep.cwd && isWithinRetainedWorktree(dep.cwd) ? dep.cwd : dep.worktree!.worktreePath;
+                }
+              }
+            }
+            if (prev.subscriptionReceipt) task.subscriptionReceipt = structuredClone(prev.subscriptionReceipt);
             if (resumeApi) {
               // The ceiling and the spend booked so far carry over; the resume cannot widen either.
-              if (unfinished[index].apiLeafCapUsd !== undefined) task.apiLeafCapUsd = unfinished[index].apiLeafCapUsd;
-              task.priorSpendUsd = unfinished[index].usage.cost.total + (unfinished[index].priorSpendUsd ?? 0);
+              if (prev.apiLeafCapUsd !== undefined) task.apiLeafCapUsd = prev.apiLeafCapUsd;
+              task.priorSpendUsd = prev.usage.cost.total + (prev.priorSpendUsd ?? 0);
             }
-            task.changedPaths = unfinished[index].changedPaths;
-            task.lastStep = unfinished[index].lastStep;
-            task.resumedFrom = unfinished[index].id;
+            if (modelOverridden) {
+              task.routeFallbacks = [...(prev.routeFallbacks ?? []), `${snapshot.model}->${effectiveModel}`];
+            }
+            task.changedPaths = prev.changedPaths;
+            task.lastStep = prev.lastStep;
+            task.resumedFrom = prev.id;
             // A leaf resumed on its fallback route still names the Claude route it replaced and why
             // (a Claude run resumes on Claude, so a mid-run fallback is not carried onto it).
-            const fallback = unfinished[index].reviewFallback;
+            const fallback = prev.reviewFallback;
             if (fallback && fallback.to === snapshot.model) task.reviewFallback = { ...fallback };
           });
-          try { current.store.prepareResume(runId, run); } catch (error) {
+          try { current.store.prepareResume(runId, run, modelOverridden ? { allowModelOverride: true } : undefined); } catch (error) {
             checkpointFailed(current, snapshot, error, "resume-reservation");
             throw new Error(current.checkpointError);
           }
           // The predecessor's latest telemetry record now names its successor.
           persistTelemetry(current, snapshot);
-          if (!claudeResume) {
+          if (dshResume && dshResolvedModel) {
+            current.workerRuntimes.set(run.id, Object.freeze({
+              model: Object.freeze({ ...dshResolvedModel }),
+              thinkingLevel: effectiveThinking as PiWorkerRuntime["thinkingLevel"],
+              dsh: Object.freeze({
+                ...(typeof ctx.modelRegistry.getApiKeyAndHeaders === "function"
+                  ? { resolveAuth: (model: NonNullable<ExtensionContext["model"]>) => ctx.modelRegistry.getApiKeyAndHeaders!(model) }
+                  : {}),
+                isUsingOAuth: (model: NonNullable<ExtensionContext["model"]>) => ctx.modelRegistry.isUsingOAuth(model),
+              }),
+            }) as PiWorkerRuntime);
+          } else if (!claudeResume) {
             current.workerRuntimes.set(run.id, Object.freeze({ model: Object.freeze({ ...resolved!.model }), thinkingLevel: resolved!.thinkingLevel }));
           }
           current.relay.createRun(run.id, [PARENT_RELAY_ID, ...run.tasks.map((task) => task.id)]);
@@ -3201,7 +3482,7 @@ export function createUltratermSubagentsExtension(
             current.bindings.set(run.id, resumed);
             resumed.completion = attachCompletion(current, run.id);
             setStatus(current, ctx);
-            return { content: [{ type: "text" as const, text: `Resumed ${unfinished.length} unfinished tasks as ${run.id} (the one bounded resume; no second resume is possible). Completed tasks were not replayed. The same budget applies again — maxTurns ${run.maxTurns}, timeoutMs ${run.timeoutMs}, never raised — on the same route ${snapshot.model}; inspect prior side effects.` }], details: dispatchDetails(started, persistenceOf(current)) };
+            return { content: [{ type: "text" as const, text: `Resumed ${unfinished.length} unfinished tasks as ${run.id} (the one bounded resume; no second resume is possible). Completed tasks were not replayed. The same budget applies again — maxTurns ${run.maxTurns}, timeoutMs ${run.timeoutMs}, never raised — on ${modelOverridden ? `explicit override route ${effectiveModel} (from ${snapshot.model})` : `the same route ${snapshot.model}`}; inspect prior side effects.` }], details: dispatchDetails(started, persistenceOf(current)) };
           } catch (error) { parent.close(); current.relay.cleanupRun(run.id); current.workerRuntimes.delete(run.id); current.workerRuntimes.delete(`${run.id}:review-fallback`); throw error; }
         }
 
@@ -3304,6 +3585,19 @@ export function createUltratermSubagentsExtension(
         }
 
         if (params.action === "inbox") {
+          if (params.seqs !== undefined) {
+            const relay = binding.parent.read({ seqs: params.seqs, limit: params.limit ?? RELAY_MAILBOX_LIMIT });
+            return {
+              content: [{
+                type: "text" as const,
+                text: relay.messages.length === 0
+                  ? "No matching relay messages for requested sequence numbers."
+                  : relay.messages.map((message) => `[#${message.seq} ${message.from} → ${message.to}] ${message.body}`).join("\n")
+                    .slice(0, MAX_TOOL_CONTENT),
+              }],
+              details: { action: "inbox" as const, run: toRunView(snapshot), relay },
+            };
+          }
           const relay = binding.parent.inbox(params.afterSeq ?? 0, params.limit ?? RELAY_MAILBOX_LIMIT);
           return {
             content: [{

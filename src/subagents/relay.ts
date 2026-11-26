@@ -44,6 +44,7 @@ export type RelaySendResult =
       ok: true;
       status: "queued" | "delivered" | "mixed";
       ids: string[];
+      seqs: number[];
       accepted: number;
       queued: number;
       delivered: number;
@@ -64,11 +65,35 @@ export interface RelayInboxResult {
   remaining: number;
 }
 
+export interface RelayReadOptions {
+  afterSeq?: number;
+  seqs?: readonly number[];
+  limit?: number;
+}
+
+export interface RelayReadResult {
+  messages: RelayEnvelope[];
+  headSeq: number;
+  nextSeq: number;
+  total: number;
+}
+
+export interface UnansweredRelayRequest {
+  id: string;
+  seq: number;
+  from: string;
+  to: string;
+  createdAt: number;
+  ageMs: number;
+}
+
 export interface RelayPeer {
   readonly runId: string;
   readonly senderId: string;
   send(input: RelaySendInput): RelaySendResult;
   inbox(afterSeq?: number, limit?: number): RelayInboxResult;
+  /** Non-destructive read from the bounded per-run append-only board log (by cursor or exact `seqs`). */
+  read(options?: RelayReadOptions): RelayReadResult;
   peers(): string[];
   close(): void;
 }
@@ -84,8 +109,10 @@ interface RelayRun {
   peerSet: ReadonlySet<string>;
   mailboxes: Map<string, RelayEnvelope[]>;
   pending: Map<string, RelayEnvelope[]>;
+  /** Bounded append-only run log (capped by `runLimit`), cleared on cleanup. */
+  history: RelayEnvelope[];
   deliveries: Map<string, DeliveryRegistration>;
-  requests: Map<string, { from: string; to: string }>;
+  requests: Map<string, { id: string; seq: number; from: string; to: string; createdAt: number }>;
   observers: Map<string, Set<(envelope: RelayEnvelope) => void>>;
   nextSeq: number;
   accepted: number;
@@ -152,6 +179,7 @@ export class RelayBroker {
       peerSet,
       mailboxes: new Map(peers.map((peerId) => [peerId, []])),
       pending: new Map(peers.map((peerId) => [peerId, []])),
+      history: [],
       deliveries: new Map(),
       requests: new Map(),
       observers: new Map(),
@@ -182,6 +210,15 @@ export class RelayBroker {
         }
         return this.readInbox(run, senderId, afterSeq, limit);
       },
+      read: (options: RelayReadOptions = {}) => {
+        if (closed || this.runs.get(runId) !== run) {
+          const afterSeq = options.afterSeq ?? 0;
+          return { messages: [], headSeq: 0, nextSeq: afterSeq, total: 0 };
+        }
+        // The parent sees the full run board; child peers see only broadcasts (`#run`),
+        // messages they sent, and direct messages addressed to them.
+        return this.readHistory(run, options, senderId === "parent" ? undefined : senderId);
+      },
       peers: () => {
         if (closed || this.runs.get(runId) !== run) return [];
         return run.peers.filter((peerId) => peerId !== senderId);
@@ -192,6 +229,48 @@ export class RelayBroker {
         if (run.deliveries.get(senderId)?.token === token) run.deliveries.delete(senderId);
       },
     });
+  }
+
+  /** Non-destructive read from the bounded per-run append-only board log. */
+  readRun(runId: string, options: RelayReadOptions = {}): RelayReadResult {
+    const run = this.runs.get(runId);
+    if (!run) {
+      const afterSeq = options.afterSeq ?? 0;
+      return { messages: [], headSeq: 0, nextSeq: afterSeq, total: 0 };
+    }
+    return this.readHistory(run, options);
+  }
+
+  /** Deterministic snapshot of open (unanswered) relay requests for a run. */
+  unansweredRequests(runId: string, now = this.now()): UnansweredRelayRequest[] {
+    const run = this.runs.get(runId);
+    if (!run) return [];
+    return [...run.requests.values()]
+      .sort((a, b) => a.seq - b.seq)
+      .map((req) => ({
+        id: req.id,
+        seq: req.seq,
+        from: req.from,
+        to: req.to,
+        createdAt: req.createdAt,
+        ageMs: Math.max(0, now - req.createdAt),
+      }));
+  }
+
+  /** Sequence numbers posted by one sender in a run visible to `viewerId` (broadcasts or addressed to viewer), for `#seq` citations. */
+  seqsBySender(runId: string, senderId: string, viewerId?: string, limit = 16): number[] {
+    const run = this.runs.get(runId);
+    if (!run) return [];
+    const seqs: number[] = [];
+    for (const envelope of run.history) {
+      if (envelope.from !== senderId) continue;
+      if (viewerId !== undefined && viewerId !== "parent"
+        && envelope.to !== RUN_BROADCAST_TARGET && envelope.to !== viewerId && envelope.from !== viewerId) {
+        continue;
+      }
+      seqs.push(envelope.seq);
+    }
+    return limit > 0 ? seqs.slice(-limit) : [];
   }
 
   bindSender(runId: string, senderId: string, onDelivery?: RelayDelivery): RelayPeer {
@@ -220,6 +299,7 @@ export class RelayBroker {
     run.requests.clear();
     run.pending.clear();
     run.mailboxes.clear();
+    run.history.length = 0;
     return this.runs.delete(runId);
   }
 
@@ -278,8 +358,10 @@ export class RelayBroker {
     let queued = 0;
     let delivered = 0;
     const ids: string[] = [];
+    const seqs: number[] = [];
     for (const recipient of recipients) {
       const seq = run.nextSeq++;
+      const createdAt = this.now();
       const envelope: RelayEnvelope = Object.freeze({
         version: USAP_VERSION,
         runId: run.id,
@@ -290,11 +372,13 @@ export class RelayBroker {
         kind,
         body: input.body,
         ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }),
-        createdAt: this.now(),
+        createdAt,
       });
       ids.push(envelope.id);
+      seqs.push(seq);
       run.accepted += 1;
-      if (kind === "request") run.requests.set(envelope.id, { from: senderId, to: recipient });
+      if (run.history.length < this.runLimit) run.history.push(envelope);
+      if (kind === "request") run.requests.set(envelope.id, { id: envelope.id, seq, from: senderId, to: recipient, createdAt });
 
       // Preserve per-recipient FIFO across steering and inbox delivery. A later
       // direct delivery must not advance a receiver past an older queued or
@@ -348,7 +432,54 @@ export class RelayBroker {
 
     if (kind === "reply") run.requests.delete(input.replyTo!);
     const status = queued === 0 ? "delivered" : delivered === 0 ? "queued" : "mixed";
-    return { ok: true, status, ids, accepted: recipients.length, queued, delivered };
+    return { ok: true, status, ids, seqs, accepted: recipients.length, queued, delivered };
+  }
+
+  private readHistory(run: RelayRun, options: RelayReadOptions, viewerId?: string): RelayReadResult {
+    const headSeq = run.nextSeq - 1;
+    const limit = options.limit ?? this.mailboxLimit;
+    if (!Number.isSafeInteger(limit) || limit < 0) {
+      throw new RangeError("limit must be a non-negative safe integer");
+    }
+    const maxItems = Math.min(limit, this.runLimit);
+    const visible = viewerId === undefined
+      ? run.history
+      : run.history.filter((envelope) =>
+          envelope.to === RUN_BROADCAST_TARGET
+          || envelope.from === viewerId
+          || envelope.to === viewerId);
+    if (options.seqs !== undefined) {
+      if (!Array.isArray(options.seqs)) throw new TypeError("seqs must be an array of positive integers");
+      const wanted = new Set<number>();
+      for (const value of options.seqs) {
+        if (!Number.isSafeInteger(value) || value < 1) {
+          throw new RangeError("seqs entries must be positive safe integers");
+        }
+        wanted.add(value);
+      }
+      const messages = maxItems === 0 || wanted.size === 0
+        ? []
+        : visible.filter((envelope) => wanted.has(envelope.seq)).slice(0, maxItems);
+      return {
+        messages,
+        headSeq,
+        nextSeq: messages.length > 0 ? messages[messages.length - 1].seq : (options.afterSeq ?? 0),
+        total: visible.length,
+      };
+    }
+    const afterSeq = options.afterSeq ?? 0;
+    if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) {
+      throw new RangeError("afterSeq must be a non-negative safe integer");
+    }
+    const messages = maxItems === 0
+      ? []
+      : visible.filter((envelope) => envelope.seq > afterSeq).slice(0, maxItems);
+    return {
+      messages,
+      headSeq,
+      nextSeq: messages.length > 0 ? messages[messages.length - 1].seq : afterSeq,
+      total: visible.length,
+    };
   }
 
   private readInbox(run: RelayRun, peerId: string, afterSeq: number, limit: number): RelayInboxResult {

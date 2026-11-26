@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import {
   MAX_ACTIVE_RUNS,
   MAX_CONCURRENCY,
@@ -11,6 +12,7 @@ import {
   TURN_BUDGET_ERROR,
   addUsage,
   emptyUsage,
+  harnessOf,
   partialReasonOf,
   sanitizeUsage,
   type PartialReason,
@@ -27,6 +29,8 @@ import { abortError, sessionScheduler, type SessionScheduler } from "./scheduler
 import { MIN_RESUME_BUDGET_MS, transientFailure } from "./auto-resume.ts";
 import { classifyFailure } from "./route-evidence.ts";
 import { defaultMachineSlots, type MachineCapacitySnapshot, type MachineSlots, type NoopSlots } from "./machine-slots.ts";
+import { resolveTaskDependencies } from "./policy.ts";
+import { finalizeTaskWorktree, prepareRunWorktrees } from "./worktree.ts";
 
 const TERMINAL_TASK_STATES = new Set<TaskState>([
   "done",
@@ -63,11 +67,15 @@ export interface CoordinatorOptions {
   /** Called once as each task settles, with isolated copies. A throw here never changes the task. */
   onTaskSettled?: (run: RunRecord, task: TaskRecord) => void;
   /**
-   * What a classed run may do about a reply that came back empty or out of output budget, or a route that was
-   * refused on spent credits or a server error after output began: retry once on the same route with a higher output
-   * budget, then move to the next ranked route (`alternates`, as `provider/model`, in order). Absent: neither happens.
+   * What a classed or implicit run may do about a reply that came back empty or out of output budget, or a route that was
+   * refused on spent credits, a server error, or a content filter: retry once on the same route with a higher output
+   * budget, then move to the next ranked/chain route (`alternates`, as `provider/model`, in order). Absent: neither happens.
    */
-  replyPolicy?: (run: RunRecord, task: TaskRecord) => { maxTokens?: number; alternates: readonly string[]; emptyReplyRetry?: boolean } | undefined;
+  replyPolicy?: (run: RunRecord, task: TaskRecord) => { maxTokens?: number; alternates: readonly string[]; emptyReplyRetry?: boolean; requireSession?: boolean } | undefined;
+  /** Optional lookup of relay sequence numbers posted by a predecessor task visible to `viewerId`, for Pi `#seq` pointers. */
+  predecessorRelaySeqs?: (runId: string, senderId: string, viewerId?: string) => number[];
+  /** Optional root directory for automatic isolated git worktrees (always outside the repo). */
+  worktreeRoot?: string;
 }
 
 /** An empty or output-exhausted reply: the worker answered but wrote nothing a parent can use. */
@@ -104,6 +112,12 @@ interface TaskRuntime {
 interface RunRuntime {
   record: RunRecord;
   tasks: Map<string, TaskRuntime>;
+  /** Resolved intra-wave DAG dependencies (`taskId -> dependency taskIds`). */
+  deps: Map<string, string[]>;
+  /** Tasks whose predecessor pointer block has already been attached. */
+  predecessorsInjected: Set<string>;
+  /** Git repo root when automatic worktree isolation is active for this run. */
+  worktreeRepoRoot?: string;
   inFlight: number;
   accepting: boolean;
   completionCount: number;
@@ -143,7 +157,13 @@ function cloneTask(task: TaskRecord): TaskRecord {
   return {
     ...task,
     ownedPaths: [...task.ownedPaths],
+    ...(task.originalOwnedPaths ? { originalOwnedPaths: [...task.originalOwnedPaths] } : {}),
     ...(task.readPaths ? { readPaths: [...task.readPaths] } : {}),
+    ...(task.dependsOn ? { dependsOn: [...task.dependsOn] } : {}),
+    ...(task.forkFrom ? { forkFrom: { ...task.forkFrom } } : {}),
+    ...(task.worktree ? { worktree: { ...task.worktree } } : {}),
+    ...(task.routeFallbacks ? { routeFallbacks: [...task.routeFallbacks] } : {}),
+    ...(task.routeHopDetails ? { routeHopDetails: task.routeHopDetails.map((hop) => ({ ...hop })) } : {}),
     changedPaths: [...workerJournal(task).changedPaths],
     lastStep: workerJournal(task).lastStep,
     usage: cloneUsage(task.usage),
@@ -204,7 +224,7 @@ export function finalWorkerReport(task: TaskRecord, state: WorkerResult["state"]
 }
 
 /** Body of a settled report: what the child itself wrote, without the host header. */
-function reportBody(output: string): string {
+export function reportBody(output: string): string {
   const split = output.startsWith("FINAL REPORT\n") ? output.indexOf("\n\n") : -2;
   const trimmed = (split === -2 ? output : split < 0 ? "" : output.slice(split + 2)).trim();
   return trimmed === "(no output)" ? "" : trimmed;
@@ -241,6 +261,8 @@ export class SubagentCoordinator {
   private readonly now: () => number;
   private readonly onTaskSettled?: CoordinatorOptions["onTaskSettled"];
   private readonly replyPolicy?: CoordinatorOptions["replyPolicy"];
+  private readonly predecessorRelaySeqs?: CoordinatorOptions["predecessorRelaySeqs"];
+  private readonly worktreeRoot?: string;
   private readonly runs = new Map<string, RunRuntime>();
   private closed = false;
   private shutdownPromise?: Promise<void>;
@@ -255,6 +277,8 @@ export class SubagentCoordinator {
     this.now = options.now ?? Date.now;
     this.onTaskSettled = options.onTaskSettled;
     this.replyPolicy = options.replyPolicy;
+    this.predecessorRelaySeqs = options.predecessorRelaySeqs;
+    this.worktreeRoot = options.worktreeRoot;
   }
 
   /** Start a normalized run and return an isolated initial snapshot. */
@@ -292,6 +316,17 @@ export class SubagentCoordinator {
     }
 
     const record = cloneRun(run);
+    // Validate intra-wave DAG dependencies fail-closed before allocating any worktrees or timers.
+    const deps = resolveTaskDependencies(record.tasks);
+    for (const task of record.tasks) {
+      const taskDeps = deps.get(task.id) ?? [];
+      if (taskDeps.length > 0) task.dependsOn = taskDeps;
+      else delete task.dependsOn;
+    }
+    const preparedWorktrees = prepareRunWorktrees(record, {
+      ...(this.worktreeRoot !== undefined ? { worktreeRoot: this.worktreeRoot } : {}),
+      now: this.now,
+    });
     const runtime: RunRuntime = {
       record,
       tasks: new Map(
@@ -300,6 +335,9 @@ export class SubagentCoordinator {
           { controller: new AbortController(), dispatched: false, accounted: false },
         ]),
       ),
+      deps,
+      predecessorsInjected: new Set(),
+      ...(preparedWorktrees.active && preparedWorktrees.repoRoot ? { worktreeRepoRoot: preparedWorktrees.repoRoot } : {}),
       inFlight: 0,
       accepting: true,
       completionCount: 0,
@@ -312,28 +350,93 @@ export class SubagentCoordinator {
 
     this.runs.set(record.id, runtime);
     const provider = record.model.includes("/") ? record.model.split("/")[0] : "default";
+    const labelById = new Map(record.tasks.map((t) => [t.id, t.label]));
     for (const task of record.tasks) {
       // The launch bound includes run-width, session and machine waits. It
       // never replenishes the absolute run budget and never applies to inference.
       const since = this.now();
-      task.launchQueue = {
-        tier: "session", provider, reason: "Waiting for run/session launch capacity",
-        since, deadlineAt: Math.min(runtime.deadlineAt,
-          task.role === "reviewer" ? since + REVIEW_LAUNCH_TIMEOUT_MS : runtime.deadlineAt),
-      };
-      delete task.lastLaunchQueue;
-      if (task.role === "reviewer" && task.launchQueue.deadlineAt < runtime.deadlineAt) {
-        runtime.tasks.get(task.id)!.launchDeadline = setTimeout(() => {
-          if (!task.launchQueue || isTerminal(task.state)) return;
-          this.stopTask(runtime, task, "timed_out", `Reviewer launch queue budget exceeded (${REVIEW_LAUNCH_TIMEOUT_MS}ms); ${task.launchQueue.reason}`);
-          this.pump(runtime);
-        }, Math.max(0, task.launchQueue.deadlineAt - this.now()));
+      const taskDeps = deps.get(task.id) ?? [];
+      if (taskDeps.length > 0) {
+        const names = taskDeps.map((depId) => labelById.get(depId) ?? depId).join(", ");
+        task.launchQueue = {
+          tier: "session", provider, reason: `Waiting on dependencies: ${names}`,
+          since, deadlineAt: runtime.deadlineAt,
+        };
+        delete task.lastLaunchQueue;
+      } else {
+        this.armLaunchQueue(runtime, task, provider, since);
       }
     }
     this.observe(runtime);
     runtime.deadline = setTimeout(() => this.expire(runtime), record.timeoutMs);
     this.pump(runtime);
     return cloneRun(record);
+  }
+
+  private armLaunchQueue(runtime: RunRuntime, task: TaskRecord, provider: string, since: number): void {
+    const taskRuntime = runtime.tasks.get(task.id)!;
+    if (taskRuntime.launchDeadline) {
+      clearTimeout(taskRuntime.launchDeadline);
+      taskRuntime.launchDeadline = undefined;
+    }
+    task.launchQueue = {
+      tier: "session", provider, reason: "Waiting for run/session launch capacity",
+      since, deadlineAt: Math.min(runtime.deadlineAt,
+        task.role === "reviewer" ? since + REVIEW_LAUNCH_TIMEOUT_MS : runtime.deadlineAt),
+    };
+    delete task.lastLaunchQueue;
+    if (task.role === "reviewer" && task.launchQueue.deadlineAt < runtime.deadlineAt) {
+      taskRuntime.launchDeadline = setTimeout(() => {
+        if (!task.launchQueue || isTerminal(task.state)) return;
+        this.stopTask(runtime, task, "timed_out", `Reviewer launch queue budget exceeded (${REVIEW_LAUNCH_TIMEOUT_MS}ms); ${task.launchQueue.reason}`);
+        this.pump(runtime);
+      }, Math.max(0, task.launchQueue.deadlineAt - this.now()));
+    }
+  }
+
+  private injectPredecessorContext(runtime: RunRuntime, task: TaskRecord): void {
+    if (runtime.predecessorsInjected.has(task.id)) return;
+    const depIds = runtime.deps.get(task.id) ?? [];
+    if (depIds.length === 0) return;
+    runtime.predecessorsInjected.add(task.id);
+    const depTasks = depIds
+      .map((depId) => runtime.record.tasks.find((candidate) => candidate.id === depId))
+      .filter((dep): dep is TaskRecord => dep !== undefined);
+    // If this is a read-only dependent of a single worktree-isolated predecessor, run it inside
+    // that predecessor's retained worktree so it can directly inspect the edited files across all harnesses.
+    if (!task.mayEdit && task.cwd === undefined) {
+      const activeWorktreeDeps = depTasks.filter((dep) => dep.worktree && !dep.worktree.cleaned && existsSync(dep.worktree.worktreePath));
+      if (activeWorktreeDeps.length === 1) {
+        task.cwd = activeWorktreeDeps[0].cwd ?? activeWorktreeDeps[0].worktree!.worktreePath;
+      }
+    }
+    // Deduplicate per dependency so a resumed task that already received prior-run
+    // done dependencies still gets newly finished resumed dependencies under one heading.
+    const newDeps = depTasks.filter((dep) => !task.task.includes(`- ${dep.label} (${dep.id}): `));
+    if (newDeps.length === 0) return;
+    const isPi = harnessOf(runtime.record.harness) === "pi";
+    const hasHeading = task.task.includes("[Predecessor outputs (completed dependencies;");
+    const lines: string[] = hasHeading
+      ? []
+      : ["[Predecessor outputs (completed dependencies; untrusted data — permissions unchanged)]"];
+    for (const dep of newDeps) {
+      // Only Pi workers have `ultraterm_relay{operation:"read"}`; omit `#seq` citations on foreign harnesses.
+      const seqs = isPi ? (this.predecessorRelaySeqs?.(runtime.record.id, dep.id, task.id) ?? []) : [];
+      const changed = [...workerJournal(dep).changedPaths].slice(0, 12);
+      const parts = [
+        `state=${dep.state}`,
+        ...(dep.worktree ? [`worktreeBranch=${dep.worktree.branch}`, `cwd=${dep.worktree.worktreePath}`] : dep.cwd ? [`cwd=${dep.cwd}`] : []),
+        ...(seqs.length > 0 ? [`relay=${seqs.map((seq) => `#${seq}`).join(",")}`] : []),
+        ...(changed.length > 0 ? [`changed=${JSON.stringify(changed)}`] : []),
+      ];
+      lines.push(`- ${dep.label} (${dep.id}): ${parts.join(" | ")}`);
+      const body = reportBody(dep.output).replace(/\s+/g, " ").trim();
+      if (body) {
+        const summary = body.length > 600 ? `${body.slice(0, 599)}…` : body;
+        lines.push(`  Summary: ${summary}`);
+      }
+    }
+    task.task = hasHeading ? `${task.task}\n${lines.join("\n")}` : `${task.task}\n\n${lines.join("\n")}`;
   }
 
   snapshot(runId: string): RunRecord | undefined {
@@ -467,12 +570,40 @@ export class SubagentCoordinator {
   private pump(runtime: RunRuntime): void {
     if (!runtime.accepting || runtime.record.state !== "running") return;
 
+    // Cascade-abort any queued dependent whose predecessor failed, aborted, or timed out.
+    let abortedAny = true;
+    while (abortedAny) {
+      abortedAny = false;
+      for (const candidate of runtime.record.tasks) {
+        const state = runtime.tasks.get(candidate.id)!;
+        if (candidate.state !== "queued" || state.dispatched) continue;
+        const depIds = runtime.deps.get(candidate.id) ?? [];
+        const failedDep = depIds
+          .map((depId) => runtime.record.tasks.find((item) => item.id === depId))
+          .find((dep) => dep !== undefined && (dep.state === "failed" || dep.state === "aborted" || dep.state === "timed_out"));
+        if (failedDep) {
+          this.stopTask(runtime, candidate, "aborted", `Dependency ${failedDep.label} failed`);
+          abortedAny = true;
+        }
+      }
+    }
+    if (!runtime.accepting || runtime.record.state !== "running") return;
+
+    const provider = runtime.record.model.includes("/") ? runtime.record.model.split("/")[0] : "default";
     while (runtime.inFlight < runtime.record.concurrency) {
       const task = runtime.record.tasks.find((candidate) => {
         const state = runtime.tasks.get(candidate.id)!;
-        return candidate.state === "queued" && !state.dispatched;
+        if (candidate.state !== "queued" || state.dispatched) return false;
+        const depIds = runtime.deps.get(candidate.id) ?? [];
+        return depIds.every((depId) => runtime.record.tasks.find((item) => item.id === depId)?.state === "done");
       });
       if (!task) break;
+
+      const depIds = runtime.deps.get(task.id) ?? [];
+      if (depIds.length > 0) {
+        this.injectPredecessorContext(runtime, task);
+        this.armLaunchQueue(runtime, task, provider, this.now());
+      }
 
       const taskRuntime = runtime.tasks.get(task.id)!;
       taskRuntime.dispatched = true;
@@ -611,7 +742,8 @@ export class SubagentCoordinator {
             // Self-healing for a classed run. A spent-credit, server-error or pre-output content-filter refusal moves to the next ranked route at
             // once; an empty or output-exhausted reply is retried once here with a higher output budget, then moves on.
             const emptyKind = emptyReplyKind(result);
-            const refusal = result.state === "failed" ? classifyFailure(result.error) : undefined;
+            const leaseFailure = /lease release failed/i.test(result.error ?? "");
+            const refusal = result.state === "failed" && !leaseFailure ? classifyFailure(result.error) : undefined;
             // A provider content-filter refusal names the input, not the route: an
             // implicit wave hops at any point (the resumed worker session keeps the
             // transcript); pre-output hops stay available to every classed run.
@@ -620,7 +752,32 @@ export class SubagentCoordinator {
             const policy = (emptyKind || hardRefusal) && !isTerminal(task.state) && !taskRuntime.stopState && !taskRuntime.controller.signal.aborted
               && safeTurns(result.turns, 0) < runtime.record.maxTurns && this.remainingRunBudgetMs(runtime) >= MIN_RESUME_BUDGET_MS
               ? this.replyPolicy?.(runtime.record, task) : undefined;
-            const nextAlternate = policy?.alternates[alternateIndex + 1];
+            // Sync `currentRoute` and visited routes from any in-worker pre-output chain hops
+            // (`createChainFallbackReporter`) so we never hop back onto a model that already failed.
+            const visitedRoutes = new Set<string>([runtime.record.model, currentRoute]);
+            for (const hop of task.routeFallbacks ?? []) {
+              const arrow = hop.lastIndexOf("->");
+              if (arrow <= 0) continue;
+              const fromRoute = hop.slice(0, arrow).trim();
+              const toRoute = hop.slice(arrow + 2).replace(/\s*\(.*\)\s*$/, "").trim();
+              if (fromRoute) visitedRoutes.add(fromRoute);
+              if (toRoute) {
+                visitedRoutes.add(toRoute);
+                currentRoute = toRoute;
+              }
+            }
+            let nextAlternateIndex = alternateIndex + 1;
+            while (policy && nextAlternateIndex < policy.alternates.length && visitedRoutes.has(policy.alternates[nextAlternateIndex])) {
+              nextAlternateIndex += 1;
+            }
+            const candidateAlternate = policy?.alternates[nextAlternateIndex];
+            // Mid-run failover after output began requires a persisted sessionFile for
+            // non-classed implicit hops (`requireSession: true`) and all editing tasks,
+            // so an alternate continues in place rather than replaying a leaf from scratch.
+            const requireSessionForMidRun = policy?.requireSession === true || task.mayEdit;
+            const canSwitchAlternate = candidateAlternate !== undefined
+              && (task.outputStarted !== true || !requireSessionForMidRun || Boolean(task.sessionFile));
+            const nextAlternate = canSwitchAlternate ? candidateAlternate : undefined;
             if (policy && (emptyKind && !hardRefusal && !retriedOnRoute && policy.emptyReplyRetry !== false || nextAlternate !== undefined)) {
               await result.cleanup;
               const spent = result.usage?.cost?.total ?? 0;
@@ -630,7 +787,7 @@ export class SubagentCoordinator {
                 reply = { boost: true, ...(policy.maxTokens !== undefined ? { maxTokens: policy.maxTokens } : {}) };
                 task.lastStep = `retry ${emptyKind} with a higher output budget`;
               } else {
-                alternateIndex += 1;
+                alternateIndex = nextAlternateIndex;
                 const cause = `${emptyKind ?? refusal}: ${String(result.error ?? "empty reply").slice(0, 200)}`;
                 // The receipt names a content-filter refusal beside the hop, so the input refusal is visible, not a silent route change.
                 task.routeFallbacks = [...(task.routeFallbacks ?? []), `${currentRoute}->${nextAlternate}${refusal === "content-filter" ? " (content-filter refusal)" : ""}`];
@@ -656,7 +813,7 @@ export class SubagentCoordinator {
               break;
             }
             if (!transient || isTerminal(task.state) || taskRuntime.stopState || taskRuntime.controller.signal.aborted
-              || !(task.sessionFile || task.claudeSessionId)
+              || !(task.sessionFile || task.claudeSessionId || task.dshSessionId)
               || this.remainingRunBudgetMs(runtime) < transient.delayMs + MIN_RESUME_BUDGET_MS) break;
             await result.cleanup;
             prior.usage = cloneUsage(result.usage);
@@ -743,6 +900,7 @@ export class SubagentCoordinator {
     }
     if (progress.sessionFile !== undefined) task.sessionFile = progress.sessionFile;
     if (progress.claudeSessionId !== undefined) task.claudeSessionId = progress.claudeSessionId;
+    if (progress.dshSessionId !== undefined) task.dshSessionId = progress.dshSessionId;
     if (progress.apiReceipt !== undefined) task.apiReceipt = structuredClone(progress.apiReceipt);
     if (progress.subscriptionReceipt !== undefined) task.subscriptionReceipt = structuredClone(progress.subscriptionReceipt);
     task.lastProgressAt = this.now();
@@ -828,6 +986,16 @@ export class SubagentCoordinator {
     else delete task.note;
     delete task.currentTool;
     task.endedAt = this.now();
+    // Finalize isolated git worktree if this task ran in one: clean/uncommitted worktrees are removed;
+    // dirty/committed branches are retained for parent integration (never auto-pushed).
+    if (task.worktree && runtime.worktreeRepoRoot) {
+      try {
+        finalizeTaskWorktree(runtime.worktreeRepoRoot, task, {
+          worktreeRoot: this.worktreeRoot,
+          allowedRunIds: [runtime.record.id, ...(runtime.record.resumedFrom ? [runtime.record.resumedFrom] : [])],
+        });
+      } catch { /* best effort */ }
+    }
     // A budget stop is explicit partial work: never a completed leaf, never a bare failure.
     const partialReason = partialReasonOf(state, task.error, task.startedAt !== undefined);
     if (partialReason) {

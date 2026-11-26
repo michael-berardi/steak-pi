@@ -150,6 +150,23 @@ function runRows(raw: unknown, expanded: boolean, observedAt: number): Row[] {
     // Expanded child blocks get a blank separator so consecutive workers do not run together.
     if (expanded && index > 0) rows.push({ text: "" });
     rows.push(taskRow(task, run, observedAt));
+    const hints: string[] = [];
+    const hops = (Array.isArray(task.routeFallbacks) ? task.routeFallbacks.slice(-4) : []).filter((hop): hop is string => typeof hop === "string" && hop.includes("->"));
+    if (hops.length > 0) hints.push(`hop ${sanitize(hops.at(-1))}`);
+    const wt = record(task.worktree);
+    if (typeof wt.branch === "string" && wt.branch) {
+      const wtState = wt.cleaned === true ? "cleaned" : wt.dirty === true ? "dirty" : wt.committed === true ? "committed" : "clean";
+      hints.push(`wt ${sanitize(wt.branch)} (${wtState})`);
+    }
+    const deps = array(task.dependsOn, 8).filter((dep): dep is string => typeof dep === "string" && dep.length > 0);
+    if (deps.length > 0 && sanitize(task.state) === "queued") {
+      const depLabels = deps.map((depId) => {
+        const found = tasks.find((candidate) => candidate.taskId === depId || candidate.id === depId);
+        return sanitize(found?.label ?? depId);
+      });
+      hints.push(`awaiting ${depLabels.join(", ")}`);
+    }
+    if (hints.length > 0) rows.push({ text: `  ${hints.join(" · ")}`, tone: "muted" });
     if (task.error) rows.push({ text: `  ${sanitize(task.error)}`, tone: "error" });
     if (!expanded) return;
     const successes = count(task.toolSuccesses), failures = count(task.toolErrors);

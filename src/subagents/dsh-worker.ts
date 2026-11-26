@@ -66,6 +66,8 @@ export const DSH_FRAME_BYTES_LIMIT = 8 * 1024 * 1024;
 /** Runaway guard on the whole run's raw stream; every frame is parsed and dropped as it arrives. */
 export const DSH_STREAM_BYTES_LIMIT = 256 * 1024 * 1024;
 export const DSH_ABORT_GRACE_MS = 2_000;
+/** Idle-stream watchdog default (matching Pi worker): fires only while no tool call is open. */
+export const DSH_WORKER_STALL_MS = 10 * 60_000;
 
 /** Environment for the child: an explicit allowlist, never a copy-with-exceptions. The route key is
  * added under its fixed name by {@link dshWorkerEnv}; nothing else credential-bearing survives. */
@@ -129,8 +131,13 @@ export function dshWritableRoots(ownedPaths: readonly string[], cwd: string | un
   return roots;
 }
 
-export function dshWorkerArgs(model: DshModel, permissions: DshWorkerPermissions, effort: DshEffort, cwd?: string): string[] {
+export function dshWorkerArgs(model: DshModel, permissions: DshWorkerPermissions, effort: DshEffort, cwd?: string, sessionId?: string): string[] {
   if (!isDshEffort(effort)) throw new Error(`Steak DSH effort must be medium, high or xhigh, not ${JSON.stringify(String(effort).slice(0, 32))}`);
+  if (sessionId !== undefined) {
+    if (typeof sessionId !== "string" || sessionId.length === 0 || sessionId.length > 160 || sessionId.startsWith("-") || /[\u0000-\u001f\u007f-\u009f\s]/.test(sessionId)) {
+      throw new Error("steak-dsh sessionId must be a safe non-empty identifier without whitespace or control characters");
+    }
+  }
   if (!(DSH_APIS as readonly string[]).includes(model.api)) {
     throw new Error(`steak-dsh cannot serve the native API ${JSON.stringify(String(model.api).slice(0, 40))} of ${model.provider}/${model.id}; it supports ${DSH_APIS.join(", ")}`);
   }
@@ -154,6 +161,7 @@ export function dshWorkerArgs(model: DshModel, permissions: DshWorkerPermissions
   return [
     "run",
     "--json",
+    ...(sessionId === undefined ? [] : ["--session-id", sessionId]),
     "--model", `${model.provider}/${model.id}`,
     "--base-url", model.baseUrl,
     "--api", model.api,
@@ -353,6 +361,22 @@ export function buildDshWorkerPrompt(run: RunRecord, task: TaskRecord): string {
   ].join("\n");
 }
 
+/** Compact continuation prompt when resuming a persisted steak-dsh session via `--session-id`.
+ * Includes the leaf objective concisely so the worker always retains its exact task contract. */
+export function buildDshWorkerContinuationPrompt(run: RunRecord, task: TaskRecord): string {
+  const leafSummary = task.task.length > 2_000 ? `${task.task.slice(0, 1_999)}…` : task.task;
+  return [
+    `Continue the exact assigned leaf "${task.label}" (task ${task.id}) in run ${run.id}.`,
+    "This steak-dsh session was resumed with --session-id from persisted history; do not repeat completed steps.",
+    "Your permissions and owned paths are unchanged from the original leaf. Re-read files you depend on before editing, finish the remaining work, and return the required concise report.",
+    "",
+    "## Leaf objective (reminder)",
+    leafSummary,
+    "",
+    ...workerFinalReportInstructions(),
+  ].join("\n");
+}
+
 /** Narrow spawn seam: production wraps node:child_process; tests inject fakes or a fake CLI script. */
 export type DshSpawn = ClaudeSpawn;
 export type DshSpawnHandle = ClaudeSpawnHandle;
@@ -422,6 +446,8 @@ export interface DshWorkerRunnerOptions {
   spawn?: DshSpawn;
   /** Bounded wait between SIGTERM and SIGKILL on cancel/timeout. */
   abortGraceMs?: number;
+  /** Idle-stream watchdog threshold (ms), active only while no tool call is executing. */
+  stallMs?: number;
   env?: NodeJS.ProcessEnv;
   /** The frozen launch context (inner registry model + Pi auth resolution), captured at dispatch. */
   resolveRuntime: (runId: string) => DshWorkerRuntime | Promise<DshWorkerRuntime>;
@@ -522,6 +548,10 @@ export function createDshWorkerRunner(options: DshWorkerRunnerOptions): WorkerRu
   if (!Number.isSafeInteger(abortGraceMs) || abortGraceMs < 0) {
     throw new RangeError("abortGraceMs must be a nonnegative safe integer");
   }
+  const stallMs = options.stallMs ?? DSH_WORKER_STALL_MS;
+  if (!Number.isSafeInteger(stallMs) || stallMs <= 0) {
+    throw new RangeError("stallMs must be a positive safe integer");
+  }
   return async ({ run, task, signal, onProgress }): Promise<WorkerResult> => {
     const fail = (error: string): WorkerResult => ({ state: "failed", output: "", turns: 0, usage: emptyUsage(), error });
     if (harnessOf(run.harness) !== "steak-dsh") {
@@ -560,8 +590,11 @@ export function createDshWorkerRunner(options: DshWorkerRunnerOptions): WorkerRu
       }
       key = auth.apiKey;
     } catch (error) { return fail(dshRouteRefusal(run.model, `Pi auth resolution failed: ${diagnostic(errorText(error), undefined)}`)); }
+    const taskCwd = task.cwd ?? run.cwd;
+    const resumingSessionId = typeof task.dshSessionId === "string" && task.dshSessionId.trim().length > 0
+      ? task.dshSessionId.trim() : undefined;
     let args: string[];
-    try { args = dshWorkerArgs(model, task, effort, run.cwd); }
+    try { args = dshWorkerArgs(model, task, effort, taskCwd, resumingSessionId); }
     catch (error) { return fail(errorText(error)); }
     if (signal.aborted) return { state: isTimeoutSignal(signal) ? "timed_out" : "aborted", output: "", turns: 0, usage: emptyUsage(), error: "Cancelled before CLI launch" };
     const childEnv = dshWorkerEnv(baseEnv, key);
@@ -580,16 +613,19 @@ export function createDshWorkerRunner(options: DshWorkerRunnerOptions): WorkerRu
     const exitPromise = new Promise<void>((resolve) => { exited = resolve; });
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     let stopDeadline: ReturnType<typeof setTimeout> | undefined;
+    let stallTimer: ReturnType<typeof setInterval> | undefined;
     let stopExpired!: () => void;
     const stopPromise = new Promise<void>((resolve) => { stopExpired = resolve; });
     let killed = false;
     let closed = false;
+    let stalled = false;
+    let lastEventAt = Date.now();
     let stdoutBuffer = "";
     let rawBytes = 0;
     let stderrTail = "";
     let sawModelOutput = false;
     let terminalFinal = false;
-    const child = spawn({ command: executable, args, env: childEnv, cwd: run.cwd });
+    const child = spawn({ command: executable, args, env: childEnv, cwd: taskCwd });
     const launchedPid = child.pid;
     const ownsProcess = (): boolean => child.pid === launchedPid;
 
@@ -632,6 +668,7 @@ export function createDshWorkerRunner(options: DshWorkerRunnerOptions): WorkerRu
     };
 
     child.onStdout((chunk) => {
+      lastEventAt = Date.now();
       if (state.failure !== undefined || state.turnLimitReached) return;
       rawBytes += Buffer.byteLength(chunk, "utf8");
       if (rawBytes > DSH_STREAM_BYTES_LIMIT) {
@@ -660,7 +697,20 @@ export function createDshWorkerRunner(options: DshWorkerRunnerOptions): WorkerRu
           killOnce(false);
           return;
         }
-        if (event.kind === "other" || event.kind === "session") continue;
+        if (event.kind === "other") continue;
+        if (event.kind === "session") {
+          const sid = event.sessionId.trim();
+          if (resumingSessionId !== undefined && sid !== resumingSessionId) {
+            state.failure = `steak-dsh did not resume requested session ${resumingSessionId} (CLI reported ${JSON.stringify(sid.slice(0, 64))}); refusing fresh session replay`;
+            killOnce(true);
+            return;
+          }
+          if (sid.length > 0 && sid.length <= 160 && !sid.startsWith("-") && !/[\u0000-\u001f\u007f-\u009f\s]/.test(sid)) {
+            task.dshSessionId = sid;
+            onProgress({ state: "running", dshSessionId: sid });
+          }
+          continue;
+        }
         if (terminalFinal && (event.kind === "text" || event.kind === "thinking" || event.kind === "tool_call" || event.kind === "final")) {
           state.failure = "steak-dsh emitted model output after its final event";
           killOnce(false);
@@ -703,7 +753,7 @@ export function createDshWorkerRunner(options: DshWorkerRunnerOptions): WorkerRu
           if (call) {
             pendingCalls.delete(event.callId);
             if (event.status !== "error" && call.path !== undefined && ["edit", "write", "apply_patch", "str_replace_editor"].includes(call.tool)) {
-              journal.changedPaths.add(call.path.startsWith("/") ? call.path : `${run.cwd.replace(/\/+$/, "")}/${call.path}`);
+              journal.changedPaths.add(call.path.startsWith("/") ? call.path : `${taskCwd.replace(/\/+$/, "")}/${call.path}`);
             }
           }
           onProgress({ state: "running", currentTool: undefined, toolErrors: state.toolErrors, toolSuccesses: state.toolSuccesses });
@@ -739,15 +789,28 @@ export function createDshWorkerRunner(options: DshWorkerRunnerOptions): WorkerRu
       else signal.addEventListener("abort", onAbort, { once: true });
       if (!signal.aborted) {
         try {
-          child.writeStdin(buildDshWorkerPrompt(run, task));
+          const promptText = resumingSessionId !== undefined
+            ? buildDshWorkerContinuationPrompt(run, task)
+            : buildDshWorkerPrompt(run, task);
+          child.writeStdin(promptText);
           child.endStdin();
         } catch {
           state.failure = "steak-dsh stdin rejected the leaf prompt";
           killOnce(false);
         }
       }
+      // Idle-stream watchdog: fires only while no tool call is executing so long-running tools are never aborted.
+      stallTimer = setInterval(() => {
+        if (stalled || closed || state.sawFinal || pendingCalls.size > 0 || Date.now() - lastEventAt < stallMs) return;
+        stalled = true;
+        const minutes = Math.max(1, Math.round(stallMs / 60_000));
+        state.failure ??= `No model or tool activity for ${minutes} min: the steak-dsh provider stream stopped responding, so the worker was stopped to free its slot`;
+        killOnce(true);
+      }, Math.max(10, Math.min(30_000, Math.floor(stallMs / 4))));
+      stallTimer.unref?.();
       await Promise.race([exitPromise, stopPromise]);
     } finally {
+      if (stallTimer !== undefined) clearInterval(stallTimer);
       signal.removeEventListener("abort", onAbort);
       if (killTimer !== undefined) clearTimeout(killTimer);
       if (stopDeadline !== undefined) clearTimeout(stopDeadline);

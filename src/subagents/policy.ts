@@ -20,11 +20,14 @@ import {
   MAX_TIMEOUT_MS,
   MIN_TIMEOUT_MS,
   USAP_VERSION,
+  WORKSPACE_MODES,
   emptyUsage,
   type DispatchInput,
   type HarnessId,
   type RunRecord,
   type SubagentRole,
+  type TaskForkSource,
+  type WorkspaceMode,
 } from "./types.ts";
 
 export type OwnedPathMode = "read" | "write";
@@ -246,6 +249,96 @@ function normalizeRole(value: unknown, field: string): SubagentRole {
   return value;
 }
 
+function normalizeWorkspace(value: unknown, field: string): WorkspaceMode | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !(WORKSPACE_MODES as readonly string[]).includes(value)) {
+    fail(`${field} must be one of ${WORKSPACE_MODES.join(", ")}`);
+  }
+  return value as WorkspaceMode;
+}
+
+function normalizeForkFrom(value: unknown, field: string, harness: HarnessId): TaskForkSource | undefined {
+  if (value === undefined) return undefined;
+  if (harness !== "pi") {
+    fail(`${field} is supported only on the native pi harness`);
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    fail(`${field} must be an object with runId and taskId`);
+  }
+  const obj = value as Record<string, unknown>;
+  for (const key of Object.keys(obj)) {
+    if (key !== "runId" && key !== "taskId") fail(`${field} contains unknown field ${JSON.stringify(key)}`);
+  }
+  return {
+    runId: nonemptyString(obj.runId, `${field}.runId`),
+    taskId: nonemptyString(obj.taskId, `${field}.taskId`),
+  };
+}
+
+/** Resolve and validate acyclic intra-wave dependencies (`dependsOn`) by sibling label or task ID. */
+export function resolveTaskDependencies(
+  tasks: ReadonlyArray<{ id: string; label: string; dependsOn?: readonly string[] }>,
+): Map<string, string[]> {
+  const byId = new Map<string, { id: string; label: string }>();
+  const byLabel = new Map<string, { id: string; label: string }>();
+  for (const task of tasks) {
+    byId.set(task.id, task);
+    byLabel.set(task.label.toLowerCase(), task);
+  }
+  const resolved = new Map<string, string[]>();
+  for (let i = 0; i < tasks.length; i += 1) {
+    const task = tasks[i];
+    const refs = task.dependsOn;
+    if (!refs || refs.length === 0) {
+      resolved.set(task.id, []);
+      continue;
+    }
+    const deps: string[] = [];
+    const seen = new Set<string>();
+    for (let j = 0; j < refs.length; j += 1) {
+      const raw = refs[j];
+      if (typeof raw !== "string" || raw.trim().length === 0) {
+        fail(`tasks[${i}].dependsOn[${j}] must be a nonempty string`);
+      }
+      const ref = raw.trim();
+      const target = byId.get(ref) ?? byLabel.get(ref.toLowerCase());
+      if (!target) {
+        fail(`tasks[${i}].dependsOn[${j}] references unknown sibling ${JSON.stringify(ref)}`);
+      }
+      if (target.id === task.id) {
+        fail(`tasks[${i}].dependsOn[${j}] cannot reference itself (${JSON.stringify(task.label)})`);
+      }
+      if (!seen.has(target.id)) {
+        seen.add(target.id);
+        deps.push(target.id);
+      }
+    }
+    resolved.set(task.id, deps);
+  }
+  // 3-color DFS cycle detection (0 = unvisited, 1 = visiting, 2 = done).
+  const color = new Map<string, number>();
+  const stack: string[] = [];
+  const visit = (id: string): void => {
+    color.set(id, 1);
+    stack.push(id);
+    for (const dep of resolved.get(id) ?? []) {
+      const state = color.get(dep) ?? 0;
+      if (state === 1) {
+        const start = stack.indexOf(dep);
+        const cycle = [...stack.slice(start), dep].map((node) => byId.get(node)?.label ?? node).join(" -> ");
+        fail(`dependsOn contains a dependency cycle: ${cycle}`);
+      }
+      if (state === 0) visit(dep);
+    }
+    stack.pop();
+    color.set(id, 2);
+  };
+  for (const task of tasks) {
+    if ((color.get(task.id) ?? 0) === 0) visit(task.id);
+  }
+  return resolved;
+}
+
 function safeDisplayId(raw: unknown): string {
   const source = nonemptyString(raw, "idFactory result");
   const safe = source
@@ -318,6 +411,7 @@ export function normalizeDispatch(
     "maxTurns",
   );
   const background = booleanOrDefault(input.background, false, "background");
+  const workspace = normalizeWorkspace(input.workspace, "workspace");
   const harness = normalizeHarness(input.harness, "harness");
   if (input.claudeAccount !== undefined) {
     if (!isClaudeAccountId(input.claudeAccount)) fail("claudeAccount must be a Claude account id from claude-accounts.json, such as primary, b or team-2");
@@ -340,6 +434,16 @@ export function normalizeDispatch(
     const mayEdit = booleanOrDefault(source.mayEdit, false, `${field}.mayEdit`);
     const allowBash = booleanOrDefault(source.allowBash, false, `${field}.allowBash`);
     const taskClass = normalizeTaskClass(source.taskClass, `${field}.taskClass`);
+    const forkFrom = normalizeForkFrom(source.forkFrom, `${field}.forkFrom`, harness);
+    if (source.dependsOn !== undefined && !Array.isArray(source.dependsOn)) {
+      fail(`${field}.dependsOn must be an array`);
+    }
+    const rawDependsOn = source.dependsOn === undefined
+      ? undefined
+      : (() => {
+          if (source.dependsOn.length > MAX_TASKS) fail(`${field}.dependsOn exceeds ${MAX_TASKS} entries`);
+          return source.dependsOn.map((value, depIndex) => nonemptyString(value, `${field}.dependsOn[${depIndex}]`));
+        })();
     // harness claude-code enforces ownedPaths through CLI permission rules
     // (claude-worker.ts) and allowBash through its tool allowlist, so write and
     // shell leaves follow the same policy as Pi leaves.
@@ -421,6 +525,8 @@ export function normalizeDispatch(
       readPaths,
       allowBash,
       ...(taskClass === undefined ? {} : { taskClass }),
+      ...(rawDependsOn && rawDependsOn.length > 0 ? { dependsOn: rawDependsOn } : {}),
+      ...(forkFrom === undefined ? {} : { forkFrom }),
       state: "queued" as const,
       output: "",
       turns: 0,
@@ -431,6 +537,15 @@ export function normalizeDispatch(
     };
   });
 
+  if (tasks.some((task) => task.dependsOn !== undefined)) {
+    const resolvedDeps = resolveTaskDependencies(tasks);
+    for (const task of tasks) {
+      const deps = resolvedDeps.get(task.id) ?? [];
+      if (deps.length > 0) task.dependsOn = deps;
+      else delete task.dependsOn;
+    }
+  }
+
   return {
     version: USAP_VERSION,
     id: runId,
@@ -440,6 +555,7 @@ export function normalizeDispatch(
     cwd: root.lexical,
     model: model.trim(),
     ...(harness === "pi" ? {} : { harness }),
+    ...(workspace === undefined ? {} : { workspace }),
     ...(input.claudeAccount === undefined ? {} : { claudeAccount: input.claudeAccount }),
     thinkingLevel: thinking.trim(),
     concurrency,

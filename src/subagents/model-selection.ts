@@ -352,7 +352,7 @@ export function resolveWorkerSelection(
   // Chains are resolved only for automatic selections, so an explicit selector never needs
   // (or fails on) a configured chain. A reviewer wave whose profile head keeps no chain of its
   // own leads with the operator's `reviewerChainHead`, when one is configured.
-  const resolveChain = (): readonly { provider: string; id: string }[] => {
+  const resolveChain = (): readonly WorkerRouteStep[] => {
     if (classHit) return classHit.ordered.map((item) => item.entry.step);
     if (forceChain) return workerChainFor(undefined, chainImages);
     const head = headRoute(profile?.model);
@@ -414,24 +414,57 @@ export function resolveWorkerSelection(
     },
   };
   assertWorkerSelectionOverride(requested, result.selection);
-  // The ranked routes behind the winner, resolved now: a reply that comes back empty after its one retry moves to
-  // the next of these without a new dispatch. A route whose profile runs an `ensure` hook is not offered, because
-  // that hook only wraps the route the run started on. A steak-dsh winner keeps no per-task alternates (its
-  // failover is the wave-level quota fall-through), and a steak-dsh step is never a Pi alternate.
+  // The remaining launchable routes behind the winner, resolved now: a mid-run quota, 5xx, or content-filter
+  // refusal (or an empty classed reply after its one retry) moves to the next of these in place without a new
+  // dispatch, preserving the worker's session history. Routes whose profile runs an `ensure` hook are excluded
+  // because that hook only wraps the route the run started on. Explicit routes (`source === "override"`) have
+  // `automatic === false` and stay strictly fail-closed with no alternates. A steak-dsh winner keeps no per-task
+  // alternates (its failover is wave-level), and a steak-dsh step is never a Pi alternate.
+  const configuredProfiles = routingConfigOrEmpty().workerProfiles ?? [];
+  const hookedIds = new Set(configuredProfiles.filter((candidate) => candidate.ensure !== undefined).map((candidate) => candidate.id));
+  const hookedModels = new Set(configuredProfiles.filter((candidate) => candidate.ensure !== undefined).map((candidate) => candidate.model));
   if (classHit && classHit.entry.step.harness !== "steak-dsh") {
-    const hooked = new Set((routingConfigOrEmpty().workerProfiles ?? []).filter((candidate) => candidate.ensure !== undefined).map((candidate) => candidate.id));
     const alternates = classHit.ordered.slice(1).flatMap((item): ClassAlternate[] => {
       if (item.entry.step.harness === "steak-dsh") return [];
-      if (item.entry.profile !== undefined && hooked.has(item.entry.profile)) return [];
+      if (item.entry.profile !== undefined && hookedIds.has(item.entry.profile)) return [];
       try {
         const level = selectWorkerThinking(item.model, profiles.find((candidate) => candidate.id === item.entry.profile)?.thinking ?? inheritedThinking, input.thinking, input.thinkingReason);
-        return [{ entry: item.entry.entry, model: item.model, thinkingLevel: level, ...(item.entry.profile ? { profile: item.entry.profile } : {}) }];
+        return [{ entry: item.entry.entry, model: item.model, thinkingLevel: level, step: item.entry.step, ...(item.entry.profile ? { profile: item.entry.profile } : {}) }];
       } catch { return []; }
     });
+    if (alternates.length > 0) result.alternates = alternates;
+  } else if (automatic && !classHit && harness !== "steak-dsh" && chained !== undefined) {
+    const winnerIndex = chain.findIndex((step) => step.provider === chained.step.provider && step.id === chained.step.id
+      && (step.harness ?? "pi") === (chained.step.harness ?? "pi"));
+    const alternates: ClassAlternate[] = [];
+    const seenRoutes = new Set<string>([route(model)]);
+    let rest: readonly WorkerRouteStep[] = winnerIndex >= 0 ? chain.slice(winnerIndex + 1) : [];
+    while (rest.length > 0) {
+      let picked: { step: WorkerRouteStep; model: Model };
+      try {
+        picked = selectChainedWorkerStep(registry, rest, { ...options, requireImages: input.requireImages === true });
+      } catch (error) {
+        if (!(error instanceof NoChainRouteError)) throw error;
+        break;
+      }
+      const at = rest.findIndex((step) => step.provider === picked.step.provider && step.id === picked.step.id
+        && (step.harness ?? "pi") === (picked.step.harness ?? "pi"));
+      rest = at >= 0 ? rest.slice(at + 1) : [];
+      if (picked.step.harness === "steak-dsh") continue;
+      const pickedRoute = route(picked.model);
+      if (seenRoutes.has(pickedRoute)) continue;
+      if (hookedModels.has(pickedRoute)) continue;
+      seenRoutes.add(pickedRoute);
+      try {
+        const matchedProfile = profiles.find((candidate) => candidate.model === pickedRoute);
+        const level = selectWorkerThinking(picked.model, matchedProfile?.thinking ?? inheritedThinking, input.thinking, input.thinkingReason);
+        alternates.push({ entry: pickedRoute, model: picked.model, thinkingLevel: level, step: picked.step, ...(matchedProfile ? { profile: matchedProfile.id } : {}) });
+      } catch { /* skip route whose thinking level is invalid for this request */ }
+    }
     if (alternates.length > 0) result.alternates = alternates;
   }
   return result;
 }
 
-/** A ranked class route behind the winner, resolved at dispatch for a per-task failover. */
-export interface ClassAlternate { entry: string; model: Model; thinkingLevel: Thinking; profile?: string }
+/** A ranked class or chain route behind the winner, resolved at dispatch for a per-task failover. */
+export interface ClassAlternate { entry: string; model: Model; thinkingLevel: Thinking; profile?: string; step?: WorkerRouteStep }

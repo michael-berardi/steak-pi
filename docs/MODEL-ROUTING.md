@@ -661,9 +661,7 @@ prior from your own measurements; the router then ranks both on live outcomes:
 Measure before you add it: a harness is not better on every model. Compare the two routes on your own tasks first
 (for example with ParetoBench) and let the recorded evidence decide after that.
 
-**Limits (v1).** No relay steering (`ultraterm_hub send`/`redirect` are refused with a named error), no resume
-(the harness keeps no resumable worker session), and no image input. The dispatch note and receipt name the
-harness whenever it is not Pi.
+**Limits.** No relay steering (`ultraterm_hub send`/`redirect` are refused with a named error) and no image input. Session continuity (`--session-id`) supports auto-resume and `ultraterm_hub resume` when the CLI recorded a session id. The dispatch note and receipt name the harness whenever it is not Pi.
 
 ## Provider guard
 

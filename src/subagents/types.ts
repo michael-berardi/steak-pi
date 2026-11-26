@@ -20,9 +20,27 @@ export const USAP_VERSION = "1.3" as const;
  * write and shell leaves; writes are scoped by CLI permission rules);
  * `"steak-dsh"` is the DSH headless CLI with the Steak DSH bundle on an exact
  * `steak-dsh/<provider>/<model-id>` registry route (writes scoped by CLI owned-path
- * rules; no relay steering or resume in v1). The field is omitted on records that never left the Pi default. */
+ * rules; no relay steering; session continuity via `--session-id`). The field is omitted on records that never left the Pi default. */
 export const HARNESS_IDS = ["pi", "claude-code", "steak-dsh"] as const;
 export type HarnessId = (typeof HARNESS_IDS)[number];
+/** Worktree isolation policy for a wave. `"auto"` isolates multi-writer git waves (`>=2` `mayEdit: true` tasks). */
+export const WORKSPACE_MODES = ["auto", "worktree", "shared"] as const;
+export type WorkspaceMode = (typeof WORKSPACE_MODES)[number];
+/** Warm Pi session fork source (same parent session only). */
+export interface TaskForkSource {
+  runId: string;
+  taskId: string;
+}
+/** Receipt for a task-isolated git worktree (never auto-pushed). */
+export interface TaskWorktreeReceipt {
+  worktreePath: string;
+  branch: string;
+  baseCommit: string;
+  dirty: boolean;
+  committed?: boolean;
+  diffStat?: string;
+  cleaned?: boolean;
+}
 /** Never infer durability or capability from an absent field: absent means Pi. */
 export function harnessOf(value: HarnessId | undefined): HarnessId {
   return value ?? "pi";
@@ -109,6 +127,10 @@ export interface SubagentTaskInput {
   /** Operator-named task class (a lowercase slug). Steers an implicit text wave onto the chain the
    * operator configured for that class (`taskClasses` in routing.json); unknown classes are ignored. */
   taskClass?: string;
+  /** Optional sibling labels or task IDs that must finish (`state === "done"`) before this task starts. */
+  dependsOn?: string[];
+  /** Optional prior Pi task in this same parent session whose persisted JSONL transcript is forked. */
+  forkFrom?: TaskForkSource;
 }
 
 /** Sanitized proof that a leaf ran on the explicit Claude API route. Every field
@@ -267,6 +289,8 @@ export interface DispatchInput {
   /** Why an explicit model/profile, not the configured worker chain, runs this wave's worker or scout tasks.
    * Required then (16 to 2000 characters); reviewer-only and implicit waves need none. */
   routeReason?: string;
+  /** Workspace isolation mode. Default `"auto"` isolates `>=2` `mayEdit` tasks in git repos. */
+  workspace?: WorkspaceMode;
 }
 
 export interface NormalizedTask {
@@ -282,6 +306,10 @@ export interface NormalizedTask {
   allowBash: boolean;
   /** The class the dispatch declared for this task (provenance only; the run's route is already frozen). */
   taskClass?: string;
+  /** Normalized sibling task IDs that must finish (`state === "done"`) before this task starts. */
+  dependsOn?: string[];
+  /** Prior Pi task in this same parent session forked into this task's session file. */
+  forkFrom?: TaskForkSource;
 }
 
 /** Sanitized receipt of a profile's `ensure` hook for one worker launch. It names the profile and the
@@ -341,6 +369,14 @@ export interface TaskRecord extends NormalizedTask {
   sessionFile?: string;
   /** Claude Code worker session id (`--session-id`), resumable with `--resume`. */
   claudeSessionId?: string;
+  /** Steak DSH worker session id (captured from `{ type: "session" }`), resumable with `--session-id`. */
+  dshSessionId?: string;
+  /** Per-task effective working directory when isolated in a git worktree; absent means `run.cwd`. */
+  cwd?: string;
+  /** Original `run.cwd`-anchored ownedPaths before worktree remapping (preserved for bounded resume). */
+  originalOwnedPaths?: string[];
+  /** Git worktree isolation receipt, when this task ran in an isolated worktree. */
+  worktree?: TaskWorktreeReceipt;
   subscriptionReceipt?: ClaudeSubscriptionReceipt;
   /** Explicit Claude API route only: sanitized auth/model/budget receipt. */
   apiReceipt?: ClaudeApiReceipt;
@@ -408,6 +444,8 @@ export interface RunRecord {
   usage: UsageTotals;
   /** Predecessor run this run continues; set only by an explicit bounded resume. */
   resumedFrom?: string;
+  /** Workspace isolation mode requested at dispatch (omitted when defaulted to `"auto"`). */
+  workspace?: WorkspaceMode;
 }
 
 export interface WorkerProgress {
@@ -430,6 +468,8 @@ export interface WorkerProgress {
   sessionFile?: string;
   /** Claude Code session id once the CLI has been launched with it. */
   claudeSessionId?: string;
+  /** Steak DSH session id once the CLI emits its `{ type: "session" }` event. */
+  dshSessionId?: string;
   subscriptionReceipt?: ClaudeSubscriptionReceipt;
   /** Explicit Claude API route: receipt recorded as soon as the CLI attests API auth. */
   apiReceipt?: ClaudeApiReceipt;

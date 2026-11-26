@@ -803,19 +803,20 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
       } catch (error) { return { state: signal.aborted ? (isTimeoutSignal(signal) ? "timed_out" : "aborted") : "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
       if (signal.aborted) return { state: isTimeoutSignal(signal) ? "timed_out" : "aborted", output: "", turns: 0, usage: emptyUsage(), error: "Cancelled before CLI launch" };
     }
+    const taskCwd = task.cwd ?? run.cwd;
     let apiPreflight = false;
     if (admission) {
       // A production launch always asks the real CLI. Only a test-injected spawn
       // may skip the probe, and it can still inject a status to exercise failures.
       if (!options.spawn || options.apiAuthStatus) {
-        try { await verifyClaudeApiAuth(executable, childEnv, run.cwd, signal, run.timeoutMs, admission.settingsPath, options.apiAuthStatus); apiPreflight = true; }
+        try { await verifyClaudeApiAuth(executable, childEnv, taskCwd, signal, run.timeoutMs, admission.settingsPath, options.apiAuthStatus); apiPreflight = true; }
         catch (error) { return { state: isTimeoutSignal(signal) ? "timed_out" : signal.aborted ? "aborted" : "failed", output: "", turns: 0, usage: emptyUsage(), error: errorText(error) }; }
       }
     } else if (!options.spawn || options.subscriptionAuthStatus) {
       try {
         const status = options.subscriptionAuthStatus
           ? await options.subscriptionAuthStatus(childEnv)
-          : await verifyClaudeSubscription(executable, childEnv, run.cwd, signal, run.timeoutMs);
+          : await verifyClaudeSubscription(executable, childEnv, taskCwd, signal, run.timeoutMs);
         subscriptionReceipt = claudeSubscriptionReceipt(status, childEnv, run.claudeAccount);
         if (task.subscriptionReceipt && task.subscriptionReceipt.identityHash !== subscriptionReceipt.identityHash) throw new Error("Claude subscription login identity changed since the previous attempt; no inference started");
         onProgress({ subscriptionReceipt });
@@ -849,7 +850,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
     const stopPromise = new Promise<void>((resolve) => { stopExpired = resolve; });
     let killed = false;
     let closed = false;
-    const child = spawn({ command: launchCommand, args, env: childEnv, cwd: run.cwd });
+    const child = spawn({ command: launchCommand, args, env: childEnv, cwd: taskCwd });
     onProgress({ claudeSessionId: sessionId });
     // Captured process identity at launch; every kill/cleanup revalidates it so
     // a replaced or rebinding handle can never signal an unrelated process.
@@ -1076,7 +1077,7 @@ export function createClaudeWorkerRunner(options: ClaudeWorkerRunnerOptions = {}
             pendingCalls.delete(result.id);
             journal.lastStep = call.name.toLowerCase();
             if (!result.isError && call.path !== undefined) {
-              journal.changedPaths.add(call.path.startsWith("/") ? call.path : `${run.cwd.replace(/\/+$/, "")}/${call.path}`);
+              journal.changedPaths.add(call.path.startsWith("/") ? call.path : `${taskCwd.replace(/\/+$/, "")}/${call.path}`);
             }
           }
           onProgress({
