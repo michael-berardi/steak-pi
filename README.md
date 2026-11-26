@@ -116,7 +116,8 @@ their loaded runtime. `STEAK_PI_NO_UPDATE_CHECK=1` disables background update ch
 Steak Pi has no telemetry, analytics, crash reporter or install ID.
 Anonymous release check: at most one GitHub GET per 6h in interactive sessions; opt out with `STEAK_PI_NO_UPDATE_CHECK=1`.
 Your provider sees the prompts and files you send; other requests happen only when you run a command.
-Local sessions, models, logs and snapshots stay on disk; see [PRIVACY.md](PRIVACY.md) for retention and deletion.
+Sessions, models, logs and snapshots stay on this machine; logs and snapshots are capped, the rest stays until you delete it.
+`steak-pi remove` deletes none of it; [PRIVACY.md](PRIVACY.md) lists every path and how to delete it.
 
 ## Reference
 
