@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.43.1 (2026-11-26)
+
+Privacy hardening: no telemetry is enabled by Steak Pi.
+
+- `steak-pi run` and both installers now default `PI_TELEMETRY=0` and `PI_OFFLINE=1`, disabling Pi's install beacon, provider attribution headers and automatic startup version/tool/catalog network access unless the operator explicitly sets them; npm/Homebrew analytics are disabled for toolchains Steak Pi invokes (`DO_NOT_TRACK=1`, `HOMEBREW_NO_ANALYTICS=1`). Model calls to configured providers still work.
+- Pre-compaction snapshots in `<project>/.steak-pi/snaps/` are now created with private 0700 directories and 0600 files, including when the paths already existed.
+- Added `## Privacy` to the README and a guard test against reintroducing analytics/telemetry packages or endpoints in shipped source.
+
 ## 0.43.0 (2026-11-25)
 
 Provider-neutral automatic swarm capabilities for USAP runs (zero extra LLM agents, zero hardcoded routes or model preferences):

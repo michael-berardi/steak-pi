@@ -16,6 +16,19 @@ import * as path from "node:path";
 export const STATE_DIR = ".steak-pi";
 export const SNAPS_DIR = "snaps";
 
+/** Create a private state directory without chmod-ing a symlink a user placed there. */
+function privateDir(dir: string): void {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const stat = fs.lstatSync(dir);
+  if (stat.isDirectory() && (stat.mode & 0o077) !== 0) fs.chmodSync(dir, 0o700);
+}
+
+/** Snapshots hold full conversation text: tighten the mode even when the file already existed. */
+function privateFile(file: string): void {
+  const stat = fs.lstatSync(file);
+  if (stat.isFile() && (stat.mode & 0o077) !== 0) fs.chmodSync(file, 0o600);
+}
+
 export interface SnapshotRetention {
   maxCount: number;
   maxAgeDays: number;
@@ -118,10 +131,13 @@ export function writeSnapEntries(cwd: string, entries: unknown[], reason: string
     entries: entries.length,
     compactor: "ultracompress",
   };
-  const dir = path.join(cwd, STATE_DIR, SNAPS_DIR);
-  fs.mkdirSync(dir, { recursive: true });
+  const state = path.join(cwd, STATE_DIR);
+  const dir = path.join(state, SNAPS_DIR);
+  privateDir(state);
+  privateDir(dir);
   const file = path.join(dir, meta.file);
-  const fd = fs.openSync(file, "w");
+  const fd = fs.openSync(file, "w", 0o600);
+  privateFile(file);
   try {
     writeAll(fd, `{"snap":${JSON.stringify(meta)},"entries":[`);
     for (let i = 0; i < entries.length; i++) {
@@ -175,10 +191,13 @@ function stringifySnapEntry(entry: unknown, index: number): string {
 }
 
 export function writeSnap(cwd: string, payload: string, fileName: string, retention = DEFAULT_SNAPSHOT_RETENTION, nowMs = Date.now()): string {
-  const dir = path.join(cwd, STATE_DIR, SNAPS_DIR);
-  fs.mkdirSync(dir, { recursive: true });
+  const state = path.join(cwd, STATE_DIR);
+  const dir = path.join(state, SNAPS_DIR);
+  privateDir(state);
+  privateDir(dir);
   const file = path.join(dir, fileName);
-  fs.writeFileSync(file, payload);
+  fs.writeFileSync(file, payload, { mode: 0o600 });
+  privateFile(file);
   pruneSnaps(cwd, nowMs, retention);
   return file;
 }
