@@ -1,6 +1,6 @@
 {
   "name": "steak-pi",
-  "version": "0.45.0",
+  "version": "0.46.0",
   "bin": {
     "steak-pi": "bin/steak-pi"
   },
@@ -30,6 +30,7 @@
     "themes",
     "skills",
     "docs/INSTALL.md",
+    "docs/updates.md",
     "docs/REFERENCE.md",
     "docs/AGENT-LIFECYCLE.md",
     "docs/CLAUDE-CODE.md",

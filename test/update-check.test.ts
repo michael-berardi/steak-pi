@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { checkForUpdate, isNewer, UPDATE_TEMP_TTL_MS, updateCheckDisabled } from "../src/update-check.ts";
+import { CHECK_INTERVAL_MS, checkForUpdate, fetchLatest, isNewer, UPDATE_TEMP_TTL_MS, updateCheckDisabled } from "../src/update-check.ts";
 import { noticeText } from "../extensions/update-notice.ts";
 
 const cachePath = () => join(mkdtempSync(join(tmpdir(), "steak-update-")), "update-check.json");
@@ -74,6 +74,29 @@ describe("update check", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("checks at most once per 24 hours and sends only an anonymous GET", async () => {
+    expect(CHECK_INTERVAL_MS).toBe(24 * 60 * 60 * 1000);
+    const seen: Array<{ url: string; headers: unknown }> = [];
+    const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
+      seen.push({ url, headers: init.headers });
+      return new Response(JSON.stringify({ tag_name: "v0.18.0" }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const path = cachePath();
+    await checkForUpdate("0.16.0", { now: 0, cachePath: path, fetchImpl, api: "http://127.0.0.1:1/releases/latest" });
+    await checkForUpdate("0.16.0", { now: CHECK_INTERVAL_MS - 1, cachePath: path, fetchImpl });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(seen[0].url).toBe("http://127.0.0.1:1/releases/latest");
+    expect(JSON.stringify(seen[0].headers)).toContain("steak-pi-update-check");
+    expect(JSON.stringify(seen[0].headers)).not.toMatch(/0\.16\.0|machine|uuid/);
+  });
+
+  it("accepts a local tag override without a network request", async () => {
+    const fetchImpl = vi.fn(async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
+    expect(await fetchLatest(fetchImpl, 10, undefined, { STEAK_PI_LATEST_TAG: "v0.21.0" })).toBe("0.21.0");
+    expect(fetchImpl).not.toHaveBeenCalled();
+    await expect(fetchLatest(fetchImpl, 10, undefined, { STEAK_PI_LATEST_TAG: "nightly" })).rejects.toThrow(/no x\.y\.z tag/);
   });
 
   it("can be turned off", () => {

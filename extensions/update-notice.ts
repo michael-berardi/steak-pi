@@ -1,22 +1,33 @@
-import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { closeSync, openSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { checkForUpdate, updateCheckDisabled, type UpdateState } from "../src/update-check.ts";
+import { boundedAppend, boundLog, DEFAULT_AUTO_LOG } from "../src/update-log.ts";
+import { isNoticeDue, markNoticeShown, readUpdatePrefs, recordAutoError, setAutoUpdate, skipVersion, writeUpdatePrefs } from "../src/update-prefs.ts";
+import { markReleaseRan } from "../src/update-releases.ts";
 
 /**
- * "Update available" notice and one-step update.
+ * "Update available" notice, one-step update and opt-in automatic updates.
  *
- * Lightweight by design: interactive sessions only (print-mode workers never check), one background
- * request at session start at most every 6 hours per machine (shared cache), no polling, nothing on the
- * startup path. When a newer release exists the footer shows one line; `/steak-update` installs it and
- * reloads. Agents and scripts update with `steak-pi update` (or `steak-pi update --check`).
- * Opt out with STEAK_PI_NO_UPDATE_CHECK=1.
+ * Interactive TUI sessions only: print, JSON, RPC and worker sessions never check, show or ask anything.
+ * One anonymous background request at session start, at most every 24 hours per machine (shared cache),
+ * never on the startup path. A newer release shows one footer line and, when the session is idle with an
+ * empty editor, one dialog (Install update / Remind me later / Skip this version), at most once per 24
+ * hours per version. After an install the user is asked once whether future updates install
+ * automatically (off by default). When on, `steak-pi update` runs detached at low priority, logs to one
+ * bounded file and applies on /reload; a failure is recorded and falls back to the dialog.
+ * Opt out with STEAK_PI_NO_UPDATE_CHECK=1 or `steak-pi update --checks off`.
  */
 const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = join(PKG_ROOT, "bin", "steak-pi");
 const STATUS_KEY = "steak-update";
+/** A session-start dialog dismisses itself (as "Remind me later") after this long. */
+const PROMPT_TIMEOUT_MS = 60_000;
+
+export const UPDATE_CHOICES = ["Install update", "Remind me later", "Skip this version"] as const;
+const attempted = new Set<string>();
 
 export function packageVersion(root = PKG_ROOT): string {
   return (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string }).version;
@@ -73,7 +84,14 @@ export async function reloadWhenIdle(
   queued = true;
 }
 
-function runCli(args: string[]): Promise<{ ok: boolean; output: string }> {
+export interface CliResult { ok: boolean; output: string }
+/** Injectable in tests; production uses the real shell CLI. */
+export interface UpdateRuntime {
+  runCli?: (args: string[]) => Promise<CliResult>;
+  runDetached?: (args: string[]) => Promise<CliResult>;
+}
+
+function runCli(args: string[]): Promise<CliResult> {
   return new Promise((resolve) => {
     execFile("/bin/sh", [CLI, ...args], { timeout: 300_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
       const output = `${stdout}${stderr}`.trim();
@@ -82,38 +100,157 @@ function runCli(args: string[]): Promise<{ ok: boolean; output: string }> {
   });
 }
 
+/** Detached and niced, writing straight to the bounded log, so it finishes even if this session exits. */
+export function runDetached(args: string[], log = DEFAULT_AUTO_LOG): Promise<CliResult> {
+  boundedAppend(log, `${new Date().toISOString()} steak-pi ${args.join(" ")}`);
+  let start = 0;
+  try { start = statSync(log).size; } catch { /* the log could not be created; the child still runs */ }
+  return new Promise((resolve) => {
+    let fd: number | undefined;
+    try { fd = openSync(log, "a", 0o600); } catch { /* no log: discard output */ }
+    const finish = (ok: boolean, fallback: string): void => {
+      let output = "";
+      try { output = readFileSync(log).subarray(start).toString("utf8").trim(); } catch { /* no log */ }
+      boundLog(log);
+      resolve({ ok, output: output || fallback });
+    };
+    const child = spawn("/bin/sh", ["-c", 'command -v nice >/dev/null 2>&1 && exec nice -n 10 /bin/sh "$@"; exec /bin/sh "$@"', "sh", CLI, ...args], {
+      detached: true,
+      stdio: ["ignore", fd ?? "ignore", fd ?? "ignore"],
+    });
+    if (fd !== undefined) closeSync(fd);
+    child.unref();
+    child.on("error", (error) => finish(false, error.message));
+    child.on("close", (code) => finish(code === 0, code === 0 ? "" : `exit ${code}`));
+  });
+}
+
+function interactive(ctx: Pick<ExtensionContext, "mode" | "hasUI">): boolean {
+  return ctx.mode === "tui" && ctx.hasUI;
+}
+
+function setStatus(ctx: Pick<ExtensionContext, "ui">, text: string | undefined): void {
+  try { ctx.ui.setStatus(STATUS_KEY, text); } catch { /* the session may have closed */ }
+}
+
+/** The last meaningful line of CLI output, for a one-line notification. */
+const lastLine = (output: string): string => output.split("\n").map((line) => line.trim()).filter(Boolean).at(-1) ?? "";
+
+type UpdateContext = ExtensionContext & Partial<ReloadContext>;
+
+/** Ask once (any answer is remembered) whether future updates install automatically. */
+async function offerAuto(ctx: UpdateContext): Promise<void> {
+  const prefs = readUpdatePrefs();
+  if (prefs.error || prefs.auto || prefs.autoAsked) return;
+  const on = await ctx.ui.confirm("Install future updates automatically?", "Off by default. Change it any time: steak-pi update --auto on|off");
+  setAutoUpdate(on);
+}
+
+/** The update dialog. Installing goes through the same `steak-pi update` as the CLI. */
+export async function offerUpdate(
+  ctx: UpdateContext,
+  state: UpdateState,
+  options: { pi?: Pick<ExtensionAPI, "on">; runtime?: UpdateRuntime; timeoutMs?: number } = {},
+): Promise<void> {
+  if (!interactive(ctx) || !state.available || !state.latest) return;
+  const choice = await ctx.ui.select(
+    `Steak Pi ${state.latest} is available — you have ${state.current}.`,
+    [...UPDATE_CHOICES],
+    options.timeoutMs ? { timeout: options.timeoutMs } : undefined,
+  );
+  if (choice === "Skip this version") {
+    skipVersion(state.latest);
+    setStatus(ctx, undefined);
+    return;
+  }
+  if (choice !== "Install update") return; // later or dismissed: the footer line stays
+  ctx.ui.notify(`Installing Steak Pi ${state.latest}…`, "info");
+  const result = await (options.runtime?.runCli ?? runCli)(["update"]);
+  if (!result.ok) {
+    ctx.ui.notify(`Steak Pi update failed: ${lastLine(result.output) || "unknown cause"}`, "error");
+    return;
+  }
+  setStatus(ctx, undefined);
+  ctx.ui.notify(lastLine(result.output), "info");
+  await offerAuto(ctx);
+  if (options.pi && typeof ctx.waitForIdle === "function" && typeof ctx.reload === "function") {
+    await reloadWhenIdle(options.pi, ctx as ReloadContext, (message, level) => ctx.ui.notify(message, level));
+  }
+}
+
+/** Opt-in automatic install: once per version per session; a failure records its cause and falls back to the dialog. */
+export async function installInBackground(state: UpdateState, ctx: UpdateContext, runtime: UpdateRuntime = {}): Promise<void> {
+  if (!state.latest || attempted.has(state.latest)) return;
+  attempted.add(state.latest);
+  setStatus(ctx, `Steak Pi ${state.latest} installing in the background`);
+  const result = await (runtime.runDetached ?? runDetached)(["update"]);
+  if (result.ok) {
+    writeUpdatePrefs({ autoError: undefined });
+    setStatus(ctx, `Steak Pi ${state.latest} installed · /reload to use it`);
+    return;
+  }
+  const cause = lastLine(result.output) || "automatic install failed";
+  recordAutoError(cause);
+  setStatus(ctx, noticeText(state));
+  ctx.ui.notify(`Steak Pi automatic update failed: ${cause}`, "error");
+  await offerUpdate(ctx, state, { runtime });
+}
+
+/** First interactive start of a release folder: record that it ran, then prune older ones in the background. */
+function settleRelease(): void {
+  const release = markReleaseRan(PKG_ROOT);
+  if (!release) return;
+  try {
+    const child = spawn(process.execPath, ["--no-warnings", join(PKG_ROOT, "src", "update-cli.ts"), "--prune", release.root, release.version], { detached: true, stdio: "ignore" });
+    child.on("error", () => undefined); // pruning is housekeeping; it never affects the session
+    child.unref();
+  } catch { /* as above */ }
+}
+
 export default function updateNotice(pi: ExtensionAPI): void {
   const current = packageVersion();
 
   pi.on("session_start", (_event, ctx: ExtensionContext) => {
-    if (ctx.mode !== "tui" || !ctx.hasUI || updateCheckDisabled()) return;
+    if (!interactive(ctx)) return;
+    settleRelease();
+    if (updateCheckDisabled() || !readUpdatePrefs().checks) return;
     // Fire and forget: the check never delays startup and a failure only means no notice.
-    void checkForUpdate(current).then((state) => {
-      const text = noticeText(state);
-      if (text) { try { ctx.ui.setStatus(STATUS_KEY, text); } catch { /* the session may have closed */ } }
+    void checkForUpdate(current).then(async (state) => {
+      const prefs = readUpdatePrefs();
+      if (!isNoticeDue(state, prefs)) return;
+      markNoticeShown(state.latest!);
+      if (prefs.auto) return installInBackground(state, ctx);
+      setStatus(ctx, noticeText(state));
+      // Never over a running response or a half-typed prompt.
+      const typing = typeof ctx.ui.getEditorText === "function" && ctx.ui.getEditorText().trim() !== "";
+      if (typeof ctx.isIdle === "function" && ctx.isIdle() && !typing) await offerUpdate(ctx, state, { timeoutMs: PROMPT_TIMEOUT_MS });
     }).catch(() => undefined);
   });
 
   pi.registerCommand("steak-update", {
-    description: "Install the latest Steak Pi release and reload",
+    description: "Install the latest Steak Pi release (check: report only; status: update settings)",
     handler: async (args, ctx) => {
-      if (args.trim() === "check") {
-        const state = await checkForUpdate(current, { force: true });
-        ctx.ui.notify(state.error ? `Update check failed: ${state.error}`
-          : state.available ? `Steak Pi ${state.latest} is available (you have ${current}).`
-          : `Steak Pi ${current} is the latest release.`, state.error ? "error" : "info");
+      const command = args.trim().toLowerCase();
+      if (command === "status") {
+        const prefs = readUpdatePrefs();
+        ctx.ui.notify(prefs.error ? `Update settings: ${prefs.error}`
+          : `Automatic updates: ${prefs.auto ? "on" : "off"}${prefs.skippedVersion ? ` · skipped ${prefs.skippedVersion}` : ""}${prefs.autoError ? ` · last failure: ${prefs.autoError}` : ""}`,
+        prefs.error || prefs.autoError ? "error" : "info");
         return;
       }
-      ctx.ui.notify(`Updating Steak Pi from ${current}…`, "info");
+      const state = await checkForUpdate(current, { force: true });
+      if (state.error || !state.available) {
+        ctx.ui.notify(state.error ? `Update check failed: ${state.error}` : `Steak Pi ${current} is the latest release.`, state.error ? "error" : "info");
+        return;
+      }
+      if (command === "check") {
+        ctx.ui.notify(`Steak Pi ${state.latest} available (you have ${current}).`, "info");
+        return;
+      }
+      if (interactive(ctx)) { await offerUpdate(ctx, state, { pi }); return; }
+      // An explicit command without dialogs: install without questions.
       const result = await runCli(["update"]);
-      if (!result.ok) {
-        ctx.ui.notify(`Steak Pi update failed:\n${result.output}`, "error");
-        return;
-      }
-      ctx.ui.setStatus(STATUS_KEY, undefined);
-      ctx.ui.notify(result.output.split("\n").slice(-3).join("\n"), "info");
-      if (/up to date/i.test(result.output)) return;
-      await reloadWhenIdle(pi, ctx, (message, level) => ctx.ui.notify(message, level));
+      ctx.ui.notify(lastLine(result.output), result.ok ? "info" : "error");
     },
   });
 }

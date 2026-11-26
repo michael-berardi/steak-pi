@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.46.0 (2026-11-26)
+
+Update notices, skip and opt-in automatic updates ([docs/updates.md](docs/updates.md)).
+
+- **Notice and dialog.** Interactive sessions show `Steak Pi <new> available (you have <current>) · /steak-update` and, only when idle with an empty editor, one dialog: Install update / Remind me later / Skip this version. Both appear at most once per 24 hours per version, and a skipped version stays hidden until a newer one. After an install, Steak Pi asks once whether future updates install automatically (default no). Print, JSON, RPC, worker and CI sessions never check or ask. The check interval is now 24 hours (was 6).
+- **`steak-pi update`** shows current -> new and the first lines of the release notes. On a terminal it asks `Install <new> now? [Y/n]`, then once `Install future updates automatically? [y/N]`. It installs only a strictly newer stable release (an older latest tag no longer downgrades). `--check` exits 0 current, 10 available or 1 failed with the cause; `--skip`, `--auto on|off|status` and `--checks on|off|status` are stored in `steak-pi.json`; `--rollback [version]` re-points release folders.
+- **Automatic updates** (off by default) run `steak-pi update` detached at low priority and log to one file capped at 256 KB. They apply on `/reload`. A failure records its cause and falls back to the dialog.
+- **Verified installs.** Release-folder updates download `steak-pi-<version>.tgz` and check it against the release's `SHA256SUMS` before anything changes. A mismatch or missing entry refuses the update, and the staging folder is deleted either way.
+- **No debris.** Release folders keep one rollback, deleted after the new release has started once or seven days after it was replaced. Older folders go too, but never while a known Pi agent directory pins them or a Pi session that started before the switch is still running (the 2026-11-03 rule stays). `--auto off` deletes the cache, log and notice state; `steak-pi remove` also deletes the `updates` settings.
+
+- **USAP skill 1.8.0.** `skills/ultraterm-subagent-protocol` now carries the 1.7.0/1.8.0 protocol guidance in Steak Pi's own terms: bounded `dependsOn` handoffs, `#seq` board citations, automatic `workspace` worktrees with parent-reviewed branch receipts, in-place failover and `forkFrom` warm forks, and deterministic diagnostics instead of monitor agents.
+
+Privacy hardening (no telemetry is enabled by Steak Pi):
+
+- `steak-pi run` and both installers now default `PI_TELEMETRY=0` and `PI_OFFLINE=1`, disabling Pi's install beacon, provider attribution headers and automatic startup version/tool/catalog network access unless the operator explicitly sets them; npm/Homebrew analytics are disabled for toolchains Steak Pi invokes (`DO_NOT_TRACK=1`, `HOMEBREW_NO_ANALYTICS=1`). Model calls to configured providers still work.
+- Pre-compaction snapshots in `<project>/.steak-pi/snaps/` are now created with private 0700 directories and 0600 files, including when the paths already existed.
+- The local model server log `~/.pi/agent/local/server.log` is rotated to `server.log.1` past 8 MiB when a server starts, so it stays bounded.
+- Added `## Privacy` to the README and a guard test against reintroducing analytics/telemetry packages or endpoints in shipped source.
+- The README `## Privacy` section is now five plain lines with a link to a new `PRIVACY.md`, which carries every network path and a table of local writes with contents, lifetime, automatic retention and deletion method. The README guard in `test/privacy.test.ts` checks the line count and the moved details.
+- The update-check cache sweeps crash-left `update-check.json.<pid>.tmp` files older than 24 hours before its next write, so the cache cannot grow without bound. Focused coverage in `test/update-check.test.ts`.
+- The README Privacy section and `PRIVACY.md` describe the daily anonymous update check, the update choices in `steak-pi.json`, the automatic-install log and the one kept rollback release.
+
 ## 0.45.0 (2026-11-26)
 
 - **`verificationGates` entries take an optional `mode`: `"fix"` or `"review"`.** In fix mode, a writable leaf on a gated route is told the parent must run a review-and-fix pass on the gate's reviewer route: a writable leaf (mayEdit, the same ownedPaths) that checks the work against the task, fixes or reworks every defect itself, reruns the checks and reports what it changed. A findings-only review does not count, and the named fallback is requested as a review-and-fix pass too. The dispatch note says the same. Without `mode`, a route listed in `freeRoutes` defaults to `fix` and every other route to `review` (one bounded verification, as before). `steak-pi routing check` rejects any other value and names the key. No route names ship in code; the operator's routing.json supplies them.

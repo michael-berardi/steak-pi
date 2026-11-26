@@ -5,10 +5,16 @@ import { basename, dirname, join } from "node:path";
 /** Where Steak Pi publishes releases. The check reads only GitHub's public "latest release" record. */
 export const RELEASES_API = "https://api.github.com/repos/michael-berardi/steak-pi/releases/latest";
 /** At most one network check per interval, across every Pi session on the machine (shared cache file). */
-export const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+export const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 export const CHECK_TIMEOUT_MS = 4_000;
 /** A process killed between writing its temp and renaming it leaves one behind; sweep those after a day. */
 export const UPDATE_TEMP_TTL_MS = 24 * 60 * 60 * 1000;
+/** Local override for testing a release before it is published; never sent in a request. */
+export const LATEST_TAG_ENV = "STEAK_PI_LATEST_TAG";
+/** Replace only the endpoint of the one anonymous GET (for a local fixture server). */
+export const UPDATE_API_ENV = "STEAK_PI_UPDATE_API";
+/** Per-machine override for the shared cache (tests and local fixtures); never transmitted. */
+export const UPDATE_CACHE_ENV = "STEAK_PI_UPDATE_CACHE";
 export const DEFAULT_CACHE_PATH = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "steak-pi", "update-check.json");
 
 export interface UpdateCache {
@@ -79,8 +85,13 @@ function writeCache(cache: UpdateCache, path: string, now = Date.now()): void {
 }
 
 /** Ask GitHub for the latest release tag. Throws a named error; never retries (the interval is the retry). */
-export async function fetchLatest(fetchImpl: typeof fetch = fetch, timeoutMs = CHECK_TIMEOUT_MS): Promise<string> {
-  const response = await fetchImpl(RELEASES_API, {
+export async function fetchLatest(fetchImpl: typeof fetch = fetch, timeoutMs = CHECK_TIMEOUT_MS, api = process.env[UPDATE_API_ENV] || RELEASES_API, env: NodeJS.ProcessEnv = process.env): Promise<string> {
+  const override = env[LATEST_TAG_ENV]?.trim();
+  if (override) {
+    if (!SEMVER.test(override)) throw new Error(`${LATEST_TAG_ENV} has no x.y.z tag (${override})`);
+    return override.replace(/^v/, "");
+  }
+  const response = await fetchImpl(api, {
     headers: { accept: "application/vnd.github+json", "user-agent": "steak-pi-update-check" },
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -96,13 +107,14 @@ export async function fetchLatest(fetchImpl: typeof fetch = fetch, timeoutMs = C
  */
 export async function checkForUpdate(current: string, options: {
   now?: number; cachePath?: string; force?: boolean; fetchImpl?: typeof fetch; intervalMs?: number;
+  api?: string; env?: NodeJS.ProcessEnv;
 } = {}): Promise<UpdateState> {
   const now = options.now ?? Date.now();
-  const path = options.cachePath ?? DEFAULT_CACHE_PATH;
+  const path = options.cachePath ?? (process.env[UPDATE_CACHE_ENV] || DEFAULT_CACHE_PATH);
   let cache = options.force ? undefined : readCache(path);
   if (!cache || now - cache.checkedAt >= (options.intervalMs ?? CHECK_INTERVAL_MS) || cache.checkedAt > now) {
     try {
-      cache = { checkedAt: now, latest: await fetchLatest(options.fetchImpl) };
+      cache = { checkedAt: now, latest: await fetchLatest(options.fetchImpl, CHECK_TIMEOUT_MS, options.api, options.env) };
     } catch (error) {
       // Keep the last known version so a flaky network never hides an update that was already found.
       const previous = readCache(path);

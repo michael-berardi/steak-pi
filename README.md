@@ -40,7 +40,7 @@ If the installer prints a PATH instruction, apply it before continuing.
 Already have Pi? Install the current package directly:
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.45.0
+pi install git:github.com/michael-berardi/steak-pi@v0.46.0
 ```
 
 Requires Node.js 22.19+ and Pi 0.87+; development checks use Pi 1.0.4.
@@ -100,24 +100,29 @@ provider to `models.json`. Then `pi --model local/<id>`: `llama-server` starts o
 It refuses, naming the cause, when memory is short, the disk is above 90% or another model server runs. No model ships
 with Steak Pi; workers use `ensure`/`release`. When a model has an adapter trained for this agent on exactly that model, local mode finds it, asks once to trust its publisher, downloads it pinned and checked, and applies it; nothing is bundled. Details: [docs/LOCAL-MODELS.md](./docs/LOCAL-MODELS.md).
 
-## Update
+## Updates
+
+A newer release shows one footer line in interactive Pi sessions and offers Install
+update, Remind me later or Skip this version. Automatic updates are off until you
+turn them on. Print, JSON and worker sessions never check or ask.
 
 ```sh
-steak-pi update --check
-steak-pi update
+steak-pi update                       # install the latest release
+steak-pi update --check               # 0 current, 10 available, 1 check failed
+steak-pi update --skip                # hide this version's notice
+steak-pi update --auto on|off|status
 ```
 
-In Pi, `/steak-update` installs an update and reloads. Existing sessions keep
-their loaded runtime. `STEAK_PI_NO_UPDATE_CHECK=1` disables background update checks.
 `steak-pi update --models` refreshes provider catalogs without installing a package.
+Details: [docs/updates.md](docs/updates.md).
 
 ## Privacy
 
 Steak Pi has no telemetry, analytics, crash reporter or install ID.
-Anonymous release check: at most one GitHub GET per 6h in interactive sessions; opt out with `STEAK_PI_NO_UPDATE_CHECK=1`.
+Update check: one anonymous GitHub GET per day in interactive sessions; opt out with `STEAK_PI_NO_UPDATE_CHECK=1`.
 Your provider sees the prompts and files you send; other requests happen only when you run a command.
 Sessions, models, logs and snapshots stay on this machine; logs and snapshots are capped, the rest stays until you delete it.
-`steak-pi remove` deletes none of it; [PRIVACY.md](PRIVACY.md) lists every path and how to delete it.
+[PRIVACY.md](PRIVACY.md) lists every path, how long it stays and how to delete it.
 
 ## Reference
 

@@ -124,7 +124,7 @@ describe("privacy guard", () => {
     expect(readme).toContain("[PRIVACY.md](PRIVACY.md)");
     expect(readme).toContain("STEAK_PI_NO_UPDATE_CHECK=1");
     expect(readme.toLowerCase()).not.toContain("no update check");
-    expect(privacy).toContain("at most once per six hours");
+    expect(privacy).toContain("at most once per 24 hours");
     expect(privacy).toContain("STEAK_PI_NO_UPDATE_CHECK=1");
     for (const path of ["~/.pi/agent/", "~/.pi/agent/local/", ".steak-pi/snaps/", "~/.cache/steak-pi/verification/", "~/.cache/steak-pi/update-check.json", "~/.ultraterm/ui-streams/"]) {
       expect(privacy).toContain(path);

@@ -44,3 +44,24 @@ it("synthetic CLI update reports a failed request without installing anything", 
   expect(result.stderr).toContain("cannot reach GitHub");
   expect(fs.existsSync(path.join(root, "install"))).toBe(false);
 });
+
+it("uninstall removes the update cache, preferences and auto-update log", () => {
+  const agent = path.join(root, "agent");
+  fs.mkdirSync(agent, { recursive: true });
+  const settings = path.join(agent, "steak-pi.json");
+  fs.writeFileSync(settings, JSON.stringify({ theme: "keep", updates: { auto: true, skippedVersion: "9.9.9" } }));
+  const cacheDir = path.join(root, "cache", "steak-pi");
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const cache = path.join(cacheDir, "update-check.json");
+  const log = path.join(cacheDir, "auto-update.log");
+  fs.writeFileSync(cache, JSON.stringify({ checkedAt: 1, latest: "9.9.9" }));
+  fs.writeFileSync(log, "old auto install\n");
+  const result = spawnSync("/bin/sh", [path.resolve("bin/steak-pi"), "remove"], {
+    encoding: "utf8",
+    env: { PATH: `${path.dirname(process.execPath)}:${root}/bin:/usr/bin:/bin`, HOME: root, PI_CODING_AGENT_DIR: agent, XDG_CACHE_HOME: path.join(root, "cache"), TEST_ROOT: root },
+  });
+  expect(result.status, result.stderr).toBe(0);
+  expect(fs.existsSync(cache)).toBe(false);
+  expect(fs.existsSync(log)).toBe(false);
+  expect(JSON.parse(fs.readFileSync(settings, "utf8"))).toEqual({ theme: "keep" });
+});

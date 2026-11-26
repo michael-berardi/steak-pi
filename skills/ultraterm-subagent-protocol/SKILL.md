@@ -4,7 +4,7 @@ description: Use at the start of nontrivial work and whenever deciding whether, 
 license: MIT
 metadata:
   acronym: USAP
-  version: 1.4.0
+  version: 1.8.0
 ---
 
 # UltraTerm Subagent Protocol
@@ -325,6 +325,31 @@ must advertise image input and a native text/tool adapter must be available.
 Inspect the receipt and hub's provider/model/profile, selection provenance and
 tool success/error counts. An all-tool-failure task is failed; done alone still
 is not acceptance. Profile defaults: `docs/PROFILES.md`.
+
+## Dependencies, worktrees, citations and failover (USAP 1.8.0)
+
+- **Bounded handoffs (`dependsOn`).** A leaf that needs another leaf's output waits for it; express a bounded acyclic
+  handoff (such as `author -> verifier`) inside one wave with `dependsOn` naming sibling labels or IDs. Dispatch refuses
+  cycles and unknown names. Dependents start when every predecessor is `done`, receive compact predecessor pointers
+  (label, state, worktree or cwd, changed paths, bounded summary, `#seq` citations for Pi workers), and settle as aborted
+  when a predecessor fails, aborts or times out. `timeoutMs` is absolute, so size it for the whole chain. Unbounded peer
+  ping-pong is forbidden; the parent keeps final judgment. Parallelize DAG siblings, not the chain.
+- **Zero-copy board citations (`#seq`).** The run board is a bounded, append-only per-run log. Pi workers read it with
+  `ultraterm_relay` `operation: "read"` (`afterSeq`, `seqs`, `limit`); the parent reads cited entries with
+  `ultraterm_hub` `inbox` and `seqs`. Cite `#seq` only to a recipient that can read the board; otherwise pass a file path
+  or a short summary. Never re-paste transcripts.
+- **Automatic worktrees (`workspace`).** `auto` (default) gives each writer of a wave with two or more `mayEdit` tasks in
+  a clean git repository its own worktree outside the repository, from the run's base `HEAD`; single-writer, read-only
+  and dirty-checkout waves stay `shared`; `worktree` forces isolation and `shared` turns it off. Worktrees do not relax
+  disjoint `ownedPaths`. Dirty or committed worktrees are kept for the parent, who reviews and merges each branch
+  receipt in the integration gate; nothing is pushed automatically. `allowBash` is still unsandboxed.
+- **Failover and warm forks.** On implicit chain runs, a transient mid-run quota or upstream 5xx failure may move the
+  worker in place to the next configured alternate, reopening its persisted transcript within the same time and turn
+  budgets and capability tier. Policy and content-filter refusals are failures, not reroutes; explicit routes stay
+  fail-closed. `forkFrom: { runId, taskId }` branches a Pi leaf from a settled transcript of this parent session, copying
+  only the transcript file.
+- **Diagnostics, not monitors.** Stalls and progress come from `diagnose` (`stalledTasks`, `unansweredRequests`,
+  `awaitingDependencies`) and run cards; never start an LLM monitor or narrator agent.
 
 ## Coordination and limits
 

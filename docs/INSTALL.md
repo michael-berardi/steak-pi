@@ -27,13 +27,13 @@ Node.js and npm through the system package manager before running the installer.
 
 ## Install a downloaded archive
 
-Download `steak-pi-0.45.0.tgz` and its `.sha256` file from the
+Download `steak-pi-0.46.0.tgz` and its `.sha256` file from the
 [release page](../README.md#install) into an empty directory. With Node.js, npm
 and Pi already installed, run:
 
 ```sh
-shasum -a 256 -c steak-pi-0.45.0.tgz.sha256
-tar -xzf steak-pi-0.45.0.tgz
+shasum -a 256 -c steak-pi-0.46.0.tgz.sha256
+tar -xzf steak-pi-0.46.0.tgz
 npm ci --ignore-scripts --prefix "$PWD/package"
 pi install "$PWD/package"
 ```
@@ -49,7 +49,10 @@ inside the installed package.
 steak-pi run              # forwards arguments to Pi
 steak-pi env              # Node memory and compile-cache defaults
 steak-pi status           # version, settings file and integration
-steak-pi update --check   # report available package update
+steak-pi update --check   # report: 0 current, 10 available, 1 failed
+steak-pi update --skip    # skip this version's notice
+steak-pi update --auto on|off|status
+steak-pi update --rollback [version]  # release-folder installs only
 steak-pi update           # install package update
 steak-pi update --models  # refresh model catalogs only
 ```
@@ -63,9 +66,11 @@ Catalog refresh loads the installed Pi packages and refreshes every registered
 provider. It prints a result per provider and exits nonzero if any refresh fails.
 It targets `PI_CODING_AGENT_DIR` and installs nothing.
 
-Release-folder updates retain older releases because running sessions may use
-them. Managed installations may have their own update policy; do not overwrite
-a running session's runtime tree. Re-running the installer also upgrades.
+Release-folder updates keep one rollback, and never remove a release that a
+known Pi agent directory pins or a running session may still load
+([details](updates.md#no-debris)). Managed installations may have their own
+update policy; do not overwrite a running session's runtime tree. Re-running
+the installer also upgrades.
 
 ## Remove
 

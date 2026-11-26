@@ -44,7 +44,7 @@ function files(dir: string): string[] {
     return TEXT.test(name) || rel.startsWith("bin/") ? [path] : [];
   });
 }
-const ROOT_FILES = ["README.md", "CONTRIBUTING.md", "SECURITY.md"];
+const ROOT_FILES = ["README.md", "CONTRIBUTING.md", "SECURITY.md", "PRIVACY.md"];
 // The tune module's own test is scanned too: it ships with the module and must not name a model family either.
 const LOCAL_TESTS = [join(root, "test", "local-tune.test.ts")].filter(existsSync);
 const shipped = [...SHIPPED_DIRS.flatMap((dir) => files(join(root, dir))), ...LOCAL_TESTS, ...ROOT_FILES.map((name) => join(root, name))].filter(existsSync);
@@ -81,6 +81,8 @@ const DISTRIBUTION_FILES = [
   "README.md",
   "CONTRIBUTING.md",
   "SECURITY.md",
+  // PRIVACY.md names the one endpoint the update check calls: this repository's own release record.
+  "PRIVACY.md",
   "bin/steak-pi",
   "scripts/install.sh",
   "src/update-check.ts",
