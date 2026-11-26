@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.44.0 (2026-11-26)
+
+- **Model discovery no longer turns telemetry or non-essential traffic back on.** The Claude Code model-catalog probe used to delete `DISABLE_TELEMETRY` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` so the CLI would fetch a live catalog: a startup network call with telemetry re-enabled, against the privacy rule the request environment already follows. Discovery now runs in the same quiet environment as every request and accepts Claude Code's built-in catalog, which is what the CLI answers with while both switches are on (the same trade-off `steak-dsh` and `codex-on-claude-code` already make). The newest models keep reaching `/model` through the shipped rows in `model-catalog.ts`, with their window and output budget. Regression tests in `test/claude-code/discovery-environment.test.ts` fail if either switch is dropped from the discovery environment or if the probe would make a network catalog fetch, and the wording that described a live list now says built-in catalog.
+
 ## 0.43.1 (2026-11-26)
 
 UltraCompress extension fixes (ported from UltraCompress 0.7.0):

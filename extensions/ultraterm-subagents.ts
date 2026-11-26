@@ -1499,7 +1499,7 @@ export function createUltratermSubagentsExtension(
     let runtime: SessionRuntime | undefined;
     setSubagentCountReader(() => runtime && !runtime.closed ? runtime.coordinator.activeRuns().length : 0);
     // A claude-code/<model> route is admitted from three sources, never a hard-coded model list: the
-    // adapter's pinned routes, the Claude Code model catalog (shipped plus ids the CLI reports live) and
+    // adapter's pinned routes, the Claude Code model catalog (shipped plus the ids the CLI reports from its built-in catalog) and
     // an operator-registered worker/launch profile that names it. Loaded lazily so a bad manifest fails
     // only where a route is decided.
     const claudeProfiles = () => dependencies.profiles ?? loadWorkerProfiles();

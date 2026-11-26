@@ -1,21 +1,87 @@
 import assert from "node:assert/strict";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "vitest";
-import { discoveryEnvironment, processEnvironment } from "../../extensions/claude-code/claude-cli.ts";
+import { discoverClaudeModels, discoveryEnvironment, processEnvironment } from "../../extensions/claude-code/claude-cli.ts";
 import { FALLBACK_DISCOVERY, modelFromDiscovery } from "../../extensions/claude-code/model-catalog.ts";
 
-// With CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC or DISABLE_TELEMETRY set, Claude Code answers the initialize request from a stale
-// built-in model list: the newest model the login could use was missing from /model (2026-11-12). Discovery runs without
-// those two switches; every request keeps them.
-test("model discovery lets the CLI fetch its live model catalog; requests stay quiet", () => {
-  const discovery = discoveryEnvironment({});
-  assert.equal(discovery.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, undefined);
-  assert.equal(discovery.DISABLE_TELEMETRY, undefined);
-  // Everything else that keeps the run on the plan and off the network stays.
-  assert.equal(discovery.CLAUDE_CODE_MAX_RETRIES, "0");
-  assert.equal(discovery.ENABLE_TOOL_SEARCH, "false");
+// With CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC or DISABLE_TELEMETRY set, Claude Code answers the initialize request from its
+// built-in model catalog instead of fetching a live one. Discovery therefore keeps every telemetry switch on exactly like a
+// request: deleting either one would put a network catalog fetch back into Pi's startup (2026-11-26 privacy audit).
+test("model discovery keeps every telemetry switch on, like a request", () => {
+  const cases = [
+    discoveryEnvironment({}),
+    discoveryEnvironment({ DISABLE_TELEMETRY: "0", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "0" }),
+    discoveryEnvironment(process.env),
+  ];
+  for (const discovery of cases) {
+    assert.equal(discovery.DISABLE_TELEMETRY, "1");
+    assert.equal(discovery.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
+    assert.equal(discovery.DISABLE_ERROR_REPORTING, "1");
+    assert.equal(discovery.CLAUDE_CODE_MAX_RETRIES, "0");
+    assert.equal(discovery.ENABLE_TOOL_SEARCH, "false");
+  }
   const request = processEnvironment({}, {});
   assert.equal(request.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
   assert.equal(request.DISABLE_TELEMETRY, "1");
+});
+
+// The real probe path, end to end: the spawned Claude Code process must be started quiet, and a quiet CLI answers from its
+// built-in catalog. The stand-in records the switches it was started with and, if either is missing, records the live-catalog
+// fetch it would make and exits 1 — so deleting a switch from the discovery environment fails this test as a network call.
+test("the discovery probe starts Claude Code quiet and lists its built-in catalog", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "steak-pi-discovery-env-"));
+  const executable = join(dir, "claude");
+  const log = join(dir, "probe.log");
+  const models = [
+    { value: "default", displayName: "Default (recommended)", description: "built-in catalog row" },
+    { value: "sonnet", displayName: "Sonnet", description: "built-in catalog row" },
+  ];
+  const script = `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+const readline = require("node:readline");
+const quiet = process.env.DISABLE_TELEMETRY === "1" && process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC === "1";
+appendFileSync(process.env.PROBE_LOG, JSON.stringify({
+  telemetry: process.env.DISABLE_TELEMETRY ?? null,
+  nonessential: process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC ?? null,
+  errorReporting: process.env.DISABLE_ERROR_REPORTING ?? null,
+  builtin: quiet,
+}) + "\\n");
+if (!quiet) {
+  appendFileSync(process.env.PROBE_LOG, JSON.stringify({ network: "live model catalog fetch" }) + "\\n");
+  process.exit(1);
+}
+(async () => {
+  for await (const line of readline.createInterface({ input: process.stdin })) {
+    if (!line.trim()) continue;
+    const frame = JSON.parse(line);
+    if (frame.type === "control_request" && frame.request?.subtype === "initialize") {
+      console.log(JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: frame.request_id, response: { models: ${JSON.stringify(models)} } } }));
+    } else if (frame.shouldQuery === false) {
+      console.log(JSON.stringify({ type: "result", num_turns: 0 }));
+    }
+  }
+})();
+`;
+  const staged = `${executable}.tmp`;
+  writeFileSync(staged, script);
+  chmodSync(staged, 0o755);
+  try {
+    writeFileSync(executable, readFileSync(staged), { mode: 0o755 });
+    const discovered = await discoverClaudeModels(
+      { ...process.env, PI_CLAUDE_CODE_COMMAND: executable, PROBE_LOG: log },
+      undefined,
+      10_000,
+    );
+    assert.deepEqual(discovered.map((row) => row.value), ["default", "sonnet"]);
+    const lines = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1, "the probe started the CLI once and made no second (network) attempt");
+    assert.deepEqual(lines[0], { telemetry: "1", nonessential: "1", errorReporting: "1", builtin: true });
+    assert.equal(lines.some((line) => line.network), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("discovery still refuses an inherited API key or backend override", () => {

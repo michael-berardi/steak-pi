@@ -75,7 +75,7 @@ export function claudeCodeServableModel(route: string | undefined): string | und
 
 /** The refusal a `claude-code/<model>` route earns, naming the three sources it was checked against. */
 export function claudeCodeRouteRefusal(route: string): string {
-  return `USAP harness claude-code runs only ${CLAUDE_CODE_ROUTES.join(" or ")} (the built-in pinned routes), a model the Claude Code model catalog serves (the shipped list plus every id the CLI reports live), or a route an operator worker profile names; ${route} is none of those, so no run was started and no fallback was selected.`;
+  return `USAP harness claude-code runs only ${CLAUDE_CODE_ROUTES.join(" or ")} (the built-in pinned routes), a model the Claude Code model catalog serves (the shipped list plus every id the CLI reports from its built-in catalog), or a route an operator worker profile names; ${route} is none of those, so no run was started and no fallback was selected.`;
 }
 
 /**

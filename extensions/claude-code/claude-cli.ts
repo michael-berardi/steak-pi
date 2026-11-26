@@ -559,21 +559,17 @@ function conflictingEnvironment(env: Record<string, string>): string[] {
 }
 
 /**
- * The environment for model discovery only. It is the request environment without the two switches that make the CLI skip its
- * live model catalog: with CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC or DISABLE_TELEMETRY set, Claude Code 2.1.322 answers the
- * initialize request from a stale built-in list (5 rows instead of the login's 14, measured 2026-11-12), so the newest model the
- * login could use was missing from Pi's /model picker. Discovery sends no prompt, so letting the
- * catalog fetch run costs nothing on the plan; requests keep the full quiet environment.
+ * The environment for model discovery. It is exactly the quiet environment a request gets, telemetry switches included: with
+ * CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC or DISABLE_TELEMETRY set, Claude Code 2.1.322 answers the initialize request from its
+ * built-in model catalog without fetching anything, so discovery never makes a network call of its own.
  *
- * Both switches are dropped even when the operator set them on purpose: processEnvironment passes an operator's own value
- * through, but either one makes discovery answer from the stale list, so only the live-catalog behaviour is useful here.
- * Nothing else is removed from the environment.
+ * The built-in catalog can lag the login's newest model (5 rows instead of the login's 14, measured 2026-11-12), and that is
+ * accepted here: a startup probe must not turn telemetry or non-essential traffic back on. The newest models are shipped as rows
+ * in model-catalog.ts (with their window and output budget) and reach /model with a release. Nothing is removed from the
+ * environment, not even a switch the operator set on purpose.
  */
 export function discoveryEnvironment(input: Record<string, string | undefined> | undefined): Record<string, string> {
-  const env = processEnvironment(input, {});
-  delete env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
-  delete env.DISABLE_TELEMETRY;
-  return env;
+  return processEnvironment(input, {});
 }
 
 export function processEnvironment(
