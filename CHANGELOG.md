@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.43.1 (2026-11-26)
+## 0.44.0 (2026-11-26)
 
 Privacy hardening: no telemetry is enabled by Steak Pi.
 
