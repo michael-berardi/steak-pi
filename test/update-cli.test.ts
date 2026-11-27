@@ -1,10 +1,26 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { shimPinnedVersion } from "../src/update-releases.ts";
 
 const CLI = resolve(import.meta.dirname, "..", "bin", "steak-pi");
+
+const shimDir = (home: string) => join(home, ".local", "bin");
+const shimPath = (home: string) => join(shimDir(home), "steak-pi");
+/** A synthetic installer launcher; the PATH line is the one scripts/install.sh writes for bundled Node. */
+function writeInstallerShim(home: string, target: string, marked = true, pathLine?: string) {
+  mkdirSync(shimDir(home), { recursive: true });
+  writeFileSync(shimPath(home), [
+    "#!/bin/sh",
+    ...(marked ? ["# steak-pi-installer-shim"] : []),
+    ...(pathLine ? [pathLine] : []),
+    `exec "${target}" "$@"`,
+    "",
+  ].join("\n"), { mode: 0o755 });
+  return shimPath(home);
+}
 
 /** Isolated release folders and a synthetic git clone; npm installs an empty dependency set offline. */
 function fixture(current: string, next: string) {
@@ -37,7 +53,7 @@ function fixture(current: string, next: string) {
 function run(f: ReturnType<typeof fixture>, current: string, args: string[], tag: string, extra: Record<string, string> = {}) {
   return spawnSync("/bin/sh", [join(f.releases, current, "package", "bin", "steak-pi"), ...args], {
     encoding: "utf8",
-    env: { ...process.env, HOME: f.home, PATH: `${join(f.home, "bin")}:${process.env.PATH}`, PI_CODING_AGENT_DIR: f.agent, STEAK_PI_LATEST_TAG: tag, STEAK_PI_RELEASE_SOURCE: f.repo, STEAK_PI_LIBEXEC: "", ...extra },
+    env: { ...process.env, HOME: f.home, PATH: `${join(f.home, "bin")}:${process.env.PATH}`, PI_CODING_AGENT_DIR: f.agent, STEAK_PI_LATEST_TAG: tag, STEAK_PI_RELEASE_SOURCE: f.repo, STEAK_PI_LIBEXEC: "", STEAK_PI_BIN_DIR: shimDir(f.home), ...extra },
   });
 }
 
@@ -49,7 +65,7 @@ describe("steak-pi update for release-folder installs", { timeout: 60_000 }, () 
     writeFileSync(join(other, "settings.json"), JSON.stringify({ packages: [join(f.releases, "0.1.0", "package")] }));
     const selected = run(f, "0.16.0", ["status"], "v0.17.0");
     const fallback = spawnSync("/bin/sh", [join(f.releases, "0.16.0", "package", "bin", "steak-pi"), "status"], {
-      encoding: "utf8", env: { ...process.env, HOME: f.home, PI_CODING_AGENT_DIR: "", STEAK_PI_LIBEXEC: "" },
+      encoding: "utf8", env: { ...process.env, HOME: f.home, PI_CODING_AGENT_DIR: "", STEAK_PI_LIBEXEC: "", STEAK_PI_BIN_DIR: shimDir(f.home) },
     });
     expect(selected.stdout).toContain(join(f.agent, "settings.json"));
     expect(selected.stdout).toContain("pi integration    ../share/steak-pi/releases/0.16.0/package  (v0.16.0)");
@@ -154,6 +170,59 @@ describe("steak-pi update for release-folder installs", { timeout: 60_000 }, () 
     expect(readdirSync(f.releases).filter((name) => name.startsWith(".staging-"))).toEqual([]); // temp downloads are removed
   });
 
+  it("rewrites a marked installer shim on update and rollback, preserving its PATH line", () => {
+    const f = fixture("0.16.0", "0.17.0");
+    const pathLine = `PATH="${join(f.home, "node", "bin")}:$PATH"; export PATH`;
+    const shim = writeInstallerShim(f.home, join(f.releases, "0.16.0", "package", "bin", "steak-pi"), true, pathLine);
+    const updated = run(f, "0.16.0", ["update"], "v0.17.0");
+    expect(updated.status, updated.stderr).toBe(0);
+    // release_root() resolves symlinks, so macOS `/var` fixtures are reported under `/private/var`.
+    const newTarget = realpathSync(join(f.releases, "0.17.0", "package", "bin", "steak-pi"));
+    expect(updated.stdout).toContain(`Re-pointed installer shim ${shim} at ${newTarget}.`);
+    expect(readFileSync(shim, "utf8")).toContain("# steak-pi-installer-shim");
+    expect(readFileSync(shim, "utf8")).toContain(pathLine);
+    expect(readFileSync(shim, "utf8")).toContain(`exec '${newTarget}' "$@"`);
+    expect(readdirSync(shimDir(f.home))).toEqual(["steak-pi"]); // no temp file left behind
+    expect(statSync(shim).mode & 0o777).toBe(0o755);
+    // The prune reader must parse what the update wrote, or the launcher's release loses its pin.
+    const shimEnv = { HOME: f.home, STEAK_PI_BIN_DIR: shimDir(f.home) };
+    expect(shimPinnedVersion(realpathSync(f.releases), shimEnv)).toBe("0.17.0");
+    // The rewritten launcher is valid shell that execs the new release.
+    chmodSync(newTarget, 0o755);
+    const launched = spawnSync(shim, ["version"], { encoding: "utf8", env: { ...process.env, HOME: f.home, STEAK_PI_LIBEXEC: "", STEAK_PI_BIN_DIR: shimDir(f.home) } });
+    expect(launched.status, launched.stderr).toBe(0);
+    expect(launched.stdout).toContain("steak-pi 0.17.0");
+
+    writeFileSync(join(f.releases, "0.17.0", ".ran-at"), String(Date.now()));
+    const rolled = run(f, "0.17.0", ["update", "--rollback"], "v0.17.0");
+    expect(rolled.status, rolled.stderr).toBe(0);
+    expect(readFileSync(shim, "utf8")).toContain(`exec '${realpathSync(join(f.releases, "0.16.0", "package", "bin", "steak-pi"))}' "$@"`);
+    expect(readFileSync(shim, "utf8")).toContain(pathLine);
+  });
+
+  it("never rewrites a foreign installer shim, and says when none exists", () => {
+    const f = fixture("0.16.0", "0.17.0");
+    const shim = writeInstallerShim(f.home, join(f.releases, "0.16.0", "package", "bin", "steak-pi"), false);
+    const before = readFileSync(shim, "utf8");
+    const updated = run(f, "0.16.0", ["update"], "v0.17.0");
+    expect(updated.status, updated.stderr).toBe(0);
+    expect(updated.stdout).toContain(`Left ${shim} alone: it was not written by this installer.`);
+    expect(readFileSync(shim, "utf8")).toBe(before);
+
+    // A marked launcher of another installation (another releases root) is not this update's to move.
+    const elsewhere = writeInstallerShim(f.home, join(f.home, "other", "steak-pi", "releases", "0.16.0", "package", "bin", "steak-pi"));
+    const theirs = readFileSync(elsewhere, "utf8");
+    const rolled = run(f, "0.17.0", ["update", "--rollback"], "v0.17.0");
+    expect(rolled.status, rolled.stderr).toBe(0);
+    expect(rolled.stdout).toContain(`Left ${elsewhere} alone: it does not run a release from ${realpathSync(f.releases)}.`);
+    expect(readFileSync(elsewhere, "utf8")).toBe(theirs);
+
+    const missing = fixture("0.16.0", "0.17.0");
+    const none = run(missing, "0.16.0", ["update"], "v0.17.0");
+    expect(none.status, none.stderr).toBe(0);
+    expect(none.stdout).toContain(`No installer shim at ${shimPath(missing.home)}; left it alone.`);
+  });
+
   it("keeps the release Pi loads as the rollback even when the CLI itself is older (2026-11-03)", () => {
     // A Homebrew CLI at 0.1.0 updating a Pi that loads 0.16.0 must keep 0.16.0 (live sessions load worker modules from it).
     const f = fixture("0.16.0", "0.17.0");
@@ -175,7 +244,8 @@ describe("steak-pi update for release-folder installs", { timeout: 60_000 }, () 
     // Once that session is gone, the next update or session start removes it.
     writeFileSync(join(f.home, "bin", "ps"), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     const pruned = spawnSync(process.execPath, ["--no-warnings", join(f.releases, "0.17.0", "package", "src", "update-cli.ts"), "--prune", f.releases, "0.17.0"], {
-      encoding: "utf8", env: { ...process.env, HOME: f.home, PATH: `${join(f.home, "bin")}:${process.env.PATH}`, PI_CODING_AGENT_DIR: f.agent },
+      // The prune reads the launcher pin: the fixture's, never the operator's.
+      encoding: "utf8", env: { ...process.env, HOME: f.home, PATH: `${join(f.home, "bin")}:${process.env.PATH}`, PI_CODING_AGENT_DIR: f.agent, STEAK_PI_BIN_DIR: shimDir(f.home) },
     });
     expect(pruned.stdout).toContain("Removed old release 0.1.0.");
     expect(existsSync(join(f.releases, "0.16.0", "package"))).toBe(true); // the rollback waits for 0.17.0 to run once

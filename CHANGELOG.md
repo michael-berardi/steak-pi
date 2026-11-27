@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.46.1 (2026-11-27)
+
+- **Release-folder updates keep the command-line launcher in step with Pi.** `steak-pi update` and `--rollback` now re-point the installer launcher when it carries Steak Pi's `steak-pi-installer-shim` marker, preserving its bundled-Node PATH line. A launcher from another installer, or one running another installation's releases folder, is never replaced. Pruning also counts the marked launcher's target as pinned, so it cannot delete the release the `steak-pi` command still runs. A launcher written before 0.46.1 still runs its older release's updater, which does not move it: the next update installed from inside Pi does, or run the installer again. Regression tests cover the rewrite, the foreign-file and other-installation guards and both prune paths.
+
 ## 0.46.0 (2026-11-26)
 
 Update notices, skip and opt-in automatic updates ([docs/updates.md](docs/updates.md)).

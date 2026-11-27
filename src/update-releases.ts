@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -10,7 +10,7 @@ import { dirname, join, resolve } from "node:path";
  * for its whole life, and its subagents load modules from it (2026-11-03: a two-day-old session lost
  * its release to an update and every dispatch failed). So an older release is removed only when all
  * of these hold:
- *   - no known Pi agent settings file pins it;
+ *   - no known Pi agent settings file pins it, and no marked installer launcher shim execs it;
  *   - it was retired (un-pinned) before every running Pi process started, so none can be loading it;
  *   - for the newest older release (the rollback): the current release has run once, or seven days
  *     have passed since the rollback was retired.
@@ -26,6 +26,10 @@ export const RAN_MARKER = ".ran-at";
 
 const VERSION = /^\d+\.\d+\.\d+$/;
 const RELEASE_ENTRY = /steak-pi\/releases\/(\d+\.\d+\.\d+)\/package$/;
+/** Written by scripts/install.sh into launcher shims this updater may rewrite. */
+export const INSTALLER_SHIM_MARKER = "steak-pi-installer-shim";
+// Both the installer's double-quoted form and the escaped single quotes of a path containing a quote.
+const SHIM_EXEC = /^exec\s+(?:"([^"]*)"|'((?:[^']|'\\'')*)'|(\S+))\s+"\$@"\s*$/;
 
 function compare(a: string, b: string): number {
   const x = a.split(".").map(Number), y = b.split(".").map(Number);
@@ -79,6 +83,31 @@ export function pinnedVersions(root: string, files: string[]): Set<string> {
   return pinned;
 }
 
+/** Launcher path the installer writes and `steak-pi update` re-points (`STEAK_PI_BIN_DIR` overrides HOME). */
+export function installerShimPath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(env.STEAK_PI_BIN_DIR || join(env.HOME || homedir(), ".local", "bin"), "steak-pi");
+}
+
+/** Version a marked shim execs, only when its target is `<root>/<version>/package/bin/steak-pi`. */
+export function shimPinnedVersion(root: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const shim = installerShimPath(env);
+  let contents: string;
+  try {
+    if (!lstatSync(shim).isFile()) return undefined;
+    contents = readFileSync(shim, "utf8");
+  } catch { return undefined; }
+  if (!contents.includes(INSTALLER_SHIM_MARKER)) return undefined;
+  const exec = contents.split(/\r?\n/).map((line) => line.trim()).find((line) => line.startsWith("exec "));
+  const parts = exec?.match(SHIM_EXEC);
+  const target = parts && (parts[1] ?? parts[2]?.replace(/'\\''/g, "'") ?? parts[3]);
+  if (!target) return undefined;
+  const absolute = resolve(target.replace(/^~(?=\/)/, env.HOME || homedir()));
+  const match = absolute.match(/\/(\d+\.\d+\.\d+)\/package\/bin\/steak-pi$/);
+  if (!match) return undefined;
+  const targetRoot = dirname(dirname(dirname(dirname(absolute))));
+  return real(targetRoot) === real(root) ? match[1] : undefined;
+}
+
 /** Start times (epoch ms) of Pi processes in `ps -o etime=,comm=` output (`[[dd-]hh:]mm:ss name`). */
 export function parsePiStarts(output: string, now = Date.now()): number[] {
   const starts: number[] = [];
@@ -106,6 +135,8 @@ export interface PruneOptions {
   pinned?: Set<string>;
   /** Running Pi process start times; default: read `ps`. Undefined means unknown, so nothing is removed. */
   piStarts?: number[] | undefined;
+  /** Version pinned by the installer shim; default: read it. Explicit undefined means no shim pin. */
+  shimPinned?: string | undefined;
 }
 
 export interface PruneResult { removed: string[]; kept: Array<{ version: string; reason: string }> }
@@ -122,11 +153,13 @@ export function pruneReleases(root: string, current: string, options: PruneOptio
     .sort((a, b) => compare(b, a));
   if (older.length === 0) return result;
   const pinned = options.pinned ?? pinnedVersions(root, knownSettingsFiles());
+  const shimPinned = "shimPinned" in options ? options.shimPinned : shimPinnedVersion(root);
   const piStarts = "piStarts" in options ? options.piStarts : runningPiStarts(now);
   const settled = existsSync(join(root, current, RAN_MARKER));
   older.forEach((version, index) => {
     const keep = (reason: string) => { result.kept.push({ version, reason }); };
     if (pinned.has(version)) return keep("pinned by a Pi agent settings file");
+    if (shimPinned === version) return keep("pinned by the installer launcher shim");
     const retiredAt = readNumber(join(root, version, RETIRED_MARKER));
     // Markers from 0.22.x were epoch seconds and are stale: treat them as unknown, like a missing one.
     if (retiredAt === undefined || retiredAt < 1e12) {

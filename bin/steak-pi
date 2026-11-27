@@ -231,6 +231,65 @@ release_missing_deps() {
   ' "$1"
 }
 
+# Point the installer launcher shim at the same release folder. Only the exact marker authorizes a
+# rewrite: a launcher from another installer (or no launcher at all) is left alone, and so is a marked
+# one that runs a release under another releases root (another installation's launcher). The optional
+# PATH line scripts/install.sh writes for its bundled Node is kept; the temp file is renamed into place.
+# sync_installer_shim <root> <version>. Own variable names: the callers' $root, $ver and $target stay intact.
+sync_installer_shim() {
+  shim_path="${STEAK_PI_BIN_DIR:-$HOME/.local/bin}/steak-pi"
+  shim_target="$1/$2/package/bin/steak-pi"
+  node - "$shim_path" "$shim_target" "$1" <<'NODE' || die "could not re-point the installer shim at $2; Pi settings were already re-pointed"
+const fs = require("node:fs");
+const path = require("node:path");
+const [shim, target, root] = process.argv.slice(2);
+const marker = "steak-pi-installer-shim";
+let stat;
+try { stat = fs.lstatSync(shim); }
+catch { console.log(`No installer shim at ${shim}; left it alone.`); process.exit(0); }
+if (!stat.isFile()) {
+  console.log(`Left ${shim} alone: it was not written by this installer.`);
+  process.exit(0);
+}
+let current;
+try { current = fs.readFileSync(shim, "utf8"); }
+catch (error) { console.error(`steak-pi: could not read ${shim}: ${error.message}`); process.exit(1); }
+if (!current.includes(marker)) {
+  console.log(`Left ${shim} alone: it was not written by this installer.`);
+  process.exit(0);
+}
+const q = String.fromCharCode(39);
+// The same exec forms src/update-releases.ts reads: the installer's double quotes, or this rewrite's single quotes.
+const execLine = current.split(/\r?\n/).map((line) => line.trim()).find((line) => line.startsWith("exec ")) || "";
+const parts = execLine.match(/^exec\s+(?:"([^"]*)"|'((?:[^']|'\\'')*)'|(\S+))\s+"\$@"\s*$/);
+const was = parts ? (parts[1] ?? (parts[2] === undefined ? parts[3] : parts[2].split(q + "\\" + q + q).join(q))) : "";
+const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+const wasAbs = was ? path.resolve(was.replace(/^~(?=\/)/, process.env.HOME || require("node:os").homedir())) : "";
+if (!/\/\d+\.\d+\.\d+\/package\/bin\/steak-pi$/.test(wasAbs) ||
+    real(path.dirname(path.dirname(path.dirname(path.dirname(wasAbs))))) !== real(root)) {
+  console.log(`Left ${shim} alone: it does not run a release from ${root}.`);
+  process.exit(0);
+}
+const pathLine = current.split(/\r?\n/).find((line) => /^PATH=".*:\$PATH"; export PATH$/.test(line)) || "";
+const shellQuote = (value) => q + value.split(q).join(q + "\\" + q + q) + q;
+const next = `#!/bin/sh\n# ${marker}\n${pathLine ? `${pathLine}\n` : ""}exec ${shellQuote(target)} "$@"\n`;
+const tmp = `${shim}.steak-pi-update.tmp.${process.pid}`;
+let created = false;
+try {
+  // Exclusive create: a path already at the temp name (or a symlink planted there) is never written through.
+  fs.writeFileSync(tmp, next, { mode: stat.mode & 0o777, flag: "wx" });
+  created = true;
+  fs.chmodSync(tmp, stat.mode & 0o777);
+  fs.renameSync(tmp, shim);
+} catch (error) {
+  if (created) try { fs.rmSync(tmp, { force: true }); } catch {}
+  console.error(`steak-pi: could not write ${shim}: ${error.message}`);
+  process.exit(1);
+}
+console.log(`Re-pointed installer shim ${shim} at ${target}.`);
+NODE
+}
+
 # Re-point every known Pi agent directory at one release folder. The same releases root is the
 # boundary: settings that pin another installation are never touched.
 repoint_releases() {
@@ -281,6 +340,7 @@ repoint_releases() {
     ' "$known" "$root" "$ver" 2>/dev/null; then others=$((others + 1)); fi
   done
   [ "$others" -gt 0 ] && say "Also re-pointed $others other Pi agent setting$([ "$others" -eq 1 ] || echo s) on this machine to $ver."
+  sync_installer_shim "$root" "$ver"
   say "Steak Pi $verb: $pinned -> $ver. Restart Pi or run /reload."
 }
 

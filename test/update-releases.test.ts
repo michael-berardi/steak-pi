@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { markReleaseRan, parsePiStarts, pinnedVersions, pruneReleases, ROLLBACK_MAX_AGE_MS } from "../src/update-releases.ts";
+import { describe, expect, it, vi } from "vitest";
+import { installerShimPath, markReleaseRan, parsePiStarts, pinnedVersions, pruneReleases, ROLLBACK_MAX_AGE_MS, shimPinnedVersion } from "../src/update-releases.ts";
 
 const NOW = 2_000_000_000_000;
 const HOUR = 60 * 60 * 1000;
@@ -18,7 +18,7 @@ function releases(versions: string[], retired: Record<string, number> = {}) {
   return root;
 }
 const left = (root: string, versions: string[]) => versions.filter((v) => existsSync(join(root, v)));
-const none = { pinned: new Set<string>(), piStarts: [] as number[], now: NOW };
+const none = { pinned: new Set<string>(), piStarts: [] as number[], now: NOW, shimPinned: undefined };
 
 describe("release-folder pruning (no debris, never under a live session)", () => {
   it("keeps one rollback until the new release has run once, and removes older ones", () => {
@@ -53,6 +53,53 @@ describe("release-folder pruning (no debris, never under a live session)", () =>
   it("keeps a release another known agent directory pins, whatever its marker says", () => {
     const root = releases(["0.1.0", "0.3.0"], { "0.1.0": NOW - 30 * 24 * HOUR });
     expect(pruneReleases(root, "0.3.0", { ...none, pinned: new Set(["0.1.0"]) }).removed).toEqual([]);
+  });
+
+  it("keeps a release a marked installer shim still execs, with a distinct reason", () => {
+    const root = releases(["0.1.0", "0.3.0"], { "0.1.0": NOW - 30 * 24 * HOUR });
+    const result = pruneReleases(root, "0.3.0", { ...none, shimPinned: "0.1.0" });
+    expect(result.removed).toEqual([]);
+    expect(result.kept).toEqual([{ version: "0.1.0", reason: "pinned by the installer launcher shim" }]);
+    expect(pruneReleases(root, "0.3.0", none).removed).toEqual(["0.1.0"]);
+  });
+
+  it("reads a shim pin only from a marked shim targeting this releases root", () => {
+    const root = releases(["0.1.0", "0.3.0"]);
+    const home = join(root, "..");
+    const bin = join(home, "shim-bin"); mkdirSync(bin, { recursive: true });
+    const shim = join(bin, "steak-pi");
+    const target = join(root, "0.1.0", "package", "bin", "steak-pi");
+    const env = { HOME: home, STEAK_PI_BIN_DIR: bin };
+    expect(installerShimPath(env)).toBe(shim);
+    const write = (marked: boolean, execTarget: string) => writeFileSync(shim,
+      `#!/bin/sh\n${marked ? "# steak-pi-installer-shim\n" : ""}exec "${execTarget}" "$@"\n`, { mode: 0o755 });
+    write(false, target);
+    expect(shimPinnedVersion(root, env)).toBeUndefined();
+    write(true, join(home, "elsewhere", "steak-pi", "releases", "0.1.0", "package", "bin", "steak-pi"));
+    expect(shimPinnedVersion(root, env)).toBeUndefined();
+    write(true, target);
+    expect(shimPinnedVersion(root, env)).toBe("0.1.0");
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("STEAK_PI_BIN_DIR", bin);
+    try {
+      // No injected shimPinned: prune itself reads the marked shim through the overridden env.
+      const result = pruneReleases(root, "0.3.0", { pinned: new Set(), piStarts: [], now: NOW });
+      expect(result.kept[0].reason).toMatch(/installer launcher shim/);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("reads the single-quoted shim `steak-pi update` writes, even for a path with a quote", () => {
+    // The update rewrites the shim as `exec '<target>' "$@"`; a reader that only knew the installer's
+    // double-quoted form would see no pin after the first update and let prune delete the launcher's release.
+    const home = join(mkdtempSync(join(tmpdir(), "steak-shim-quote-")), "it's here");
+    const root = join(home, "steak-pi", "releases");
+    for (const version of ["0.1.0", "0.3.0"]) mkdirSync(join(root, version, "package", "bin"), { recursive: true });
+    const bin = join(home, "bin"); mkdirSync(bin);
+    const env = { HOME: home, STEAK_PI_BIN_DIR: bin };
+    const quoted = `'${join(root, "0.1.0", "package", "bin", "steak-pi").split("'").join("'\\''")}'`;
+    writeFileSync(join(bin, "steak-pi"),
+      `#!/bin/sh\n# steak-pi-installer-shim\nPATH="${join(home, "node", "bin")}:$PATH"; export PATH\nexec ${quoted} "$@"\n`, { mode: 0o755 });
+    expect(shimPinnedVersion(root, env)).toBe("0.1.0");
   });
 
   it("starts the clock for a release without a usable marker instead of removing it", () => {

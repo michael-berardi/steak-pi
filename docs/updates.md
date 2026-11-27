@@ -69,6 +69,15 @@ the dialog opens instead.
   entry, it refuses and changes nothing. The release is unpacked into a new
   sibling folder and its locked dependencies are installed. Then every known Pi
   agent settings file that pins this releases folder is re-pointed atomically.
+- **Installer launcher**: `steak-pi update` and `--rollback` also re-point the
+  launcher the installer wrote (`$STEAK_PI_BIN_DIR/steak-pi`, default
+  `~/.local/bin/steak-pi`) at the same release, keeping its bundled-Node `PATH`
+  line. Only a file carrying the `steak-pi-installer-shim` marker that runs a
+  release from this releases folder is rewritten; a missing launcher, one from
+  another installer or one of another installation is left alone. A launcher
+  written before 0.46.1 runs its older release's `steak-pi update`, which does
+  not move it: the next update installed from inside Pi moves it, or run the
+  installer again.
 - **Homebrew**: `steak-pi update` runs `brew upgrade steak-pi`.
   **Git installs** (`pi install git:…`): it runs `pi install git:…@<tag>`.
   Steak Pi never overwrites files a package manager owns.
@@ -84,7 +93,8 @@ the dialog opens instead.
 - Release folders keep one rollback. It is deleted after the new release has
   started once, or seven days after it was replaced, whichever comes first.
   Older release folders are deleted too, but never while a known Pi agent
-  directory pins them or a Pi session that started before the switch is still
+  directory pins them, the marked installer launcher still runs them from this
+  releases folder, or a Pi session that started before the switch is still
   running.
 - Automatic installs log to one file, `steak-pi/auto-update.log`, capped at 256 KB.
 - `steak-pi update --auto off` deletes the cache, the log and the notice state.

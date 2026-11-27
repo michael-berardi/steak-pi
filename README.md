@@ -40,7 +40,7 @@ If the installer prints a PATH instruction, apply it before continuing.
 Already have Pi? Install the current package directly:
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.46.0
+pi install git:github.com/michael-berardi/steak-pi@v0.46.1
 ```
 
 Requires Node.js 22.19+ and Pi 0.87+; development checks use Pi 1.0.4.
@@ -114,6 +114,7 @@ steak-pi update --auto on|off|status
 ```
 
 `steak-pi update --models` refreshes provider catalogs without installing a package.
+Release-folder updates and rollbacks also move the marked installer launcher to the new release and keep that release folder while the launcher points at it.
 Details: [docs/updates.md](docs/updates.md).
 
 ## Privacy

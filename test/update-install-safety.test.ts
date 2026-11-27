@@ -38,7 +38,7 @@ function fixture(current: string, next: string, corrupt = false) {
 function run(f: ReturnType<typeof fixture>, current: string, args: string[], extra: Record<string, string> = {}) {
   return spawnSync("/bin/sh", [join(f.releases, current, "package", "bin", "steak-pi"), ...args], {
     encoding: "utf8",
-    env: { ...process.env, HOME: f.home, PI_CODING_AGENT_DIR: f.agent, STEAK_PI_LATEST_TAG: "v0.17.0", STEAK_PI_RELEASE_BASE: `file://${f.assets}`, STEAK_PI_LIBEXEC: "", ...extra },
+    env: { ...process.env, HOME: f.home, PI_CODING_AGENT_DIR: f.agent, STEAK_PI_BIN_DIR: join(f.home, "bin"), STEAK_PI_LATEST_TAG: "v0.17.0", STEAK_PI_RELEASE_BASE: `file://${f.assets}`, STEAK_PI_LIBEXEC: "", ...extra },
   });
 }
 const pin = (f: ReturnType<typeof fixture>) => JSON.parse(readFileSync(join(f.agent, "settings.json"), "utf8")).packages[0];
@@ -100,7 +100,7 @@ it("builds the published archive URL from the package's repository metadata", ()
   writeFileSync(join(bin, "curl"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${requests}"\nexit 22\n`, { mode: 0o755 });
   const r = spawnSync("/bin/sh", [join(f.releases, "0.16.0", "package", "bin", "steak-pi"), "update"], {
     encoding: "utf8",
-    env: { ...process.env, HOME: f.home, PATH: `${bin}:${process.env.PATH}`, PI_CODING_AGENT_DIR: f.agent, STEAK_PI_LATEST_TAG: "v0.17.0", STEAK_PI_RELEASE_BASE: "", STEAK_PI_LIBEXEC: "" },
+    env: { ...process.env, HOME: f.home, PATH: `${bin}:${process.env.PATH}`, PI_CODING_AGENT_DIR: f.agent, STEAK_PI_BIN_DIR: bin, STEAK_PI_LATEST_TAG: "v0.17.0", STEAK_PI_RELEASE_BASE: "", STEAK_PI_LIBEXEC: "" },
   });
   expect(r.status).not.toBe(0);
   const repoUrl = (JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).repository.url as string).replace(/\.git$/, "");
