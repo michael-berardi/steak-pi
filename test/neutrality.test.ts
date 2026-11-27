@@ -56,6 +56,8 @@ const MODEL_CHOICE = /\b(?:gpt-\d[\w.-]*|deepseek[\w./-]*|opencode-go\/|openrout
 const ADAPTER_CATALOGS = [
   "src/subagents/claude-code-models.ts", // Claude Code CLI adapter: pinned route spellings.
   "extensions/claude-code/model-catalog.ts", // Claude Code provider: the CLI's own model list.
+  "extensions/google-ai-plan/models.ts", // Google AI Ultra plan provider: the plan's fixed model list (partner docs).
+  "docs/GOOGLE-AI-PLAN.md", // Documents that provider's catalog.
   "docs/CLAUDE-CODE.md", // Documents that provider's catalog.
   "docs/CLAUDE-API-ROUTE.md", // The explicit Claude API adapter route; its example record is contract-tested.
   "docs/OPUS-5-5.md", // The adapter's candidate-model manifest notes.

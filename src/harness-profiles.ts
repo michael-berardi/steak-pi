@@ -56,6 +56,8 @@ const MAX_MANIFEST_BYTES = 128 * 1024;
  * a live manifest entry with one of these ids is dropped from the merge. None by default. */
 const STEAK_PI_HARNESS = "steak-pi";
 const retiredSteakPiProfiles = (): ReadonlySet<string> => new Set(routingConfigOrEmpty().retiredProfiles ?? []);
+/** Harness-qualified profile ids the operator hid from pickers only (`hiddenProfiles` in routing.json). */
+const hiddenPickerProfiles = (): ReadonlySet<string> => new Set(routingConfigOrEmpty().hiddenProfiles ?? []);
 
 const object = (x: unknown): x is Record<string, any> => !!x && typeof x === "object" && !Array.isArray(x);
 const clean = (x: unknown): x is string => typeof x === "string" && x.length > 0 && !/[\x00-\x1f\x7f-\x9f]/u.test(x);
@@ -319,13 +321,21 @@ let cachedScope: ScopeEntry | undefined;
 export function curatedPickerScope(env: NodeJS.ProcessEnv = process.env): Set<string> | undefined {
   const harness = activeHarnessId(env);
   const sources = harnessProfileDirs(env);
-  const key = `${harness}\u0000${sources.join("\u0000")}`;
+  const hidden = hiddenPickerProfiles();
+  // The hidden list is picker policy, not manifest metadata: include it in the
+  // cache key so an edit applies even when neither manifest file changed.
+  const key = `${harness}\u0000${sources.join("\u0000")}\u0000${JSON.stringify([...hidden].sort())}`;
   const revision = harnessManifestRevision(env);
   if (cachedScope && cachedScope.key === key && cachedScope.revision === revision) return cachedScope.scope;
   let scope: Set<string> | undefined;
   try {
     // An effective catalog that exists is authority even when it names no native route.
-    scope = new Set(resolveHarnessManifest(sources, harness).profiles.map(routeKey));
+    // `profileId` is harness-qualified with the harness id resolved above, so an
+    // operator entry names exactly this profile. Only the picker route is dropped;
+    // the manifest catalog and every dispatch path still know the profile.
+    scope = new Set(resolveHarnessManifest(sources, harness).profiles
+      .filter(profile => !hidden.has(profile.profileId))
+      .map(routeKey));
   } catch {
     // Malformed metadata must never hide a healthy native catalog.
     scope = undefined;

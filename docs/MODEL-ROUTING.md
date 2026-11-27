@@ -693,7 +693,7 @@ app-bundled `ULTRATERM_HARNESS_RESOURCES` fallback, live manifests under
 `~/.config/ultraterm/harnesses/{harness}.json`): only exact
 `--model provider/id` profiles with an explicit `--thinking` level are routes.
 Unknown metadata fails open; a manifest that exists is authority. Operator
-`hiddenModelPatterns` and pinned/retired routes never become choices.
+`hiddenModelPatterns` and pinned/retired routes never become choices. An operator may also list `hiddenProfiles` (`"harness/profileId"` strings) in routing.json: those manifest profiles are omitted from both interactive picker choices, while their routes stay in the dispatch catalog for explicit selectors, workers, USAP chains, reviewers, fallbacks and `--model` launches. A session already running on such a route keeps running.
 Dispatch stays unfiltered: chain membership and worker preflight check the
 published dispatch catalog.
 

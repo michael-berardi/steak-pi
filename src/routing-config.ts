@@ -225,6 +225,8 @@ export interface RoutingConfig {
   routeConditions?: Readonly<Record<string, OnlyWhenCondition>>;
   retiredModelPatterns?: readonly RetiredModelPattern[];
   retiredProfiles?: readonly string[];
+  /** Harness-qualified profile ids (`harness/profileId`) omitted from interactive pickers only. */
+  hiddenProfiles?: readonly string[];
   catalogExtras?: readonly CatalogExtra[];
   providerQuotaFallback?: readonly QuotaTierConfig[];
   hiddenModelPatterns?: readonly HiddenModelPattern[];
@@ -560,6 +562,9 @@ export function parseRoutingConfig(raw: unknown): RoutingConfig {
   }
   if (raw.retiredProfiles !== undefined) {
     config.retiredProfiles = array(raw.retiredProfiles, "retiredProfiles").map((entry, index) => text(entry, `retiredProfiles[${index}]`));
+  }
+  if (raw.hiddenProfiles !== undefined) {
+    config.hiddenProfiles = array(raw.hiddenProfiles, "hiddenProfiles").map((entry, index) => text(entry, `hiddenProfiles[${index}]`));
   }
   if (raw.catalogExtras !== undefined) {
     config.catalogExtras = array(raw.catalogExtras, "catalogExtras").map((entry, index) => {

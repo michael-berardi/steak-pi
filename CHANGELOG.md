@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.47.0 (2026-11-27)
+
+- **Google AI Ultra plan provider.** Gemini 4 Hydrogen, Neon and Carbon (and 3.5 Flash-Lite) now run on a Google AI Ultra plan through the `google-ai-plan` provider from earendil-works/pi PR 12614, ported as a Steak Pi extension until the pinned Pi ships it. Sign in with `/login` → Sign in with Google (AI Ultra) after adding your own Google-approved OAuth client; Steak Pi ships none, because Google approves each app's client separately. The PR's own 26 tests run against the port. See [docs/GOOGLE-AI-PLAN.md](docs/GOOGLE-AI-PLAN.md).
+- **Hidden profiles leave the pickers only.** Profiles listed in routing.json `hiddenProfiles` (the list UltraTerm's Settings writes) drop out of native `/model` and the UltraTerm composer list. Workers, chains, reviewers, fallbacks and explicit `--model` launches still use them.
+
 ## 0.46.2 (2026-11-27)
 
 - **The installer replaces the old Steak Pi entry instead of adding a second one.** `steak-pi install` (run by `install.sh` and `install.ps1`) passed Pi's relative settings path to `pi remove`, which Pi resolves against the current folder, so nothing matched: the new release was appended next to the old one and Pi kept loading the old release. It now removes every other Steak Pi entry by its absolute path and stops with the cause if one remains. `steak-pi update` and `--rollback` also collapse a release folder listed twice into one entry. Regression tests run the real Pi CLI.
