@@ -613,7 +613,7 @@ export interface ClaudeWorkerRunnerOptions {
   reserveRouter?: RouterCall;
   env?: NodeJS.ProcessEnv;
   /** Durable admission for a `claude-code/<model>` run: pins, the provider catalog (shipped rows plus
-   * ids the CLI reported live) and, when the caller has them, operator profiles. Defaults to pins and
+   * ids the CLI reports from its built-in catalog) and, when the caller has them, operator profiles. Defaults to pins and
    * catalog, so a resume or a direct runner call never falls back to a hard-coded model list. */
   admit?: (route: string | undefined) => ClaudeCodeModel | undefined;
 }

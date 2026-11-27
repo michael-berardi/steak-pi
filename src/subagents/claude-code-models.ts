@@ -58,7 +58,7 @@ export function claudeCodeRouteModel(route: string | undefined): string | undefi
 export interface ClaudeCodeRouteProfile { id?: string; model?: string; args?: readonly string[] }
 
 /** Which of its three sources admitted a route: the adapter's built-in pins, the provider's own model
- * catalog (shipped rows plus ids the CLI reported live), or an operator-registered profile. */
+ * catalog (shipped rows plus the ids the CLI reports from its built-in catalog), or an operator-registered profile. */
 export type ClaudeCodeRouteSource = "pinned" | "catalog" | "profile";
 
 /** An admitted `claude-code/<model>` route with its source, or the reason none admitted it. */
@@ -81,7 +81,7 @@ export function claudeCodeRouteRefusal(route: string): string {
 /**
  * Durable admission for a `claude-code/<model>` route. A route is admitted from three sources, never
  * from a release-time model list: the adapter's built-in pinned routes, the Claude Code provider's own
- * catalog (the shipped rows plus every id the CLI reported live), or an operator-registered worker /
+ * catalog (the shipped rows plus every id the CLI reports from its built-in catalog), or an operator-registered worker /
  * launch profile that names it (its head `model` or its `--model` arg). A new Claude model therefore
  * works without a Steak Pi release. Undefined means the route is not a `claude-code/…` route at all
  * (a Pi route, or the API adapter's `claude-code-api/…` route), which this gate does not own; a
