@@ -178,6 +178,36 @@ expect_checksum() {
   [ "$(sha256_file "$1")" = "$want" ] || die "checksum mismatch for $2; nothing was changed"
 }
 
+# Steak Pi entries in Pi's settings whose identity differs from $1 (one per line). A local entry is printed as an absolute
+# path resolved from the agent directory; it counts as Steak Pi when it is a release folder, Homebrew's libexec, or a folder
+# whose package.json is named steak-pi. A git or npm entry of this repository prints as written. Exit 1: unreadable settings.
+steak_entries_except() {
+  [ -f "$SETTINGS" ] || return 0
+  node -e '
+    const fs = require("node:fs"); const path = require("node:path"); const os = require("node:os");
+    const [file, target, repo] = process.argv.slice(1);
+    let s; try { s = JSON.parse(fs.readFileSync(file, "utf8")); } catch (error) { console.error("steak-pi: " + file + ": " + error.message); process.exit(1); }
+    const dir = path.dirname(file);
+    const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+    const remote = (src) => /^(git:|npm:|https?:|ssh:|git@)/.test(src);
+    const abs = (src) => path.resolve(dir, src.replace(/^~(?=\/|$)/, os.homedir()));
+    const ours = (src) => {
+      if (remote(src)) return src.includes(repo);
+      const p = abs(src);
+      if (/steak-pi\/releases\/[^/]+\/package\/?$/.test(p) || /opt\/steak-pi\/libexec\/?$/.test(p)) return true;
+      try { return JSON.parse(fs.readFileSync(path.join(p, "package.json"), "utf8")).name === "steak-pi"; } catch { return false; }
+    };
+    const id = (src) => remote(src) ? src.replace(/^git:/, "").replace(/@[^@/]*$/, "") : "local:" + real(abs(src));
+    const want = id(target); const out = new Set();
+    for (const p of Array.isArray(s.packages) ? s.packages : []) {
+      const src = typeof p === "string" ? p : p?.source;
+      if (typeof src !== "string" || !ours(src) || id(src) === want) continue;
+      out.add(remote(src) ? src : abs(src));
+    }
+    if (out.size) console.log([...out].join("\n"));
+  ' "$SETTINGS" "$1" "$REPO"
+}
+
 cmd_install() {
   need_pi
   if [ "$BREW_MODE" -eq 1 ]; then
@@ -185,10 +215,17 @@ cmd_install() {
   else
     TARGET="$GIT_SPEC"
   fi
-  current=$(pi_spec) || current=""
-  if [ -n "$current" ] && [ "$current" != "$TARGET" ]; then
-    say "Replacing the existing pi package entry ($current) to keep one canonical source..."
-    pi remove "$current" || say "pi remove reported nothing to do; continuing."
+  # Every other Steak Pi entry goes, passed to `pi remove` as an absolute path: Pi resolves a local remove argument against
+  # the current directory, not the agent directory its settings are relative to (2026-11-27: the relative 0.46.0 entry did not
+  # match, the installer appended 0.46.1 next to it, and Pi kept loading 0.46.0).
+  stale=$(steak_entries_except "$TARGET") || die "cannot read Pi's package list in $SETTINGS; nothing was changed"
+  if [ -n "$stale" ]; then
+    printf '%s\n' "$stale" | while IFS= read -r entry; do
+      say "Replacing the existing pi package entry ($entry) to keep one canonical source..."
+      pi remove "$entry" || die "pi remove $entry failed; Pi's settings still list it"
+    done || exit 1
+    stale=$(steak_entries_except "$TARGET") || stale=""
+    [ -z "$stale" ] || die "Pi's settings still list another Steak Pi entry after pi remove: $stale"
   fi
   say "Installing Steak Pi $VERSION for pi:"
   say "  pi install $TARGET"
@@ -311,6 +348,10 @@ repoint_releases() {
       if (old !== ver) try { fs.writeFileSync(root + "/" + old + "/.retired-at", Date.now() + "\n", { mode: 0o600 }); } catch {}
       return typeof p === "string" ? next : { ...p, source: next }; });
     if (!hit) { console.error("no release-folder entry in " + file); process.exit(1); }
+    // Two release entries now naming one folder load the package twice: keep the first (2026-11-27).
+    const seen = new Set();
+    s.packages = s.packages.filter((p) => { if (!rel(p)) return true; const key = require("node:path").resolve(require("node:path").dirname(file), typeof p === "string" ? p : p.source);
+      if (seen.has(key)) return false; seen.add(key); return true; });
     const tmp = file + ".steak-pi-update.tmp"; fs.writeFileSync(tmp, JSON.stringify(s, null, 2) + "\n", { mode: 0o600 }); fs.renameSync(tmp, file);
   ' "$SETTINGS" "$root" "$ver" || die "could not re-point $SETTINGS at $ver"
   # The same machine runs Pi from several known agent directories: the default ~/.pi/agent and one per UltraTerm provider
@@ -336,6 +377,10 @@ repoint_releases() {
         if (old !== ver) try { fs.writeFileSync(path.join(root, old, ".retired-at"), Date.now() + "\n", { mode: 0o600 }); } catch {}
         return typeof p === "string" ? next : { ...p, source: next }; });
       if (!hit) process.exit(3);
+      const seen = new Set();
+      s.packages = s.packages.filter((p) => { const src = typeof p === "string" ? p : p?.source ?? "";
+        if (!/steak-pi\/releases\/[^/]+\/package$/.test(src) || !under(src)) return true;
+        const key = path.resolve(dir, src.replace(/^~(?=\/)/, process.env.HOME)); if (seen.has(key)) return false; seen.add(key); return true; });
       const tmp = file + ".steak-pi-update.tmp"; fs.writeFileSync(tmp, JSON.stringify(s, null, 2) + "\n", { mode: 0o600 }); fs.renameSync(tmp, file);
     ' "$known" "$root" "$ver" 2>/dev/null; then others=$((others + 1)); fi
   done

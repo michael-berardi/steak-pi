@@ -2,8 +2,9 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { shimPinnedVersion } from "../src/update-releases.ts";
+import { hermeticEnv } from "./helpers/hermetic-env.ts";
 
 const CLI = resolve(import.meta.dirname, "..", "bin", "steak-pi");
 
@@ -23,8 +24,9 @@ function writeInstallerShim(home: string, target: string, marked = true, pathLin
 }
 
 /** Isolated release folders and a synthetic git clone; npm installs an empty dependency set offline. */
-function fixture(current: string, next: string) {
-  const home = mkdtempSync(join(tmpdir(), "steak-update-cli-"));
+function fixture(current: string, next: string, subdir = "") {
+  const home = join(mkdtempSync(join(tmpdir(), "steak-update-cli-")), subdir);
+  mkdirSync(home, { recursive: true });
   const releases = join(home, "share", "steak-pi", "releases");
   const pkg = (dir: string, version: string) => {
     mkdirSync(join(dir, "bin"), { recursive: true });
@@ -53,7 +55,7 @@ function fixture(current: string, next: string) {
 function run(f: ReturnType<typeof fixture>, current: string, args: string[], tag: string, extra: Record<string, string> = {}) {
   return spawnSync("/bin/sh", [join(f.releases, current, "package", "bin", "steak-pi"), ...args], {
     encoding: "utf8",
-    env: { ...process.env, HOME: f.home, PATH: `${join(f.home, "bin")}:${process.env.PATH}`, PI_CODING_AGENT_DIR: f.agent, STEAK_PI_LATEST_TAG: tag, STEAK_PI_RELEASE_SOURCE: f.repo, STEAK_PI_LIBEXEC: "", STEAK_PI_BIN_DIR: shimDir(f.home), ...extra },
+    env: hermeticEnv(f.home, { PATH: `${join(f.home, "bin")}:${process.env.PATH}`, PI_CODING_AGENT_DIR: f.agent, STEAK_PI_LATEST_TAG: tag, STEAK_PI_RELEASE_SOURCE: f.repo, STEAK_PI_LIBEXEC: "", STEAK_PI_BIN_DIR: shimDir(f.home), ...extra }),
   });
 }
 
@@ -65,7 +67,7 @@ describe("steak-pi update for release-folder installs", { timeout: 60_000 }, () 
     writeFileSync(join(other, "settings.json"), JSON.stringify({ packages: [join(f.releases, "0.1.0", "package")] }));
     const selected = run(f, "0.16.0", ["status"], "v0.17.0");
     const fallback = spawnSync("/bin/sh", [join(f.releases, "0.16.0", "package", "bin", "steak-pi"), "status"], {
-      encoding: "utf8", env: { ...process.env, HOME: f.home, PI_CODING_AGENT_DIR: "", STEAK_PI_LIBEXEC: "", STEAK_PI_BIN_DIR: shimDir(f.home) },
+      encoding: "utf8", env: hermeticEnv(f.home, { PI_CODING_AGENT_DIR: "", STEAK_PI_LIBEXEC: "", STEAK_PI_BIN_DIR: shimDir(f.home) }),
     });
     expect(selected.stdout).toContain(join(f.agent, "settings.json"));
     expect(selected.stdout).toContain("pi integration    ../share/steak-pi/releases/0.16.0/package  (v0.16.0)");
@@ -189,7 +191,7 @@ describe("steak-pi update for release-folder installs", { timeout: 60_000 }, () 
     expect(shimPinnedVersion(realpathSync(f.releases), shimEnv)).toBe("0.17.0");
     // The rewritten launcher is valid shell that execs the new release.
     chmodSync(newTarget, 0o755);
-    const launched = spawnSync(shim, ["version"], { encoding: "utf8", env: { ...process.env, HOME: f.home, STEAK_PI_LIBEXEC: "", STEAK_PI_BIN_DIR: shimDir(f.home) } });
+    const launched = spawnSync(shim, ["version"], { encoding: "utf8", env: hermeticEnv(f.home, { STEAK_PI_LIBEXEC: "", STEAK_PI_BIN_DIR: shimDir(f.home) }) });
     expect(launched.status, launched.stderr).toBe(0);
     expect(launched.stdout).toContain("steak-pi 0.17.0");
 
@@ -198,6 +200,56 @@ describe("steak-pi update for release-folder installs", { timeout: 60_000 }, () 
     expect(rolled.status, rolled.stderr).toBe(0);
     expect(readFileSync(shim, "utf8")).toContain(`exec '${realpathSync(join(f.releases, "0.16.0", "package", "bin", "steak-pi"))}' "$@"`);
     expect(readFileSync(shim, "utf8")).toContain(pathLine);
+  });
+
+  it("rewrites the launcher for a releases folder whose path contains a quote, and the result runs", () => {
+    // The shell guard compares the launcher's target against the releases root and writes a single-quoted exec line;
+    // both must survive a ' in the path (macOS home folders can carry one).
+    const f = fixture("0.16.0", "0.17.0", "it's here");
+    const shim = writeInstallerShim(f.home, join(f.releases, "0.16.0", "package", "bin", "steak-pi"));
+    const updated = run(f, "0.16.0", ["update"], "v0.17.0");
+    expect(updated.status, updated.stderr).toBe(0);
+    const newTarget = realpathSync(join(f.releases, "0.17.0", "package", "bin", "steak-pi"));
+    expect(newTarget).toContain("it's here");
+    expect(updated.stdout).toContain(`Re-pointed installer shim ${shim} at ${newTarget}.`);
+    expect(readFileSync(shim, "utf8")).toContain(`exec '${newTarget.split("'").join("'\\''")}' "$@"`);
+    expect(shimPinnedVersion(realpathSync(f.releases), { HOME: f.home, STEAK_PI_BIN_DIR: shimDir(f.home) })).toBe("0.17.0");
+    chmodSync(newTarget, 0o755);
+    const launched = spawnSync(shim, ["version"], { encoding: "utf8", env: hermeticEnv(f.home, { STEAK_PI_LIBEXEC: "", STEAK_PI_BIN_DIR: shimDir(f.home) }) });
+    expect(launched.status, launched.stderr).toBe(0);
+    expect(launched.stdout).toContain("steak-pi 0.17.0");
+    // A second update reads the single-quoted line it wrote (and rolls the launcher back with it).
+    writeFileSync(join(f.releases, "0.17.0", ".ran-at"), String(Date.now()));
+    const rolled = run(f, "0.17.0", ["update", "--rollback"], "v0.17.0");
+    expect(rolled.status, rolled.stderr).toBe(0);
+    expect(rolled.stdout).toContain(`Re-pointed installer shim ${shim} at ${realpathSync(join(f.releases, "0.16.0", "package", "bin", "steak-pi"))}.`);
+  });
+
+  it("leaves one entry when a settings file lists the Steak Pi release folder twice (2026-11-27)", () => {
+    // The 0.46.1 installer appended its entry next to the old one; the next update turned both into the same folder.
+    const f = fixture("0.16.0", "0.17.0");
+    writeFileSync(join(f.agent, "settings.json"), JSON.stringify({ packages: ["../share/steak-pi/releases/0.16.0/package", "npm:other", join(f.releases, "0.1.0", "package")] }));
+    const defaultAgent = join(f.home, ".pi", "agent"); mkdirSync(defaultAgent, { recursive: true });
+    writeFileSync(join(defaultAgent, "settings.json"), JSON.stringify({ packages: [join(f.releases, "0.16.0", "package"), join(f.releases, "0.16.0", "package")] }));
+    const r = run(f, "0.16.0", ["update"], "v0.17.0");
+    expect(r.status, r.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(join(f.agent, "settings.json"), "utf8")).packages).toEqual(["../share/steak-pi/releases/0.17.0/package", "npm:other"]);
+    expect(JSON.parse(readFileSync(join(defaultAgent, "settings.json"), "utf8")).packages).toEqual([join(f.releases, "0.17.0", "package")]);
+  });
+
+  it("never reads or re-points the provider accounts of an inherited ULTRATERM_HOME", () => {
+    // The suite runs inside Pi and UltraTerm sessions that export ULTRATERM_HOME; the CLI under test must not see it.
+    const f = fixture("0.16.0", "0.17.0");
+    const bait = join(f.home, "inherited-ultraterm", "provider-accounts", "codex", "x", "agent"); mkdirSync(bait, { recursive: true });
+    const baitSettings = JSON.stringify({ packages: [join(f.releases, "0.16.0", "package")] });
+    writeFileSync(join(bait, "settings.json"), baitSettings);
+    vi.stubEnv("ULTRATERM_HOME", join(f.home, "inherited-ultraterm"));
+    try {
+      const r = run(f, "0.16.0", ["update"], "v0.17.0");
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout).not.toContain("Also re-pointed");
+      expect(readFileSync(join(bait, "settings.json"), "utf8")).toBe(baitSettings);
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it("never rewrites a foreign installer shim, and says when none exists", () => {
@@ -245,7 +297,7 @@ describe("steak-pi update for release-folder installs", { timeout: 60_000 }, () 
     writeFileSync(join(f.home, "bin", "ps"), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     const pruned = spawnSync(process.execPath, ["--no-warnings", join(f.releases, "0.17.0", "package", "src", "update-cli.ts"), "--prune", f.releases, "0.17.0"], {
       // The prune reads the launcher pin: the fixture's, never the operator's.
-      encoding: "utf8", env: { ...process.env, HOME: f.home, PATH: `${join(f.home, "bin")}:${process.env.PATH}`, PI_CODING_AGENT_DIR: f.agent, STEAK_PI_BIN_DIR: shimDir(f.home) },
+      encoding: "utf8", env: hermeticEnv(f.home, { PATH: `${join(f.home, "bin")}:${process.env.PATH}`, PI_CODING_AGENT_DIR: f.agent, STEAK_PI_BIN_DIR: shimDir(f.home) }),
     });
     expect(pruned.stdout).toContain("Removed old release 0.1.0.");
     expect(existsSync(join(f.releases, "0.16.0", "package"))).toBe(true); // the rollback waits for 0.17.0 to run once

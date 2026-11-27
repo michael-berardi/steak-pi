@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.46.2 (2026-11-27)
+
+- **The installer replaces the old Steak Pi entry instead of adding a second one.** `steak-pi install` (run by `install.sh` and `install.ps1`) passed Pi's relative settings path to `pi remove`, which Pi resolves against the current folder, so nothing matched: the new release was appended next to the old one and Pi kept loading the old release. It now removes every other Steak Pi entry by its absolute path and stops with the cause if one remains. `steak-pi update` and `--rollback` also collapse a release folder listed twice into one entry. Regression tests run the real Pi CLI.
+- **Update tests are hermetic.** The updater and installer tests no longer pass the session's `ULTRATERM_HOME`, `PI_*`, `STEAK_PI_*` or `XDG_*` variables to the CLI under test, so they never read or re-point this machine's provider-account settings; a test with a planted inherited `ULTRATERM_HOME` guards it. A new test covers the launcher rewrite for a releases folder whose path contains a quote.
+
 ## 0.46.1 (2026-11-27)
 
 - **Release-folder updates keep the command-line launcher in step with Pi.** `steak-pi update` and `--rollback` now re-point the installer launcher when it carries Steak Pi's `steak-pi-installer-shim` marker, preserving its bundled-Node PATH line. A launcher from another installer, or one running another installation's releases folder, is never replaced. Pruning also counts the marked launcher's target as pinned, so it cannot delete the release the `steak-pi` command still runs. A launcher written before 0.46.1 still runs its older release's updater, which does not move it: the next update installed from inside Pi does, or run the installer again. Regression tests cover the rewrite, the foreign-file and other-installation guards and both prune paths.

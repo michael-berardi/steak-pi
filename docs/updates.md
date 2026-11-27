@@ -69,6 +69,11 @@ the dialog opens instead.
   entry, it refuses and changes nothing. The release is unpacked into a new
   sibling folder and its locked dependencies are installed. Then every known Pi
   agent settings file that pins this releases folder is re-pointed atomically.
+  If a settings file lists the release folder twice, one entry is kept.
+- **One Pi entry**: `steak-pi install` (which the installer runs) removes every
+  other Steak Pi entry from Pi's settings before adding its own: release
+  folders, a Homebrew `libexec` and git installs of this repository, however the
+  path is written. A remove that fails stops the install with its cause.
 - **Installer launcher**: `steak-pi update` and `--rollback` also re-point the
   launcher the installer wrote (`$STEAK_PI_BIN_DIR/steak-pi`, default
   `~/.local/bin/steak-pi`) at the same release, keeping its bundled-Node `PATH`

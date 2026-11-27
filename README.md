@@ -40,7 +40,7 @@ If the installer prints a PATH instruction, apply it before continuing.
 Already have Pi? Install the current package directly:
 
 ```sh
-pi install git:github.com/michael-berardi/steak-pi@v0.46.1
+pi install git:github.com/michael-berardi/steak-pi@v0.46.2
 ```
 
 Requires Node.js 22.19+ and Pi 0.87+; development checks use Pi 1.0.4.

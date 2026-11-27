@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { hermeticEnv } from "./helpers/hermetic-env.ts";
 
 const CLI = resolve(import.meta.dirname, "..", "bin", "steak-pi");
 const INSTALL_SH = resolve(import.meta.dirname, "..", "scripts", "install.sh");
@@ -114,8 +115,7 @@ function fixture(opts: { piPresent: boolean; fakeNpm: boolean; version?: string;
   const steakHome = join(home, "steak-pi-home");
   const bin = join(home, "bin");
   const env = {
-    ...process.env,
-    HOME: home,
+    ...hermeticEnv(home),
     PATH: `${tools}:/usr/bin:/bin`, // a controlled PATH: the operator's own pi never leaks in
     PI_CODING_AGENT_DIR: agent,
     STEAK_PI_HOME: steakHome,
