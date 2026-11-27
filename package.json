@@ -17,6 +17,7 @@
   },
   "files": [
     "CHANGELOG.md",
+    "PRIVACY.md",
     "CONTRIBUTING.md",
     "SECURITY.md",
     "benchmarks/usap/README.md",

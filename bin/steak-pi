@@ -20,6 +20,9 @@
 # Git and npm installs derive everything from this script's location.
 set -u
 
+# Generic opt-out honoured by npm and other toolchains this CLI invokes. An operator's explicit value wins.
+export DO_NOT_TRACK="${DO_NOT_TRACK:-1}"
+
 # Help must be handled before the hook, runtime setup, or any subcommand work.
 is_help() { [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; }
 if is_help "${2:-}"; then
@@ -278,6 +281,8 @@ cmd_update() {
   fi
   if [ "$BREW_MODE" -eq 1 ]; then
     command -v brew >/dev/null 2>&1 || die "brew not found; this copy is Homebrew-managed."
+    # Homebrew analytics are off for this update unless the operator set a value.
+    HOMEBREW_NO_ANALYTICS="${HOMEBREW_NO_ANALYTICS:-1}"; export HOMEBREW_NO_ANALYTICS
     say "Upgrading Homebrew formula ${STEAK_PI_FORMULA:-steak-pi}..."
     brew update || die "brew update failed."
     brew upgrade "${STEAK_PI_FORMULA:-steak-pi}" || say "Homebrew reports no upgrade; continuing."
@@ -368,6 +373,16 @@ stable_node_env() {
 
 run_env() {
   stable_node_env
+  # Pi's install telemetry (pi.dev report-install plus provider attribution headers) stays off for
+  # sessions launched here unless the operator explicitly enables it.
+  if [ -z "${PI_TELEMETRY:-}" ]; then
+    PI_TELEMETRY=0; export PI_TELEMETRY
+  fi
+  # Offline at startup: no Pi version check, tool download or catalog refresh until the operator asks.
+  # Model calls to configured providers still work; PI_OFFLINE=0 restores Pi's online startup defaults.
+  if [ -z "${PI_OFFLINE:-}" ]; then
+    PI_OFFLINE=1; export PI_OFFLINE
+  fi
   if [ -z "${NODE_COMPILE_CACHE:-}" ] && [ -z "${NODE_DISABLE_COMPILE_CACHE:-}" ]; then
     NODE_COMPILE_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/steak-pi/node-compile-cache"
     export NODE_COMPILE_CACHE

@@ -491,22 +491,29 @@ test("Escape during the backoff between recoveries stops the turn: aborted, no f
   }));
 
 test("Escape during a quiet stretch is an abort, not a stall, and nothing is recovered", () => {
-  // Escape is timed from the moment the stream goes quiet (the request reached the API and the
-  // ping was sent), not from the start of the run: on a busy machine the process can take longer
-  // than a fixed delay to send its request, and Escape then landed before any request existed.
   const controller = new AbortController();
-  let quietSince = 0;
-  return rig((_attempt, response) => {
+  let quietFrom = 0;
+  return rig((attempt, response) => {
     response.writeHead(200, { "content-type": "text/event-stream" });
     sse(response, START, { type: "ping" });
-    quietSince = Date.now();
-    later(500, () => controller.abort(new Error("operator pressed Escape")));
+    // Escape 500 ms into the quiet stretch that follows the first bytes. Timed from the start of the run instead, it
+    // raced the launch: before the first send a run starts two Node processes (the `claude auth status` check and the
+    // fake CLI itself), and on a loaded host (the full suite) they took longer than 500 ms, so Escape landed before the
+    // request was ever sent (0 sends, not 1) and the test no longer exercised a quiet stretch at all.
+    if (attempt === 1) {
+      quietFrom = Date.now();
+      later(500, () => controller.abort(new Error("operator pressed Escape")));
+    }
   }, async (r) => {
+    const diagnostics: string[] = [];
+    setClaudeCodeDiagnosticReporter((line) => diagnostics.push(line));
     const message = await r.run({}, undefined, controller.signal);
     assert.equal(message.stopReason, "aborted");
-    assert.ok(quietSince > 0, "the request reached the API before Escape");
-    assert.ok(Date.now() - quietSince < 1_300, "ended at Escape, before the 1.4 s stall limit");
+    assert.ok(quietFrom > 0, "the request reached the API and its first bytes arrived before Escape");
+    // The stall limit (1.4 s) counts from the last byte, which is no earlier than quietFrom.
+    assert.ok(Date.now() - quietFrom < 1_300, "ended at Escape, before the 1.4 s stall limit");
     assert.equal(r.attempts(), 1);
     assert.equal((await r.spawns()).length, 1);
+    assert.deepEqual(diagnostics.filter((line) => /asking again/.test(line)), [], "no recovery was started");
   });
 });

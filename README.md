@@ -111,6 +111,14 @@ In Pi, `/steak-update` installs an update and reloads. Existing sessions keep
 their loaded runtime. `STEAK_PI_NO_UPDATE_CHECK=1` disables background update checks.
 `steak-pi update --models` refreshes provider catalogs without installing a package.
 
+## Privacy
+
+Steak Pi has no telemetry, analytics, crash reporter or install ID.
+Anonymous release check: at most one GitHub GET per 6h in interactive sessions; opt out with `STEAK_PI_NO_UPDATE_CHECK=1`.
+Your provider sees the prompts and files you send; other requests happen only when you run a command.
+Sessions, models, logs and snapshots stay on this machine; logs and snapshots are capped, the rest stays until you delete it.
+`steak-pi remove` deletes none of it; [PRIVACY.md](PRIVACY.md) lists every path and how to delete it.
+
 ## Reference
 
 - [Session reference](docs/REFERENCE.md): workers, verification, finish guard, settings and adaptive tools

@@ -10,6 +10,9 @@
 # STEAK_PI_RELEASE_BASE (override the download base URL, used by tests).
 set -eu
 
+# Generic toolchain opt-out; npm telemetry is disabled explicitly below as well.
+export DO_NOT_TRACK="${DO_NOT_TRACK:-1}"
+
 REPO="github.com/michael-berardi/steak-pi"
 NODE_MIN_MAJOR=22; NODE_MIN_MINOR=19
 HOME_DIR="${STEAK_PI_HOME:-$HOME/.local/share/steak-pi}"
@@ -175,7 +178,7 @@ say "Adding Steak Pi $VERSION to Pi..."
 PATH="$BIN_DIR:$PATH"
 if [ "$PI_WAS_PRESENT" -eq 0 ]; then PATH="$HOME_DIR/pi/node_modules/.bin:$PATH"; fi
 export PATH
-STEAK_PI_LIBEXEC="$REL/package" "$REL/package/bin/steak-pi" install </dev/null || die "'steak-pi install' failed; Pi's settings were not changed"
+PI_TELEMETRY="${PI_TELEMETRY:-0}" PI_OFFLINE="${PI_OFFLINE:-1}" STEAK_PI_LIBEXEC="$REL/package" "$REL/package/bin/steak-pi" install </dev/null || die "'steak-pi install' failed; Pi's settings were not changed"
 
 PI_SHIM_WRITTEN=0
 if [ "$PI_WAS_PRESENT" -eq 0 ]; then write_shim pi "$HOME_DIR/pi/node_modules/.bin/pi" && PI_SHIM_WRITTEN=1; fi

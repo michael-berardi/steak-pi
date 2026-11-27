@@ -92,6 +92,13 @@ function Install-SteakPi {
   $savedPath = $env:PATH
   $savedLibexec = $env:STEAK_PI_LIBEXEC
   $savedNpm = @{ notifier = $env:npm_config_update_notifier; fund = $env:npm_config_fund; audit = $env:npm_config_audit }
+  $savedDoNotTrack = $env:DO_NOT_TRACK
+  $savedPiTelemetry = $env:PI_TELEMETRY
+  $savedPiOffline = $env:PI_OFFLINE
+  # Generic toolchain and Pi startup-telemetry opt-outs; an operator's explicit values win.
+  if (-not $env:DO_NOT_TRACK) { $env:DO_NOT_TRACK = '1' }
+  if (-not $env:PI_TELEMETRY) { $env:PI_TELEMETRY = '0' }
+  if (-not $env:PI_OFFLINE) { $env:PI_OFFLINE = '1' }
   $stage = $null
   try {
     Say 'Downloading Steak Pi...'
@@ -353,6 +360,7 @@ function Install-SteakPi {
     $env:PATH = $savedPath
     $env:STEAK_PI_LIBEXEC = $savedLibexec
     $env:npm_config_update_notifier = $savedNpm.notifier; $env:npm_config_fund = $savedNpm.fund; $env:npm_config_audit = $savedNpm.audit
+    $env:DO_NOT_TRACK = $savedDoNotTrack; $env:PI_TELEMETRY = $savedPiTelemetry; $env:PI_OFFLINE = $savedPiOffline
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
     if ($stage -and (Test-Path $stage)) { Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue }
   }
