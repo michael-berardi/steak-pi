@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.47.1 (2026-11-27)
+
+- **The Google AI Ultra plan port steps aside for Pi's own provider.** When the running Pi ships `google-ai-plan` itself (earendil-works/pi PR 12614 once merged), Steak Pi no longer registers its port over it, so Pi's built-in sign-in is kept.
+
 ## 0.47.0 (2026-11-27)
 
 - **Google AI Ultra plan provider.** Gemini 4 Hydrogen, Neon and Carbon (and 3.5 Flash-Lite) now run on a Google AI Ultra plan through the `google-ai-plan` provider from earendil-works/pi PR 12614, ported as a Steak Pi extension until the pinned Pi ships it. Sign in with `/login` → Sign in with Google (AI Ultra) after adding your own Google-approved OAuth client; Steak Pi ships none, because Google approves each app's client separately. The PR's own 26 tests run against the port. See [docs/GOOGLE-AI-PLAN.md](docs/GOOGLE-AI-PLAN.md).

@@ -40,3 +40,14 @@ describe("Google AI Ultra plan OAuth client", () => {
     expect(provider.getModels().map((model) => model.id)).toContain("gemini-4-neon");
   });
 });
+
+import { piShipsGoogleAiPlan } from "../../extensions/google-ai-plan/index.ts";
+describe("step-aside when Pi ships the provider", () => {
+  it("steps aside only when pi-ai exports googleAiPlanProvider", async () => {
+    expect(await piShipsGoogleAiPlan(async () => ({ googleAiPlanProvider: () => ({}) }))).toBe(true);
+    expect(await piShipsGoogleAiPlan(async () => { throw new Error("Cannot find module"); })).toBe(false);
+    expect(await piShipsGoogleAiPlan(async () => ({}))).toBe(false);
+    // The pinned Pi does not ship it yet, so the port registers.
+    expect(await piShipsGoogleAiPlan()).toBe(false);
+  });
+});
